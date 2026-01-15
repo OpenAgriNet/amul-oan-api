@@ -1,0 +1,20 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mh-oan-api-config
+  namespace: openagri
+data:
+  ENVIRONMENT: "development"
+  DEBUG: "true"
+  REDIS_HOST: "redis"
+  REDIS_PORT: "6379"
+  POSTGRES_HOST: "postgres"
+  POSTGRES_PORT: "5432"
+  POSTGRES_DB: "openagri"
+  POSTGRES_USER: "postgres"
+  # Marqo
+  MARQO_ENDPOINT_URL: "http://marqo:8882"
+  MARQO_INDEX_NAME: "mh-oan-index"
+  BAP_ENDPOINT: "http://dev-seeker-service:3001"
+  OPENAI_API_KEY: "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"
+  OPENAI_BASE_URL: "https://openrouter.ai/api/v1"

@@ -43,11 +43,6 @@ async def get_current_user(token: str | None = Depends(oauth2_scheme)):
     This replaces the Django middleware approach.
     Bypasses authentication in development environment.
     """
-    # # Skip authentication in development environment
-    # if settings.environment == "development":
-    #     logger.info("Development environment detected - bypassing authentication")
-    #     return "development_user"
-    
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Could not validate credentials",
