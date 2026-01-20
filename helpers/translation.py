@@ -51,34 +51,34 @@ def chunks_to_markdown(chunks):
     return ''.join(f"{c['start']}{c['text']}{c['end']}" for c in chunks)
 
 
-def add_marathi_terms(text: str, term_pairs=term_pairs) -> str:
+def add_gujarati_terms(text: str, term_pairs=term_pairs) -> str:
     """
-    Add Marathi translations in brackets for matching English terms in the text.
-    Example: "Click the button" -> "Click (क्लिक) the button (बटण)"
+    Add Gujarati translations in brackets for matching English terms in the text.
+    Example: "Click the button" -> "Click (ક્લિક) the button (બટન)"
     
     Args:
         text: English text to process
-        term_pairs: List of dictionaries with 'en' and 'mr' keys for term pairs
+        term_pairs: List of dictionaries with 'en' and 'gu' keys for term pairs
         
     Returns:
-        Text with Marathi translations added in brackets for matching terms
+        Text with Gujarati translations added in brackets for matching terms
     """
     if not text or not term_pairs:
         return text
 
-    # Extract valid English-Marathi pairs and sort by length
+    # Extract valid English-Gujarati pairs and sort by length
     valid_terms = []
     for term in term_pairs:
         en_term = term.get('en', '').strip()
-        mr_term = term.get('mr', '').strip()
+        gu_term = term.get('gu', '').strip()
         
-        if not en_term or not mr_term:
+        if not en_term or not gu_term:
             continue
             
         # Normalize whitespace
         en_term = ' '.join(en_term.split())
-        mr_term = ' '.join(mr_term.split())
-        valid_terms.append((en_term, mr_term))
+        gu_term = ' '.join(gu_term.split())
+        valid_terms.append((en_term, gu_term))
     
     # Sort by length (longest first) to handle overlapping terms
     valid_terms.sort(key=lambda x: len(x[0]), reverse=True)
@@ -88,17 +88,17 @@ def add_marathi_terms(text: str, term_pairs=term_pairs) -> str:
 
     # Create pattern parts and mapping
     pattern_parts = []
-    term_mapping = {}  # English lowercase -> Marathi
+    term_mapping = {}  # English lowercase -> Gujarati
     case_mapping = {}  # English lowercase -> English original case
     
-    for en_term, mr_term in valid_terms:
+    for en_term, gu_term in valid_terms:
         try:
             # Escape special regex characters
             escaped_term = re.escape(en_term)
             pattern_parts.append(escaped_term)
             
             # Store mappings
-            term_mapping[en_term.lower()] = mr_term
+            term_mapping[en_term.lower()] = gu_term
             case_mapping[en_term.lower()] = en_term
         except Exception:
             continue
@@ -116,14 +116,14 @@ def add_marathi_terms(text: str, term_pairs=term_pairs) -> str:
         compiled_pattern = re.compile(pattern, re.IGNORECASE)
 
     def replace_match(match):
-        """Replace matched English term with "term (मराठी शब्द)" """
+        """Replace matched English term with "term (ગુજરાતી શબ્દ)" """
         term = match.group(0)
         lookup_term = term.strip().lower()
         
-        marathi = term_mapping.get(lookup_term, '')
-        if marathi:
+        gujarati = term_mapping.get(lookup_term, '')
+        if gujarati:
             original_case = case_mapping.get(lookup_term, term)
-            return f"{original_case} ({marathi})"
+            return f"{original_case} ({gujarati})"
         return term
 
     try:

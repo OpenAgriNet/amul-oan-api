@@ -9,7 +9,7 @@ load_dotenv()
 
 class Settings(BaseSettings):
     # Core Application Settings
-    app_name: str = "MahaVistaar AI API"
+    app_name: str = "Amul Vistaar AI API"
     environment: str = os.getenv("ENVIRONMENT", "production")
     debug: bool = False
     base_dir: Path = Path(__file__).resolve().parent.parent

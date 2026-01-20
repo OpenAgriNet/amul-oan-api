@@ -14,11 +14,11 @@ class FarmerContext(BaseModel):
 
     Example:
         **User:** "What is the weather in Mumbai?"
-        **Selected Language:** Marathi
+        **Selected Language:** Gujarati
         **Moderation Result:** "This is a valid agricultural question."
     """
     query: str = Field(description="The user's question.")
-    lang_code: str = Field(description="The language code of the user's question.", default='mr')
+    lang_code: str = Field(description="The language code of the user's question.", default='gu')
     moderation_str: Optional[str] = Field(default=None, description="The moderation result of the user's question.")
     farmer_id: Optional[str] = Field(default=None, description="The farmer ID of the user.")
 

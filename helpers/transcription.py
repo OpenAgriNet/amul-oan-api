@@ -59,7 +59,7 @@ def transcribe_bhashini(audio_base64: str, source_lang='mr'):
     Transcribes an audio file using the Bhashini service.
 
     Parameters:
-    source_lang (str): The language code of the audio file's language. Default is 'mr' (Marathi).
+    source_lang (str): The language code of the audio file's language. Default is 'gu' (Gujarati).
 
     Returns:
     str: The transcribed text if the request is successful.
@@ -136,5 +136,5 @@ def detect_audio_language_bhashini(audio_base64: str):
     response_json = response.json()
     detected_language_code = response_json['pipelineResponse'][0]['output'][0]['langPrediction'][0]['langCode']
 
-    # NOTE: Keeping only English and Marathi for now
+    # NOTE: Keeping only English and Gujarati for now
     return 'en' if detected_language_code == 'en' else 'mr'

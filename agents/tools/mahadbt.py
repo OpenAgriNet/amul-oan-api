@@ -63,7 +63,7 @@ class SchemeApplication(BaseModel):
     # Class-level PII codes that should be masked
     PII_CODES: ClassVar[set[str]] = {"application_id", "farmer_component_mapping_id"}
     
-    # Status labels with emojis and Marathi translations
+    # Status labels with emojis and Gujarati translations
     STATUS_LABELS: ClassVar[Dict[str, str]] = {
         "Fund Disbursed": "✅ Fund Disbursed (पैसे दिले गेले)",
         "Winner": "🏆 Winner (निवड झाली)",
@@ -116,7 +116,7 @@ class SchemeApplication(BaseModel):
 
     @classmethod
     def format_status_display(cls, status: str) -> str:
-        """Format status with appropriate emoji indicators and Marathi translations.
+        """Format status with appropriate emoji indicators and Gujarati translations.
         
         Args:
             status: The status string to format

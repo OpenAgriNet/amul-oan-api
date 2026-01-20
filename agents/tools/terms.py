@@ -1,6 +1,6 @@
 import json
 from enum import Enum
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from rapidfuzz import fuzz
 
 # Load term pairs from JSON file with UTF-8 encoding
@@ -8,19 +8,26 @@ term_pairs = json.load(open('assets/glossary_terms.json', 'r', encoding='utf-8')
 
 class Language(str, Enum):
     ENGLISH = "en"
-    MARATHI = "mr"
+    GUJARATI = "gu"
     TRANSLITERATION = "transliteration"
 
 class TermPair(BaseModel):
     en: str = Field(description="English term")
-    mr: str = Field(description="Marathi term")
-    transliteration: str = Field(description="Transliteration of Marathi term to English")
+    gu: str = Field(description="Gujarati term")
+    transliteration: str = Field(description="Transliteration of Gujarati term to English")
+    mr: str = Field(default="", description="Marathi term (for backward compatibility)")
 
     def __str__(self):
-        return f"{self.en} -> {self.mr} ({self.transliteration})"
+        return f"{self.en} -> {self.gu} ({self.transliteration})"
 
 # Convert raw dictionaries to TermPair objects
-TERM_PAIRS = [TermPair(**pair) for pair in term_pairs]
+# Handle backward compatibility: if JSON has 'mr' but not 'gu', map 'mr' to 'gu'
+TERM_PAIRS = []
+for pair in term_pairs:
+    # If 'gu' is not present but 'mr' is, use 'mr' as 'gu'
+    if 'gu' not in pair and 'mr' in pair:
+        pair['gu'] = pair['mr']
+    TERM_PAIRS.append(TermPair(**pair))
 
 async def search_terms(
     term: str, 
@@ -34,7 +41,7 @@ async def search_terms(
         term: The term to search for
         max_results: Maximum number of results to return
         threshold: Minimum similarity score (0-1) to consider a match (default is 0.7)
-        language: Optional language to restrict search to (en/mr/transliteration)
+        language: Optional language to restrict search to (en/gu/transliteration)
         
     Returns:
         str: Formatted string with matching results and their scores
@@ -53,10 +60,10 @@ async def search_terms(
             en_score = fuzz.ratio(term, term_pair.en.lower()) / 100.0
             max_score = max(max_score, en_score)
             
-        # Check Marathi term if no language specified or language is Marathi    
-        if language in [None, Language.MARATHI]:
-            mr_score = fuzz.ratio(term, term_pair.mr.lower()) / 100.0
-            max_score = max(max_score, mr_score)
+        # Check Gujarati term if no language specified or language is Gujarati    
+        if language in [None, Language.GUJARATI]:
+            gu_score = fuzz.ratio(term, term_pair.gu.lower()) / 100.0
+            max_score = max(max_score, gu_score)
             
         # Check transliteration if no language specified or language is transliteration
         if language in [None, Language.TRANSLITERATION]:
@@ -100,7 +107,7 @@ GLOSSARY_PATTERN = re.compile(build_glossary_pattern(EN_TERMS), flags=re.IGNOREC
 
 def normalize_text_with_glossary(text: str, threshold=97):
     """
-    Append Marathi term in brackets next to English glossary terms. Preserves formatting & avoids spacing issues.
+    Append Gujarati term in brackets next to English glossary terms. Preserves formatting & avoids spacing issues.
     NOTE: Adds about 100ms of latency to the search results. Can it be optimized?
     """
 
@@ -110,7 +117,7 @@ def normalize_text_with_glossary(text: str, threshold=97):
 
         # Exact match
         if lw in EN_INDEX:
-            marathi = EN_INDEX[lw].mr
+            gujarati = EN_INDEX[lw].gu
         else:
             # Fuzzy fallback (very high threshold to avoid false positives)
             match_term, score, _ = process.extractOne(
@@ -118,13 +125,13 @@ def normalize_text_with_glossary(text: str, threshold=97):
             ) or (None, 0, None)
             if not match_term:
                 return word
-            marathi = EN_INDEX[match_term].mr
+            gujarati = EN_INDEX[match_term].gu
 
         # Decide spacing: if next char is alphanumeric, add space after replacement
         after = match.end()
         if after < len(text) and text[after].isalnum():
-            return f"{word} [{marathi}] "
+            return f"{word} [{gujarati}] "
         else:
-            return f"{word} [{marathi}]"
+            return f"{word} [{gujarati}]"
 
     return GLOSSARY_PATTERN.sub(replacer, text)
