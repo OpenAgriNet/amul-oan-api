@@ -87,35 +87,42 @@ async def stream_chat_messages(
                 continue
             elif Agent.is_model_request_node(node):
                 async with node.stream(agent_run.ctx) as response_stream:
+                    # Reset state for each model request node
+                    # We only want text from the request where FinalResultEvent occurs
                     final_result_found = False
-                    buffered_text = []  # Buffer text deltas that arrive before FinalResultEvent
+                    buffered_text = []
                     
                     async for event in response_stream:
                         if isinstance(event, PartStartEvent):
                             if isinstance(event.part, ThinkingPart):
                                 logger.info("Reasoning part started (not streamed to user)")
                             elif isinstance(event.part, TextPart):
-                                # logger.info(f"Text part started: {event.part.content}")
-                                pass
+                                # Capture initial content from TextPart if present
+                                if event.part.content:
+                                    buffered_text.append(event.part.content)
                         elif isinstance(event, PartDeltaEvent):
                             if isinstance(event.delta, ThinkingPartDelta):
                                 # Don't stream reasoning to user - just log it
-                                # logger.debug(f"Reasoning delta: {event.delta.content_delta}")
                                 pass
                             elif isinstance(event.delta, TextPartDelta):
                                 if event.delta.content_delta:
                                     if final_result_found:
                                         yield event.delta.content_delta
                                     else:
-                                        # Buffer text that arrives before FinalResultEvent
+                                        # Buffer text until we know if this is the final result
                                         buffered_text.append(event.delta.content_delta)
                         elif isinstance(event, FinalResultEvent):
                             logger.info("[Result] The model started producing a final result")
                             final_result_found = True
-                            # Yield any buffered text that arrived before FinalResultEvent
+                            # Yield buffered text from THIS model request only
                             if buffered_text:
                                 yield ''.join(buffered_text)
                                 buffered_text.clear()
+                    
+                    # If no FinalResultEvent in this request, discard buffered text
+                    # (it was intermediate reasoning for tool calls, not the final answer)
+                    if not final_result_found:
+                        buffered_text.clear()
             elif Agent.is_call_tools_node(node):
                 logger.info("Tool execution node")
                 continue
