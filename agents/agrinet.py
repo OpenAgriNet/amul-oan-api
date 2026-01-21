@@ -2,7 +2,7 @@ from pydantic_ai import Agent, RunContext
 from helpers.utils import get_prompt, get_today_date_str
 from agents.models import LLM_MODEL
 from agents.tools import TOOLS
-from pydantic_ai.models.openai import OpenAIChatModelSettings
+from pydantic_ai.settings import ModelSettings
 from agents.deps import FarmerContext
 
 
@@ -15,7 +15,7 @@ agrinet_agent = Agent(
     retries=5,
     tools=TOOLS,
     end_strategy='exhaustive',
-    model_settings=OpenAIChatModelSettings(
+    model_settings=ModelSettings(
         # Settings specific to OpenAI 
         temperature=1.0,
         top_k=100,
