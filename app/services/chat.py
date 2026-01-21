@@ -10,15 +10,6 @@ from app.utils import (
 )
 from app.tasks.suggestions import create_suggestions
 from agents.deps import FarmerContext
-from pydantic_ai import (
-    Agent,
-    FinalResultEvent,
-    PartDeltaEvent,
-    PartStartEvent,
-    TextPartDelta,
-    ThinkingPartDelta,
-)
-from pydantic_ai.messages import TextPart, ThinkingPart
 
 
 logger = get_logger(__name__)
@@ -80,59 +71,17 @@ async def stream_chat_messages(
     
     logger.info(f"Trimmed history length: {len(trimmed_history)} messages")
 
-    async with agrinet_agent.iter(user_prompt=user_message, message_history=trimmed_history, deps=deps) as agent_run:
-        async for node in agent_run:
-            if Agent.is_user_prompt_node(node):
-                logger.info(f"User prompt node: {node.user_prompt}")
-                continue
-            elif Agent.is_model_request_node(node):
-                async with node.stream(agent_run.ctx) as response_stream:
-                    # Reset state for each model request node
-                    # We only want text from the request where FinalResultEvent occurs
-                    final_result_found = False
-                    buffered_text = []
-                    
-                    async for event in response_stream:
-                        if isinstance(event, PartStartEvent):
-                            if isinstance(event.part, ThinkingPart):
-                                logger.info("Reasoning part started (not streamed to user)")
-                            elif isinstance(event.part, TextPart):
-                                # Capture initial content from TextPart if present
-                                if event.part.content:
-                                    buffered_text.append(event.part.content)
-                        elif isinstance(event, PartDeltaEvent):
-                            if isinstance(event.delta, ThinkingPartDelta):
-                                # Don't stream reasoning to user - just log it
-                                pass
-                            elif isinstance(event.delta, TextPartDelta):
-                                if event.delta.content_delta:
-                                    if final_result_found:
-                                        yield event.delta.content_delta
-                                    else:
-                                        # Buffer text until we know if this is the final result
-                                        buffered_text.append(event.delta.content_delta)
-                        elif isinstance(event, FinalResultEvent):
-                            logger.info("[Result] The model started producing a final result")
-                            final_result_found = True
-                            # Yield buffered text from THIS model request only
-                            if buffered_text:
-                                yield ''.join(buffered_text)
-                                buffered_text.clear()
-                    
-                    # If no FinalResultEvent in this request, discard buffered text
-                    # (it was intermediate reasoning for tool calls, not the final answer)
-                    if not final_result_found:
-                        buffered_text.clear()
-            elif Agent.is_call_tools_node(node):
-                logger.info("Tool execution node")
-                continue
-            elif Agent.is_end_node(node):
-                logger.info(f"End node reached: {node.data.output}")
-                break
-
+    # Use run_stream which handles tool calls internally and only streams the final text response
+    async with agrinet_agent.run_stream(
+        user_prompt=user_message,
+        message_history=trimmed_history,
+        deps=deps
+    ) as response:
+        async for text in response.stream_text(delta=True):
+            yield text
         
     # Get the result and new messages after streaming completes
-    new_messages = agent_run.result.new_messages() if agent_run and agent_run.result else []
+    new_messages = response.new_messages() if response else []
     logger.info(f"Streaming complete for session {session_id}")
 
     # Post-processing happens AFTER streaming is complete
