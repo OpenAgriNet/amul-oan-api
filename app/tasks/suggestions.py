@@ -32,7 +32,7 @@ async def create_suggestions(session_id: str, target_lang: str = 'mr'):
         message = f"**Conversation**\n\n{message_pairs}\n\n**Based on the conversation, suggest 3-5 questions the farmer can ask in {target_lang_name}.**"
         
         # Run the agent
-        agent_run = await suggestions_agent.run(message)
+        agent_run   = await suggestions_agent.run(message)
         suggestions = [x for x in agent_run.output]
         logger.info(f"Suggestions: {suggestions}")
         

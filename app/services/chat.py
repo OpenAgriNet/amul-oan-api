@@ -8,8 +8,6 @@ from app.utils import (
     trim_history, 
     format_message_pairs
 )
-from helpers.telemetry import create_moderation_event, TelemetryRequest
-from app.tasks.telemetry import send_telemetry
 from app.tasks.suggestions import create_suggestions
 from agents.deps import FarmerContext
 
@@ -48,24 +46,6 @@ async def stream_chat_messages(
         moderation_data = moderation_run.output
         logger.info(f"Moderation data: {moderation_data}")
 
-    # # Create the moderation event
-    # moderation_event = create_moderation_event(
-    #     question_text=query,
-    #     moderation_type="TEXT_MODERATION",
-    #     content_id=content_id,
-    #     session_id=session_id,
-    #     content_type="text",
-    #     moderation_service="agent_moderation",
-    #     flagged=moderation_data.category != "valid_agricultural",
-    #     category=moderation_data.category,
-    #     action=moderation_data.action,
-    #     uid=user_id
-    # )                    
-    
-    # # Create the telemetry request and send it
-    # _telemetry_request = TelemetryRequest(events=[moderation_event])
-    # background_tasks.add_task(send_telemetry, _telemetry_request.dict())
-        # Generate suggestions after moderation passes
         if moderation_data.category == "valid_agricultural":
             logger.info(f"Triggering suggestions generation for session {session_id}")
             try:
