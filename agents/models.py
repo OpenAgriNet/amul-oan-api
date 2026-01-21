@@ -6,8 +6,8 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Get configurations from environment variables
-LLM_PROVIDER = os.getenv('LLM_PROVIDER', 'openai').lower()
-LLM_MODEL_NAME = os.getenv('LLM_MODEL_NAME', 'gpt-4.1')
+LLM_PROVIDER = os.getenv('LLM_PROVIDER', 'vllm').lower()
+LLM_MODEL_NAME = os.getenv('LLM_MODEL_NAME', 'gpt-oss-20b')
 
 if LLM_PROVIDER == 'vllm':
     LLM_MODEL = OpenAIModel(
