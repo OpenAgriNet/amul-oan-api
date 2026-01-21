@@ -29,7 +29,7 @@ python-decouple
 openpyxl
 
 ### Pydantic AI (Updated to resolve conflicts)
-pydantic-ai==1.44.0
+pydantic-ai-slim[openai,logfire]==1.44.0
 asgiref
 
 # Web Server
@@ -38,7 +38,7 @@ uvicorn[standard]==0.34.3  # ASGI server
 uvicorn-worker
 
 # FastAPI and dependencies
-fastapi[standard]>=0.116.2
+fastapi[standard]==0.115.6
 aioredis
 httpx
 

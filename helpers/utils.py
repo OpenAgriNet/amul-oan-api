@@ -4,7 +4,6 @@ import os
 import re
 from typing import List, Dict
 import logging
-import boto3
 from dotenv import load_dotenv
 import base64
 import tiktoken
@@ -15,18 +14,6 @@ from jinja2 import Environment, FileSystemLoader
 import pytz
 
 load_dotenv()
-
-
-def get_s3_client():
-    """Get S3 client."""
-    return boto3.client(
-        's3',
-        aws_access_key_id=os.getenv('AWS_ACCESS_KEY_ID'),
-        aws_secret_access_key=os.getenv('AWS_SECRET_ACCESS_KEY'),
-        region_name=os.getenv('AWS_REGION'),
-        endpoint_url=os.getenv("AWS_ENDPOINT_URL", None)
-    )
-
 
 def get_today_date_str() -> str:
     """Get today's date as a string in the format Monday, 23rd May 2025."""
@@ -219,7 +206,6 @@ def get_prompt(prompt_file: str, context: Dict = {}, prompt_dir: str = "assets/p
     
     return prompt
 
-def upload_audio_to_s3(audio_base64: str, session_id: str, bucket_name: str = None) -> Dict:
     """Upload base64 encoded audio to S3.
     
     Args:
