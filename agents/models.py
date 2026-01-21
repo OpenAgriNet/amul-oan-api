@@ -13,7 +13,7 @@ if LLM_PROVIDER == 'vllm':
     LLM_MODEL = OpenAIModel(
         LLM_MODEL_NAME,
         provider=OpenAIProvider(
-            base_url=os.getenv('VLLM_ENDPOINT_URL'), 
+            base_url=os.getenv('VLLM_BASE_URL'), 
             api_key="dummy"
         ),
     )
