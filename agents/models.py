@@ -1,8 +1,6 @@
 import os
 from pydantic_ai.models.openai import OpenAIModel
-from pydantic_ai.models.gemini import GeminiModel
 from pydantic_ai.providers.openai import OpenAIProvider
-from pydantic_ai.providers.google_gla import GoogleGLAProvider
 from dotenv import load_dotenv
 
 load_dotenv()

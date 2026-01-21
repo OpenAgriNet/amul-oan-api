@@ -20,30 +20,30 @@ class FarmerContext(BaseModel):
     query: str = Field(description="The user's question.")
     lang_code: str = Field(description="The language code of the user's question.", default='gu')
     moderation_str: Optional[str] = Field(default=None, description="The moderation result of the user's question.")
-    farmer_id: Optional[str] = Field(default=None, description="The farmer ID of the user.")
+    # farmer_id: Optional[str] = Field(default=None, description="The farmer ID of the user.")
 
     def update_moderation_str(self, moderation_str: str):
         """Update the moderation result of the user's question."""
         self.moderation_str = moderation_str
 
-    def update_farmer_id(self, farmer_id: str):
-        """Update the farmer ID of the user."""
-        self.farmer_id = farmer_id
+    # def update_farmer_id(self, farmer_id: str):
+    #     """Update the farmer ID of the user."""
+    #     self.farmer_id = farmer_id
 
-    def get_farmer_id(self) -> Optional[str]:
-        """Get the farmer ID of the user."""
-        return self.farmer_id
+    # def get_farmer_id(self) -> Optional[str]:
+    #     """Get the farmer ID of the user."""
+    #     return self.farmer_id
         
     def get_moderation_str(self) -> Optional[str]:
         """Get the moderation result of the user's question."""
         return self.moderation_str
     
-    def _language_string(self):
-        """Get the language string for the agrinet agent."""
-        if self.lang_code:
-            return f"**Selected Language:** {Language.get(self.lang_code).display_name()}"
-        else:
-            return None
+    # def _language_string(self):
+    #     """Get the language string for the agrinet agent."""
+    #     if self.lang_code:
+    #         return f"**Selected Language:** {Language.get(self.lang_code).display_name()}"
+    #     else:
+    #         return None
     
     def _query_string(self):
         """Get the query string for the agrinet agent."""
@@ -56,14 +56,19 @@ class FarmerContext(BaseModel):
         else:
             return None
     
-    def _agristack_availability_string(self):
-        """Get the farmer ID string for the agrinet agent."""
-        if self.farmer_id:
-            return "**Agristack Information Availability**: ✅"
-        else:
-            return "**Agristack Information Availability**: ❌"
+    # def _agristack_availability_string(self):
+    #     """Get the farmer ID string for the agrinet agent."""
+    #     if self.farmer_id:
+    #         return "**Agristack Information Availability**: ✅"
+    #     else:
+    #         return "**Agristack Information Availability**: ❌"
 
     def get_user_message(self):
         """Get the user message for the agrinet agent."""
-        strings = [self._query_string(), self._language_string(), self._moderation_string(), self._agristack_availability_string()]
+        strings = [
+            self._query_string(), 
+        #self._language_string(), 
+        #self._moderation_string(), 
+            self._agristack_availability_string()
+        ]
         return "\n".join([x for x in strings if x])

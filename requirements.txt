@@ -1,59 +1,68 @@
 ## basic setup packages
 wheel
 setuptools
-python-dotenv==1.2.1
-Jinja2>=3.1.6  # For template rendering
+python-dotenv==1.0.0
+httpx_oauth
+Jinja2>=3.1.0  # For template rendering
 
 # for data/DB
-simplejson==3.20.2
-requests==2.32.5
+pandas
+simplejson
+
+### for DB
+pg8000
+sqlalchemy
+requests
 
 # LLM
-openai==2.15.0
-pydantic==2.12.5
-tiktoken==0.12.0
-
+openai
+pydantic==2.11.4
+tiktoken
+tenacity
+slowapi
 # Logfire
-logfire==4.18.0
+logfire
+gevent>=22.10.0
 
 # Redis for caching and stuff
-redis==7.1.0
+redis
+
+# Settings
+python-decouple
+
+openpyxl
 
 ### Pydantic AI (Updated to resolve conflicts)
-pydantic-ai==1.41.0
+pydantic-ai==0.2.4
+asgiref
 
 # Web Server
-uvicorn[standard]==0.40.0  # ASGI server
+gunicorn
+uvicorn[standard]==0.34.3  # ASGI server
+uvicorn-worker
 
 # FastAPI and dependencies
-fastapi[standard]==0.128.0
+fastapi[standard]==0.115.6
+aioredis
+starlette
+httpx
 
 # Search and Data
-marqo==3.18.0
+marqo==3.11.0
 rapidfuzz
 
 # Authentication and Security
-PyJWT==2.10.1
-cryptography==46.0.3
-
-# AWS and Services
-boto3==1.42.26
-
-# Geospatial
-mapbox==0.18.1
-cachecontrol  # For mapbox caching
+PyJWT
+cryptography
 
 # Async utilities
+aiofiles==23.2.1
 aiocache==0.12.3
-pydantic-settings==2.12.0
-python-dateutil==2.9.0.post0
-pytz==2025.2  # For timezone handling
-
-# Translation
-google-cloud-translate==3.23.0  # For Google Translation API
+pydantic-settings==2.9.1
+python-dateutil
 
 # Language codes
-langcodes[data]==3.5.1
+langcodes[data]==3.4.0
 
 # Humanize time, date, numbers, etc.
-humanize==4.15.0
+humanize
