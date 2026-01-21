@@ -88,6 +88,7 @@ async def stream_chat_messages(
             elif Agent.is_model_request_node(node):
                 async with node.stream(agent_run.ctx) as response_stream:
                     final_result_found = False
+                    buffered_text = []  # Buffer text deltas that arrive before FinalResultEvent
                     
                     async for event in response_stream:
                         if isinstance(event, PartStartEvent):
@@ -102,13 +103,19 @@ async def stream_chat_messages(
                                 # logger.debug(f"Reasoning delta: {event.delta.content_delta}")
                                 pass
                             elif isinstance(event.delta, TextPartDelta):
-                                # Only yield text deltas after FinalResultEvent
-                                if final_result_found and event.delta.content_delta:
-                                    yield event.delta.content_delta
+                                if event.delta.content_delta:
+                                    if final_result_found:
+                                        yield event.delta.content_delta
+                                    else:
+                                        # Buffer text that arrives before FinalResultEvent
+                                        buffered_text.append(event.delta.content_delta)
                         elif isinstance(event, FinalResultEvent):
                             logger.info("[Result] The model started producing a final result")
                             final_result_found = True
-                            # Don't break - continue to collect text deltas
+                            # Yield any buffered text that arrived before FinalResultEvent
+                            if buffered_text:
+                                yield ''.join(buffered_text)
+                                buffered_text.clear()
             elif Agent.is_call_tools_node(node):
                 logger.info("Tool execution node")
                 continue
