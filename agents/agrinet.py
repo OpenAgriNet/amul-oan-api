@@ -2,20 +2,25 @@ from pydantic_ai import Agent, RunContext
 from helpers.utils import get_prompt, get_today_date_str
 from agents.models import LLM_MODEL
 from agents.tools import TOOLS
-from pydantic_ai.settings import ModelSettings
+from pydantic_ai.models.openai import OpenAIChatModelSettings
 from agents.deps import FarmerContext
 
 
 agrinet_agent = Agent(
     model=LLM_MODEL,
-    name="Amul Vistaar Agent",
+    name="Vistaar Agent",
     instrument=True,
     output_type=str,
     deps_type=FarmerContext,
     retries=5,
     tools=TOOLS,
     end_strategy='exhaustive',
-    model_settings=ModelSettings(
+    model_settings=OpenAIChatModelSettings(
+        # Settings specific to OpenAI 
+        temperature=1.0,
+        top_k=100,
+        top_p=1.0,
+        openai_reasoning_effort='low',
         max_tokens=8192,
         parallel_tool_calls=True,
         request_limit=10,
