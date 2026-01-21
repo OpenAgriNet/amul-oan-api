@@ -1,39 +1,58 @@
-# amul-oan-api
-OAN API for AMUL implementation 
+# Amul Vistaar API
 
-# sunbird-va-api
+Backend API for the Amul Vistaar platform.
 
-## Delete all volumes
-```
-docker system prune -a --volumes
+---
+
+## Quick Start
+
+### Prerequisites
+- Docker & Docker Compose
+- Redis Stack
+- Marqo (for search)
+
+---
+
+## Docker Setup
+
+### Create Network
+```bash
+docker network create amul-network
 ```
 
-----
-# Create a new network
+### Run Redis Stack
+```bash
+docker run -d --name redis-stack --network amul-network -p 6379:6379 -p 8001:8001 redis/redis-stack:latest
 ```
-docker network create networkname
-```
-# Run seperate Redis
-```
-docker run -d --name redis-stack --network networkname -p 6379:6379 -p 8001:8001 redis/redis-stack:latest
-```
-# Docker Setup
-```
-docker compose up --build --force-recreate --detach
-```
-# Stop
-```
-docker compose down --remove-orphans
-```
-docker compose down --remove-orphans
-docker compose up --build --force-recreate --detach
-docker logs -f container name
 
-# Marqo Setup
-
-```
+### Run Marqo
+```bash
 docker run --name marqo -p 8882:8882 \
     -e MARQO_MAX_CONCURRENT_SEARCH=50 \
     -e VESPA_POOL_SIZE=50 \
     marqoai/marqo:latest
+```
+
+### Build & Run API
+```bash
+docker compose up --build --force-recreate --detach
+```
+
+### Stop Services
+```bash
+docker compose down --remove-orphans
+```
+
+### View Logs
+```bash
+docker logs -f <container_name>
+```
+
+---
+
+## Cleanup
+
+### Remove all volumes and images
+```bash
+docker system prune -a --volumes
 ```
