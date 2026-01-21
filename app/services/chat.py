@@ -117,9 +117,9 @@ async def stream_chat_messages(
                 break
 
         
+    # Get the result and new messages after streaming completes
+    new_messages = agent_run.result.new_messages() if agent_run and agent_run.result else []
     logger.info(f"Streaming complete for session {session_id}")
-        # Capture the data we need while response_stream is still available
-    new_messages = response_stream.new_messages()
 
     # Post-processing happens AFTER streaming is complete
     messages = [
