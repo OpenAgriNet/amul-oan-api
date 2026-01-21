@@ -14,7 +14,7 @@ TOOLS = [
     # Search Documents
     Tool(
         search_documents,
-        takes_ctx=False, # No context is needed for this tool
+        takes_ctx=True, # No context is needed for this tool
         docstring_format='auto', 
         require_parameter_descriptions=True,
     ),
