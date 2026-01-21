@@ -38,9 +38,8 @@ uvicorn[standard]==0.34.3  # ASGI server
 uvicorn-worker
 
 # FastAPI and dependencies
-fastapi[standard]==0.115.6
+fastapi[standard]>=0.116.2
 aioredis
-starlette
 httpx
 
 # Search and Data
@@ -58,7 +57,8 @@ pydantic-settings==2.9.1
 python-dateutil
 
 # Language codes
-langcodes[data]==3.4.0
+langcodes==3.4.0
+language_data>=1.2
 
 # Humanize time, date, numbers, etc.
 humanize
