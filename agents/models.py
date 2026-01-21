@@ -13,8 +13,8 @@ if LLM_PROVIDER == 'vllm':
     LLM_MODEL = OpenAIModel(
         LLM_MODEL_NAME,
         provider=OpenAIProvider(
-            base_url=os.getenv('INFERENCE_ENDPOINT_URL'), 
-            api_key=os.getenv('INFERENCE_API_KEY'),  
+            base_url=os.getenv('VLLM_ENDPOINT_URL'), 
+            api_key="dummy"
         ),
     )
 elif LLM_PROVIDER == 'openai':
