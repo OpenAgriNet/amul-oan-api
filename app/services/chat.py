@@ -10,6 +10,16 @@ from app.utils import (
 )
 from app.tasks.suggestions import create_suggestions
 from agents.deps import FarmerContext
+from pydantic_ai import (
+    Agent,
+    FinalResultEvent,
+    PartDeltaEvent,
+    PartStartEvent,
+    TextPartDelta,
+    ThinkingPartDelta,
+)
+from pydantic_ai.messages import TextPart, ThinkingPart
+
 
 logger = get_logger(__name__)
 
@@ -70,17 +80,46 @@ async def stream_chat_messages(
     
     logger.info(f"Trimmed history length: {len(trimmed_history)} messages")
 
-    async with agrinet_agent.run_stream(
-        user_prompt=user_message,
-        message_history=trimmed_history,
-        deps=deps,
-    ) as response_stream:
-        async for chunk in response_stream.stream_text(delta=True):
-            yield chunk
+    async with agrinet_agent.iter(user_prompt=user_message, message_history=trimmed_history, deps=deps) as agent_run:
+        async for node in agent_run:
+            if Agent.is_user_prompt_node(node):
+                logger.info(f"User prompt node: {node.user_prompt}")
+                continue
+            elif Agent.is_model_request_node(node):
+                async with node.stream(agent_run.ctx) as response_stream:
+                    final_result_found = False
+                    
+                    async for event in response_stream:
+                        if isinstance(event, PartStartEvent):
+                            if isinstance(event.part, ThinkingPart):
+                                logger.info("Reasoning part started (not streamed to user)")
+                            elif isinstance(event.part, TextPart):
+                                # logger.info(f"Text part started: {event.part.content}")
+                                pass
+                        elif isinstance(event, PartDeltaEvent):
+                            if isinstance(event.delta, ThinkingPartDelta):
+                                # Don't stream reasoning to user - just log it
+                                # logger.debug(f"Reasoning delta: {event.delta.content_delta}")
+                                pass
+                            elif isinstance(event.delta, TextPartDelta):
+                                # Only yield text deltas after FinalResultEvent
+                                if final_result_found and event.delta.content_delta:
+                                    yield event.delta.content_delta
+                        elif isinstance(event, FinalResultEvent):
+                            logger.info("[Result] The model started producing a final result")
+                            final_result_found = True
+                            # Don't break - continue to collect text deltas
+            elif Agent.is_call_tools_node(node):
+                logger.info("Tool execution node")
+                continue
+            elif Agent.is_end_node(node):
+                logger.info(f"End node reached: {node.data.output}")
+                break
+
         
-        logger.info(f"Streaming complete for session {session_id}")
+    logger.info(f"Streaming complete for session {session_id}")
         # Capture the data we need while response_stream is still available
-        new_messages = response_stream.new_messages()
+    new_messages = response_stream.new_messages()
 
     # Post-processing happens AFTER streaming is complete
     messages = [

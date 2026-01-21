@@ -17,15 +17,5 @@ TOOLS = [
         takes_ctx=True, # No context is needed for this tool
         docstring_format='auto', 
         require_parameter_descriptions=True,
-    ),
-
-    # # Search Videos
-    # Tool(
-    #     search_videos,
-    #     takes_ctx=False,
-    #     docstring_format='auto', 
-    #     require_parameter_descriptions=True,
-    # ),
-
- 
+    ), 
 ]

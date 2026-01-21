@@ -20,8 +20,7 @@ agrinet_agent = Agent(
         temperature=1.0,
         top_k=100,
         top_p=1.0,
-        openai_reasoning_effort='low',
-        max_tokens=8192,
+        openai_reasoning_effort='medium',
         parallel_tool_calls=True,
         request_limit=10,
    )

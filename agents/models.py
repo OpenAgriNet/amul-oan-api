@@ -1,5 +1,5 @@
 import os
-from pydantic_ai.models.openai import OpenAIModel
+from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
 from dotenv import load_dotenv
 
@@ -10,7 +10,7 @@ LLM_PROVIDER = os.getenv('LLM_PROVIDER', 'vllm').lower()
 LLM_MODEL_NAME = os.getenv('LLM_MODEL_NAME', 'gpt-oss-20b')
 
 if LLM_PROVIDER == 'vllm':
-    LLM_MODEL = OpenAIModel(
+    LLM_MODEL = OpenAIChatModel(
         LLM_MODEL_NAME,
         provider=OpenAIProvider(
             base_url=os.getenv('VLLM_BASE_URL'), 
@@ -18,7 +18,7 @@ if LLM_PROVIDER == 'vllm':
         ),
     )
 elif LLM_PROVIDER == 'openai':
-    LLM_MODEL = OpenAIModel(
+    LLM_MODEL = OpenAIChatModel(
         LLM_MODEL_NAME,
         provider=OpenAIProvider(
             api_key=os.getenv('OPENAI_API_KEY'),
