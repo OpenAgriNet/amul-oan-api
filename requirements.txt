@@ -8,10 +8,6 @@ Jinja2>=3.1.0  # For template rendering
 # for data/DB
 pandas
 simplejson
-
-### for DB
-pg8000
-sqlalchemy
 requests
 
 # LLM
