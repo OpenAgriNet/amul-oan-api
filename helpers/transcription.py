@@ -54,7 +54,7 @@ def transcribe_whisper(audio_base64: str):
     
 
 
-def transcribe_bhashini(audio_base64: str, source_lang='mr'):
+def transcribe_bhashini(audio_base64: str, source_lang='gu'):
     """
     Transcribes an audio file using the Bhashini service.
 
@@ -100,41 +100,41 @@ def transcribe_bhashini(audio_base64: str, source_lang='mr'):
     response_json = response.json()
     return response_json['pipelineResponse'][0]['output'][0]['source']
 
-def detect_audio_language_bhashini(audio_base64: str):
-    """
-    Detects the language of an audio file using the Bhashini API.
+# def detect_audio_language_bhashini(audio_base64: str):
+#     """
+#     Detects the language of an audio file using the Bhashini API.
     
-    Returns:
-    str: The detected language code if the request is successful.
-    str: An error message if the request fails.
-    """
-    url = 'https://dhruva-api.bhashini.gov.in/services/inference/pipeline'
-    headers = {
-        'Accept': '*/*',
-        'Authorization': os.getenv('MEITY_API_KEY_VALUE'),
-    }
-    data = {
-        "pipelineTasks": [
-            {
-                "taskType": "audio-lang-detection",
-                "config": {
-                    "serviceId": "bhashini/iitmandi/audio-lang-detection/gpu",
-                    "language": {
-                        "sourceLanguage": "auto"
-                    },
-                    "audioFormat": "wav",
-                }
-            }
-        ],
-        "inputData": {
-            "audio": [{"audioContent": audio_base64}]
-        }
-    }
+#     Returns:
+#     str: The detected language code if the request is successful.
+#     str: An error message if the request fails.
+#     """
+#     url = 'https://dhruva-api.bhashini.gov.in/services/inference/pipeline'
+#     headers = {
+#         'Accept': '*/*',
+#         'Authorization': os.getenv('MEITY_API_KEY_VALUE'),
+#     }
+#     data = {
+#         "pipelineTasks": [
+#             {
+#                 "taskType": "audio-lang-detection",
+#                 "config": {
+#                     "serviceId": "bhashini/iitmandi/audio-lang-detection/gpu",
+#                     "language": {
+#                         "sourceLanguage": "auto"
+#                     },
+#                     "audioFormat": "wav",
+#                 }
+#             }
+#         ],
+#         "inputData": {
+#             "audio": [{"audioContent": audio_base64}]
+#         }
+#     }
 
-    response = requests.post(url, headers=headers, json=data)
-    response.raise_for_status()
-    response_json = response.json()
-    detected_language_code = response_json['pipelineResponse'][0]['output'][0]['langPrediction'][0]['langCode']
+#     response = requests.post(url, headers=headers, json=data)
+#     response.raise_for_status()
+#     response_json = response.json()
+#     detected_language_code = response_json['pipelineResponse'][0]['output'][0]['langPrediction'][0]['langCode']
 
-    # NOTE: Keeping only English and Gujarati for now
-    return 'en' if detected_language_code == 'en' else 'mr'
+#     # NOTE: Keeping only English and Gujarati for now
+#     return 'en' if detected_language_code == 'en' else 'mr'
