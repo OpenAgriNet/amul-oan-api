@@ -12,7 +12,7 @@ requests
 
 # LLM
 openai
-pydantic==2.11.4
+pydantic>=2.11.7
 tiktoken
 tenacity
 slowapi
