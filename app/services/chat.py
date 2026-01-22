@@ -10,15 +10,7 @@ from app.utils import (
 )
 # from app.tasks.suggestions import create_suggestions  # Commented out: suggestion agent disabled
 from agents.deps import FarmerContext
-from pydantic_ai import (
-    Agent,
-    FinalResultEvent,
-    PartDeltaEvent,
-    PartStartEvent,
-    TextPartDelta,
-    ThinkingPartDelta,
-)
-from pydantic_ai.messages import TextPart, ThinkingPart
+from pydantic_ai import Agent, FinalResultEvent
 
 logger = get_logger(__name__)
 

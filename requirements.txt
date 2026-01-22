@@ -54,7 +54,7 @@ cryptography
 # Async utilities
 aiofiles==23.2.1
 aiocache==0.12.3
-pydantic-settings==2.9.1
+pydantic-settings
 python-dateutil
 
 # Language codes
