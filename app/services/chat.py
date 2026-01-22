@@ -10,7 +10,7 @@ from app.utils import (
 )
 # from app.tasks.suggestions import create_suggestions  # Commented out: suggestion agent disabled
 from agents.deps import FarmerContext
-from pydantic_ai import Agent, FinalResultEvent
+from pydantic_ai import Agent, FinalResultEvent, ToolCallPart, BuiltinToolCallPart
 
 logger = get_logger(__name__)
 
@@ -59,16 +59,42 @@ async def stream_chat_messages(
         async for node in agent_run:
             if Agent.is_user_prompt_node(node):
                 logger.info(f"User prompt node: {node.user_prompt}")
-            elif Agent.is_model_request_node(node):
-                # Stream this model request node
+            elif Agent.is_model_request_node(node):                
+                # is_call_tools_node / is_end_node
+                if Agent.is_call_tools_node(node):
+                    logger.info("Tool execution node")
+                elif Agent.is_end_node(node):
+                    logger.info(f"End node reached: {node.data.output}")
+                    break
+
                 async with node.stream(agent_run.ctx) as request_stream:
+                    final_result_seen = False
+                    
                     async for event in request_stream:
                         if isinstance(event, FinalResultEvent):
-                            # Once final result is found, use stream_text() to stream output
-                            # This is the pydantic-ai recommended approach
-                            logger.info("[Result] The model started producing a final result")
-                            async for text in request_stream.stream_text(delta=True, debounce_by=0.1):
-                                yield text
+                            final_result_seen = True
+                    
+                    # After stream completes, check if response contains tool calls
+                    # Only stream text if there are NO tool calls (this is the final answer)
+                    if final_result_seen:
+                        has_tool_calls = any(
+                            isinstance(part, (ToolCallPart, BuiltinToolCallPart))
+                            for part in request_stream.response.parts
+                        )
+                        parts_info = [(type(p).__name__, getattr(p, 'tool_name', None) or (p.content[:50] if hasattr(p, 'content') and p.content else '')) for p in request_stream.response.parts]
+                        logger.info(f"[Stream Complete] Response parts: {parts_info}, has_tool_calls: {has_tool_calls}")
+                        
+                        if has_tool_calls:
+                            logger.info("[Result] Skipping text output - response contains tool calls")
+                        else:
+                            # No tool calls - this is the final result, yield the complete text
+                            logger.info("[Result] Streaming final result text")
+                            # Get text parts from the response and yield them
+                            for part in request_stream.response.parts:
+                                if hasattr(part, 'content') and part.content and not isinstance(part, (ToolCallPart, BuiltinToolCallPart)):
+                                    # Skip ThinkingPart content - only yield TextPart
+                                    if type(part).__name__ == 'TextPart':
+                                        yield part.content
             elif Agent.is_call_tools_node(node):
                 logger.info("Tool execution node")
             elif Agent.is_end_node(node):
