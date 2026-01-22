@@ -39,7 +39,7 @@ uvicorn[standard]
 uvicorn-worker
 
 # FastAPI and dependencies
-fastapi
+fastapi==0.128.0
 aioredis
 httpx
 

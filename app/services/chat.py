@@ -64,39 +64,46 @@ async def stream_chat_messages(
     logger.info(f"Trimmed history length: {len(trimmed_history)} messages")
 
     async with agrinet_agent.iter(user_prompt=user_message, message_history=trimmed_history, deps=deps) as agent_run:
+        # Track pending text buffer - will be yielded if no tool calls follow
+        pending_text_buffer = []
+        
         async for node in agent_run:
             if Agent.is_user_prompt_node(node):
                 logger.info(f"User prompt node: {node.user_prompt}")
                 continue
             elif Agent.is_model_request_node(node):
+                # Clear the pending buffer for this new model request
+                pending_text_buffer = []
+                final_result_found = False
+                
                 async with node.stream(agent_run.ctx) as response_stream:
-                    final_result_found = False
-                    
                     async for event in response_stream:
                         if isinstance(event, PartStartEvent):
                             if isinstance(event.part, ThinkingPart):
                                 logger.info("Reasoning part started (not streamed to user)")
-                            elif isinstance(event.part, TextPart):
-                                # logger.info(f"Text part started: {event.part.content}")
-                                pass
                         elif isinstance(event, PartDeltaEvent):
                             if isinstance(event.delta, ThinkingPartDelta):
-                                # Don't stream reasoning to user - just log it
-                                # logger.debug(f"Reasoning delta: {event.delta.content_delta}")
+                                # Don't stream reasoning to user
                                 pass
                             elif isinstance(event.delta, TextPartDelta):
-                                # Only yield text deltas after FinalResultEvent
+                                # Buffer text deltas after FinalResultEvent
                                 if final_result_found and event.delta.content_delta:
-                                    yield event.delta.content_delta
+                                    pending_text_buffer.append(event.delta.content_delta)
                         elif isinstance(event, FinalResultEvent):
                             logger.info("[Result] The model started producing a final result")
                             final_result_found = True
-                            # Don't break - continue to collect text deltas
+                            
             elif Agent.is_call_tools_node(node):
-                logger.info("Tool execution node")
+                # Tool call follows - discard the pending text buffer (it was tool preamble)
+                logger.info(f"Tool execution node - discarding {len(pending_text_buffer)} buffered text chunks (tool preamble)")
+                pending_text_buffer = []
                 continue
             elif Agent.is_end_node(node):
-                logger.info(f"End node reached: {node.data.output}")
+                # End node reached - yield the pending text buffer (it's the final response)
+                logger.info(f"End node reached - yielding {len(pending_text_buffer)} buffered text chunks")
+                for text in pending_text_buffer:
+                    yield text
+                logger.info(f"End node output: {node.data.output}")
                 break
 
     # Get the result and new messages after streaming completes
