@@ -35,11 +35,11 @@ asgiref
 
 # Web Server
 gunicorn
-uvicorn[standard]==0.34.3  # ASGI server
+uvicorn[standard]
 uvicorn-worker
 
 # FastAPI and dependencies
-fastapi[standard]==0.115.6
+fastapi[standard]
 aioredis
 httpx
 
