@@ -29,4 +29,13 @@ agrinet_agent = Agent(
 @agrinet_agent.system_prompt(dynamic=True)
 def get_agrinet_system_prompt(ctx: RunContext):
     prompt_file = f'agrinet_system_{ctx.deps.lang_code}'
-    return get_prompt(prompt_file, context={'today_date': get_today_date_str()})
+    
+    # Format farmer context from JWT token
+    farmer_context = ctx.deps.get_farmer_context_string()
+    
+    context = {
+        'today_date': get_today_date_str(),
+        'farmer_context': farmer_context if farmer_context else None
+    }
+    
+    return get_prompt(prompt_file, context=context)

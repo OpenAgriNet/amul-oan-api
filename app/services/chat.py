@@ -26,8 +26,17 @@ async def stream_chat_messages(
     """Async generator for streaming chat messages."""
     # Generate a unique content ID for this query
     content_id = f"query_{session_id}_{len(history)//2 + 1}"
-       
-    deps = FarmerContext(query=query, lang_code=target_lang, session_id=session_id)
+    logger.info(f"User info: {user_info}")
+    
+    # Extract only the 'data' field from JWT token (ignore standard JWT fields like iss, sub, exp)
+    farmer_data = user_info.get('data') if user_info else None
+    
+    deps = FarmerContext(
+        query=query,
+        lang_code=target_lang,
+        session_id=session_id,
+        farmer_info=farmer_data if farmer_data else None
+    )
 
     message_pairs = "\n\n".join(format_message_pairs(history, 3))
     logger.info(f"Message pairs: {message_pairs}")
