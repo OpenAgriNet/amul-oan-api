@@ -9,15 +9,16 @@ import base64
 import tiktoken
 import unicodedata as ud
 from datetime import datetime
+from zoneinfo import ZoneInfo
 import simplejson as json
 from jinja2 import Environment, FileSystemLoader
-import pytz
+
 
 load_dotenv()
 
 def get_today_date_str() -> str:
     """Get today's date as a string in the format Monday, 23rd May 2025."""
-    ist = pytz.timezone('Asia/Kolkata')
+    ist = ZoneInfo('Asia/Kolkata')
     today = datetime.now(ist)
     return today.strftime('%A, %d %B %Y')
 
