@@ -1,7 +1,7 @@
 ## basic setup packages
 wheel
 setuptools
-python-dotenv==1.0.0
+python-dotenv>=1.1.0
 httpx_oauth
 Jinja2>=3.1.0  # For template rendering
 
