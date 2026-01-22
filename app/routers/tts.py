@@ -19,18 +19,12 @@ async def tts(request: TTSRequest = Body(...), user_info: dict = Depends(get_cur
     session_id = request.session_id or str(uuid.uuid4())
     
     # For now, only bhashini is implemented, but the model supports eleven_labs too
-    if request.service_type == 'bhashini':
-        audio_data = text_to_speech_bhashini(
-            request.text, 
-            request.target_lang, 
-            gender='female', 
-            sampling_rate=8000
-        )
-    else:
-        return JSONResponse({
-            'status': 'error',
-            'message': 'Service type not implemented yet'
-        }, status_code=400)
+    audio_data = text_to_speech_bhashini(
+        request.text, 
+        request.target_lang, 
+        gender='female', 
+        sampling_rate=8000
+    )
     
     if isinstance(audio_data, bytes):
         audio_data = base64.b64encode(audio_data).decode('utf-8')
