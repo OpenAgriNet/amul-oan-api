@@ -67,7 +67,7 @@ async def stream_chat_messages(
                             # Once final result is found, use stream_text() to stream output
                             # This is the pydantic-ai recommended approach
                             logger.info("[Result] The model started producing a final result")
-                            async for text in request_stream.stream_text():
+                            async for text in request_stream.stream_text(delta=True, debounce_by=0.1):
                                 yield text
             elif Agent.is_call_tools_node(node):
                 logger.info("Tool execution node")
