@@ -8,7 +8,7 @@ from agents.deps import FarmerContext
 
 agrinet_agent = Agent(
     model=LLM_MODEL,
-    name="Vistaar Agent",
+    name="Amul Vistaar",
     instrument=True,
     output_type=str,
     deps_type=FarmerContext,

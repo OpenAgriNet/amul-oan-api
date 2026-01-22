@@ -3,6 +3,7 @@ from typing import Literal
 from pydantic_ai import Agent
 from helpers.utils import get_prompt
 from pydantic_ai.models import ModelSettings
+from pydantic_ai import NativeOutput
 from agents.models import LLM_MODEL
 
 
@@ -28,7 +29,7 @@ moderation_agent = Agent(
     name="Moderation Agent",
     system_prompt=get_prompt('moderation_system'),
     instrument=True,
-    output_type=QueryModerationResult,
+    output_type=NativeOutput(QueryModerationResult),
     retries=2,
     model_settings=ModelSettings(
         #  temperature=0.1,

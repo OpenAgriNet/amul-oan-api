@@ -3,7 +3,7 @@ from fastapi.responses import StreamingResponse
 from app.auth.jwt_auth import get_current_user
 from app.services.chat import stream_chat_messages
 from app.utils import _get_message_history
-from app.tasks.suggestions import create_suggestions
+# from app.tasks.suggestions import create_suggestions  # Commented out: suggestion agent disabled
 from app.models.requests import ChatRequest
 from helpers.utils import get_logger
 import uuid
@@ -41,7 +41,6 @@ async def chat_endpoint(
             target_lang=request.target_lang,
             user_id=request.user_id,
             history=history,
-            user_info=user_info,
             background_tasks=background_tasks
         ),
         media_type='text/event-stream'

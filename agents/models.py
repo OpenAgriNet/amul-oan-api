@@ -1,5 +1,5 @@
 import os
-from pydantic_ai.models.openai import OpenAIChatModel
+from pydantic_ai.models.openai import OpenAIResponsesModel, OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
 from dotenv import load_dotenv
 
@@ -18,7 +18,7 @@ if LLM_PROVIDER == 'vllm':
         ),
     )
 elif LLM_PROVIDER == 'openai':
-    LLM_MODEL = OpenAIChatModel(
+    LLM_MODEL = OpenAIResponsesModel(
         LLM_MODEL_NAME,
         provider=OpenAIProvider(
             api_key=os.getenv('OPENAI_API_KEY'),

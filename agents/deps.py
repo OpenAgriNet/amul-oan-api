@@ -10,6 +10,7 @@ class FarmerContext(BaseModel):
         query (str): The user's question.
         lang_code (str): The language code of the user's question.
         moderation_str (Optional[str]): The moderation result of the user's question.
+        session_id (Optional[str]): The session ID for the conversation.
 
 
     Example:
@@ -20,6 +21,7 @@ class FarmerContext(BaseModel):
     query: str = Field(description="The user's question.")
     lang_code: str = Field(description="The language code of the user's question.", default='gu')
     moderation_str: Optional[str] = Field(default=None, description="The moderation result of the user's question.")
+    session_id: Optional[str] = Field(default=None, description="The session ID for the conversation.")
     # farmer_id: Optional[str] = Field(default=None, description="The farmer ID of the user.")
 
     def update_moderation_str(self, moderation_str: str):
