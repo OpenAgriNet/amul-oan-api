@@ -11,6 +11,8 @@ from agents.tools.mahadbt import get_scheme_status
 from agents.tools.terms import search_terms
 from agents.tools.scheme_info import get_scheme_codes, get_scheme_info, get_multiple_schemes_info
 from agents.tools.staff_contact import contact_agricultural_staff
+from agents.tools.farmer import get_farmer_by_mobile
+from agents.tools.animal import get_animal_by_tag
 
 TOOLS = [
     # # Search Terms
@@ -27,6 +29,21 @@ TOOLS = [
         search_documents,
         takes_ctx=False, # No context is needed for this tool
         docstring_format='auto', 
+        require_parameter_descriptions=True,
+    ),
+
+    # PashuGPT APIs - Farmer and Animal Data
+    Tool(
+        get_farmer_by_mobile,
+        takes_ctx=False,
+        docstring_format='auto',
+        require_parameter_descriptions=True,
+    ),
+    
+    Tool(
+        get_animal_by_tag,
+        takes_ctx=False,
+        docstring_format='auto',
         require_parameter_descriptions=True,
     ),
 
