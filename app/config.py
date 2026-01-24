@@ -63,6 +63,7 @@ class Settings(BaseSettings):
 
     # External Service API Keys
     openai_api_key: Optional[str] = None
+    anthropic_api_key: Optional[str] = None
     sarvam_api_key: Optional[str] = None
     meity_api_key_value: Optional[str] = None
     logfire_token: Optional[str] = None
