@@ -68,7 +68,6 @@ class Settings(BaseSettings):
     meity_api_key_value: Optional[str] = None
     logfire_token: Optional[str] = None
     bhashini_api_key: str = ""
-    eleven_labs_api_key: str = ""
     inference_api_key: Optional[str] = None
     gemini_api_key: Optional[str] = None
     mapbox_api_token: Optional[str] = None
