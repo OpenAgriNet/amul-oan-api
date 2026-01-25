@@ -132,7 +132,7 @@ async def stream_chat_messages(
                                             yield text
 
             logger.info(f"Streaming complete for session {session_id}")
-            new_messages = agent_run.new_messages()
+            new_messages = agent_run.result.new_messages()
     else:
         # For OpenAI/vLLM: Use standard run_stream()
         async with agrinet_agent.run_stream(
