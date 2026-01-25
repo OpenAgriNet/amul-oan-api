@@ -2,6 +2,7 @@ from typing import AsyncGenerator
 from fastapi import BackgroundTasks
 from agents.agrinet import agrinet_agent
 from agents.moderation import moderation_agent
+from agents.models import LLM_PROVIDER
 from helpers.utils import get_logger
 from app.utils import (
     update_message_history, 
@@ -95,17 +96,56 @@ async def stream_chat_messages(
     
     logger.info(f"Trimmed history length: {len(trimmed_history)} messages")
 
-    async with agrinet_agent.run_stream(
-        user_prompt=user_message,
-        message_history=trimmed_history,
-        deps=deps,
-    ) as response_stream:
-        async for chunk in response_stream.stream_text(delta=True):
-            yield chunk
-        
-        logger.info(f"Streaming complete for session {session_id}")
-        # Capture the data we need while response_stream is still available
-        new_messages = response_stream.new_messages()
+    if LLM_PROVIDER == 'anthropic':
+        # For Anthropic: Use agent.iter() + node.stream() instead of run_stream()
+        # This correctly handles streaming through tool calls (run_stream only yields pre-tool text)
+        async with agrinet_agent.iter(
+            user_prompt=user_message,
+            message_history=trimmed_history,
+            deps=deps,
+        ) as agent_run:
+            async for node in agent_run:
+                node_type = type(node).__name__
+
+                if node_type == 'ModelRequestNode':
+                    # Stream text from ModelRequestNode
+                    async with node.stream(agent_run.ctx) as request_stream:
+                        async for event in request_stream:
+                            event_type = type(event).__name__
+
+                            # Capture initial text from PartStartEvent (TextPart)
+                            if event_type == 'PartStartEvent':
+                                if hasattr(event, 'part'):
+                                    part_type = type(event.part).__name__
+                                    if part_type == 'TextPart' and hasattr(event.part, 'content'):
+                                        text = event.part.content
+                                        if text:
+                                            yield text
+
+                            # Capture text deltas from PartDeltaEvent
+                            elif event_type == 'PartDeltaEvent':
+                                if hasattr(event, 'delta'):
+                                    delta_type = type(event.delta).__name__
+                                    if delta_type == 'TextPartDelta':
+                                        text = event.delta.content_delta
+                                        if text:
+                                            yield text
+
+            logger.info(f"Streaming complete for session {session_id}")
+            new_messages = agent_run.result.new_messages()
+    else:
+        # For OpenAI/vLLM: Use standard run_stream()
+        async with agrinet_agent.run_stream(
+            user_prompt=user_message,
+            message_history=trimmed_history,
+            deps=deps,
+        ) as response_stream:
+            async for chunk in response_stream.stream_text(delta=True):
+                yield chunk
+
+            logger.info(f"Streaming complete for session {session_id}")
+            # Capture the data we need while response_stream is still available
+            new_messages = response_stream.new_messages()
 
     # Post-processing happens AFTER streaming is complete
     messages = [
