@@ -44,12 +44,27 @@ async def get_animal_by_tag(
                 }
             )
             
+            # Handle different status codes
+            if response.status_code == 204:
+                # 204 No Content - valid response meaning no data found
+                logger.info(f"No animal data found for tag {tag_no} (204 No Content)")
+                return f"Animal Details for Tag {tag_no}:\n\nNo animal data found for this tag number."
+            
             if response.status_code != 200:
                 error_text = response.text
                 logger.error(f"API error for tag {tag_no}: {response.status_code} - {error_text}")
                 raise ModelRetry(f"Failed to fetch animal details: {response.status_code}")
             
-            data = response.json()
+            # Handle empty response body
+            if not response.text or response.text.strip() == '':
+                logger.info(f"Empty response for tag {tag_no}")
+                return f"Animal Details for Tag {tag_no}:\n\nNo animal data found for this tag number."
+            
+            try:
+                data = response.json()
+            except json.JSONDecodeError as e:
+                logger.error(f"Failed to parse JSON response for tag {tag_no}: {e}. Response text: {response.text[:500]}")
+                raise ModelRetry(f"Failed to parse animal details response")
         
         # Format the response as a readable string
         formatted_data = json.dumps(data, indent=2, ensure_ascii=False)
