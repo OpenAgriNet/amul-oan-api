@@ -32,7 +32,7 @@ moderation_agent = Agent(
     retries=2,
     model_settings=ModelSettings(
         temperature=0.1,
-        max_tokens=32,
+        max_tokens=128,  # Sufficient for JSON output with category and action fields
         timeout=5 # NOTE: Added timeout to avoid infinite loops
     )
 )
