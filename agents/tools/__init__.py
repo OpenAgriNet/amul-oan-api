@@ -2,6 +2,8 @@
 from pydantic_ai import Tool
 from agents.tools.search import search_documents, search_videos
 from agents.tools.terms import search_terms
+from agents.tools.animal import get_animal_by_tag
+from agents.tools.cvcc import get_cvcc_health_details
 
 TOOLS = [
     # # Search Terms
@@ -18,6 +20,22 @@ TOOLS = [
         search_documents,
         takes_ctx=False, # No context is needed for this tool
         docstring_format='auto', 
+        require_parameter_descriptions=True,
+    ),
+
+    # Get Animal by Tag
+    Tool(
+        get_animal_by_tag,
+        takes_ctx=False,
+        docstring_format='auto',
+        require_parameter_descriptions=True,
+    ),
+
+    # Get CVCC Health Details
+    Tool(
+        get_cvcc_health_details,
+        takes_ctx=False,
+        docstring_format='auto',
         require_parameter_descriptions=True,
     ),
 
