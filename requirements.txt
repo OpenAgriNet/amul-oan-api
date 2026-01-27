@@ -23,6 +23,8 @@ tenacity
 slowapi
 # Logfire
 logfire
+# Langfuse
+langfuse
 gevent>=22.10.0
 
 # Redis for caching and stuff
