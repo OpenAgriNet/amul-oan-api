@@ -17,6 +17,7 @@ requests
 # LLM
 openai
 anthropic
+google-genai
 pydantic==2.11.4
 tiktoken
 tenacity

@@ -1,6 +1,7 @@
 import os
 from pydantic_ai.models.openai import OpenAIModel
 from pydantic_ai.models.anthropic import AnthropicModel
+from pydantic_ai.models.google import GoogleModel
 from pydantic_ai.providers.openai import OpenAIProvider
 from dotenv import load_dotenv
 
@@ -28,6 +29,16 @@ elif LLM_PROVIDER == 'openai':
 elif LLM_PROVIDER == 'anthropic':
     # AnthropicModel reads ANTHROPIC_API_KEY from environment automatically
     LLM_MODEL = AnthropicModel(LLM_MODEL_NAME)
+elif LLM_PROVIDER == 'gemini':
+    # GoogleModel reads GOOGLE_API_KEY from environment automatically
+    # Can also use GEMINI_API_KEY as an alias
+    api_key = os.getenv('GOOGLE_API_KEY') or os.getenv('GEMINI_API_KEY')
+    if api_key:
+        os.environ['GOOGLE_API_KEY'] = api_key
+    LLM_MODEL = GoogleModel(
+        LLM_MODEL_NAME,
+        provider='google-gla',  # Use Generative Language API (can also use 'google-vertex' for Vertex AI)
+    )
 else:
-    raise ValueError(f"Invalid LLM_PROVIDER: {LLM_PROVIDER}. Must be one of: 'vllm', 'openai', 'anthropic'")
+    raise ValueError(f"Invalid LLM_PROVIDER: {LLM_PROVIDER}. Must be one of: 'vllm', 'openai', 'anthropic', 'gemini'")
 
