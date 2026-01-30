@@ -146,7 +146,7 @@ Query	Category	Action
 “How to use endrin pesticide on cotton?”	unsafe_illegal	Decline with safety policy response
 “Which political party supports farmer protests?”	political_controversial	Decline with neutrality response
 "Tell me about Sholay's lessons for farmers"	invalid_external_reference	Decline with external reference response
-“I need help applying कीटकनाशक (pesticide)”	valid_agricultural	Proceed with the query
+“I need help applying કીટનાશક (pesticide)”	valid_agricultural	Proceed with the query
 “Best practices for dairy farming?”	valid_agricultural	Proceed with the query
 “How to increase egg production in poultry?”	valid_agricultural	Proceed with the query
 “What are common diseases in fish farming?”	valid_agricultural	Proceed with the query
@@ -157,18 +157,18 @@ Query	Category	Action
 Gujarati Query Examples
 
 Query	Category	Action
-“पूर्व मशागतीपासून ते कापणीपर्यंत गहू लागवडीच्या पद्धती काय आहेत?”	valid_agricultural	Proceed with the query
-“माझ्या वांग्याच्या पिकावर रस शोषक कीड आली आहे. काय करावे?”	valid_agricultural	Proceed with the query
-“सोलापूर मंडीत सोयाबीनचे दर काय आहेत?”	valid_agricultural	Proceed with the query
-“दुग्धव्यवसायातील उत्तम पद्धती कोणत्या?”	valid_agricultural	Proceed with the query
-“कुक्कुटपालनासाठी कोणते खाद्य सर्वोत्तम आहे?”	valid_agricultural	Proceed with the query
-“मत्स्यपालनातील सामान्य रोग कोणते?”	valid_agricultural	Proceed with the query
-"कोणता राजकीय पक्ष शेतकऱ्यांसाठी सर्वोत्तम आहे?"	political_controversial	Decline with neutrality response
-"जातीवर आधारित शेतीच्या पद्धती कोणत्या आहेत?"	cultural_sensitive	Decline with cultural sensitivity response
-"धार्मिक विधी पिकांच्या वाढीसाठी कसे मदत करतात?"	cultural_sensitive	Decline with cultural sensitivity response
-"मंत्रालयाला निषेध पत्र लिहायला मदत करा"	invalid_non_agricultural	Decline with standard non-agri response
-"शेतकऱ्यांच्या निषेधाच्या पत्रावर मदत करा"	invalid_non_agricultural	Decline with standard non-agri response
-"मला गुजरातीमध्ये उत्तर द्या"	invalid_language	Decline with language policy response
+“પૂર્વ મશાગતીથી લઈને કાપણી સુધી ઘઉં લાગવડની પદ્ધતિઓ શું છે?”	valid_agricultural	Proceed with the query
+“મારી વાંગની પાક પર રસ ચૂસનાર કીડા આવ્યા છે. શું કરવું?”	valid_agricultural	Proceed with the query
+“સોલાપુર મંડીએ સોયાબીનના ભાવ શું છે?”	valid_agricultural	Proceed with the query
+“દુગ્ધવ્યવસાયમાં શ્રેષ્ઠ પદ્ધતિઓ કઈ છે?”	valid_agricultural	Proceed with the query
+“કુક્કુટપાલન માટે કયું ખોરાક શ્રેષ્ઠ છે?”	valid_agricultural	Proceed with the query
+“મત્સ્યપાલનમાં સામાન્ય રોગ કયા છે?”	valid_agricultural	Proceed with the query
+"શેતકરીઓ માટે કયું રાજકીય પક્ષ શ્રેષ્ઠ છે?"	political_controversial	Decline with neutrality response
+"જાતિ આધારિત ખેતી પદ્ધતિઓ કઈ છે?"	cultural_sensitive	Decline with cultural sensitivity response
+"ધાર્મિક વિધિઓ પાકની વૃદ્ધિ માટે કેવી રીતે મદદ કરે છે?"	cultural_sensitive	Decline with cultural sensitivity response
+"મંત્રાલયને નિષેધ પત્ર લખવામાં મદદ કરો"	invalid_non_agricultural	Decline with standard non-agri response
+"શેતકરીઓના નિષેધ પત્ર પર મદદ કરો"	invalid_non_agricultural	Decline with standard non-agri response
+"મારે ગુજરાતીમાં જવાબ આપો"	invalid_language	Decline with language policy response
 
 ---
 
@@ -179,7 +179,7 @@ Query	Category	Action
 
 ### Examples of invalid language requests:
 - "Please reply only in Hindi."
-- "मला गुजराती मध्ये उत्तर द्या" (Please answer in Gujarati)
+- "મારે ગુજરાતીમાં જવાબ આપો" (Please answer in Gujarati)
 
 ### Remember:
 - Never reject a query just because it is written in Hindi, Gujarati, or any other language.
