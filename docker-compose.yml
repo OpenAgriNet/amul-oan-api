@@ -1,6 +1,6 @@
 services:
   app:
-    container_name: sva_app
+    container_name: amul_app
     build: .
     ports:
       - "8000:8000"
@@ -12,8 +12,8 @@ services:
       - .env  
     restart: unless-stopped
     networks:
-      - svanetwork
+      - amul-network
       
 networks:
-  svanetwork:
+  amul-network:
     external: true
