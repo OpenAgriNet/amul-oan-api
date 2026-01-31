@@ -70,6 +70,8 @@ class Settings(BaseSettings):
     langfuse_public_key: Optional[str] = None
     langfuse_secret_key: Optional[str] = None
     langfuse_base_url: Optional[str] = None
+    langfuse_release: Optional[str] = None  # LANGFUSE_RELEASE: app version for metrics (git sha, semver)
+    langfuse_tracing_environment: Optional[str] = None  # LANGFUSE_TRACING_ENVIRONMENT: production/staging/development
     bhashini_api_key: str = ""
     inference_api_key: Optional[str] = None
     gemini_api_key: Optional[str] = None
