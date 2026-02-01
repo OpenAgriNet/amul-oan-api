@@ -33,6 +33,12 @@ class Settings(BaseSettings):
     jwt_public_key_path: str = os.getenv("JWT_PUBLIC_KEY_PATH", "jwt_public_key.pem")
     jwt_private_key_path: Optional[str] = os.getenv("JWT_PRIVATE_KEY_PATH")
 
+    # Webview / App FE URL (served behind FCM auth; JWT token appended for FE)
+    app_fe_url: Optional[str] = os.getenv("APP_FE_URL")
+
+    # Firebase / FCM (for webview endpoint auth)
+    firebase_service_account_path: Optional[str] = os.getenv("FIREBASE_SERVICE_ACCOUNT_PATH", "service-account.json")
+
     # Worker Settings
     uvicorn_workers: int = os.cpu_count() or 1
 
