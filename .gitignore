@@ -146,6 +146,7 @@ ENV/
 env.bak/
 venv.bak/
 sunenv/
+service-account.json
 
 # Spyder project settings
 .spyderproject

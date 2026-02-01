@@ -59,6 +59,8 @@ notebooks/
 docs/
 README.md
 *.md
+# Keep app prompt files (chat, moderation, suggestions)
+!assets/prompts/*.md
 API_DOC.md
 DEPLOYMENT.md
 
