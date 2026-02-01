@@ -2,12 +2,16 @@
 Simple authentication router that generates JWT tokens for the frontend.
 This closes the auth loop - FE can call this endpoint to get a valid token.
 """
-from fastapi import APIRouter, HTTPException, status
-from pydantic import BaseModel
 from datetime import datetime, timedelta
+from typing import Any, Optional
+from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
+
 import jwt
 from cryptography.hazmat.primitives import serialization
-from pathlib import Path
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from pydantic import BaseModel
+
+from app.auth.fcm_auth import require_fcm_token
 from app.config import settings
 from helpers.utils import get_logger
 
@@ -38,6 +42,36 @@ def load_private_key():
     
     with open(private_key_path, 'rb') as key_file:
         return serialization.load_pem_private_key(key_file.read(), password=None)
+
+
+def create_jwt_for_phone(phone: str, expires_days: int = 365) -> str:
+    """
+    Create a JWT token containing the phone number, signed with jwt_private_key.pem.
+    Used for webview URL so the FE can identify the user.
+    """
+    try:
+        private_key = load_private_key()
+        exp = datetime.utcnow() + timedelta(days=expires_days)
+        iat = datetime.utcnow()
+        payload = {
+            "phone": phone,
+            "sub": phone,
+            "iat": int(iat.timestamp()),
+            "exp": int(exp.timestamp()),
+            "aud": "oan-ui-service",
+            "iss": "mh-oan-api",
+        }
+        return jwt.encode(
+            payload,
+            private_key,
+            algorithm=settings.jwt_algorithm,
+        )
+    except Exception as e:
+        logger.error(f"Error creating JWT for phone: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to generate token: {str(e)}",
+        )
 
 
 def create_jwt_token(username: str, user_id: str = None, email: str = None) -> str:
@@ -111,6 +145,66 @@ async def login(request: LoginRequest):
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Login failed: {str(e)}"
         )
+
+
+def _build_webview_url(base_url: str, jwt_token: str) -> str:
+    """Parse base_url and append token as query param (merge with existing query if any)."""
+    parsed = urlparse(base_url.strip())
+    query = parsed.query
+    params = dict()
+    if query:
+        for k, v in parse_qs(query).items():
+            params[k] = v[0] if len(v) == 1 else v
+    params["token"] = jwt_token
+    new_query = urlencode(params, doseq=True)
+    return urlunparse((
+        parsed.scheme,
+        parsed.netloc,
+        parsed.path,
+        parsed.params,
+        new_query,
+        parsed.fragment,
+    ))
+
+
+@router.get(
+    "/webview-url",
+    summary="Get app FE URL for webview (FCM auth)",
+    response_model=None,
+    responses={
+        200: {
+            "description": "Success. Returns URL with token query param.",
+            "content": {"application/json": {"example": {"url": "https://app.example.com?token=eyJ..."}}},
+        },
+        401: {"description": "Missing or invalid FCM token"},
+        503: {"description": "FCM/Firebase not configured"},
+    },
+)
+async def get_webview_url(
+    phone: str = Query(..., description="User phone number (included in issued JWT)"),
+    _fcm_token: str = Depends(require_fcm_token),
+) -> Any:
+    """
+    **Endpoint:** `GET /api/auth/webview-url`
+
+    **Headers** (one required for authentication):
+    - `Authorization: Bearer <fcm_token>` — FCM device token
+    - `X-FCM-Token: <fcm_token>` — alternative header
+
+    **Params:**
+    - `phone` (query, required) — User phone number; issued JWT will contain this.
+
+    **Response:** JSON with `url` (string): FE base URL from `APP_FE_URL` with `token={jwt}` added as query param.
+    The JWT is signed with `jwt_private_key.pem` and contains `phone` (and standard claims).
+    """
+    if not settings.app_fe_url or not settings.app_fe_url.strip():
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="APP_FE_URL not configured",
+        )
+    token = create_jwt_for_phone(phone)
+    url = _build_webview_url(settings.app_fe_url, token)
+    return {"url": url}
 
 
 @router.get("/demo")
