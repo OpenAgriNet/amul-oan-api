@@ -37,7 +37,11 @@ class Settings(BaseSettings):
     app_fe_url: Optional[str] = os.getenv("APP_FE_URL")
 
     # Firebase / FCM (for webview endpoint auth)
+    # Primary Firebase project (existing behaviour)
     firebase_service_account_path: Optional[str] = os.getenv("FIREBASE_SERVICE_ACCOUNT_PATH", "service-account.json")
+    # Optional secondary Firebase project; if configured we will accept
+    # tokens that are valid for either project.
+    firebase_service_account_path_2: Optional[str] = os.getenv("FIREBASE_SERVICE_ACCOUNT_PATH_2")
 
     # Worker Settings
     uvicorn_workers: int = os.cpu_count() or 1

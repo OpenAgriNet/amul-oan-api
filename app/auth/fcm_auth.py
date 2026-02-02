@@ -1,9 +1,10 @@
 """
 FCM token authentication for app/webview endpoints.
 Accepts token via header: Authorization: Bearer <fcm_token> or X-FCM-Token: <fcm_token>.
-Verifies token using Firebase Admin (dry_run send).
+Verifies token using Firebase Admin (dry_run send). Supports a primary and optional
+secondary Firebase project; if either project accepts the token, authorization is allowed.
 """
-from typing import Optional
+from typing import Optional, Dict
 
 from fastapi import HTTPException, Request, status
 from helpers.utils import get_logger
@@ -13,23 +14,54 @@ from app.config import settings
 logger = get_logger(__name__)
 
 _firebase_initialized = False
+_firebase_apps: Dict[str, object] = {}
 
 
 def _ensure_firebase():
-    global _firebase_initialized
+    """
+    Lazily initialize one or more Firebase apps for FCM verification.
+    Supports a primary and an optional secondary service account.
+    """
+    global _firebase_initialized, _firebase_apps
     if _firebase_initialized:
         return
     try:
         import firebase_admin
         from firebase_admin import credentials
 
-        path = settings.base_dir / (settings.firebase_service_account_path or "service-account.json")
-        if not path.exists():
-            raise FileNotFoundError(f"Firebase service account not found: {path}")
-        cred = credentials.Certificate(str(path))
-        firebase_admin.initialize_app(cred)
+        firebase_configs = []
+
+        # Primary Firebase project (existing behaviour)
+        primary_path = settings.base_dir / (settings.firebase_service_account_path or "service-account.json")
+        if primary_path.exists():
+            firebase_configs.append(("default", primary_path))
+        else:
+            logger.error(f"Primary Firebase service account not found: {primary_path}")
+
+        # Optional secondary Firebase project
+        if settings.firebase_service_account_path_2:
+            secondary_path = settings.base_dir / settings.firebase_service_account_path_2
+            if secondary_path.exists():
+                firebase_configs.append(("secondary", secondary_path))
+            else:
+                logger.error(f"Secondary Firebase service account not found: {secondary_path}")
+
+        if not firebase_configs:
+            raise FileNotFoundError("No Firebase service accounts configured for FCM verification")
+
+        for name, path in firebase_configs:
+            cred = credentials.Certificate(str(path))
+            if name == "default":
+                app = firebase_admin.initialize_app(cred)
+            else:
+                app = firebase_admin.initialize_app(cred, name=name)
+            _firebase_apps[name] = app
+
         _firebase_initialized = True
-        logger.info("Firebase Admin initialized for FCM verification")
+        logger.info(
+            "Firebase Admin initialized for FCM verification "
+            f"with apps: {', '.join(_firebase_apps.keys())}"
+        )
     except Exception as e:
         logger.error(f"Firebase init failed: {e}")
         raise HTTPException(
@@ -39,20 +71,25 @@ def _ensure_firebase():
 
 
 def verify_fcm_token(fcm_token: str) -> bool:
-    """Verify FCM token via Firebase dry_run send. Returns True if valid."""
+    """
+    Verify FCM token via Firebase dry_run send.
+    Tries the primary and (if configured) secondary Firebase app; returns True if any accepts the token.
+    """
     _ensure_firebase()
     from firebase_admin import messaging, exceptions as fcm_exceptions
 
     message = messaging.Message(token=fcm_token)
-    try:
-        messaging.send(message, dry_run=True)
-        return True
-    except fcm_exceptions.FirebaseError as e:
-        logger.warning(f"FCM verification failed: {e.code} - {e}")
-        return False
-    except Exception as e:
-        logger.warning(f"FCM verification error: {e}")
-        return False
+    for app_name, app in _firebase_apps.items():
+        try:
+            messaging.send(message, dry_run=True, app=app)
+            logger.debug(f"FCM token valid for app: {app_name}")
+            return True
+        except fcm_exceptions.FirebaseError as e:
+            logger.debug(f"FCM verification failed for app {app_name}: {e.code} - {e}")
+        except Exception as e:
+            logger.debug(f"FCM verification error for app {app_name}: {e}")
+    logger.warning("FCM token invalid for all configured Firebase apps")
+    return False
 
 
 def get_fcm_token_from_request(request: Request) -> Optional[str]:
