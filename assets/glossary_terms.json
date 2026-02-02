@@ -331,7 +331,7 @@
     },
     {
         "en": "Milk Fever",
-        "gu": "સૂવાનો રોગ (મિલ્ક ફીવર)",
+        "gu": "સૂવાનો રોગ (મિલ્ક ફીવર) / દૂધીઓ તાવ",
         "transliteration": "Suva no Rog (Milk Fever)"
     },
     {
@@ -340,9 +340,9 @@
         "transliteration": "Calcium no Abhav"
     },
     {
-        "en": "Retention of Placenta",
-        "gu": "મેલી/ઓર ન પડવી",
-        "transliteration": "Meli/Or na Padvi"
+        "en": "Retention of Placenta / Afterbirth retained /Placenta not expelled",
+        "gu": "જર/ મેલી / ઓર ન પડવી /પડિયો અંદર અટકી ગયો /આફટર બર્થ ન નીકળવું /બચ્ચા પછી પડ લટકતું રહેવું",
+        "transliteration": "Jar/ Meli/Or na Padvi"
     },
     {
         "en": "Uterine Prolapse",
@@ -981,7 +981,7 @@
     },
     {
         "en": "Disinfectant",
-        "gu": "જંતુનાશક",
+        "gu": "સાફસફાઈની દવા",
         "transliteration": "Jantunashak"
     },
     {
@@ -2558,5 +2558,245 @@
         "en": "ABORTION",
         "gu": "પશુ તરવાઈ જવું",
         "transliteration": "pashu tarvai javu"
+    },
+    {
+        "en": "Cattle",
+        "gu": "પશુ",
+        "transliteration": "pashu"
+    },
+    {
+        "en": "Calf (male)",
+        "gu": "વાછરડો",
+        "transliteration": "vachdo / vachardo"
+    },
+    {
+        "en": "Calf (female)",
+        "gu": "વાછરડી",
+        "transliteration": "vachdi  / vachardi"
+    },
+    {
+        "en": "Heat / Estrus",
+        "gu": "વેતર / ગરમી",
+        "transliteration": "vetar / garami"
+    },
+    {
+        "en": "Natural mating",
+        "gu": "કુદરતી ફળવણી",
+        "transliteration": "kudarati felavni"
+    },
+    {
+        "en": "Pregnancy",
+        "gu": "ગર્ભ",
+        "transliteration": "garbh"
+    },
+    {
+        "en": "Calving",
+        "gu": "વિયાણ",
+        "transliteration": "viyan"
+    },
+    {
+        "en": "Retained placenta",
+        "gu": "માટી ન ખસવી",
+        "transliteration": "mati na khasavi"
+    },
+    {
+        "en": "Placenta",
+        "gu": "માટી / મેલી",
+        "transliteration": "mati meli"
+    },
+    {
+        "en": "Indigestion",
+        "gu": "અજીર્ણ",
+        "transliteration": "ajirna"
+    },
+    {
+        "en": "Diarrhea",
+        "gu": "પાતળા ઝાડા",
+        "transliteration": "patla zada"
+    },
+    {
+        "en": "Constipation",
+        "gu": "કબજિયાત",
+        "transliteration": "kabajiyat"
+    },
+    {
+        "en": "Lumpy Skin Disease",
+        "gu": "ગાંઠિયો રોગ",
+        "transliteration": "ganthiyo rog"
+    },
+    {
+        "en": "Deworming",
+        "gu": "કીડાનાશક દવા",
+        "transliteration": "kidanashak dava"
+    },
+    {
+        "en": "Feed",
+        "gu": "ચારો",
+        "transliteration": "charo"
+    },
+    {
+        "en": "Concentrate",
+        "gu": "દાણ",
+        "transliteration": "dan"
+    },
+    {
+        "en": "Salt lick",
+        "gu": "મીઠાનો પથ્થર",
+        "transliteration": "chatva mate mitha no patthar"
+    },
+    {
+        "en": "Water intake",
+        "gu": "પાણી પીવાની માત્રા",
+        "transliteration": "pani pivani matra"
+    },
+    {
+        "en": "Body condition",
+        "gu": "પશુની તંદુરસ્તી",
+        "transliteration": "pashu ni tandurasti"
+    },
+    {
+        "en": "Shed",
+        "gu": "વાડો",
+        "transliteration": "vado"
+    },
+    {
+        "en": "Mortality",
+        "gu": "મૃત્યુદર",
+        "transliteration": "mrutyudar"
+    },
+    {
+        "en": "Veterinary doctor",
+        "gu": "પશુચિકિત્સક",
+        "transliteration": "pashuchikitsak"
+    },
+    {
+        "en": "Banni Buffalo",
+        "gu": "બન્ની ભેંસ",
+        "transliteration": "banni bhens"
+    },
+    {
+        "en": "Kankrej Cow",
+        "gu": "કાંકરેજી ગાય",
+        "transliteration": "kakreji gay"
+    },
+    {
+        "en": "Kharai Camel",
+        "gu": "ખારાઈ ઊંટ",
+        "transliteration": "kharai oot"
+    },
+    {
+        "en": "Female/Male Calf",
+        "gu": "પાડી / પાડો",
+        "transliteration": "padi / pado"
+    },
+    {
+        "en": "Breeding Bull",
+        "gu": "વરડો / સાંઢ",
+        "transliteration": "vardo / sandh"
+    },
+    {
+        "en": "Fodder / Grass",
+        "gu": "ખડપ / ઘાસચારો",
+        "transliteration": "khadap / ghascharo"
+    },
+    {
+        "en": "Dry Fodder",
+        "gu": "સુકો ચારો",
+        "transliteration": "suko charo"
+    },
+    {
+        "en": "Green Fodder",
+        "gu": "લીલો ચારો",
+        "transliteration": "lilo charo"
+    },
+    {
+        "en": "Concentrated Feed",
+        "gu": "ખાણ / કણું",
+        "transliteration": "khan / kanu"
+    },
+    {
+        "en": "Oil Cake",
+        "gu": "ખોળ",
+        "transliteration": "khol"
+    },
+    {
+        "en": "Grazing Land",
+        "gu": "ચરિયાણ",
+        "transliteration": "chariyan"
+    },
+    {
+        "en": "Animal Enclosure",
+        "gu": "વાડો",
+        "transliteration": "vado"
+    },
+    {
+        "en": "Feeding Manger",
+        "gu": "ગમાણ",
+        "transliteration": "gaman"
+    },
+    {
+        "en": "Milking",
+        "gu": "દોહવું",
+        "transliteration": "dohvu"
+    },
+    {
+        "en": "Tethering Stake",
+        "gu": "ખીલો",
+        "transliteration": "khilo"
+    },
+    {
+        "en": "Milk Can",
+        "gu": "ડબ્બો / કેન",
+        "transliteration": "dabbo / ken"
+    },
+    {
+        "en": "Pregnant",
+        "gu": "ગાભણ",
+        "transliteration": "gabhan"
+    },
+    {
+        "en": "Lactation Cycle",
+        "gu": "વેતર",
+        "transliteration": "vetar"
+    },
+    {
+        "en": "Heat Cycle",
+        "gu": "તાણ / ગરમી",
+        "transliteration": "taan / garami"
+    },
+    {
+        "en": "Udder/Teats",
+        "gu": "આંચળ",
+        "transliteration": "anchal"
+    },
+    {
+        "en": "Vaccination",
+        "gu": "રસીકરણ",
+        "transliteration": "rasikaran"
+    },
+    {
+        "en": "Heifer",
+        "gu": "ખડાયું  / khadelu",
+        "transliteration": "khadayu / khadelu"
+    },
+    {
+        "en": "placenta",
+        "gu": "જર",
+        "transliteration": "jar"
+    },
+    {
+        "en": "sub-clinical mastitis",
+        "gu": "સૂકો ગરિયો",
+        "transliteration": "suko gariyo"
+    },
+    {
+        "en": "oral dosing",
+        "gu": "નાળ દેવી",
+        "transliteration": "naal devi"
+    },
+    {
+        "en": "Ethnoveterinary Medicine (EVM)",
+        "gu": "ઘરગથ્થું ઉપચાર / ઘરેલુ  ઉપચાર /દેશી ઉપચાર",
+        "transliteration": "ghargathhu upchar, deshi upchar"
     }
 ]
