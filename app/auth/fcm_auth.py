@@ -3,8 +3,11 @@ FCM token authentication for app/webview endpoints.
 Accepts token via header: Authorization: Bearer <fcm_token> or X-FCM-Token: <fcm_token>.
 Verifies token using Firebase Admin (dry_run send). Supports a primary and optional
 secondary Firebase project; if either project accepts the token, authorization is allowed.
+Service account can be provided as inline JSON (FIREBASE_SERVICE_ACCOUNT / FIREBASE_SERVICE_ACCOUNT_2)
+or as file paths (FIREBASE_SERVICE_ACCOUNT_PATH / FIREBASE_SERVICE_ACCOUNT_PATH_2); value takes precedence.
 """
-from typing import Optional, Dict
+import json
+from typing import Optional, Dict, Union, Tuple, List
 
 from fastapi import HTTPException, Request, status
 from helpers.utils import get_logger
@@ -17,10 +20,40 @@ _firebase_initialized = False
 _firebase_apps: Dict[str, object] = {}
 
 
+def _get_primary_credential() -> Optional[Union[str, dict]]:
+    """Resolve primary Firebase credential: inline JSON value or file path."""
+    if settings.firebase_service_account and settings.firebase_service_account.strip():
+        try:
+            return json.loads(settings.firebase_service_account.strip())
+        except json.JSONDecodeError as e:
+            logger.error(f"Invalid FIREBASE_SERVICE_ACCOUNT JSON: {e}")
+            return None
+    path = settings.base_dir / (settings.firebase_service_account_path or "service-account.json")
+    if path.exists():
+        return str(path)
+    return None
+
+
+def _get_secondary_credential() -> Optional[Union[str, dict]]:
+    """Resolve secondary Firebase credential: inline JSON value or file path."""
+    if settings.firebase_service_account_2 and settings.firebase_service_account_2.strip():
+        try:
+            return json.loads(settings.firebase_service_account_2.strip())
+        except json.JSONDecodeError as e:
+            logger.error(f"Invalid FIREBASE_SERVICE_ACCOUNT_2 JSON: {e}")
+            return None
+    if settings.firebase_service_account_path_2:
+        path = settings.base_dir / settings.firebase_service_account_path_2
+        if path.exists():
+            return str(path)
+    return None
+
+
 def _ensure_firebase():
     """
     Lazily initialize one or more Firebase apps for FCM verification.
     Supports a primary and an optional secondary service account.
+    Credentials from inline values (FIREBASE_SERVICE_ACCOUNT / _2) take precedence over paths.
     """
     global _firebase_initialized, _firebase_apps
     if _firebase_initialized:
@@ -29,28 +62,23 @@ def _ensure_firebase():
         import firebase_admin
         from firebase_admin import credentials
 
-        firebase_configs = []
+        firebase_configs: List[Tuple[str, Union[str, dict]]] = []
 
-        # Primary Firebase project (existing behaviour)
-        primary_path = settings.base_dir / (settings.firebase_service_account_path or "service-account.json")
-        if primary_path.exists():
-            firebase_configs.append(("default", primary_path))
+        primary = _get_primary_credential()
+        if primary is not None:
+            firebase_configs.append(("default", primary))
         else:
-            logger.error(f"Primary Firebase service account not found: {primary_path}")
+            logger.error("Primary Firebase service account not configured (no value and path not found)")
 
-        # Optional secondary Firebase project
-        if settings.firebase_service_account_path_2:
-            secondary_path = settings.base_dir / settings.firebase_service_account_path_2
-            if secondary_path.exists():
-                firebase_configs.append(("secondary", secondary_path))
-            else:
-                logger.error(f"Secondary Firebase service account not found: {secondary_path}")
+        secondary = _get_secondary_credential()
+        if secondary is not None:
+            firebase_configs.append(("secondary", secondary))
 
         if not firebase_configs:
             raise FileNotFoundError("No Firebase service accounts configured for FCM verification")
 
-        for name, path in firebase_configs:
-            cred = credentials.Certificate(str(path))
+        for name, cred_source in firebase_configs:
+            cred = credentials.Certificate(cred_source)
             if name == "default":
                 app = firebase_admin.initialize_app(cred)
             else:

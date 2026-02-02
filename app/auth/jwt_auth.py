@@ -30,12 +30,30 @@ class OptionalOAuth2PasswordBearer(OAuth2PasswordBearer):
 # OAuth2 scheme for FastAPI - optional in development
 oauth2_scheme = OptionalOAuth2PasswordBearer(tokenUrl="token")
 
-# Construct the absolute path to the public key using settings
-public_key_path = settings.base_dir / settings.jwt_public_key_path
 
-with open(public_key_path, 'rb') as key_file:
-    public_key = serialization.load_pem_public_key(key_file.read())
-logger.info(f"Successfully loaded JWT Public Key from: {public_key_path}")
+def _load_public_key():
+    """Load JWT public key from inline value or file path (value takes precedence)."""
+    if settings.jwt_public_key and settings.jwt_public_key.strip():
+        try:
+            key_bytes = settings.jwt_public_key.strip().encode() if isinstance(settings.jwt_public_key, str) else settings.jwt_public_key
+            return serialization.load_pem_public_key(key_bytes)
+        except Exception as e:
+            logger.warning(f"Failed to load JWT public key from value: {e}")
+    key_path = settings.base_dir / settings.jwt_public_key_path
+    if key_path.exists():
+        try:
+            with open(key_path, 'rb') as key_file:
+                key = serialization.load_pem_public_key(key_file.read())
+            logger.info(f"Successfully loaded JWT Public Key from: {key_path}")
+            return key
+        except Exception as e:
+            logger.warning(f"Failed to load JWT public key from {key_path}: {e}")
+    return None
+
+
+public_key = _load_public_key()
+if public_key is None:
+    logger.warning("JWT Public Key not loaded (no JWT_PUBLIC_KEY value and path not found or invalid)")
 
 async def get_current_user(token: str | None = Depends(oauth2_scheme)):
     """

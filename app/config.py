@@ -29,27 +29,31 @@ class Settings(BaseSettings):
     allowed_headers: List[str] = ["*"]
 
     # JWT Configuration
+    # Inline PEM values take precedence; if not set, keys are loaded from paths.
     jwt_algorithm: str = "RS256"
+    jwt_public_key: Optional[str] = os.getenv("JWT_PUBLIC_KEY")  # PEM string; overrides path if set
     jwt_public_key_path: str = os.getenv("JWT_PUBLIC_KEY_PATH", "jwt_public_key.pem")
+    jwt_private_key: Optional[str] = os.getenv("JWT_PRIVATE_KEY")  # PEM string; overrides path if set
     jwt_private_key_path: Optional[str] = os.getenv("JWT_PRIVATE_KEY_PATH")
 
     # Webview / App FE URL (served behind FCM auth; JWT token appended for FE)
     app_fe_url: Optional[str] = os.getenv("APP_FE_URL")
 
     # Firebase / FCM (for webview endpoint auth)
-    # Primary Firebase project (existing behaviour)
+    # Inline JSON values take precedence; if not set, credentials are loaded from paths.
+    firebase_service_account: Optional[str] = os.getenv("FIREBASE_SERVICE_ACCOUNT")  # JSON string; overrides path if set
     firebase_service_account_path: Optional[str] = os.getenv("FIREBASE_SERVICE_ACCOUNT_PATH", "service-account.json")
-    # Optional secondary Firebase project; if configured we will accept
-    # tokens that are valid for either project.
+    firebase_service_account_2: Optional[str] = os.getenv("FIREBASE_SERVICE_ACCOUNT_2")  # JSON string; overrides path if set
     firebase_service_account_path_2: Optional[str] = os.getenv("FIREBASE_SERVICE_ACCOUNT_PATH_2")
 
     # Worker Settings
     uvicorn_workers: int = os.cpu_count() or 1
 
-    # Redis Settings
+    # Redis Settings (set REDIS_HOST, REDIS_PORT, REDIS_DB, REDIS_PASSWORD, etc. via env)
     redis_host: str = "localhost"
     redis_port: int = 6379
     redis_db: int = 0
+    redis_password: Optional[str] = None
     redis_key_prefix: str = "sva-cache-"
     redis_socket_connect_timeout: int = 10
     redis_socket_timeout: int = 10

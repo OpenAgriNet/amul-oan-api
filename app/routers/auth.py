@@ -34,12 +34,20 @@ class TokenResponse(BaseModel):
 
 
 def load_private_key():
-    """Load the private key for signing JWT tokens"""
+    """Load the private key for signing JWT tokens. Uses JWT_PRIVATE_KEY value if set, else file path."""
+    if settings.jwt_private_key and settings.jwt_private_key.strip():
+        try:
+            key_bytes = (
+                settings.jwt_private_key.strip().encode()
+                if isinstance(settings.jwt_private_key, str)
+                else settings.jwt_private_key
+            )
+            return serialization.load_pem_private_key(key_bytes, password=None)
+        except Exception as e:
+            logger.warning(f"Failed to load JWT private key from value: {e}")
     private_key_path = settings.base_dir / (settings.jwt_private_key_path or "jwt_private_key.pem")
-    
     if not private_key_path.exists():
         raise FileNotFoundError(f"Private key not found at {private_key_path}")
-    
     with open(private_key_path, 'rb') as key_file:
         return serialization.load_pem_private_key(key_file.read(), password=None)
 
