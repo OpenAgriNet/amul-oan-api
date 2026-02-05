@@ -14,6 +14,7 @@ from helpers.telemetry import create_moderation_event, TelemetryRequest
 from app.tasks.telemetry import send_telemetry
 from app.tasks.suggestions import create_suggestions
 from agents.deps import FarmerContext
+from agents.tools.farmer import get_farmer_data_by_mobile
 
 logger = get_logger(__name__)
 
@@ -43,8 +44,16 @@ async def stream_chat_messages(
         content_id = f"query_{session_id}_{len(history)//2 + 1}"
         logger.info(f"User info: {user_info}")
 
-        # Extract only the 'data' field from JWT token (ignore standard JWT fields like iss, sub, exp)
+        # Extract farmer context: prefer JWT 'data' field; if JWT has 'phone' and no data, fetch by phone
         farmer_data = user_info.get('data') if user_info else None
+        if not farmer_data and user_info and user_info.get('phone'):
+            try:
+                farmer_records = await get_farmer_data_by_mobile(user_info['phone'])
+                if farmer_records:
+                    farmer_data = {"farmer_records": farmer_records}
+                    logger.info(f"Injected farmer context from phone for {len(farmer_records)} record(s)")
+            except Exception as e:
+                logger.warning(f"Could not fetch farmer data by phone: {e}")
 
         deps = FarmerContext(
             query=query,
