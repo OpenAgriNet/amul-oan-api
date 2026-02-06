@@ -6,6 +6,8 @@ from datetime import datetime, timedelta
 from typing import Any, Optional
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
+import re
+
 import jwt
 from cryptography.hazmat.primitives import serialization
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -175,6 +177,25 @@ def _build_webview_url(base_url: str, jwt_token: str) -> str:
     ))
 
 
+_PHONE_DIGITS_RE = re.compile(r"^\+?\d{7,15}$")
+
+
+def _validate_phone(raw: str) -> str:
+    """Strip whitespace and validate that phone contains 7-15 digits (with optional leading +)."""
+    phone = raw.strip()
+    if not phone:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="phone parameter is required and must not be empty",
+        )
+    if not _PHONE_DIGITS_RE.match(phone):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid phone number: must be 7-15 digits (optional leading +), got '{phone}'",
+        )
+    return phone
+
+
 @router.get(
     "/webview-url",
     summary="Get app FE URL for webview (FCM auth)",
@@ -184,6 +205,7 @@ def _build_webview_url(base_url: str, jwt_token: str) -> str:
             "description": "Success. Returns URL with token query param.",
             "content": {"application/json": {"example": {"url": "https://app.example.com?token=eyJ..."}}},
         },
+        400: {"description": "Missing or invalid phone number"},
         401: {"description": "Missing or invalid FCM token"},
         503: {"description": "FCM/Firebase not configured"},
     },
@@ -205,6 +227,7 @@ async def get_webview_url(
     **Response:** JSON with `url` (string): FE base URL from `APP_FE_URL` with `token={jwt}` added as query param.
     The JWT is signed with `jwt_private_key.pem` and contains `phone` (and standard claims).
     """
+    phone = _validate_phone(phone)
     if not settings.app_fe_url or not settings.app_fe_url.strip():
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
