@@ -64,6 +64,9 @@ aiocache==0.12.3
 pydantic-settings==2.12.0
 python-dateutil==2.9.0.post0
 
+# Audio conversion (WebM/Opus -> WAV for Bhashini; requires ffmpeg installed on system)
+pydub>=0.25.1
+
 # Language codes
 langcodes[data]==3.5.1
 

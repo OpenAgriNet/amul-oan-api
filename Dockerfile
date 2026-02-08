@@ -4,12 +4,13 @@ FROM python:3.10-slim
 # Set work directory
 WORKDIR /app
 
-# Install system dependencies
+# Install system dependencies (ffmpeg for pydub WebM/Opus -> WAV conversion in transcribe)
 RUN apt-get update && apt-get install -y \
     supervisor \
     gcc \
     python3-dev \
     curl \
+    ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements first for better Docker layer caching
