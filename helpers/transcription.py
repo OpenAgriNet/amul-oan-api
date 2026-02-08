@@ -1,7 +1,9 @@
+import asyncio
 import os
 import base64
 import requests
 import json
+import httpx
 import logging
 from dotenv import load_dotenv
 # from tenacity import retry, stop_after_attempt, wait_exponential, wait_fixed
@@ -190,6 +192,78 @@ def transcribe_bhashini(audio_base64: str, source_lang='mr'):
             "transcribe_bhashini: Request failed: %s", str(e)
         )
         raise
+
+
+BHASHINI_PIPELINE_URL = "https://dhruva-api.bhashini.gov.in/services/inference/pipeline"
+TRANSCRIBE_TIMEOUT = 30.0
+
+
+async def transcribe_bhashini_async(audio_base64: str, source_lang: str = "mr") -> str:
+    """
+    Async version of transcribe_bhashini. Uses httpx for non-blocking HTTP and
+    runs CPU-bound pydub conversion in a thread so the event loop is not blocked.
+
+    Returns:
+        str: The transcribed text.
+
+    Raises:
+        httpx.HTTPStatusError: If Bhashini returns a non-2xx status.
+    """
+    detected_format = _detect_audio_format_from_base64(audio_base64)
+    _transcription_logger.info(
+        "transcribe_bhashini_async: source_lang=%s, audio_len=%d, detected_format=%s",
+        source_lang, len(audio_base64), detected_format,
+    )
+
+    if detected_format != "wav":
+        convert_format = detected_format if detected_format != "unknown" else "webm"
+        if detected_format == "unknown":
+            _transcription_logger.info(
+                "transcribe_bhashini_async: format unknown, assuming webm (common for browser recordings)"
+            )
+        audio_base64 = await asyncio.to_thread(
+            _convert_audio_to_wav_base64, audio_base64, convert_format
+        )
+    else:
+        _transcription_logger.info("transcribe_bhashini_async: audio already WAV, no conversion needed")
+
+    api_key = os.getenv("MEITY_API_KEY_VALUE")
+    headers = {
+        "Accept": "*/*",
+        "User-Agent": "Thunder Client (https://www.thunderclient.com)",
+        "Authorization": api_key,
+        "Content-Type": "application/json",
+    }
+    data = {
+        "pipelineTasks": [
+            {
+                "taskType": "asr",
+                "config": {
+                    "language": {"sourceLanguage": source_lang},
+                    "audioFormat": "wav",
+                    "samplingRate": 16000,
+                    "preProcessors": ["vad"],
+                },
+            }
+        ],
+        "inputData": {"audio": [{"audioContent": audio_base64}]},
+    }
+
+    async with httpx.AsyncClient(timeout=TRANSCRIBE_TIMEOUT) as client:
+        response = await client.post(
+            BHASHINI_PIPELINE_URL,
+            headers=headers,
+            data=json.dumps(data),
+        )
+    if response.status_code != 200:
+        _transcription_logger.error(
+            "transcribe_bhashini_async: Bhashini returned status=%d, body=%s",
+            response.status_code, (response.text[:1000] if response.text else "(empty)"),
+        )
+    response.raise_for_status()
+    response_json = response.json()
+    return response_json["pipelineResponse"][0]["output"][0]["source"]
+
 
 def detect_audio_language_bhashini(audio_base64: str):
     """

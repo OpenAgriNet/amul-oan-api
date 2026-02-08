@@ -6,6 +6,7 @@ secondary Firebase project; if either project accepts the token, authorization i
 Service account can be provided as inline JSON (FIREBASE_SERVICE_ACCOUNT / FIREBASE_SERVICE_ACCOUNT_2)
 or as file paths (FIREBASE_SERVICE_ACCOUNT_PATH / FIREBASE_SERVICE_ACCOUNT_PATH_2); value takes precedence.
 """
+import asyncio
 import json
 from typing import Optional, Dict, Union, Tuple, List
 
@@ -145,7 +146,8 @@ async def require_fcm_token(request: Request) -> str:
             detail="Missing FCM token. Provide Authorization: Bearer <fcm_token> or X-FCM-Token: <fcm_token>",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    if not verify_fcm_token(token):
+    # Firebase SDK is sync; run in thread pool to avoid blocking the event loop
+    if not await asyncio.to_thread(verify_fcm_token, token):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or expired FCM token",

@@ -1,10 +1,13 @@
 """
 Marqo client implementation for vector search.
+The Marqo Python client is synchronous; we run it in asyncio.to_thread() to avoid
+blocking the event loop when serving many concurrent requests.
 """
+import asyncio
 import os
 import re
 import marqo
-from typing import Optional, Literal
+from typing import Any, Dict, List, Literal, Optional
 from pydantic import BaseModel, Field
 from pydantic_ai import ModelRetry
 from helpers.utils import get_logger
@@ -12,6 +15,13 @@ from helpers.utils import get_logger
 from agents.tools.terms import normalize_text_with_glossary
 
 logger = get_logger(__name__)
+
+
+def _marqo_search_sync(endpoint_url: str, index_name: str, search_params: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Synchronous Marqo search; call via asyncio.to_thread() from async code."""
+    client = marqo.Client(url=endpoint_url)
+    result = client.index(index_name).search(**search_params)
+    return result.get("hits", [])
 
 DocumentType = Literal['video', 'document']
 
@@ -61,20 +71,14 @@ async def search_documents(
         search_results: Formatted list of documents
     """
     try:
-        # Initialize Marqo client
         endpoint_url = os.getenv('MARQO_ENDPOINT_URL')
         if not endpoint_url:
             raise ValueError("Marqo endpoint URL is required")
-        
         index_name = os.getenv('MARQO_INDEX_NAME', 'sunbird-va-index')
         if not index_name:
             raise ValueError("Marqo index name is required")
-        
-        client = marqo.Client(url=endpoint_url)
+
         logger.info(f"Searching for '{query}' in index '{index_name}'")
-            
-        # Perform search
-        # Note: No filter_string needed - the index contains only documents
         search_params = {
             "q": query,
             "limit": top_k,
@@ -84,11 +88,13 @@ async def search_documents(
                 "rankingMethod": "rrf",
                 "alpha": 0.5,
                 "rrfK": 60,
-            },        
+            },
         }
-        
-        results = client.index(index_name).search(**search_params)['hits']
-        
+        # Marqo client is sync; run in thread pool to avoid blocking the event loop
+        results = await asyncio.to_thread(
+            _marqo_search_sync, endpoint_url, index_name, search_params
+        )
+
         if len(results) == 0:
             return f"No results found for `{query}`"
         else:
@@ -129,28 +135,24 @@ async def search_videos(
         search_results: Formatted list of videos
     """
     try:
-        # Initialize Marqo client
         endpoint_url = os.getenv('MARQO_ENDPOINT_URL')
         if not endpoint_url:
             raise ValueError("Marqo endpoint URL is required")
-        
         index_name = os.getenv('MARQO_INDEX_NAME', 'sunbird-va-index')
         if not index_name:
             raise ValueError("Marqo index name is required")
-        
-        client = marqo.Client(url=endpoint_url)
+
         logger.info(f"Searching for '{query}' in index '{index_name}'")
-        
-        # Perform search using just tensor search
-        # Note: No filter_string needed - the index contains only documents
         search_params = {
             "q": query,
             "limit": top_k,
             "search_method": "tensor",
         }
-        
-        results = client.index(index_name).search(**search_params)['hits']
-        
+        # Marqo client is sync; run in thread pool to avoid blocking the event loop
+        results = await asyncio.to_thread(
+            _marqo_search_sync, endpoint_url, index_name, search_params
+        )
+
         if len(results) == 0:
             return f"No videos found for `{query}`"
         else:            
