@@ -2798,5 +2798,430 @@
         "en": "Ethnoveterinary Medicine (EVM)",
         "gu": "ઘરગથ્થું ઉપચાર / ઘરેલુ  ઉપચાર /દેશી ઉપચાર",
         "transliteration": "ghargathhu upchar, deshi upchar"
+    },
+    {
+        "en": "dairy farming",
+        "gu": "પશુપાલન",
+        "transliteration": "deri farming / pashu palan"
+    },
+    {
+        "en": "ABORTION",
+        "gu": "તરવાઈ જવું",
+        "transliteration": "tarvai javu"
+    },
+    {
+        "en": "REPEAT BREEDING",
+        "gu": "ઠરતું નથી, ઉથલા મારવા ઝેભની, ગાભણ રહેતી નથી",
+        "transliteration": "thartu nathi / uthla marva / gabhan raheti nathi"
+    },
+    {
+        "en": "PROLAPSE",
+        "gu": "દેહ બતાવવી, આર બતાવવું, ઘાતર બતાવવું",
+        "transliteration": "deh batavvi"
+    },
+    {
+        "en": "ENTRITIS",
+        "gu": "ફોકવું, ઝાડા",
+        "transliteration": "fokvu , zada"
+    },
+    {
+        "en": "BLOAT",
+        "gu": "ગેસ આફરો,ફૂલી જવું,",
+        "transliteration": "ges , aafro, fuli javu"
+    },
+    {
+        "en": "MASTITIS",
+        "gu": "પાઠુ, બેક્ટેરિયા સૂકો ઘડીઓ બાવલા નો સોજો",
+        "transliteration": "pathu, becteria suko ghadio , bavla no sojo"
+    },
+    {
+        "en": "UDDER OEDEMA",
+        "gu": "અરહો",
+        "transliteration": "arho"
+    },
+    {
+        "en": "DISLOCATION",
+        "gu": "ફોહવાઈ જવું",
+        "transliteration": "fohvai javu"
+    },
+    {
+        "en": "LAMNESS",
+        "gu": "ખોડંગાય ,લંગડાય",
+        "transliteration": "khodangay / langday"
+    },
+    {
+        "en": "ABCESS",
+        "gu": "ગુમડું ઘા ખરજવું",
+        "transliteration": "gumdu , gha , kharjavu"
+    },
+    {
+        "en": "SUBCLINICAL MASTITIS",
+        "gu": "સુકો ઘડીયો",
+        "transliteration": "suko ghadiyo"
+    },
+    {
+        "en": "WORMS",
+        "gu": "પેટમાં કીડા કરમિયા",
+        "transliteration": "vodki, jotu, karmiya"
+    },
+    {
+        "en": "HEIFER",
+        "gu": "વોડકી, ઝોટુ, પાડી",
+        "transliteration": "vodki , jotu, padi"
+    },
+    {
+        "en": "HEAT",
+        "gu": "ગરમીમાં આવવું, વેતરમો આવવું",
+        "transliteration": "garm ma aavvu, vetermo aavvu"
+    },
+    {
+        "en": "ARTIFICIAL INSEMINATION",
+        "gu": "બીજદાન કરાવવું, ડોજ મુકાવવો",
+        "transliteration": "bijdan karavvu , doj mukavvo"
+    },
+    {
+        "en": "PREGNANCY DIAGNOSIS",
+        "gu": "ખાલી ગાભણ તપાસ",
+        "transliteration": "khali gabhan tapas"
+    },
+    {
+        "en": "HORN FRACTURE",
+        "gu": "હેગડું ભાગવું",
+        "transliteration": "hegdu bhagvu / shengdu bhangvu"
+    },
+    {
+        "en": "ECTOPARASITE",
+        "gu": "ઇતેરી, ઈતડી , બગાઈ , બગાયું",
+        "transliteration": "itedi iteri itardi"
+    },
+    {
+        "en": "udder",
+        "gu": "પાહો,",
+        "transliteration": "paho"
+    },
+    {
+        "en": "milk leaking",
+        "gu": "દૂધ ઝરવું",
+        "transliteration": "dudh jharvu"
+    },
+    {
+        "en": "ANIMAL ACCOMODATION",
+        "gu": "ઢારિયું,",
+        "transliteration": "dhariyu"
+    },
+    {
+        "en": "ARTHRITIS",
+        "gu": "પગ પકડાવી જવા, જકડાઈ જવા",
+        "transliteration": "pag pakdai java , jakdai java"
+    },
+    {
+        "en": "PANTING",
+        "gu": "હોફે છે",
+        "transliteration": "hoe che, hanfe che, hafe che"
+    },
+    {
+        "en": "BLOOD IN URINE",
+        "gu": "લોહી જરે છે",
+        "transliteration": "lohi jhare che"
+    },
+    {
+        "en": "ADHESION OF OVARY",
+        "gu": "અંડાશયનું સંલગ્નતા",
+        "transliteration": "andashay nu sanlagnta"
+    },
+    {
+        "en": "AGALCTIA",
+        "gu": "દૂધ ઉત્પાદનમાં ઘટાડો",
+        "transliteration": "dudh utpadan ma ghtado"
+    },
+    {
+        "en": "AMPUTATION OF HORN",
+        "gu": "શિંગડાનું કાપવું",
+        "transliteration": "shingda nu kapvu"
+    },
+    {
+        "en": "AMPUTATION OF TAIL",
+        "gu": "પૂંછડીનું કાપવું",
+        "transliteration": "puchdi nu kapvu"
+    },
+    {
+        "en": "ANTI RABIES VACCINATION",
+        "gu": "હડકવા વિરોધી રસીકરણ",
+        "transliteration": "hadkava virodhi rasikaran"
+    },
+    {
+        "en": "ASCITES",
+        "gu": "પેટમાં પાણી ભરાવું",
+        "transliteration": "pet me pani bharavu"
+    },
+    {
+        "en": "BEE STING",
+        "gu": "મધમાખીનો ડંખ",
+        "transliteration": "madhmakhi no dankh"
+    },
+    {
+        "en": "CONSTIPATION",
+        "gu": "કબજિયાત",
+        "transliteration": "kabjiyat"
+    },
+    {
+        "en": "LAMENESS",
+        "gu": "લંગડાપણું",
+        "transliteration": "langdapanu"
+    },
+    {
+        "en": "RABIES",
+        "gu": "હડકવા",
+        "transliteration": "hadkava"
+    },
+    {
+        "en": "WOUND",
+        "gu": "ઘા",
+        "transliteration": "gha"
+    },
+    {
+        "en": "MUMMIFIED FETUS",
+        "gu": "મૃત બાળક",
+        "transliteration": "mrut balak / mrut bacchu"
+    },
+    {
+        "en": "ACTINOBACILLOSIS",
+        "gu": "ગળામાં ચેપી ગોઠ",
+        "transliteration": "gala ma chepi ganth"
+    },
+    {
+        "en": "ALLERGY",
+        "gu": "એલર્જી",
+        "transliteration": "alerji"
+    },
+    {
+        "en": "ALLOPACIA",
+        "gu": "વાળ ખરવા",
+        "transliteration": "val kharva"
+    },
+    {
+        "en": "ANAPLASMOSIS",
+        "gu": "લોહીના પરોપજીવી",
+        "transliteration": "lohi na paropjivi"
+    },
+    {
+        "en": "ASPERMIA",
+        "gu": "ઓછા શુક્રાણુ",
+        "transliteration": "ocha shukranu"
+    },
+    {
+        "en": "ATRESIA ANI",
+        "gu": "ગુદા નો ભાગ ન હોવો",
+        "transliteration": "guda no bhag n hovo"
+    },
+    {
+        "en": "AZOSPERMIA",
+        "gu": "ઓછા શુક્રાણુ",
+        "transliteration": "ocha shukranu"
+    },
+    {
+        "en": "BABESIOSIS",
+        "gu": "લોહીના પરોપજીવી બબેસીયા",
+        "transliteration": "lohi na paropjivi babesia"
+    },
+    {
+        "en": "BURN",
+        "gu": "ચામડી બળવી",
+        "transliteration": "chamdi balvi"
+    },
+    {
+        "en": "CAESARIAN SECTION",
+        "gu": "ઉપરથી બાળક લેવું",
+        "transliteration": "uparthi balak levu"
+    },
+    {
+        "en": "CALF SCOUR",
+        "gu": "બચ્ચામાં જાડા",
+        "transliteration": "baccha ma jada"
+    },
+    {
+        "en": "CARDIOVASCULAR DISEASE",
+        "gu": "હૃદય રોગ",
+        "transliteration": "hriday rog"
+    },
+    {
+        "en": "CASTRATION",
+        "gu": "ખસીકરણ",
+        "transliteration": "khasikaran"
+    },
+    {
+        "en": "CERVICITIS",
+        "gu": "કમળનો સોજો",
+        "transliteration": "kamal no sojo"
+    },
+    {
+        "en": "CHOKE",
+        "gu": "બ્લોક થવું",
+        "transliteration": "block thavu"
+    },
+    {
+        "en": "CUTANIOUS FILARIASIS",
+        "gu": "હાથી પગો",
+        "transliteration": "hadi pago"
+    },
+    {
+        "en": "CYST",
+        "gu": "પાણીની કોથળી",
+        "transliteration": "panini kothli"
+    },
+    {
+        "en": "FOOT ROT",
+        "gu": "ખરીનો રોગ",
+        "transliteration": "khari no rog"
+    },
+    {
+        "en": "TORSIONOFUTERUS",
+        "gu": "ગર્ભાશય ની આંટી",
+        "transliteration": "garbhashay ni aanti"
+    },
+    {
+        "en": "MILKFEVER",
+        "gu": "સુવારોગ, દુધીયો તાવ",
+        "transliteration": "suvarog, dudhiyo tav"
+    },
+    {
+        "en": "METRITIS",
+        "gu": "ગર્ભાશયની દીવાલ નો સોજો",
+        "transliteration": "garbhashay ni dival no sojo"
+    },
+    {
+        "en": "MANGE",
+        "gu": "ખરજવું",
+        "transliteration": "kharjavu"
+    },
+    {
+        "en": "MAGNESIUMTETANI",
+        "gu": "મગજની ચકરી નો રોગ",
+        "transliteration": "magaj ni chakri no rog"
+    },
+    {
+        "en": "MACERATEDFOETUS",
+        "gu": "મૃત બાળક",
+        "transliteration": "mrut balak / mrut bacchu"
+    },
+    {
+        "en": "LIGHTENINGSTROKE",
+        "gu": "વીજળી પડવી",
+        "transliteration": "vijli padvi"
+    },
+    {
+        "en": "LAMINITIS(HOOF)",
+        "gu": "ખરી નો સોજો",
+        "transliteration": "khari no sojo"
+    },
+    {
+        "en": "LAMENESS",
+        "gu": "પગ લંગડાવવો",
+        "transliteration": "pag langdavo"
+    },
+    {
+        "en": "KNUCKLING(OPR.)",
+        "gu": "ઘૂંટણે ચાલવું",
+        "transliteration": "ghuntane chalvu"
+    },
+    {
+        "en": "KINKEDSCRVIX",
+        "gu": "વાંકુ કમળ",
+        "transliteration": "vanku kamal"
+    },
+    {
+        "en": "KETOSIS",
+        "gu": "કિટોસીસ /ઊર્જાની કમીથી થતો રોગ",
+        "transliteration": "kitosis"
+    },
+    {
+        "en": "INDIGESTION",
+        "gu": "અપચો",
+        "transliteration": "apacho"
+    },
+    {
+        "en": "HYPOPHOSPHETAEMIA",
+        "gu": "ફોસ્ફરસ ની ઉણપ",
+        "transliteration": "fosfaras ni unap"
+    },
+    {
+        "en": "HYPOCALCEMIA",
+        "gu": "કેલ્શિયમની ઉણપ",
+        "transliteration": "kelsium ni unap"
+    },
+    {
+        "en": "HYGROMA",
+        "gu": "ઘૂંટણનો સોજો",
+        "transliteration": "ghuntan no sojo"
+    },
+    {
+        "en": "HORNCANCER",
+        "gu": "કરમોડી, શીંગડાનું કેન્સર",
+        "transliteration": "karmodi , shingda nu kensar"
+    },
+    {
+        "en": "HERNIA",
+        "gu": "આંતરડું બહાર આવવું",
+        "transliteration": "aatardu bahar aavu"
+    },
+    {
+        "en": "HAEMORRHAGICSEPTICAEMIA",
+        "gu": "ગળશૂંઢો",
+        "transliteration": "galsundho"
+    },
+    {
+        "en": "HAEMATOMA",
+        "gu": "લોહી જામી જવું",
+        "transliteration": "lohi jami javu"
+    },
+    {
+        "en": "GANGRENE",
+        "gu": "ચામડી સુકાવવી",
+        "transliteration": "chamdi sukavvi"
+    },
+    {
+        "en": "FMD",
+        "gu": "ખરવા મોવાસા",
+        "transliteration": "kharva movasa"
+    },
+    {
+        "en": "FASCIOLASIS",
+        "gu": "યકૃત કૃમિ",
+        "transliteration": "yakrut krumi"
+    },
+    {
+        "en": "EYEINJURY",
+        "gu": "આંખમાં ઈજા થવી",
+        "transliteration": "aankh ma ija thavi"
+    },
+    {
+        "en": "EPISTAXIS",
+        "gu": "નાકમાંથી લોહી આવવું",
+        "transliteration": "nakmathi lohi aavu"
+    },
+    {
+        "en": "EPHEMERALFEVER",
+        "gu": "વલો",
+        "transliteration": "valo"
+    },
+    {
+        "en": "ECZEMA",
+        "gu": "ખંજવાળ આવવી",
+        "transliteration": "khanjval aavvi"
+    },
+    {
+        "en": "DEWORMING",
+        "gu": "કૃમિ નિવારણ દવા",
+        "transliteration": "krumi nivaran dava"
+    },
+    {
+        "en": "DERMATITIS",
+        "gu": "ચામડીની એલર્જી",
+        "transliteration": "chamdi ni alerji"
+    },
+    {
+        "en": "herd",
+        "gu": "પશુઓ",
+        "transliteration": "Cattle herd"
     }
 ]
