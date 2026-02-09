@@ -1,3 +1,4 @@
+import asyncio
 import jwt
 import os
 from dotenv import load_dotenv
@@ -72,17 +73,19 @@ async def get_current_user(token: str | None = Depends(oauth2_scheme)):
         raise credentials_exception
         
     try:
-        decoded_token = jwt.decode(
+        # jwt.decode is CPU-bound (crypto); run in thread pool to avoid blocking the event loop
+        decoded_token = await asyncio.to_thread(
+            jwt.decode,
             token,
             public_key,
             algorithms=[settings.jwt_algorithm],
             options={
                 "verify_signature": True,
                 "verify_aud": False,
-                "verify_iss": False
-            }
+                "verify_iss": False,
+            },
         )
-        
+
         logger.info(f"Decoded token: {decoded_token}")
         
         return decoded_token

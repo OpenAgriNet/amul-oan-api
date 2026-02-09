@@ -3,7 +3,7 @@ import time
 from fastapi import APIRouter, Body, Depends
 from fastapi.responses import JSONResponse
 from app.models.requests import TranscribeRequest
-from helpers.transcription import transcribe_bhashini
+from helpers.transcription import transcribe_bhashini_async
 from helpers.utils import get_logger
 from app.auth.jwt_auth import get_current_user
 
@@ -31,7 +31,7 @@ async def transcribe(request: TranscribeRequest = Body(...), user_info: dict = D
         }, status_code=400)
     
     try:
-        transcription = transcribe_bhashini(request.audio_content, source_lang)
+        transcription = await transcribe_bhashini_async(request.audio_content, source_lang)
         logger.info("transcribe success: session_id=%s, text_len=%d", session_id, len(transcription) if transcription else 0)
     except Exception as e:
         logger.exception("transcribe failed: session_id=%s, error=%s", session_id, str(e))

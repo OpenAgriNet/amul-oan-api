@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Body, Depends
 from fastapi.responses import JSONResponse
 from app.models.requests import TTSRequest
-from helpers.tts import text_to_speech_bhashini
+from helpers.tts import text_to_speech_bhashini_async
 import uuid
 import base64
 from helpers.utils import get_logger
@@ -18,12 +18,12 @@ async def tts(request: TTSRequest = Body(...), user_info: dict = Depends(get_cur
     """
     session_id = request.session_id or str(uuid.uuid4())
     
-    # For now, only bhashini is implemented
-    audio_data = text_to_speech_bhashini(
-        request.text, 
-        request.target_lang, 
-        gender='female', 
-        sampling_rate=8000
+    # For now, only bhashini is implemented (async for non-blocking behaviour)
+    audio_data = await text_to_speech_bhashini_async(
+        request.text,
+        request.target_lang,
+        gender="female",
+        sampling_rate=8000,
     )
     
     if isinstance(audio_data, bytes):

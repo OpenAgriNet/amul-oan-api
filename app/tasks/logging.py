@@ -1,15 +1,19 @@
 """
 Tasks for logging operations.
+S3 upload runs in a thread pool so the event loop is not blocked.
 """
-from fastapi import BackgroundTasks
-from helpers.utils import upload_audio_to_s3, get_logger
-from dotenv import load_dotenv
+import asyncio
 from datetime import datetime
 from typing import Optional
+
+from dotenv import load_dotenv
+
+from helpers.utils import upload_audio_to_s3, get_logger
 
 load_dotenv()
 
 logger = get_logger(__name__)
+
 
 async def log_audio_task(
     audio_base64: str, 
@@ -37,9 +41,11 @@ async def log_audio_task(
         
         # Use provided timestamp or generate current timestamp
         event_timestamp = timestamp if timestamp is not None else int(datetime.now().timestamp() * 1000)
-        
-        # Upload audio to S3
-        s3_result = upload_audio_to_s3(audio_base64, session_id, bucket_name)
+
+        # boto3 is sync; run in thread pool to avoid blocking the event loop
+        s3_result = await asyncio.to_thread(
+            upload_audio_to_s3, audio_base64, session_id, bucket_name
+        )
         logger.info(f"Successfully uploaded audio to S3 for session: {session_id}")
         
         # TODO: Uncomment this when we have telemetry requests working
