@@ -2,6 +2,7 @@
 Simple authentication router that generates JWT tokens for the frontend.
 This closes the auth loop - FE can call this endpoint to get a valid token.
 """
+import uuid
 from datetime import datetime, timedelta
 from typing import Any, Optional
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
@@ -123,6 +124,53 @@ def create_jwt_token(username: str, user_id: str = None, email: str = None) -> s
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to generate token: {str(e)}"
         )
+
+
+def create_anonymous_jwt_token(expires_days: float = 1.0) -> str:
+    """
+    Create a 1-day signed JWT for anonymous usage.
+    sub is a randomly generated anonymous user ID (UUID4).
+    """
+    try:
+        private_key = load_private_key()
+        anonymous_id = f"anon-{uuid.uuid4().hex}"
+        exp = datetime.utcnow() + timedelta(days=expires_days)
+        iat = datetime.utcnow()
+        payload = {
+            "sub": anonymous_id,
+            "iat": int(iat.timestamp()),
+            "exp": int(exp.timestamp()),
+            "aud": "oan-ui-service",
+            "iss": "mh-oan-api",
+            "anonymous": True,
+        }
+        return jwt.encode(
+            payload,
+            private_key,
+            algorithm=settings.jwt_algorithm,
+        )
+    except Exception as e:
+        logger.error(f"Error creating anonymous JWT: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to generate anonymous token: {str(e)}",
+        )
+
+
+@router.post("/anonymous", response_model=TokenResponse)
+async def anonymous_token():
+    """
+    Issue a 1-day signed JWT for anonymous usage.
+    No credentials required. sub is a randomly generated anonymous user ID.
+    """
+    expires_days = 1.0
+    token = create_anonymous_jwt_token(expires_days=expires_days)
+    expires_in = int(expires_days * 24 * 60 * 60)
+    return TokenResponse(
+        access_token=token,
+        token_type="bearer",
+        expires_in=expires_in,
+    )
 
 
 @router.post("/login", response_model=TokenResponse)
