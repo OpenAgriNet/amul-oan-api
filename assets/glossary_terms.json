@@ -90,9 +90,9 @@
         "transliteration": "Navjat pashu ni Sarsambhal"
     },
     {
-        "en": "Ticks/Flies",
-        "gu": "ઇતરડી/માખી",
-        "transliteration": "Itardi/Makhi"
+        "en": "Ticks/Flies /Ectoparasites",
+        "gu": "ઇતરડી/માખી / ઝેગુડી / ઝીંગોડી /જીંગોડી / ઝેગોડા",
+        "transliteration": "Itardi/Makhi / jhegudi /jhingodi / jhegoda"
     },
     {
         "en": "Parasite Control",
@@ -343,11 +343,6 @@
         "en": "Retention of Placenta / Afterbirth retained /Placenta not expelled",
         "gu": "જર/ મેલી / ઓર ન પડવી /પડિયો અંદર અટકી ગયો /આફટર બર્થ ન નીકળવું /બચ્ચા પછી પડ લટકતું રહેવું",
         "transliteration": "Jar/ Meli/Or na Padvi"
-    },
-    {
-        "en": "Uterine Prolapse",
-        "gu": "ગર્ભાશય બહાર નીકળી જવું",
-        "transliteration": "Garbhashay Bahar Nikli Javu"
     },
     {
         "en": "Fatty Liver Syndrome",
@@ -3223,5 +3218,50 @@
         "en": "herd",
         "gu": "પશુઓ",
         "transliteration": "Cattle herd"
+    },
+    {
+        "en": "not getting healthy",
+        "gu": "શરીર લેતી નથી",
+        "transliteration": "sharir leti nathi"
+    },
+    {
+        "en": "Uterine Prolapse",
+        "gu": "ગર્ભાશય બહાર નીકળી જવું / દિલ ધસી આવવું / વાખર (વાખોર ) નિકળવી",
+        "transliteration": "Garbhashay Bahar Nikli Javu / dil dhasi aavvu /vakhar nikalvi"
+    },
+    {
+        "en": "Deworming",
+        "gu": "પેટના કીડા મારવાની દવા / કૃમિનાશક",
+        "transliteration": ""
+    },
+    {
+        "en": "bite",
+        "gu": "કરડવું / બચકું ભરવું",
+        "transliteration": "kaydu / karadiyu / kaidu / bachku bharyu / kaidyo"
+    },
+    {
+        "en": "mongoose",
+        "gu": "નોરીયો / નોળિયો",
+        "transliteration": "noriyo / નોળિયો"
+    },
+    {
+        "en": "mud",
+        "gu": "કાદવ / ગારો",
+        "transliteration": "kadav / garo"
+    },
+    {
+        "en": "muddy",
+        "gu": "કાદવવાળી / ગારાવાળી",
+        "transliteration": "kadavvali / garavali"
+    },
+    {
+        "en": "pregnent",
+        "gu": "ગાભણ",
+        "transliteration": "gabhan"
+    },
+    {
+        "en": "udder affection /udder infection / mastitis",
+        "gu": "પાઠવાઈ જાય છે / પાઠુ આવી જાય છે",
+        "transliteration": "pathu aavi jay che / pathvai jay che"
     }
 ]
