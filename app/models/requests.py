@@ -22,4 +22,4 @@ class TTSRequest(BaseModel):
     text: str = Field(..., description="Text to convert to speech")
     target_lang: str = Field('gu', description="Target language code for TTS")
     session_id: Optional[str] = Field(None, description="Session ID")
-    service_type: Literal['bhashini'] = Field('bhashini', description="TTS service to use") 
+    service_type: Literal['bhashini', 'raya'] = Field('bhashini', description="TTS service to use") 

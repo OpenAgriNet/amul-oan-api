@@ -21,12 +21,18 @@ async def lifespan(app: FastAPI):
     # Shutdown
     print(f"🛑 {settings.app_name} shutting down...")
 
+# Disable API docs in production to avoid exposing full API surface
+_docs_enabled = settings.environment != "production"
+
 # Create FastAPI app with settings
 app = FastAPI(
     title=settings.app_name,
     debug=settings.debug,
     description="AI-powered Voice Assistant API for Agricultural Support",
-    lifespan=lifespan
+    lifespan=lifespan,
+    docs_url="/docs" if _docs_enabled else None,
+    redoc_url="/redoc" if _docs_enabled else None,
+    openapi_url="/openapi.json" if _docs_enabled else None,
 )
 
 # Add CORS middleware with enhanced settings
