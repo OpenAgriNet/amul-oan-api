@@ -37,3 +37,12 @@ docker run --name marqo -p 8882:8882 \
     -e VESPA_POOL_SIZE=50 \
     marqoai/marqo:latest
 ```
+
+# Pre-commit Hooks Setup
+
+```bash
+pip install pre-commit
+pre-commit install
+```
+
+Runs GitGuardian to scan for secrets and credentials.

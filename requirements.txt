@@ -72,3 +72,6 @@ langcodes[data]==3.5.1
 
 # Humanize time, date, numbers, etc.
 humanize==4.15.0
+
+# Development tools
+pre-commit==3.8.0
