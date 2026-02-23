@@ -27,7 +27,7 @@ async def chat_endpoint(
     logger.info(
         f"Chat request received - session_id: {session_id}, user_id: {request.user_id}, "
         f"authenticated_user: {user_info}, source_lang: {request.source_lang}, "
-        f"target_lang: {request.target_lang}, query: {request.query}"
+        f"target_lang: {request.target_lang}, use_translation_pipeline: {request.use_translation_pipeline}, query: {request.query}"
     )
     
     history = await _get_message_history(session_id)
@@ -42,7 +42,8 @@ async def chat_endpoint(
             user_id=request.user_id,
             history=history,
             user_info=user_info,
-            background_tasks=background_tasks
+            background_tasks=background_tasks,
+            use_translation_pipeline=request.use_translation_pipeline or False,
         ),
         media_type='text/event-stream'
     ) 

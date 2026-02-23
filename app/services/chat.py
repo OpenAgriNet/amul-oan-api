@@ -15,6 +15,11 @@ from app.tasks.telemetry import send_telemetry
 from app.tasks.suggestions import create_suggestions
 from agents.deps import FarmerContext
 from agents.tools.farmer import get_farmer_data_by_mobile
+from app.services.translation import (
+    translate_text,
+    translate_text_stream_fast,
+    INDIAN_LANGUAGES,
+)
 
 logger = get_logger(__name__)
 
@@ -32,7 +37,7 @@ async def stream_chat_messages(
     history: list,
     user_info: dict,
     background_tasks: BackgroundTasks,
-    
+    use_translation_pipeline: bool = False,
 ) -> AsyncGenerator[str, None]:
     """Async generator for streaming chat messages."""
     # Langfuse sessions: propagate session_id to all observations for session replay (max 200 chars)
@@ -55,10 +60,34 @@ async def stream_chat_messages(
             except Exception as e:
                 logger.warning(f"Could not fetch farmer data by phone: {e}")
 
+        # Translation pipeline: pre-translate to English if source is Indian; post-translate if target is Indian
+        processing_query = query
+        processing_lang = target_lang
+        needs_output_translation = use_translation_pipeline and target_lang.lower() in INDIAN_LANGUAGES
+
+        if use_translation_pipeline and source_lang.lower() in INDIAN_LANGUAGES:
+            logger.info(f"Translation pipeline: pre-translating {source_lang} query to English (Gemma)")
+            try:
+                processing_query = await translate_text(
+                    text=query,
+                    source_lang=source_lang,
+                    target_lang="english",
+                )
+                processing_lang = "en"
+                logger.info(f"Query translated: {query[:50]}... -> {processing_query[:50]}...")
+            except Exception as e:
+                logger.error(f"Pre-translation failed, using original query: {e}")
+                processing_query = query
+                processing_lang = target_lang
+        elif use_translation_pipeline and needs_output_translation:
+            # Source may be English; agent still responds in English
+            processing_lang = "en"
+
         deps = FarmerContext(
-            query=query,
-            lang_code=target_lang,
-            farmer_info=farmer_data if farmer_data else None
+            query=processing_query,
+            lang_code=processing_lang,
+            farmer_info=farmer_data if farmer_data else None,
+            use_translation_pipeline=use_translation_pipeline,
         )
 
         message_pairs = "\n\n".join(format_message_pairs(history, 3))
@@ -101,6 +130,17 @@ async def stream_chat_messages(
 
         logger.info(f"Trimmed history length: {len(trimmed_history)} messages")
 
+        english_response = ""
+
+        def _collect_or_yield(chunk: str):
+            """Collect chunk if output translation needed, else yield immediately."""
+            nonlocal english_response
+            if needs_output_translation:
+                english_response += chunk
+            else:
+                return chunk
+            return None
+
         if LLM_PROVIDER == 'anthropic':
             # For Anthropic: Use agent.iter() + node.stream() instead of run_stream()
             async with agrinet_agent.iter(
@@ -122,7 +162,9 @@ async def stream_chat_messages(
                                         if part_type == 'TextPart' and hasattr(event.part, 'content'):
                                             text = event.part.content
                                             if text:
-                                                yield text
+                                                out = _collect_or_yield(text)
+                                                if out is not None:
+                                                    yield out
 
                                 elif event_type == 'PartDeltaEvent':
                                     if hasattr(event, 'delta'):
@@ -130,7 +172,9 @@ async def stream_chat_messages(
                                         if delta_type == 'TextPartDelta':
                                             text = event.delta.content_delta
                                             if text:
-                                                yield text
+                                                out = _collect_or_yield(text)
+                                                if out is not None:
+                                                    yield out
 
                 logger.info(f"Streaming complete for session {session_id}")
                 new_messages = agent_run.result.new_messages()
@@ -142,10 +186,26 @@ async def stream_chat_messages(
                 deps=deps,
             ) as response_stream:
                 async for chunk in response_stream.stream_text(delta=True):
-                    yield chunk
+                    out = _collect_or_yield(chunk)
+                    if out is not None:
+                        yield out
 
                 logger.info(f"Streaming complete for session {session_id}")
                 new_messages = response_stream.new_messages()
+
+        # Post-translation: stream English response translated to target_lang
+        if needs_output_translation and english_response:
+            logger.info(f"Translation pipeline: streaming response translation to {target_lang}")
+            try:
+                async for translated_chunk in translate_text_stream_fast(
+                    text=english_response,
+                    source_lang="english",
+                    target_lang=target_lang,
+                ):
+                    yield translated_chunk
+            except Exception as e:
+                logger.error(f"Post-translation failed, using English response: {e}")
+                yield english_response
 
         # Post-processing happens AFTER streaming is complete
         messages = [

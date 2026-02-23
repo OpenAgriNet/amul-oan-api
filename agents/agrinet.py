@@ -24,14 +24,15 @@ agrinet_agent = Agent(
 
 @agrinet_agent.system_prompt(dynamic=True)
 def get_agrinet_system_prompt(ctx: RunContext):
-    # prompt_file = f'agrinet_system_{ctx.deps.lang_code}'
-    
     # Format farmer context from JWT token
     farmer_context = ctx.deps.get_farmer_context_string()
-    
+
     context = {
         'today_date': get_today_date_str(),
         'farmer_context': farmer_context if farmer_context else None
     }
-    
+
+    # Use English-only prompt when translation pipeline is active (pre/post translation)
+    if ctx.deps.use_translation_pipeline:
+        return get_prompt("agrinet_system_translation_pipeline.md", context=context)
     return get_prompt("agrinet_system.md", context=context)

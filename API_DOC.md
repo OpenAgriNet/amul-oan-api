@@ -5,21 +5,27 @@ This document provides details about the API endpoints available in the `sunbird
 
 ## Endpoints
 
-### 1. answer (GET)
+### 1. Chat (GET)
 Handles chat sessions between a user and the AI assistant.
 
 - **URL**: `/api/chat/`
 - **Method**: `GET`
+- **Authentication**: Required (JWT Bearer token)
 - **Query Parameters**:
-  - `session_id`: The unique identifier for the chat session.
-  - `query`: The user's query to the AI assistant.
-  - `source_lang`: The source language of the query. Defaults to `mr`. (Will depend on the `transcribe` endpoint's response)
-  - `target_lang`: The target language of the query. Defaults to `mr`. (Can use other languages as well for testing)
+  - `query`: The user's query to the AI assistant. (required)
+  - `session_id`: The unique identifier for the chat session. Optional; auto-generated if omitted.
+  - `source_lang`: The source language of the query. Defaults to `gu`.
+  - `target_lang`: The target language for the response. Defaults to `gu`.
+  - `user_id`: User identifier. Defaults to `anonymous`.
+  - `use_translation_pipeline`: Optional. When `true`, uses Gemma-based pre/post translation: query→English→agent→target_lang. Requires TranslateGemma vLLM endpoints. See [Translation Pipeline API](docs/TRANSLATION_PIPELINE_API.md).
 
-- **Response**: 
-  - A `StreamingHttpResponse` that streams translated messages from the AI assistant.
-- **Description**: 
-  - This endpoint initiates a chat session with the AI assistant. It uses the `agrinet_agent` to process the query and streams the response back to the user. The response is translated to the target language using the `BhashiniTranslator`.
+- **Response**:
+  - **Content-Type**: `text/event-stream`
+  - **Format**: Raw text chunks streamed directly (UTF-8). Concatenate chunks in order for the full response.
+  - No SSE envelope; each chunk is plain text.
+
+- **Description**:
+  - Initiates a chat session with the AI assistant. Uses the `agrinet_agent` to process the query and streams the response. When `use_translation_pipeline=true`, the query is translated to English, the agent responds in English, and the response is translated to `target_lang` before streaming.
 
 ### 2. suggestions (GET)
 Handles suggestions for questions for the farmer to ask.
