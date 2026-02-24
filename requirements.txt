@@ -52,6 +52,7 @@ httpx==0.28.1
 # Search and Data
 marqo==3.18.0
 rapidfuzz==3.14.3
+regex
 
 # Authentication and Security
 PyJWT==2.10.1

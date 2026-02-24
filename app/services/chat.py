@@ -1,5 +1,8 @@
 from contextlib import nullcontext
 from typing import AsyncGenerator
+from functools import lru_cache
+import regex
+import re
 from fastapi import BackgroundTasks
 from agents.agrinet import agrinet_agent
 from agents.moderation import moderation_agent
@@ -20,6 +23,74 @@ from app.services.translation import (
     translate_text_stream_fast,
     INDIAN_LANGUAGES,
 )
+
+
+class SentenceSegmenter:
+    sep = 'ŽžŽžSentenceSeparatorŽžŽž'
+    latin_terminals = '!?.'
+    jap_zh_terminals = '。！？'
+    terminals = latin_terminals + jap_zh_terminals
+
+    def __init__(self):
+        terminals = self.terminals
+        self._re = [
+            (regex.compile(r'(\P{N})([' + terminals + r'])(\p{Z}*)'),
+             r'\1\2\3' + self.sep),
+            (regex.compile(r'(' + terminals + r')(\P{N})'),
+             r'\1' + self.sep + r'\2'),
+        ]
+
+    @lru_cache(maxsize=2**16)
+    def __call__(self, line: str):
+        for (_re, repl) in self._re:
+            line = _re.sub(repl, line)
+        return [t for t in line.split(self.sep) if t != '']
+
+
+sentence_segmenter = SentenceSegmenter()
+
+
+def extract_complete_sentences(text: str):
+    if not text:
+        return [], ""
+    sentences = sentence_segmenter(text)
+    if len(sentences) <= 1:
+        return [], text
+    complete = sentences[:-1]
+    incomplete = sentences[-1]
+    return complete, incomplete
+
+
+def should_translate_batch(batch_text: str, word_count: int) -> bool:
+    MIN_WORDS = 60
+    MAX_WORDS = 120
+
+    if word_count < MIN_WORDS:
+        return False
+    if word_count >= MAX_WORDS:
+        return True
+
+    text_end = batch_text.rstrip()
+
+    # Paragraph break
+    if text_end.endswith('\n\n'):
+        return True
+
+    # Bullet/list endings
+    if text_end.endswith('\n') and len(batch_text.split('\n')) > 1:
+        lines = batch_text.rstrip('\n').split('\n')
+        last_line = lines[-1].strip()
+        if last_line.startswith(('-', '*', '•')):
+            return True
+        if re.match(r'^\d+\.', last_line):
+            return True
+
+    # Sentence end
+    if text_end.endswith(('.', '!', '?')):
+        return True
+
+    return False
+
 
 logger = get_logger(__name__)
 
@@ -76,27 +147,28 @@ async def stream_chat_messages(
             except Exception as e:
                 logger.warning(f"Could not fetch farmer data by phone: {e}")
 
-        # Translation pipeline: pre-translate to English if source is Indian; post-translate if target is Indian
+        # Translation pipeline: send query as-is to agent; post-translate response if target is Indian
+        # (Pre-translation commented out so e.g. Gujarati question goes directly to the agrinet agent.)
         processing_query = query
         processing_lang = target_lang
         needs_output_translation = use_translation_pipeline and target_lang.lower() in INDIAN_LANGUAGES
 
-        if use_translation_pipeline and source_lang.lower() in INDIAN_LANGUAGES:
-            logger.info(f"Translation pipeline: pre-translating {source_lang} query to English (Gemma)")
-            try:
-                processing_query = await translate_text(
-                    text=query,
-                    source_lang=source_lang,
-                    target_lang="english",
-                )
-                processing_lang = "en"
-                logger.info(f"Query translated: {query[:50]}... -> {processing_query[:50]}...")
-            except Exception as e:
-                logger.error(f"Pre-translation failed, using original query: {e}")
-                processing_query = query
-                processing_lang = target_lang
-        elif use_translation_pipeline and needs_output_translation:
-            # Source may be English; agent still responds in English
+        # if use_translation_pipeline and source_lang.lower() in INDIAN_LANGUAGES:
+        #     logger.info(f"Translation pipeline: pre-translating {source_lang} query to English (Gemma)")
+        #     try:
+        #         processing_query = await translate_text(
+        #             text=query,
+        #             source_lang=source_lang,
+        #             target_lang="english",
+        #         )
+        #         processing_lang = "en"
+        #         logger.info(f"Query translated: {query[:50]}... -> {processing_query[:50]}...")
+        #     except Exception as e:
+        #         logger.error(f"Pre-translation failed, using original query: {e}")
+        #         processing_query = query
+        #         processing_lang = target_lang
+        if use_translation_pipeline and needs_output_translation:
+            # Agent responds in English; response will be translated to target_lang downstream
             processing_lang = "en"
 
         deps = FarmerContext(
@@ -147,9 +219,13 @@ async def stream_chat_messages(
         logger.info(f"Trimmed history length: {len(trimmed_history)} messages")
 
         english_response = ""
+        did_stream_translated = False
 
         def _collect_or_yield(chunk: str):
-            """Collect chunk if output translation needed, else yield immediately."""
+            """Collect chunk if output translation needed, else yield immediately.
+
+            This helper is used for providers where we still do full-response translation.
+            """
             nonlocal english_response
             if needs_output_translation:
                 english_response += chunk
@@ -201,16 +277,98 @@ async def stream_chat_messages(
                 message_history=trimmed_history,
                 deps=deps,
             ) as response_stream:
-                async for chunk in response_stream.stream_text(delta=True):
-                    out = _collect_or_yield(chunk)
-                    if out is not None:
-                        yield out
+                if needs_output_translation:
+                    # Optimised batched streaming: segment English into sentences and translate in good-sized batches
+                    sentence_buffer = ""
+                    translation_batch = []
+                    batch_word_count = 0
+                    full_english = ""
 
-                logger.info(f"Streaming complete for session {session_id}")
-                new_messages = response_stream.new_messages()
+                    async for chunk in response_stream.stream_text(delta=True):
+                        sentence_buffer += chunk
+                        full_english += chunk
+
+                        complete_sentences, remaining = extract_complete_sentences(sentence_buffer)
+                        if complete_sentences:
+                            for sentence in complete_sentences:
+                                translation_batch.append(sentence)
+                                batch_word_count += len(sentence.split())
+
+                            batch_text = "".join(translation_batch)
+                            if should_translate_batch(batch_text, batch_word_count):
+                                try:
+                                    logger.info(
+                                        f"Translation pipeline: streaming optimised batch to {target_lang} "
+                                        f"({batch_word_count} words)"
+                                    )
+                                    async for translated_chunk in translate_text_stream_fast(
+                                        text=batch_text,
+                                        source_lang="english",
+                                        target_lang=target_lang,
+                                    ):
+                                        yield translated_chunk
+                                except Exception as e:
+                                    logger.error(
+                                        f"Optimised batch translation failed, falling back to English batch: {e}"
+                                    )
+                                    yield batch_text
+
+                                translation_batch = []
+                                batch_word_count = 0
+
+                            sentence_buffer = remaining
+
+                    # Flush remaining batches/fragments at end of stream
+                    if translation_batch:
+                        batch_text = "".join(translation_batch)
+                        try:
+                            logger.info(
+                                f"Translation pipeline: flushing final batch to {target_lang} "
+                                f"({batch_word_count} words)"
+                            )
+                            async for translated_chunk in translate_text_stream_fast(
+                                text=batch_text,
+                                source_lang="english",
+                                target_lang=target_lang,
+                            ):
+                                yield translated_chunk
+                        except Exception as e:
+                            logger.error(
+                                f"Final batch translation failed, falling back to English batch: {e}"
+                            )
+                            yield batch_text
+
+                    if sentence_buffer.strip():
+                        try:
+                            logger.info(
+                                f"Translation pipeline: flushing tail fragment to {target_lang}"
+                            )
+                            async for translated_chunk in translate_text_stream_fast(
+                                text=sentence_buffer,
+                                source_lang="english",
+                                target_lang=target_lang,
+                            ):
+                                yield translated_chunk
+                        except Exception as e:
+                            logger.error(
+                                f"Tail fragment translation failed, falling back to English fragment: {e}"
+                            )
+                            yield sentence_buffer
+
+                    did_stream_translated = True
+                    logger.info(f"Streaming complete for session {session_id}")
+                    new_messages = response_stream.new_messages()
+                else:
+                    async for chunk in response_stream.stream_text(delta=True):
+                        out = _collect_or_yield(chunk)
+                        if out is not None:
+                            yield out
+
+                    logger.info(f"Streaming complete for session {session_id}")
+                    new_messages = response_stream.new_messages()
 
         # Post-translation: stream English response translated to target_lang
-        if needs_output_translation and english_response:
+        if needs_output_translation and english_response and not did_stream_translated:
             logger.info(f"Translation pipeline: streaming response translation to {target_lang}")
             try:
                 async for translated_chunk in translate_text_stream_fast(
