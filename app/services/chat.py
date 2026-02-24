@@ -40,9 +40,25 @@ async def stream_chat_messages(
     use_translation_pipeline: bool = False,
 ) -> AsyncGenerator[str, None]:
     """Async generator for streaming chat messages."""
-    # Langfuse sessions: propagate session_id to all observations for session replay (max 200 chars)
+    # Langfuse: propagate session_id, metadata, and tags for dashboard filtering (max 200 chars per value)
     session_id_safe = (session_id or "")[:200]
-    session_ctx = propagate_attributes(session_id=session_id_safe) if propagate_attributes else nullcontext()
+    pipeline_name = "translation" if use_translation_pipeline else "default"
+    langfuse_metadata = {
+        "pipeline": pipeline_name,
+        "source_lang": (source_lang or "unknown").lower()[:200],
+        "target_lang": (target_lang or "unknown").lower()[:200],
+        "user_id": (user_id or "anonymous")[:200],
+    }
+    langfuse_tags = [f"pipeline:{pipeline_name}"]
+    session_ctx = (
+        propagate_attributes(
+            session_id=session_id_safe,
+            metadata=langfuse_metadata,
+            tags=langfuse_tags,
+        )
+        if propagate_attributes
+        else nullcontext()
+    )
 
     with session_ctx:
         # Generate a unique content ID for this query
