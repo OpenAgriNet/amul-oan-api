@@ -11,6 +11,7 @@ import aiohttp
 from typing import Literal, Optional
 from helpers.utils import get_logger
 from dotenv import load_dotenv
+from agents.tools.terms import get_mini_glossary_for_text
 
 load_dotenv()
 
@@ -67,21 +68,33 @@ INDIAN_LANGUAGES = [
 ]
 
 
-def _format_translation_prompt(text: str, source_lang: str, target_lang: str) -> str:
-    """Format the translation prompt using TranslateGemma's official chat template."""
+def _format_translation_prompt(
+    text: str,
+    source_lang: str,
+    target_lang: str,
+    mini_glossary: Optional[str] = None,
+) -> str:
+    """Format the translation prompt using TranslateGemma's official chat template.
+    When target is Gujarati and mini_glossary is provided, injects a dynamic term list
+    so the model uses consistent domain terminology."""
     source_name = LANG_NAMES.get(source_lang.lower(), source_lang.capitalize())
     target_name = LANG_NAMES.get(target_lang.lower(), target_lang.capitalize())
     source_code = LANG_CODES.get(source_lang.lower(), source_lang.lower())
     target_code = LANG_CODES.get(target_lang.lower(), target_lang.lower())
 
-    prompt = (
-        f"<bos><start_of_turn>user\n"
+    instruction = (
         f"You are a professional {source_name} ({source_code}) to {target_name} ({target_code}) translator. "
         f"Your goal is to accurately convey the meaning and nuances of the original {source_name} text "
         f"while adhering to {target_name} grammar, vocabulary, and cultural sensitivities.\n"
-        f"Produce only the {target_name} translation, without any additional explanations or commentary. "
-        f"Please translate the following {source_name} text into {target_name}:\n\n\n"
-        f"{text.strip()}<end_of_turn>\n"
+        f"Produce only the {target_name} translation, without any additional explanations or commentary."
+    )
+    if mini_glossary and mini_glossary.strip():
+        instruction += f"\n\nSpecific Translations for Reference:\n{mini_glossary.strip()}\n"
+    instruction += f"\n\nPlease translate the following {source_name} text into {target_name}:\n\n\n{text.strip()}"
+
+    prompt = (
+        f"<bos><start_of_turn>user\n"
+        f"{instruction}<end_of_turn>\n"
         f"<start_of_turn>model\n"
     )
     return prompt
@@ -122,7 +135,12 @@ async def translate_text(
     if not endpoint or not model_id:
         raise ValueError(f"Invalid translation model size: {model_size}")
 
-    prompt = _format_translation_prompt(text, source_lang, target_lang)
+    mini_glossary = ""
+    if target_lang.lower() in ("gujarati", "gu"):
+        mini_glossary = get_mini_glossary_for_text(text, threshold=0.95)
+        if mini_glossary:
+            logger.info(f"Translation prompt: injected mini glossary ({len(mini_glossary.splitlines())} terms)")
+    prompt = _format_translation_prompt(text, source_lang, target_lang, mini_glossary=mini_glossary)
     logger.info(f"Translating {source_lang} -> {target_lang} using {model_size} model")
 
     try:
@@ -173,7 +191,12 @@ async def translate_text_stream_fast(
     if not endpoint or not model_id:
         raise ValueError(f"Invalid translation model size: {model_size}")
 
-    prompt = _format_translation_prompt(text, source_lang, target_lang)
+    mini_glossary = ""
+    if target_lang.lower() in ("gujarati", "gu"):
+        mini_glossary = get_mini_glossary_for_text(text, threshold=0.95)
+        if mini_glossary:
+            logger.info(f"Translation prompt: injected mini glossary ({len(mini_glossary.splitlines())} terms)")
+    prompt = _format_translation_prompt(text, source_lang, target_lang, mini_glossary=mini_glossary)
     logger.info(f"Fast streaming translation {source_lang} -> {target_lang} using {model_size} model")
 
     try:
