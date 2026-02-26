@@ -62,10 +62,15 @@ def extract_complete_sentences(text: str):
 
 
 def should_translate_batch(batch_text: str, word_count: int) -> bool:
-    MIN_WORDS = 60
-    MAX_WORDS = 120
+    # Tuned for low-latency streaming while keeping reasonable batch size
+    MIN_WORDS = 15
+    MAX_WORDS = 80
 
     if word_count < MIN_WORDS:
+        # For very short answers, still allow early flush when a sentence ends
+        text_end = batch_text.rstrip()
+        if text_end.endswith(('.', '!', '?')) and word_count >= 5:
+            return True
         return False
     if word_count >= MAX_WORDS:
         return True
@@ -95,9 +100,10 @@ def should_translate_batch(batch_text: str, word_count: int) -> bool:
 logger = get_logger(__name__)
 
 try:
-    from langfuse import propagate_attributes
+    from langfuse import propagate_attributes, get_client as get_langfuse_client
 except ImportError:
     propagate_attributes = None
+    get_langfuse_client = None
 
 async def stream_chat_messages(
     query: str,
@@ -218,20 +224,8 @@ async def stream_chat_messages(
 
         logger.info(f"Trimmed history length: {len(trimmed_history)} messages")
 
-        english_response = ""
-        did_stream_translated = False
-
-        def _collect_or_yield(chunk: str):
-            """Collect chunk if output translation needed, else yield immediately.
-
-            This helper is used for providers where we still do full-response translation.
-            """
-            nonlocal english_response
-            if needs_output_translation:
-                english_response += chunk
-            else:
-                return chunk
-            return None
+        # Buffer streamed translated output for Langfuse (final agent output as tool observation)
+        translated_output_chunks: list[str] = []
 
         if LLM_PROVIDER == 'anthropic':
             # For Anthropic: Use agent.iter() + node.stream() instead of run_stream()
@@ -245,7 +239,6 @@ async def stream_chat_messages(
                     sentence_buffer = ""
                     translation_batch = []
                     batch_word_count = 0
-                    full_english = ""
 
                     async for node in agent_run:
                         node_type = type(node).__name__
@@ -267,7 +260,6 @@ async def stream_chat_messages(
 
                                     if text:
                                         sentence_buffer += text
-                                        full_english += text
 
                                         complete_sentences, remaining = extract_complete_sentences(sentence_buffer)
                                         if complete_sentences:
@@ -288,12 +280,14 @@ async def stream_chat_messages(
                                                         source_lang="english",
                                                         target_lang=target_lang,
                                                     ):
+                                                        translated_output_chunks.append(translated_chunk)
                                                         yield translated_chunk
                                                 except Exception as e:
                                                     logger.error(
                                                         "Optimised batch translation (Anthropic) failed, "
                                                         f"falling back to English batch: {e}"
                                                     )
+                                                    translated_output_chunks.append(batch_text)
                                                     yield batch_text
 
                                                 translation_batch = []
@@ -314,12 +308,14 @@ async def stream_chat_messages(
                                 source_lang="english",
                                 target_lang=target_lang,
                             ):
+                                translated_output_chunks.append(translated_chunk)
                                 yield translated_chunk
                         except Exception as e:
                             logger.error(
                                 "Final batch translation (Anthropic) failed, "
                                 f"falling back to English batch: {e}"
                             )
+                            translated_output_chunks.append(batch_text)
                             yield batch_text
 
                     if sentence_buffer.strip():
@@ -333,15 +329,15 @@ async def stream_chat_messages(
                                 source_lang="english",
                                 target_lang=target_lang,
                             ):
+                                translated_output_chunks.append(translated_chunk)
                                 yield translated_chunk
                         except Exception as e:
                             logger.error(
                                 "Tail fragment translation (Anthropic) failed, "
                                 f"falling back to English fragment: {e}"
                             )
+                            translated_output_chunks.append(sentence_buffer)
                             yield sentence_buffer
-
-                    did_stream_translated = True
                 else:
                     async for node in agent_run:
                         node_type = type(node).__name__
@@ -362,9 +358,7 @@ async def stream_chat_messages(
                                             text = event.delta.content_delta
 
                                     if text:
-                                        out = _collect_or_yield(text)
-                                        if out is not None:
-                                            yield out
+                                        yield text
 
                 logger.info(f"Streaming complete for session {session_id}")
                 new_messages = agent_run.result.new_messages()
@@ -380,11 +374,9 @@ async def stream_chat_messages(
                     sentence_buffer = ""
                     translation_batch = []
                     batch_word_count = 0
-                    full_english = ""
 
                     async for chunk in response_stream.stream_text(delta=True):
                         sentence_buffer += chunk
-                        full_english += chunk
 
                         complete_sentences, remaining = extract_complete_sentences(sentence_buffer)
                         if complete_sentences:
@@ -404,11 +396,13 @@ async def stream_chat_messages(
                                         source_lang="english",
                                         target_lang=target_lang,
                                     ):
+                                        translated_output_chunks.append(translated_chunk)
                                         yield translated_chunk
                                 except Exception as e:
                                     logger.error(
                                         f"Optimised batch translation failed, falling back to English batch: {e}"
                                     )
+                                    translated_output_chunks.append(batch_text)
                                     yield batch_text
 
                                 translation_batch = []
@@ -429,11 +423,13 @@ async def stream_chat_messages(
                                 source_lang="english",
                                 target_lang=target_lang,
                             ):
+                                translated_output_chunks.append(translated_chunk)
                                 yield translated_chunk
                         except Exception as e:
                             logger.error(
                                 f"Final batch translation failed, falling back to English batch: {e}"
                             )
+                            translated_output_chunks.append(batch_text)
                             yield batch_text
 
                     if sentence_buffer.strip():
@@ -446,38 +442,43 @@ async def stream_chat_messages(
                                 source_lang="english",
                                 target_lang=target_lang,
                             ):
+                                translated_output_chunks.append(translated_chunk)
                                 yield translated_chunk
                         except Exception as e:
                             logger.error(
                                 f"Tail fragment translation failed, falling back to English fragment: {e}"
                             )
+                            translated_output_chunks.append(sentence_buffer)
                             yield sentence_buffer
 
-                    did_stream_translated = True
                     logger.info(f"Streaming complete for session {session_id}")
                     new_messages = response_stream.new_messages()
                 else:
                     async for chunk in response_stream.stream_text(delta=True):
-                        out = _collect_or_yield(chunk)
-                        if out is not None:
-                            yield out
+                        yield chunk
 
                     logger.info(f"Streaming complete for session {session_id}")
                     new_messages = response_stream.new_messages()
 
-        # Post-translation: stream English response translated to target_lang
-        if needs_output_translation and english_response and not did_stream_translated:
-            logger.info(f"Translation pipeline: streaming response translation to {target_lang}")
+        # Log final translated output to Langfuse as a tool (response_translation) and set trace output
+        if needs_output_translation and translated_output_chunks and get_langfuse_client:
             try:
-                async for translated_chunk in translate_text_stream_fast(
-                    text=english_response,
-                    source_lang="english",
-                    target_lang=target_lang,
-                ):
-                    yield translated_chunk
+                full_translated = "".join(translated_output_chunks)
+                langfuse = get_langfuse_client()
+                with langfuse.start_as_current_observation(
+                    as_type="tool",
+                    name="response_translation",
+                    input={
+                        "source_lang": "english",
+                        "target_lang": target_lang,
+                        "step": "TranslateGemma",
+                    },
+                ) as tool_obs:
+                    tool_obs.update(output=full_translated)
+                    tool_obs.update_trace(output=full_translated)
+                logger.debug("Langfuse: recorded response_translation tool output and trace output")
             except Exception as e:
-                logger.error(f"Post-translation failed, using English response: {e}")
-                yield english_response
+                logger.warning(f"Langfuse: failed to record response_translation: {e}")
 
         # Post-processing happens AFTER streaming is complete
         messages = [
