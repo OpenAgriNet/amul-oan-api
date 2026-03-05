@@ -16,6 +16,7 @@ from agents.tools.terms import normalize_text_with_glossary
 
 logger = get_logger(__name__)
 _index_capabilities_cache: Dict[str, Dict[str, Any]] = {}
+_TOKEN_RE = re.compile(r"[\w\-]+", re.UNICODE)
 
 
 def _marqo_search_sync(endpoint_url: str, index_name: str, search_params: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -111,6 +112,70 @@ def _apply_doc_diversity(hits: List[Dict[str, Any]], top_k: int, max_per_doc: in
                 break
     return selected
 
+
+def _normalize_text(value: str) -> str:
+    return re.sub(r"\s+", " ", (value or "").strip().lower())
+
+
+def _tokenize(value: str) -> List[str]:
+    return _TOKEN_RE.findall(_normalize_text(value))
+
+
+def _token_overlap_score(query: str, text: str) -> float:
+    q_tokens = set(_tokenize(query))
+    t_tokens = set(_tokenize(text))
+    if not q_tokens or not t_tokens:
+        return 0.0
+    return len(q_tokens & t_tokens) / len(q_tokens)
+
+
+def _metadata_blob(hit: Dict[str, Any]) -> str:
+    return " ".join(
+        str(hit.get(k) or "")
+        for k in (
+            "name",
+            "name_en",
+            "name_gu",
+            "filename",
+            "title_en",
+            "title_gu",
+            "category_tags",
+            "description",
+            "doc_short_description",
+            "doc_llm_description",
+        )
+    )
+
+
+def _rerank_hits(query: str, hits: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    if not hits:
+        return hits
+
+    raw_scores = [float(h.get("_score", h.get("score", 0.0)) or 0.0) for h in hits]
+    min_score = min(raw_scores)
+    max_score = max(raw_scores)
+    denom = (max_score - min_score) if max_score > min_score else 1.0
+
+    rescored: List[Dict[str, Any]] = []
+    for hit, raw in zip(hits, raw_scores):
+        semantic = (raw - min_score) / denom
+        text = str(hit.get("text") or "")
+        metadata_text = _metadata_blob(hit)
+        lexical_text = _token_overlap_score(query, text)
+        lexical_meta = _token_overlap_score(query, metadata_text)
+        lexical = max(lexical_text, lexical_meta)
+
+        metadata_boost = 0.08 * lexical_meta
+        reference_penalty = -0.12 if bool(hit.get("is_reference", False)) else 0.0
+        rerank_score = (0.62 * semantic) + (0.30 * lexical) + metadata_boost + reference_penalty
+
+        enriched = dict(hit)
+        enriched["_rerank_score"] = rerank_score
+        rescored.append(enriched)
+
+    rescored.sort(key=lambda x: float(x.get("_rerank_score", 0.0)), reverse=True)
+    return rescored
+
 DocumentType = Literal['video', 'document']
 
 class SearchHit(BaseModel):
@@ -183,26 +248,56 @@ async def search_documents(
         use_e5_query_prefix = _env_bool("MARQO_USE_E5_QUERY_PREFIX", True)
         exclude_reference_chunks = _env_bool("MARQO_EXCLUDE_REFERENCE", True)
         max_per_doc = int(os.getenv("MARQO_MAX_CHUNKS_PER_DOC", "2"))
-        search_limit = min(max(top_k * 5, top_k), 100)
+        candidate_multiplier = int(os.getenv("MARQO_CANDIDATE_MULTIPLIER", "10"))
+        candidate_cap = int(os.getenv("MARQO_CANDIDATE_CAP", "120"))
+        search_limit = min(max(top_k * max(candidate_multiplier, 1), top_k), max(candidate_cap, top_k))
         effective_query = _prepare_query_for_e5(query) if use_e5_query_prefix else query
 
-        search_params = {
+        search_mode = (os.getenv("MARQO_SEARCH_MODE", "hybrid") or "hybrid").strip().lower()
+        search_params: Dict[str, Any] = {
             "q": effective_query,
             "limit": search_limit,
-            "search_method": "hybrid",
-            "hybrid_parameters": {
+        }
+        if search_mode == "hybrid":
+            search_params["search_method"] = "hybrid"
+            search_params["hybrid_parameters"] = {
                 "retrievalMethod": "disjunction",
                 "rankingMethod": "rrf",
                 "alpha": 0.5,
                 "rrfK": 60,
-            },
-        }
+            }
+        elif search_mode == "tensor":
+            search_params["search_method"] = "tensor"
+        elif search_mode == "lexical":
+            search_params["search_method"] = "lexical"
+        else:
+            raise ValueError(f"Unsupported MARQO_SEARCH_MODE={search_mode}")
+
         if exclude_reference_chunks and capabilities.get("has_is_reference_filter", False):
             search_params["filter_string"] = "is_reference:false"
+
         # Marqo client is sync; run in thread pool to avoid blocking the event loop
-        results = await asyncio.to_thread(
-            _marqo_search_sync, endpoint_url, index_name, search_params
-        )
+        try:
+            results = await asyncio.to_thread(
+                _marqo_search_sync, endpoint_url, index_name, search_params
+            )
+        except Exception:
+            if search_mode == "hybrid":
+                logger.warning("Hybrid search failed, retrying with tensor search for query '%s'", query)
+                fallback_params = {
+                    "q": effective_query,
+                    "limit": search_limit,
+                    "search_method": "tensor",
+                }
+                if exclude_reference_chunks and capabilities.get("has_is_reference_filter", False):
+                    fallback_params["filter_string"] = "is_reference:false"
+                results = await asyncio.to_thread(
+                    _marqo_search_sync, endpoint_url, index_name, fallback_params
+                )
+            else:
+                raise
+
+        results = _rerank_hits(query, results)
         results = _apply_doc_diversity(results, top_k=top_k, max_per_doc=max_per_doc)
 
         if len(results) == 0:
@@ -218,7 +313,7 @@ async def search_documents(
                     "doc_id": hit.get("doc_id", hit.get("_id", "")),
                     "type": hit.get("type", "document"),
                     "source": hit.get("source", ""),
-                    "score": hit.get("_score", hit.get("score", 0.0)),
+                    "score": hit.get("_rerank_score", hit.get("_score", hit.get("score", 0.0))),
                     "id": hit.get("_id", hit.get("id", ""))
                 }
                 search_hits.append(SearchHit(**processed_hit))            
