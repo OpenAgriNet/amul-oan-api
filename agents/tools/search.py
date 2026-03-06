@@ -17,6 +17,7 @@ from agents.tools.terms import normalize_text_with_glossary
 logger = get_logger(__name__)
 _index_capabilities_cache: Dict[str, Dict[str, Any]] = {}
 _TOKEN_RE = re.compile(r"[\w\-]+", re.UNICODE)
+_GUJARATI_CHAR_RE = re.compile(r"[\u0A80-\u0AFF]")
 
 
 def _validate_search_query(query: str) -> str:
@@ -93,6 +94,74 @@ def _prepare_query_for_e5(query: str) -> str:
     if cleaned.lower().startswith("query:"):
         return cleaned
     return f"query: {cleaned}"
+
+
+def _parse_int_env(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        logger.warning("Invalid int for %s=%r; using default=%s", name, raw, default)
+        return default
+
+
+def _parse_float_env(name: str, default: float) -> float:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        logger.warning("Invalid float for %s=%r; using default=%s", name, raw, default)
+        return default
+
+
+def _resolve_final_top_k(requested_top_k: int) -> int:
+    """
+    Resolve final top_k with contract caps.
+
+    Contract:
+    - MARQO_DEFAULT_FINAL_CHUNKS (default 12)
+    - MARQO_MAX_FINAL_CHUNKS (default 20)
+    - hard cap at 20
+    """
+    default_final = max(1, _parse_int_env("MARQO_DEFAULT_FINAL_CHUNKS", 12))
+    env_cap = max(1, _parse_int_env("MARQO_MAX_FINAL_CHUNKS", 20))
+    hard_cap = min(env_cap, 20)
+
+    try:
+        requested = int(requested_top_k)
+    except (TypeError, ValueError):
+        requested = default_final
+
+    if requested <= 0:
+        requested = default_final
+
+    return max(1, min(requested, hard_cap))
+
+
+def _expand_query_by_profile(query: str, profile: str) -> str:
+    """
+    Lightweight query-expansion hook controlled by MARQO_QUERY_EXPANSION_PROFILE.
+    - off/none: no expansion.
+    - gu-v1 (default): minimal normalization and profile markering; keep query stable.
+    """
+    profile_norm = (profile or "gu-v1").strip().lower()
+    cleaned = re.sub(r"\s+", " ", query.strip())
+    if profile_norm in {"off", "none", "disabled"}:
+        return cleaned
+
+    if profile_norm == "gu-v1":
+        # Keep behavior deterministic and non-destructive.
+        # If Gujarati text is present, do not alter semantics; just normalize spacing.
+        if _GUJARATI_CHAR_RE.search(cleaned):
+            return cleaned
+        return cleaned
+
+    logger.warning("Unknown MARQO_QUERY_EXPANSION_PROFILE=%s; using raw normalized query", profile)
+    return cleaned
 
 
 def _doc_key(hit: Dict[str, Any]) -> str:
@@ -227,14 +296,14 @@ class SearchHit(BaseModel):
 
 async def search_documents(
     query: str, 
-    top_k: int = 10, 
+    top_k: int = 12, 
 ) -> str:
     """
     Semantic search for documents. Use this tool to search for relevant documents.
     
     Args:
         query: The search query in *English* (required)
-        top_k: Maximum number of results to return (default: 10)
+        top_k: Requested number of final results (contract-clamped, default: 12)
         
     Returns:
         search_results: Formatted list of documents
@@ -244,7 +313,7 @@ async def search_documents(
         endpoint_url = os.getenv('MARQO_ENDPOINT_URL')
         if not endpoint_url:
             raise ValueError("Marqo endpoint URL is required")
-        index_name = os.getenv('MARQO_INDEX_NAME', 'sunbird-va-index')
+        index_name = os.getenv('MARQO_INDEX_NAME', 'amul-veterinary-index')
         if not index_name:
             raise ValueError("Marqo index name is required")
 
@@ -264,11 +333,19 @@ async def search_documents(
 
         use_e5_query_prefix = _env_bool("MARQO_USE_E5_QUERY_PREFIX", True)
         exclude_reference_chunks = _env_bool("MARQO_EXCLUDE_REFERENCE", True)
+        query_expansion_profile = os.getenv("MARQO_QUERY_EXPANSION_PROFILE", "gu-v1")
+        final_top_k = _resolve_final_top_k(top_k)
         max_per_doc = int(os.getenv("MARQO_MAX_CHUNKS_PER_DOC", "2"))
         candidate_multiplier = int(os.getenv("MARQO_CANDIDATE_MULTIPLIER", "10"))
         candidate_cap = int(os.getenv("MARQO_CANDIDATE_CAP", "120"))
-        search_limit = min(max(top_k * max(candidate_multiplier, 1), top_k), max(candidate_cap, top_k))
-        effective_query = _prepare_query_for_e5(query) if use_e5_query_prefix else query
+        hybrid_alpha = _parse_float_env("MARQO_HYBRID_ALPHA", 0.6)
+        hybrid_rrfk = _parse_int_env("MARQO_HYBRID_RRFK", 60)
+        search_limit = min(
+            max(final_top_k * max(candidate_multiplier, 1), final_top_k),
+            max(candidate_cap, final_top_k),
+        )
+        expanded_query = _expand_query_by_profile(query, query_expansion_profile)
+        effective_query = _prepare_query_for_e5(expanded_query) if use_e5_query_prefix else expanded_query
 
         search_mode = (os.getenv("MARQO_SEARCH_MODE", "hybrid") or "hybrid").strip().lower()
         search_params: Dict[str, Any] = {
@@ -280,8 +357,8 @@ async def search_documents(
             search_params["hybrid_parameters"] = {
                 "retrievalMethod": "disjunction",
                 "rankingMethod": "rrf",
-                "alpha": 0.5,
-                "rrfK": 60,
+                "alpha": hybrid_alpha,
+                "rrfK": hybrid_rrfk,
             }
         elif search_mode == "tensor":
             search_params["search_method"] = "tensor"
@@ -314,10 +391,20 @@ async def search_documents(
             else:
                 raise
 
-        results = _rerank_hits(query, results)
-        results = _apply_doc_diversity(results, top_k=top_k, max_per_doc=max_per_doc)
+        rerank_mode = (os.getenv("MARQO_RERANK_MODE", "bm25lite") or "bm25lite").strip().lower()
+        if rerank_mode not in {"off", "none", "disabled"}:
+            results = _rerank_hits(query, results)
+        results = _apply_doc_diversity(results, top_k=final_top_k, max_per_doc=max_per_doc)
 
-        logger.info("Search completed: query=%s hits=%s", query, len(results))
+        logger.info(
+            "Search completed: query=%s expanded_query=%s mode=%s top_k=%s hits=%s profile=%s",
+            query,
+            expanded_query,
+            search_mode,
+            final_top_k,
+            len(results),
+            query_expansion_profile,
+        )
 
         if len(results) == 0:
             return f"No results found for `{query}`"

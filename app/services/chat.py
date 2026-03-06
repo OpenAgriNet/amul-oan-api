@@ -98,6 +98,12 @@ def should_translate_batch(batch_text: str, word_count: int) -> bool:
 
 
 logger = get_logger(__name__)
+GENERIC_UNAVAILABLE_MESSAGE_EN = (
+    "I am unable to process your request right now. Please try again later."
+)
+GENERIC_UNAVAILABLE_MESSAGE_GU = (
+    "હાલમાં હું તમારી વિનંતી પ્રક્રિયા કરી શકતી નથી. કૃપા કરીને થોડા સમય પછી ફરી પ્રયાસ કરો."
+)
 
 try:
     from langfuse import propagate_attributes, get_client as get_langfuse_client
@@ -138,6 +144,38 @@ async def stream_chat_messages(
     )
 
     with session_ctx:
+        async def localize_system_text(text_en: str) -> str:
+            """
+            Localize short system-generated outputs to target language when needed.
+            Falls back to Gujarati default text if translation fails for Gujarati targets.
+            """
+            if not text_en:
+                return text_en
+            if not target_lang:
+                return text_en
+
+            lang = target_lang.lower()
+            if lang == "english" or lang == "en":
+                return text_en
+
+            if lang in INDIAN_LANGUAGES:
+                try:
+                    return await translate_text(
+                        text=text_en,
+                        source_lang="english",
+                        target_lang=target_lang,
+                    )
+                except Exception as e:
+                    logger.warning(
+                        "request_id=%s system text translation failed target_lang=%s error=%s",
+                        request_id if 'request_id' in locals() else "unknown",
+                        target_lang,
+                        e,
+                    )
+                    if lang in {"gu", "gujarati"}:
+                        return GENERIC_UNAVAILABLE_MESSAGE_GU
+            return text_en
+
         request_id = session_id
         # Generate a unique content ID for this query
         content_id = f"query_{session_id}_{len(history)//2 + 1}"
@@ -218,24 +256,7 @@ async def stream_chat_messages(
                 decline_text = (moderation_data.action or "").strip() or (
                     "I can only answer agriculture and livestock related questions."
                 )
-                if (
-                    not use_translation_pipeline
-                    and target_lang
-                    and target_lang.lower() in INDIAN_LANGUAGES
-                    and target_lang.lower() != "english"
-                ):
-                    try:
-                        decline_text = await translate_text(
-                            text=decline_text,
-                            source_lang="english",
-                            target_lang=target_lang,
-                        )
-                    except Exception as e:
-                        logger.warning(
-                            "request_id=%s moderation decline translation failed: %s",
-                            request_id,
-                            e,
-                        )
+                decline_text = await localize_system_text(decline_text)
                 logger.info(
                     "request_id=%s moderation_blocked=True response_preview=%s",
                     request_id,
@@ -245,7 +266,15 @@ async def stream_chat_messages(
                 return
             deps.update_moderation_str(str(moderation_data))
         except Exception as e:
-            logger.error(f"Error in moderation: {str(e)}")
+            logger.error("request_id=%s moderation_error=%s", request_id, str(e))
+            fail_closed_message = await localize_system_text(GENERIC_UNAVAILABLE_MESSAGE_EN)
+            logger.info(
+                "request_id=%s moderation_blocked=True reason=moderation_error response_preview=%s",
+                request_id,
+                fail_closed_message[:160],
+            )
+            yield fail_closed_message
+            return
 
         user_message = deps.get_user_message()
         logger.info("request_id=%s running_agent=True user_message=%s", request_id, user_message)
