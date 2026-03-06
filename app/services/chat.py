@@ -138,9 +138,10 @@ async def stream_chat_messages(
     )
 
     with session_ctx:
+        request_id = session_id
         # Generate a unique content ID for this query
         content_id = f"query_{session_id}_{len(history)//2 + 1}"
-        logger.info(f"User info: {user_info}")
+        logger.info("request_id=%s user_info=%s", request_id, user_info)
 
         # Extract farmer context: prefer JWT 'data' field; if JWT has 'phone' and no data, fetch by phone
         farmer_data = user_info.get('data') if user_info else None
@@ -195,7 +196,12 @@ async def stream_chat_messages(
             user_message    = f"{last_response}{deps.get_user_message()}"
             moderation_run  = await moderation_agent.run(user_message)
             moderation_data = moderation_run.output
-            logger.info(f"Moderation data: {moderation_data}")
+            logger.info(
+                "request_id=%s moderation_category=%s moderation_action=%s",
+                request_id,
+                moderation_data.category,
+                moderation_data.action,
+            )
 
             # # Create the moderation event
             # moderation_event = create_moderation_event(...)
@@ -207,12 +213,42 @@ async def stream_chat_messages(
                     logger.info("Successfully added suggestions task")
                 except Exception as e:
                     logger.error(f"Error adding suggestions task: {str(e)}")
+            else:
+                # Hard gate: do not run retrieval/answer agent for moderated non-agricultural requests.
+                decline_text = (moderation_data.action or "").strip() or (
+                    "I can only answer agriculture and livestock related questions."
+                )
+                if (
+                    not use_translation_pipeline
+                    and target_lang
+                    and target_lang.lower() in INDIAN_LANGUAGES
+                    and target_lang.lower() != "english"
+                ):
+                    try:
+                        decline_text = await translate_text(
+                            text=decline_text,
+                            source_lang="english",
+                            target_lang=target_lang,
+                        )
+                    except Exception as e:
+                        logger.warning(
+                            "request_id=%s moderation decline translation failed: %s",
+                            request_id,
+                            e,
+                        )
+                logger.info(
+                    "request_id=%s moderation_blocked=True response_preview=%s",
+                    request_id,
+                    decline_text[:160],
+                )
+                yield decline_text
+                return
             deps.update_moderation_str(str(moderation_data))
         except Exception as e:
             logger.error(f"Error in moderation: {str(e)}")
 
         user_message = deps.get_user_message()
-        logger.info(f"Running agent with user message: {user_message}")
+        logger.info("request_id=%s running_agent=True user_message=%s", request_id, user_message)
 
         # Run the main agent
         trimmed_history = trim_history(

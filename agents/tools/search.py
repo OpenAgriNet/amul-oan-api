@@ -19,6 +19,22 @@ _index_capabilities_cache: Dict[str, Dict[str, Any]] = {}
 _TOKEN_RE = re.compile(r"[\w\-]+", re.UNICODE)
 
 
+def _validate_search_query(query: str) -> str:
+    """Normalize query before retrieval.
+
+    Raises:
+        ModelRetry: only when query is empty.
+    """
+    normalized = re.sub(r"\s+", " ", (query or "").strip())
+
+    if not normalized:
+        logger.warning("Search query validation failed: empty query")
+        raise ModelRetry("INVALID_QUERY: EMPTY_QUERY. Provide a focused agricultural search query.")
+
+    logger.info("Search query validation passed: query=%s", normalized)
+    return normalized
+
+
 def _marqo_search_sync(endpoint_url: str, index_name: str, search_params: Dict[str, Any]) -> List[Dict[str, Any]]:
     """Synchronous Marqo search; call via asyncio.to_thread() from async code."""
     client = marqo.Client(url=endpoint_url)
@@ -224,6 +240,7 @@ async def search_documents(
         search_results: Formatted list of documents
     """
     try:
+        query = _validate_search_query(query)
         endpoint_url = os.getenv('MARQO_ENDPOINT_URL')
         if not endpoint_url:
             raise ValueError("Marqo endpoint URL is required")
@@ -299,6 +316,8 @@ async def search_documents(
 
         results = _rerank_hits(query, results)
         results = _apply_doc_diversity(results, top_k=top_k, max_per_doc=max_per_doc)
+
+        logger.info("Search completed: query=%s hits=%s", query, len(results))
 
         if len(results) == 0:
             return f"No results found for `{query}`"
