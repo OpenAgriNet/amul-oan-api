@@ -2,9 +2,9 @@
 from pydantic_ai import Tool
 from agents.tools.search import search_documents, search_videos
 from agents.tools.terms import search_terms
-from agents.tools.animal import get_animal_by_tag
-from agents.tools.cvcc import get_cvcc_health_details
-from agents.tools.farmer import get_farmer_by_mobile
+# from agents.tools.animal import get_animal_by_tag
+# from agents.tools.cvcc import get_cvcc_health_details
+# from agents.tools.farmer import get_farmer_by_mobile
 
 TOOLS = [
     # # Search Terms
@@ -24,29 +24,29 @@ TOOLS = [
         require_parameter_descriptions=True,
     ),
 
-    # Get Animal by Tag
-    Tool(
-        get_animal_by_tag,
-        takes_ctx=False,
-        docstring_format='auto',
-        require_parameter_descriptions=True,
-    ),
+    # # Get Animal by Tag (temporarily disabled)
+    # Tool(
+    #     get_animal_by_tag,
+    #     takes_ctx=False,
+    #     docstring_format='auto',
+    #     require_parameter_descriptions=True,
+    # ),
 
-    # Get CVCC Health Details
-    Tool(
-        get_cvcc_health_details,
-        takes_ctx=False,
-        docstring_format='auto',
-        require_parameter_descriptions=True,
-    ),
+    # # Get CVCC Health Details (temporarily disabled)
+    # Tool(
+    #     get_cvcc_health_details,
+    #     takes_ctx=False,
+    #     docstring_format='auto',
+    #     require_parameter_descriptions=True,
+    # ),
 
-    # Get Farmer by Mobile Number
-    Tool(
-        get_farmer_by_mobile,
-        takes_ctx=False,
-        docstring_format='auto',
-        require_parameter_descriptions=True,
-    ),
+    # # Get Farmer by Mobile Number (temporarily disabled)
+    # Tool(
+    #     get_farmer_by_mobile,
+    #     takes_ctx=False,
+    #     docstring_format='auto',
+    #     require_parameter_descriptions=True,
+    # ),
 
     # # Search Videos
     # Tool(
