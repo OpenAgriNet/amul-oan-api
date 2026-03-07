@@ -18,19 +18,70 @@ logger = get_logger(__name__)
 _index_capabilities_cache: Dict[str, Dict[str, Any]] = {}
 _TOKEN_RE = re.compile(r"[\w\-]+", re.UNICODE)
 _GUJARATI_CHAR_RE = re.compile(r"[\u0A80-\u0AFF]")
+_REFUSAL_OR_META_PATTERNS = [
+    "i can only answer",
+    "your query appears to be",
+    "would you like to ask about",
+    "not within the agricultural scope",
+    "out of scope",
+    "not related to",
+    "i cannot help",
+    "i'm unable to",
+    "as an ai",
+    "search results for",
+    "based on the provided documents",
+]
+_WRONG_INTENT_HINTS = [
+    "hf receipts",
+    "tracking numbers",
+    "track number",
+]
 
 
 def _validate_search_query(query: str) -> str:
     """Normalize query before retrieval.
 
     Raises:
-        ModelRetry: only when query is empty.
+        ModelRetry: when query is empty or violates query quality guardrails.
     """
     normalized = re.sub(r"\s+", " ", (query or "").strip())
 
     if not normalized:
         logger.warning("Search query validation failed: empty query")
         raise ModelRetry("INVALID_QUERY: EMPTY_QUERY. Provide a focused agricultural search query.")
+
+    lowered = normalized.lower()
+    if any(p in lowered for p in _REFUSAL_OR_META_PATTERNS):
+        logger.warning("Search query validation failed: refusal/meta leakage query=%s", normalized)
+        raise ModelRetry(
+            "INVALID_QUERY: REFUSAL_TEXT_LEAK. "
+            "Provide only concise domain keywords, never policy/refusal/meta text."
+        )
+
+    if any(p in lowered for p in _WRONG_INTENT_HINTS):
+        logger.warning("Search query validation failed: known wrong-intent leakage query=%s", normalized)
+        raise ModelRetry(
+            "INVALID_QUERY: OFF_TOPIC_QUERY. "
+            "Regenerate query aligned to user intent and agricultural topic."
+        )
+
+    # Guard against dumping long answer text/prompt text as search query.
+    token_count = len(_TOKEN_RE.findall(lowered))
+    if token_count > 20:
+        logger.warning("Search query validation failed: too long token_count=%s query=%s", token_count, normalized)
+        raise ModelRetry(
+            "INVALID_QUERY: QUERY_TOO_LONG. "
+            "Use 2-12 concise keywords capturing entity/problem/task."
+        )
+
+    # Queries should be keyword-style; avoid full-sentence narration/explanations.
+    sentence_markers = ("?", ".", "!", " because ", " please ", " should ", " would ")
+    if token_count >= 12 and any(marker in lowered for marker in sentence_markers):
+        logger.warning("Search query validation failed: narrative query=%s", normalized)
+        raise ModelRetry(
+            "INVALID_QUERY: NARRATIVE_QUERY. "
+            "Use compact keyword query, not a sentence or explanation."
+        )
 
     logger.info("Search query validation passed: query=%s", normalized)
     return normalized
