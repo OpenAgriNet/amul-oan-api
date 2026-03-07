@@ -350,10 +350,25 @@ async def search_documents(
     top_k: int = 12, 
 ) -> str:
     """
-    Semantic search for documents. Use this tool to search for relevant documents.
+    Semantic retrieval over veterinary/agri documents.
+
+    Use this tool when:
+    - The user asks a factual agriculture/livestock question and document-grounded evidence is needed.
+    - You need disease, nutrition, breeding, fodder, crop, scheme, market, or weather guidance from indexed docs.
+
+    Do NOT use this tool when:
+    - The user intent is profile/account/services/mobile lookup (use relevant non-search tools instead).
+    - The user intent is language-switch only.
+    - The request is clearly out-of-scope and should be declined.
+
+    Query contract:
+    - Must be concise English keywords (prefer 2-8 words, hard max ~12-20 tokens).
+    - Must preserve user intent and core entity/problem.
+    - Must NOT contain refusal/policy/meta/system narration.
+    - Must NOT be long explanatory paragraphs or copied answer text.
     
     Args:
-        query: The search query in *English* (required)
+        query: English keyword query for retrieval (required). Keep compact and intent-aligned.
         top_k: Requested number of final results (contract-clamped, default: 12)
         
     Returns:
