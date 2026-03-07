@@ -1,10 +1,34 @@
 import json
+from pathlib import Path
 from enum import Enum
 from pydantic import BaseModel, Field, field_validator
 from rapidfuzz import fuzz
 
 # Load term pairs from JSON file with UTF-8 encoding
 term_pairs = json.load(open('assets/glossary_terms.json', 'r', encoding='utf-8'))
+
+
+def _load_gu_term_policy() -> dict:
+    candidates = [
+        Path.cwd() / "assets/gu_term_policy.json",
+        Path(__file__).resolve().parents[2] / "assets/gu_term_policy.json",
+    ]
+    for path in candidates:
+        if path.exists():
+            try:
+                with path.open("r", encoding="utf-8") as f:
+                    return json.load(f)
+            except Exception:
+                return {}
+    return {}
+
+
+GU_TERM_POLICY = _load_gu_term_policy()
+PREFERRED_GU_BY_EN = {
+    str(k).strip().lower(): str(v).strip()
+    for k, v in (GU_TERM_POLICY.get("preferred", {}) if isinstance(GU_TERM_POLICY, dict) else {}).items()
+    if str(k).strip() and str(v).strip()
+}
 
 class Language(str, Enum):
     ENGLISH = "en"
@@ -27,6 +51,9 @@ for pair in term_pairs:
     # If 'gu' is not present but 'mr' is, use 'mr' as 'gu'
     if 'gu' not in pair and 'mr' in pair:
         pair['gu'] = pair['mr']
+    en_key = str(pair.get("en", "")).strip().lower()
+    if en_key in PREFERRED_GU_BY_EN:
+        pair["gu"] = PREFERRED_GU_BY_EN[en_key]
     TERM_PAIRS.append(TermPair(**pair))
 
 

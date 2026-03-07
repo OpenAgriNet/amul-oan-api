@@ -9,6 +9,7 @@ import os
 import json
 import re
 import aiohttp
+from pathlib import Path
 from typing import Literal, Optional
 from helpers.utils import get_logger
 from dotenv import load_dotenv
@@ -28,7 +29,40 @@ GU_PREFERRED_TRANSLATION_RULES = [
 ]
 
 
-GU_POST_REPLACEMENTS = [
+def _load_gu_term_policy() -> dict:
+    candidates = [
+        Path.cwd() / "assets/gu_term_policy.json",
+        Path(__file__).resolve().parents[2] / "assets/gu_term_policy.json",
+    ]
+    for path in candidates:
+        if path.exists():
+            try:
+                with path.open("r", encoding="utf-8") as f:
+                    return json.load(f)
+            except Exception as e:
+                logger.warning("Failed loading Gujarati term policy at %s: %s", path, e)
+                return {}
+    return {}
+
+
+def _build_gu_policy_replacements(policy: dict) -> list[tuple[str, str]]:
+    forbidden = policy.get("forbidden", {}) if isinstance(policy, dict) else {}
+    if not isinstance(forbidden, dict):
+        return []
+    # Longer keys first so phrase-level replacements win before single-word ones.
+    items = sorted(
+        [(str(k).strip(), str(v).strip()) for k, v in forbidden.items() if str(k).strip() and str(v).strip()],
+        key=lambda kv: len(kv[0]),
+        reverse=True,
+    )
+    out: list[tuple[str, str]] = []
+    for src, dst in items:
+        pattern = re.escape(src)
+        out.append((pattern, dst))
+    return out
+
+
+GU_POST_REPLACEMENTS_BASE = [
     (r"(?i)red\s*colour\s*-?\s*delete", ""),
     (r"(?i)red\s*colour", ""),
     (r"(?i)\bpaho\b", "આઉ/બાવલું"),
@@ -42,7 +76,16 @@ GU_POST_REPLACEMENTS = [
     (r"ટિક્કી", "ઇતરડી"),
     (r"સ્તનના\s*નિપલ્સ", "આંચળ"),
     (r"સ્તન\s*પ્રદેશ", "આઉ/બાવલા ના ભાગ"),
+    (r"\bકીડા\b", "કૃમિ"),
+    (r"ઇતરડીનાશક\s*દવાઓ", "કીટનાશક દવાનો ઉપયોગ"),
+    (r"\bપીપી\b", "પોટેશિયમ પરમેંગેનેટના દ્રાવણ"),
+    (r"નાની\s*ઈજા", "નાની તિરાડો"),
+    (r"\bપાડુ\b", "બચ્ચું"),
+    (r"તાવના\s*તબક્કામાં", "તાવના શરૂઆત ના તબક્કામાં"),
 ]
+GU_TERM_POLICY = _load_gu_term_policy()
+GU_POLICY_REPLACEMENTS = _build_gu_policy_replacements(GU_TERM_POLICY)
+GU_POST_REPLACEMENTS = GU_POST_REPLACEMENTS_BASE + GU_POLICY_REPLACEMENTS
 
 
 def _fix_dandas(text: str) -> str:

@@ -371,7 +371,7 @@
   },
   {
     "en": "bite",
-    "gu": "કરડવું / બચકું ભરવું",
+    "gu": "કરડવું/બચકું ભરવું",
     "transliteration": "kaydu / karadiyu / kaidu / bachku bharyu / kaidyo"
   },
   {
@@ -476,7 +476,7 @@
   },
   {
     "en": "Breeding Bull",
-    "gu": "વરડો / સાંઢ",
+    "gu": "વરડો/સાંઢ",
     "transliteration": "vardo / sandh"
   },
   {
@@ -506,7 +506,7 @@
   },
   {
     "en": "Bull",
-    "gu": "સાંઢ / આખલો",
+    "gu": "સાંઢ/આખલો",
     "transliteration": "Sandh / Akhlo"
   },
   {
@@ -551,13 +551,13 @@
   },
   {
     "en": "Calf",
-    "gu": "પાડુ / વાછરડું",
+    "gu": "પાડુ/વાછરડું",
     "transliteration": "Lavaru / Vachardu"
   },
   {
     "en": "Calf (female)",
     "gu": "વાછરડી",
-    "transliteration": "vachdi  / vachardi"
+    "transliteration": "vachdi / vachardi"
   },
   {
     "en": "Calf (male)",
@@ -646,7 +646,7 @@
   },
   {
     "en": "Cattle shed",
-    "gu": "ગભાણ / કોઠાર / વાડો",
+    "gu": "ગભાણ/કોઠાર/વાડો",
     "transliteration": "ગભાણ / કોઠાર / વાડો"
   },
   {
@@ -766,7 +766,7 @@
   },
   {
     "en": "Concentrated Feed",
-    "gu": "ખાણ / કણું",
+    "gu": "ખાણ/કણું",
     "transliteration": "khan / kanu"
   },
   {
@@ -975,19 +975,9 @@
     "transliteration": "Detergent"
   },
   {
-    "en": "Deworming",
-    "gu": "કીડાનાશક દવા",
-    "transliteration": "kidanashak dava"
-  },
-  {
     "en": "DEWORMING",
-    "gu": "કૃમિ નિવારણ દવા",
+    "gu": "કૃમિનાશક દવા",
     "transliteration": "krumi nivaran dava"
-  },
-  {
-    "en": "Deworming",
-    "gu": "પેટના કીડા મારવાની દવા / કૃમિનાશક",
-    "transliteration": ""
   },
   {
     "en": "Diagnosis",
@@ -1251,7 +1241,7 @@
   },
   {
     "en": "Ethnoveterinary Medicine (EVM)",
-    "gu": "ઘરગથ્થું ઉપચાર / ઘરેલુ  ઉપચાર /દેશી ઉપચાર",
+    "gu": "ઘરગથ્થું ઉપચાર/ઘરેલુ ઉપચાર/દેશી ઉપચાર",
     "transliteration": "ghargathhu upchar, deshi upchar"
   },
   {
@@ -1341,7 +1331,7 @@
   },
   {
     "en": "Female/Male Calf",
-    "gu": "પાડી / પાડો",
+    "gu": "પાડી/પાડો",
     "transliteration": "padi / pado"
   },
   {
@@ -1406,7 +1396,7 @@
   },
   {
     "en": "Fodder / Grass",
-    "gu": "ખડપ / ઘાસચારો",
+    "gu": "ખડપ/ઘાસચારો",
     "transliteration": "khadap / ghascharo"
   },
   {
@@ -1646,17 +1636,17 @@
   },
   {
     "en": "Heat / Estrus",
-    "gu": "વેતર / ગરમી",
+    "gu": "વેતર/ગરમી",
     "transliteration": "vetar / garami"
   },
   {
     "en": "Heat / Oestrus",
-    "gu": "ગરમીમાં આવવું / વેતરમાં આવવું",
+    "gu": "ગરમીમાં આવવું/વેતરમાં આવવું",
     "transliteration": "Garmi ma avavu/Vetar ma avavu"
   },
   {
     "en": "Heat Cycle",
-    "gu": "તાણ / ગરમી",
+    "gu": "તાણ/ગરમી",
     "transliteration": "taan / garami"
   },
   {
@@ -1681,12 +1671,12 @@
   },
   {
     "en": "Heifer",
-    "gu": "પાડી / વાછરડી /વોડકી",
+    "gu": "પાડી/વાછરડી/વોડકી",
     "transliteration": "Padi / Vachardi/vodki"
   },
   {
     "en": "Heifer",
-    "gu": "ખડાયું  / khadelu",
+    "gu": "ખડાયું/khadelu",
     "transliteration": "khadayu / khadelu"
   },
   {
@@ -1921,7 +1911,7 @@
   },
   {
     "en": "KETOSIS",
-    "gu": "કિટોસીસ /ઊર્જાની કમીથી થતો રોગ",
+    "gu": "કિટોસીસ/ઊર્જાની કમીથી થતો રોગ",
     "transliteration": "kitosis"
   },
   {
@@ -2135,11 +2125,6 @@
     "transliteration": "Mastitis"
   },
   {
-    "en": "MASTITIS",
-    "gu": "પાઠુ, બેક્ટેરિયા સૂકો ઘડીઓ બાવલા નો સોજો",
-    "transliteration": "pathu, becteria suko ghadio , bavla no sojo"
-  },
-  {
     "en": "Mastitis Testing",
     "gu": "મસ્ટીટીસનું પરીક્ષણ",
     "transliteration": "Mastitis nu parikshan"
@@ -2186,7 +2171,7 @@
   },
   {
     "en": "Milk Can",
-    "gu": "ડબ્બો / કેન",
+    "gu": "ડબ્બો/કેન",
     "transliteration": "dabbo / ken"
   },
   {
@@ -2206,7 +2191,7 @@
   },
   {
     "en": "Milk Fever",
-    "gu": "સૂવાનો રોગ (મિલ્ક ફીવર) / દૂધીઓ તાવ",
+    "gu": "સૂવાનો રોગ (મિલ્ક ફીવર)/દૂધીઓ તાવ",
     "transliteration": "Suva no Rog (Milk Fever)"
   },
   {
@@ -2316,7 +2301,7 @@
   },
   {
     "en": "mongoose",
-    "gu": "નોરીયો / નોળિયો",
+    "gu": "નોરીયો/નોળિયો",
     "transliteration": "noriyo / નોળિયો"
   },
   {
@@ -2341,12 +2326,12 @@
   },
   {
     "en": "mud",
-    "gu": "કાદવ / ગારો",
+    "gu": "કાદવ/ગારો",
     "transliteration": "kadav / garo"
   },
   {
     "en": "muddy",
-    "gu": "કાદવવાળી / ગારાવાળી",
+    "gu": "કાદવવાળી/ગારાવાળી",
     "transliteration": "kadavvali / garavali"
   },
   {
@@ -2596,7 +2581,7 @@
   },
   {
     "en": "Placenta",
-    "gu": "માટી / મેલી",
+    "gu": "માટી/મેલી",
     "transliteration": "mati meli"
   },
   {
@@ -2776,7 +2761,7 @@
   },
   {
     "en": "Puberty",
-    "gu": "તરુણાવસ્થા / પુખ્તતા",
+    "gu": "તરુણાવસ્થા/પુખ્તતા",
     "transliteration": "tarunavastha/pukhtata"
   },
   {
@@ -2906,7 +2891,7 @@
   },
   {
     "en": "Retained Placenta (RP)",
-    "gu": "ઝેર અટકી જવું / મેલી ન પડવી",
+    "gu": "ઝેર અટકી જવું/મેલી ન પડવી",
     "transliteration": "zer atki javu/meli na padvi"
   },
   {
@@ -2916,7 +2901,7 @@
   },
   {
     "en": "Retention of Placenta / Afterbirth retained /Placenta not expelled",
-    "gu": "જર/ મેલી / ઓર ન પડવી /પડિયો અંદર અટકી ગયો /આફટર બર્થ ન નીકળવું /બચ્ચા પછી પડ લટકતું રહેવું",
+    "gu": "જર/મેલી/ઓર ન પડવી/પડિયો અંદર અટકી ગયો/આફટર બર્થ ન નીકળવું/બચ્ચા પછી પડ લટકતું રહેવું",
     "transliteration": "Jar/ Meli/Or na Padvi"
   },
   {
@@ -3441,7 +3426,7 @@
   },
   {
     "en": "Ticks/Flies /Ectoparasites",
-    "gu": "ઇતરડી/માખી / ઝેગુડી / ઝીંગોડી /જીંગોડી / ઝેગોડા",
+    "gu": "ઇતરડી/માખી/ઝેગુડી/ઝીંગોડી/જીંગોડી/ઝેગોડા",
     "transliteration": "Itardi/Makhi / jhegudi /jhingodi / jhegoda"
   },
   {
@@ -3511,7 +3496,7 @@
   },
   {
     "en": "udder affection /udder infection / mastitis",
-    "gu": "પાઠવાઈ જાય છે / પાઠુ આવી જાય છે",
+    "gu": "પાઠવાઈ જાય છે/પાઠુ આવી જાય છે",
     "transliteration": "pathu aavi jay che / pathvai jay che"
   },
   {
@@ -3621,7 +3606,7 @@
   },
   {
     "en": "Uterine Prolapse",
-    "gu": "ગર્ભાશય બહાર નીકળી જવું / દિલ ધસી આવવું / વાખર (વાખોર ) નિકળવી",
+    "gu": "ગર્ભાશય બહાર નીકળી જવું/દિલ ધસી આવવું/વાખર (વાખોર ) નિકળવી",
     "transliteration": "Garbhashay Bahar Nikli Javu / dil dhasi aavvu /vakhar nikalvi"
   },
   {
