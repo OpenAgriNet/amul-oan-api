@@ -222,3 +222,78 @@ def get_mini_glossary_for_text(
         return ""
     lines = [f"{en} -> {gu}" for en, gu in term_to_gu.values()]
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Ambiguity hints — dynamically injected into system prompt based on query
+# ---------------------------------------------------------------------------
+
+def _load_ambiguity_terms() -> list:
+    candidates = [
+        Path.cwd() / "assets/ambiguity_terms.json",
+        Path(__file__).resolve().parents[2] / "assets/ambiguity_terms.json",
+    ]
+    for path in candidates:
+        if path.exists():
+            try:
+                with path.open("r", encoding="utf-8") as f:
+                    return json.load(f)
+            except Exception:
+                return []
+    return []
+
+
+_AMBIGUITY_TERMS = _load_ambiguity_terms()
+
+
+def get_ambiguity_hints_for_query(query: str, threshold: float = 0.80) -> str:
+    """
+    Fuzzy-match incoming query (any language) against ambiguity_terms.json.
+    Returns a formatted string of matching rules to inject into the system prompt,
+    or empty string if no matches.
+
+    Args:
+        query: The raw user query string.
+        threshold: Minimum similarity 0-1 (default 0.80, lower than glossary since
+                   Gujarati term matching is fuzzier).
+
+    Returns:
+        Formatted rules string, e.g.:
+          "- 'ઉથલા' always means repeat breeder, NOT vomiting."
+        or "" if no terms matched.
+    """
+    if not query or not _AMBIGUITY_TERMS:
+        return ""
+
+    score_cutoff = int(threshold * 100)
+    matched_rules = []
+    seen = set()
+
+    query_lower = query.lower().strip()
+
+    for entry in _AMBIGUITY_TERMS:
+        gu_terms = entry.get("gu_terms", [])
+        rule = entry.get("rule", "").strip()
+        if not rule or not gu_terms:
+            continue
+
+        # Check each trigger term against the query using substring + fuzzy
+        for term in gu_terms:
+            term_lower = term.lower().strip()
+            if not term_lower:
+                continue
+            # Substring match first (fast path)
+            if term_lower in query_lower:
+                if rule not in seen:
+                    matched_rules.append(f"- {rule}")
+                    seen.add(rule)
+                break
+            # Fuzzy match fallback
+            score = fuzz.partial_ratio(term_lower, query_lower)
+            if score >= score_cutoff:
+                if rule not in seen:
+                    matched_rules.append(f"- {rule}")
+                    seen.add(rule)
+                break
+
+    return "\n".join(matched_rules)
