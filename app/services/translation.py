@@ -22,7 +22,7 @@ logger = get_logger(__name__)
 
 GU_PREFERRED_TRANSLATION_RULES = [
     "Use farmer-preferred Gujarati livestock terms.",
-    "Prefer 'આઉ/બાવલું' over 'પાહો' for udder context.",
+    "Prefer 'બાવલું' over 'પાહો' for udder context.",
     "Prefer 'ધાર' over 'ટીપાં' for milk streams.",
     "Use 'ગાભણ' for pregnant livestock context.",
     "Do not output editorial markers like 'red colour' or formatting instructions.",
@@ -65,9 +65,9 @@ def _build_gu_policy_replacements(policy: dict) -> list[tuple[str, str]]:
 GU_POST_REPLACEMENTS_BASE = [
     (r"(?i)red\s*colour\s*-?\s*delete", ""),
     (r"(?i)red\s*colour", ""),
-    (r"(?i)\bpaho\b", "આઉ/બાવલું"),
+    (r"(?i)\bpaho\b", "બાવલું"),
     (r"ગર્ભવતી", "ગાભણ"),
-    (r"પાહો", "આઉ/બાવલું"),
+    (r"પાહો", "બાવલું"),
     (r"ટીપાં", "ધાર"),
     (r"શિશુ\s*પશુ", "નાના બચ્ચા/વાછરડી"),
     (r"\bટોળા\b", "ધણ"),
@@ -75,7 +75,7 @@ GU_POST_REPLACEMENTS_BASE = [
     (r"ગર્ભાધાન", "બીજદાન"),
     (r"ટિક્કી", "ઇતરડી"),
     (r"સ્તનના\s*નિપલ્સ", "આંચળ"),
-    (r"સ્તન\s*પ્રદેશ", "આઉ/બાવલા ના ભાગ"),
+    (r"સ્તન\s*પ્રદેશ", "બાવલા ના ભાગ"),
     (r"\bકીડા\b", "કૃમિ"),
     (r"ઇતરડીનાશક\s*દવાઓ", "કીટનાશક દવાનો ઉપયોગ"),
     (r"\bપીપી\b", "પોટેશિયમ પરમેંગેનેટના દ્રાવણ"),
