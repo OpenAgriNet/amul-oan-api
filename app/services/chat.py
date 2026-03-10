@@ -18,6 +18,7 @@ from agents.deps import FarmerContext
 from agents.tools.farmer import get_farmer_data_by_mobile
 from app.services.translation import (
     translate_text,
+    translate_to_english_with_haiku,
     translate_text_stream_fast,
     INDIAN_LANGUAGES,
 )
@@ -187,6 +188,7 @@ async def stream_chat_messages(
     session_ctx = (
         propagate_attributes(
             session_id=session_id_safe,
+            trace_name=f"chat.{pipeline_name}",
             metadata=langfuse_metadata,
             tags=langfuse_tags,
         )
@@ -195,6 +197,20 @@ async def stream_chat_messages(
     )
 
     with session_ctx:
+        if get_langfuse_client:
+            try:
+                langfuse = get_langfuse_client()
+                langfuse.update_current_trace(
+                    input={
+                        "query": query,
+                        "source_lang": source_lang,
+                        "target_lang": target_lang,
+                        "use_translation_pipeline": use_translation_pipeline,
+                    }
+                )
+            except Exception as e:
+                logger.warning("Langfuse: failed to set trace input: %s", e)
+
         async def localize_system_text(text_en: str) -> str:
             """
             Localize short system-generated outputs to target language when needed.
@@ -243,26 +259,55 @@ async def stream_chat_messages(
             except Exception as e:
                 logger.warning(f"Could not fetch farmer data by phone: {e}")
 
-        # Translation pipeline: send query as-is to agent; post-translate response if target is Indian
-        # (Pre-translation commented out so e.g. Gujarati question goes directly to the agrinet agent.)
         processing_query = query
         processing_lang = target_lang
         needs_output_translation = use_translation_pipeline and target_lang.lower() in INDIAN_LANGUAGES
 
-        # if use_translation_pipeline and source_lang.lower() in INDIAN_LANGUAGES:
-        #     logger.info(f"Translation pipeline: pre-translating {source_lang} query to English (Gemma)")
-        #     try:
-        #         processing_query = await translate_text(
-        #             text=query,
-        #             source_lang=source_lang,
-        #             target_lang="english",
-        #         )
-        #         processing_lang = "en"
-        #         logger.info(f"Query translated: {query[:50]}... -> {processing_query[:50]}...")
-        #     except Exception as e:
-        #         logger.error(f"Pre-translation failed, using original query: {e}")
-        #         processing_query = query
-        #         processing_lang = target_lang
+        if use_translation_pipeline and source_lang.lower() in {"gu", "gujarati"}:
+            logger.info(
+                "request_id=%s translation_pipeline=True pretranslating gu->en with Anthropic Haiku",
+                request_id,
+            )
+            try:
+                processing_query = await translate_to_english_with_haiku(
+                    text=query,
+                    source_lang=source_lang,
+                )
+                processing_lang = "en"
+                logger.info(
+                    "request_id=%s pretranslation_success=True source_preview=%s translated_preview=%s",
+                    request_id,
+                    query[:80],
+                    processing_query[:80],
+                )
+            except Exception as e:
+                logger.error(
+                    "request_id=%s pretranslation_success=False source_lang=%s error=%s",
+                    request_id,
+                    source_lang,
+                    e,
+                )
+                try:
+                    logger.info(
+                        "request_id=%s pretranslation_fallback=translategemma source_lang=%s",
+                        request_id,
+                        source_lang,
+                    )
+                    processing_query = await translate_text(
+                        text=query,
+                        source_lang=source_lang,
+                        target_lang="english",
+                    )
+                    processing_lang = "en"
+                except Exception as fallback_error:
+                    logger.error(
+                        "request_id=%s pretranslation_fallback_failed=True source_lang=%s error=%s",
+                        request_id,
+                        source_lang,
+                        fallback_error,
+                    )
+                    processing_query = query
+                    processing_lang = target_lang
         if use_translation_pipeline and needs_output_translation:
             # Agent responds in English; response will be translated to target_lang downstream
             processing_lang = "en"
@@ -607,25 +652,15 @@ async def stream_chat_messages(
                     logger.info(f"Streaming complete for session {session_id}")
                     new_messages = response_stream.new_messages()
 
-        # Log final translated output to Langfuse as a tool (response_translation) and set trace output
+        # Set user-facing trace output to the translated response when translation pipeline is active.
         if needs_output_translation and translated_output_chunks and get_langfuse_client:
             try:
                 full_translated = "".join(translated_output_chunks)
                 langfuse = get_langfuse_client()
-                with langfuse.start_as_current_observation(
-                    as_type="tool",
-                    name="response_translation",
-                    input={
-                        "source_lang": "english",
-                        "target_lang": target_lang,
-                        "step": "TranslateGemma",
-                    },
-                ) as tool_obs:
-                    tool_obs.update(output=full_translated)
-                    tool_obs.update_trace(output=full_translated)
-                logger.debug("Langfuse: recorded response_translation tool output and trace output")
+                langfuse.update_current_trace(output=full_translated)
+                logger.debug("Langfuse: updated trace output with translated response")
             except Exception as e:
-                logger.warning(f"Langfuse: failed to record response_translation: {e}")
+                logger.warning(f"Langfuse: failed to record translated trace output: {e}")
 
         # Post-processing happens AFTER streaming is complete
         messages = [

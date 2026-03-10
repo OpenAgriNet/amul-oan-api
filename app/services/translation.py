@@ -11,13 +11,26 @@ import re
 import aiohttp
 from pathlib import Path
 from typing import Literal, Optional
+from anthropic import AsyncAnthropic
 from helpers.utils import get_logger
 from dotenv import load_dotenv
 from agents.tools.terms import get_mini_glossary_for_text
 
+try:
+    from langfuse import get_client as get_langfuse_client
+except ImportError:
+    get_langfuse_client = None
+
 load_dotenv()
 
 logger = get_logger(__name__)
+
+
+ANTHROPIC_PRETRANSLATION_MODEL = os.getenv(
+    "ANTHROPIC_PRETRANSLATION_MODEL",
+    "claude-haiku-4-5",
+)
+_anthropic_client: Optional[AsyncAnthropic] = None
 
 
 GU_PREFERRED_TRANSLATION_RULES = [
@@ -212,6 +225,15 @@ def _resolve_model(model_size: Optional[str], target_lang: str) -> tuple[str, Op
     return model_size, endpoint, model_id
 
 
+def _get_langfuse():
+    if not get_langfuse_client:
+        return None
+    try:
+        return get_langfuse_client()
+    except Exception:
+        return None
+
+
 async def translate_text(
     text: str,
     source_lang: str,
@@ -240,36 +262,189 @@ async def translate_text(
     prompt = _format_translation_prompt(text, source_lang, target_lang, mini_glossary=mini_glossary)
     logger.info(f"Translating {source_lang} -> {target_lang} using {model_size} model")
 
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                f"{endpoint}/completions",
-                json={
-                    "model": model_id,
-                    "prompt": prompt,
-                    "temperature": temperature,
-                    "max_tokens": max_tokens,
-                },
-                timeout=aiohttp.ClientTimeout(total=60)
-            ) as response:
-                if response.status != 200:
-                    error_text = await response.text()
-                    logger.error(f"Translation API error {response.status}: {error_text}")
-                    raise Exception(f"Translation failed with status {response.status}")
+    langfuse = _get_langfuse()
 
-                result = await response.json()
-                translated_text = result["choices"][0]["text"].strip()
-                translated_text = _fix_dandas(translated_text)
-                translated_text = _post_normalize_gu_translation(
-                    translated_text,
-                    target_lang,
-                )
-                logger.info(f"Translation successful ({len(text)} -> {len(translated_text)} chars)")
-                return translated_text
+    try:
+        if not langfuse:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"{endpoint}/completions",
+                    json={
+                        "model": model_id,
+                        "prompt": prompt,
+                        "temperature": temperature,
+                        "max_tokens": max_tokens,
+                    },
+                    timeout=aiohttp.ClientTimeout(total=60)
+                ) as response:
+                    if response.status != 200:
+                        error_text = await response.text()
+                        logger.error(f"Translation API error {response.status}: {error_text}")
+                        raise Exception(f"Translation failed with status {response.status}")
+
+                    result = await response.json()
+                    translated_text = result["choices"][0]["text"].strip()
+                    translated_text = _fix_dandas(translated_text)
+                    translated_text = _post_normalize_gu_translation(
+                        translated_text,
+                        target_lang,
+                    )
+                    logger.info(f"Translation successful ({len(text)} -> {len(translated_text)} chars)")
+                    return translated_text
+
+        with langfuse.start_as_current_observation(
+            name="text_translation",
+            as_type="generation",
+            input={
+                "source_lang": source_lang,
+                "target_lang": target_lang,
+                "text": text,
+            },
+            model=model_id,
+            metadata={
+                "translation_provider": "translategemma",
+                "model_size": model_size,
+                "pipeline_stage": "text_translation",
+            },
+        ) as observation:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"{endpoint}/completions",
+                    json={
+                        "model": model_id,
+                        "prompt": prompt,
+                        "temperature": temperature,
+                        "max_tokens": max_tokens,
+                    },
+                    timeout=aiohttp.ClientTimeout(total=60)
+                ) as response:
+                    if response.status != 200:
+                        error_text = await response.text()
+                        logger.error(f"Translation API error {response.status}: {error_text}")
+                        raise Exception(f"Translation failed with status {response.status}")
+
+                    result = await response.json()
+                    translated_text = result["choices"][0]["text"].strip()
+                    translated_text = _fix_dandas(translated_text)
+                    translated_text = _post_normalize_gu_translation(
+                        translated_text,
+                        target_lang,
+                    )
+                    observation.update(output=translated_text)
+                    logger.info(f"Translation successful ({len(text)} -> {len(translated_text)} chars)")
+                    return translated_text
 
     except aiohttp.ClientError as e:
         logger.error(f"Translation API connection error: {str(e)}")
         raise Exception(f"Failed to connect to translation service: {str(e)}")
+
+
+def _get_anthropic_client() -> AsyncAnthropic:
+    global _anthropic_client
+    if _anthropic_client is None:
+        api_key = os.getenv("ANTHROPIC_API_KEY")
+        if not api_key:
+            raise ValueError("ANTHROPIC_API_KEY is required for Anthropic pre-translation")
+        _anthropic_client = AsyncAnthropic(api_key=api_key)
+    return _anthropic_client
+
+
+async def translate_to_english_with_haiku(
+    text: str,
+    source_lang: str,
+    *,
+    max_tokens: int = 1024,
+) -> str:
+    """Translate input text to English using Anthropic Haiku for pipeline pre-translation."""
+    if not text or not text.strip():
+        return text
+
+    if source_lang.lower() in {"english", "en"}:
+        return text
+
+    client = _get_anthropic_client()
+    source_name = LANG_NAMES.get(source_lang.lower(), source_lang.capitalize())
+    source_code = LANG_CODES.get(source_lang.lower(), source_lang.lower())
+
+    langfuse = _get_langfuse()
+
+    if not langfuse:
+        response = await client.messages.create(
+            model=ANTHROPIC_PRETRANSLATION_MODEL,
+            max_tokens=max_tokens,
+            temperature=0.0,
+            system=(
+                "You are a precise agricultural translation engine. "
+                "Translate the user's message into natural English only. "
+                "Preserve meaning, livestock terminology, and formatting. "
+                "Do not answer the question. Do not add commentary."
+            ),
+            messages=[
+                {
+                    "role": "user",
+                    "content": (
+                        f"Translate this {source_name} ({source_code}) text to English.\n\n"
+                        f"{text.strip()}"
+                    ),
+                }
+            ],
+        )
+
+        translated_parts: list[str] = []
+        for block in response.content:
+            if getattr(block, "type", None) == "text" and getattr(block, "text", None):
+                translated_parts.append(block.text)
+
+        translated_text = "".join(translated_parts).strip()
+        if not translated_text:
+            raise ValueError("Anthropic pre-translation returned empty output")
+        return translated_text
+
+    with langfuse.start_as_current_observation(
+        name="query_pretranslation",
+        as_type="generation",
+        input={
+            "source_lang": source_lang,
+            "target_lang": "english",
+            "text": text,
+        },
+        model=ANTHROPIC_PRETRANSLATION_MODEL,
+        metadata={
+            "translation_provider": "anthropic",
+            "pipeline_stage": "query_pretranslation",
+        },
+    ) as observation:
+        response = await client.messages.create(
+            model=ANTHROPIC_PRETRANSLATION_MODEL,
+            max_tokens=max_tokens,
+            temperature=0.0,
+            system=(
+                "You are a precise agricultural translation engine. "
+                "Translate the user's message into natural English only. "
+                "Preserve meaning, livestock terminology, and formatting. "
+                "Do not answer the question. Do not add commentary."
+            ),
+            messages=[
+                {
+                    "role": "user",
+                    "content": (
+                        f"Translate this {source_name} ({source_code}) text to English.\n\n"
+                        f"{text.strip()}"
+                    ),
+                }
+            ],
+        )
+
+        translated_parts: list[str] = []
+        for block in response.content:
+            if getattr(block, "type", None) == "text" and getattr(block, "text", None):
+                translated_parts.append(block.text)
+
+        translated_text = "".join(translated_parts).strip()
+        if not translated_text:
+            raise ValueError("Anthropic pre-translation returned empty output")
+        observation.update(output=translated_text)
+        return translated_text
 
 
 async def translate_text_stream_fast(
@@ -300,47 +475,112 @@ async def translate_text_stream_fast(
     prompt = _format_translation_prompt(text, source_lang, target_lang, mini_glossary=mini_glossary)
     logger.info(f"Fast streaming translation {source_lang} -> {target_lang} using {model_size} model")
 
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                f"{endpoint}/completions",
-                json={
-                    "model": model_id,
-                    "prompt": prompt,
-                    "temperature": temperature,
-                    "max_tokens": max_tokens,
-                    "stream": True
-                },
-                timeout=aiohttp.ClientTimeout(total=60)
-            ) as response:
-                if response.status != 200:
-                    error_text = await response.text()
-                    logger.error(f"Translation API error {response.status}: {error_text}")
-                    raise Exception(f"Translation failed with status {response.status}")
+    translated_parts: list[str] = []
+    langfuse = _get_langfuse()
 
-                buffer = b''
-                async for chunk in response.content.iter_chunked(64):
-                    buffer += chunk
-                    while b'\n' in buffer:
-                        line, buffer = buffer.split(b'\n', 1)
-                        line = line.decode('utf-8').strip()
-                        if line.startswith('data: '):
-                            data = line[6:]
-                            if data == '[DONE]':
-                                break
-                            try:
-                                chunk_data = json.loads(data)
-                                content = chunk_data['choices'][0].get('text', '')
-                                if content:
-                                    content = _fix_dandas(content)
-                                    content = _post_normalize_gu_translation(
-                                        content,
-                                        target_lang,
-                                        strip_outer=False,
-                                    )
-                                    yield content
-                            except json.JSONDecodeError:
-                                continue
+    try:
+        if not langfuse:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"{endpoint}/completions",
+                    json={
+                        "model": model_id,
+                        "prompt": prompt,
+                        "temperature": temperature,
+                        "max_tokens": max_tokens,
+                        "stream": True
+                    },
+                    timeout=aiohttp.ClientTimeout(total=60)
+                ) as response:
+                    if response.status != 200:
+                        error_text = await response.text()
+                        logger.error(f"Translation API error {response.status}: {error_text}")
+                        raise Exception(f"Translation failed with status {response.status}")
+
+                    buffer = b''
+                    async for chunk in response.content.iter_chunked(64):
+                        buffer += chunk
+                        while b'\n' in buffer:
+                            line, buffer = buffer.split(b'\n', 1)
+                            line = line.decode('utf-8').strip()
+                            if line.startswith('data: '):
+                                data = line[6:]
+                                if data == '[DONE]':
+                                    break
+                                try:
+                                    chunk_data = json.loads(data)
+                                    content = chunk_data['choices'][0].get('text', '')
+                                    if content:
+                                        content = _fix_dandas(content)
+                                        content = _post_normalize_gu_translation(
+                                            content,
+                                            target_lang,
+                                            strip_outer=False,
+                                        )
+                                        translated_parts.append(content)
+                                        yield content
+                                except json.JSONDecodeError:
+                                    continue
+            return
+
+        with langfuse.start_as_current_observation(
+            name="stream_translation",
+            as_type="generation",
+            input={
+                "source_lang": source_lang,
+                "target_lang": target_lang,
+                "text": text,
+            },
+            model=model_id,
+            metadata={
+                "translation_provider": "translategemma",
+                "model_size": model_size,
+                "stream": "true",
+                "pipeline_stage": "stream_translation",
+            },
+        ) as observation:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"{endpoint}/completions",
+                    json={
+                        "model": model_id,
+                        "prompt": prompt,
+                        "temperature": temperature,
+                        "max_tokens": max_tokens,
+                        "stream": True
+                    },
+                    timeout=aiohttp.ClientTimeout(total=60)
+                ) as response:
+                    if response.status != 200:
+                        error_text = await response.text()
+                        logger.error(f"Translation API error {response.status}: {error_text}")
+                        raise Exception(f"Translation failed with status {response.status}")
+
+                    buffer = b''
+                    async for chunk in response.content.iter_chunked(64):
+                        buffer += chunk
+                        while b'\n' in buffer:
+                            line, buffer = buffer.split(b'\n', 1)
+                            line = line.decode('utf-8').strip()
+                            if line.startswith('data: '):
+                                data = line[6:]
+                                if data == '[DONE]':
+                                    break
+                                try:
+                                    chunk_data = json.loads(data)
+                                    content = chunk_data['choices'][0].get('text', '')
+                                    if content:
+                                        content = _fix_dandas(content)
+                                        content = _post_normalize_gu_translation(
+                                            content,
+                                            target_lang,
+                                            strip_outer=False,
+                                        )
+                                        translated_parts.append(content)
+                                        yield content
+                                except json.JSONDecodeError:
+                                    continue
+            observation.update(output="".join(translated_parts))
 
     except Exception as e:
         logger.error(f"Translation streaming error: {str(e)}")

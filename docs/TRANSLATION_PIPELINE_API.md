@@ -25,7 +25,7 @@ GET /api/chat/
 
 ### When `use_translation_pipeline=true`
 
-1. **Pre-translation**: If `source_lang` is an Indian language, the query is translated to English via TranslateGemma.
+1. **Pre-translation**: If `source_lang=gu`, the query is translated to English via Anthropic Haiku.
 2. **Agent**: The agrinet agent processes the query in English and responds in English.
 3. **Post-translation**: If `target_lang` is an Indian language, the agent's response is translated to the target language via TranslateGemma and streamed to the client.
 
@@ -68,12 +68,38 @@ The client receives a stream of plain text. Concatenate chunks in order to build
 | Step | Input | Output |
 |------|-------|--------|
 | User sends | `મારી ગાયને ખાંચ છે` (Gujarati) | — |
-| Pre-translate (Gemma) | Gujarati query | `My cow has a cough` (English) |
+| Pre-translate (Anthropic Haiku) | Gujarati query | `My cow has a cough` (English) |
 | Agent | English query | English agricultural response |
 | Post-translate (Gemma) | English response | Gujarati response (streamed) |
 | Client receives | — | Gujarati text chunks |
 
 ---
+
+## Anthropic Pre-Translation
+
+Gujarati input is pre-translated to English before moderation and before the agrinet agent runs. This keeps the translation-pipeline path as English-in / English-out for the core agent flow.
+
+### Model
+
+- Default model: `claude-haiku-4-5`
+- Override with: `ANTHROPIC_PRETRANSLATION_MODEL`
+
+### Required Environment Variable
+
+| Variable | Description |
+|----------|-------------|
+| `ANTHROPIC_API_KEY` | Required for Gujarati-to-English pre-translation |
+| `ANTHROPIC_PRETRANSLATION_MODEL` | Optional override for the Haiku model alias |
+
+### Langfuse Tracing
+
+When Langfuse is configured, the translation-pipeline request keeps a single chat trace/session and records:
+
+- `query_pretranslation`: Gujarati to English via Anthropic Haiku
+- PydanticAI agent execution
+- `text_translation` / `stream_translation`: TranslateGemma output translation calls
+
+The trace output is set to the final translated user-visible response.
 
 ## TranslateGemma Model (Expected API Contract)
 
