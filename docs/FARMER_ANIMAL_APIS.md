@@ -46,6 +46,47 @@ Some fields can be null (e.g. state/district/village).
 
 Merged output uses the canonical keys above; herdman-only fields appear when present.
 
+## Banas Operated Visit API (GetOperatedVisit)
+
+A **separate backend** (Banas mobile API) returns **completed veterinary visit records** for a given animal tag. Used for visit history, not for farmer/animal master data.
+
+| Backend              | Base URL                              | Endpoint                                      |
+|----------------------|----------------------------------------|-----------------------------------------------|
+| banasmobileapi.amnex | `https://banasmobileapi.amnex.com`     | `POST /api/FarmerVisitAPIKOS/GetOperatedVisit` |
+
+**Request**
+
+- **Method:** `POST`
+- **Content-Type:** `application/json`
+- **Body:**
+  - `strApiKey` (string): API key (e.g. from Postman collection).
+  - `tagId` (string): Animal tag number (e.g. `"340129866427"`).
+
+**Response**
+
+JSON **array** of visit objects. Each object includes:
+
+- **Visit:** `VisitCode`, `VisitNoteDate`, `VisitScheduleDate`, `VisitAllocationDate`, `EntryTime`, `VisitResponseTime` (minutes), `VisitStatus` (e.g. `"Completed"`).
+- **Animal:** `animaltagnumber`, `speciesname`, `gendername`, `pregnancystatus`, `breed`, `milkstatus`, `agegroup`, `Ailment1`–`Ailment3`.
+- **Member/farmer:** `membername`, `membercode`, `memberaddress`, `membercontactno`, `societyname`, `societycode`, `societyphonenumber`.
+- **Clinical:** `disease`, `DiseaseName`, `DiseaseCode1`, `diseasegroup`, `prognosisdetails`, `medicineremarks`.
+- **Staff:** `primarydoctorname`, `doctorcode`, `doctorMobile`, `Drivername`, `vehicleregno`.
+- **Place:** `VetcentreName`, `AllotedVetCentreName`, `societyaddress`.
+- **Payment:** `PaymentOption`, `PaymentMode`, `PaymentComment`.
+- **Nested JSON strings:** `MedicinesJson` (array of medicine objects: stock, uomdoctor, uommedicine, medicinename, remarks), `LabReportsJson` (array of lab sample objects).
+
+**Example request**
+
+```bash
+curl -X POST "https://banasmobileapi.amnex.com/api/FarmerVisitAPIKOS/GetOperatedVisit" \
+  -H "Content-Type: application/json" \
+  -d '{"strApiKey": "<API_KEY>", "tagId": "340129866427"}'
+```
+
+**Spec / Postman**
+
+- Collection file: `Banas_Operated_Visit_New.postman_collection.json` (root of repo). Import into Postman to run the request; the collection contains the endpoint and example body.
+
 ## Exploration
 
 To capture raw responses from both APIs (for new phone/tag sets):
