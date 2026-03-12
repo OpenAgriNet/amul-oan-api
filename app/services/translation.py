@@ -8,6 +8,7 @@ TranslateGemma 27B base model deployed on vLLM.
 import os
 import json
 import re
+import random
 import aiohttp
 from pathlib import Path
 from typing import Literal, Optional
@@ -130,6 +131,14 @@ TRANSLATION_ENDPOINTS = {
     "27b-base": os.getenv("TRANSLATEGEMMA_27B_BASE_ENDPOINT", "http://localhost:18002/v1"),
 }
 
+# Multi-endpoint support: comma-separated list for load-balanced 27b-base
+_27b_base_ep_raw = os.getenv("TRANSLATEGEMMA_27B_BASE_ENDPOINTS", "").strip()
+TRANSLATION_ENDPOINTS_27B_BASE: list[str] = (
+    [e.strip() for e in _27b_base_ep_raw.split(",") if e.strip()]
+    if _27b_base_ep_raw
+    else [TRANSLATION_ENDPOINTS["27b-base"]]
+)
+
 DEFAULT_TRANSLATION_MODEL = os.getenv("DEFAULT_TRANSLATION_MODEL", "27b-base")
 
 TRANSLATION_MODEL_IDS = {
@@ -220,7 +229,7 @@ def _resolve_model(model_size: Optional[str], target_lang: str) -> tuple[str, Op
     Returns (model_size, endpoint, model_id).
     """
     model_size = "27b-base"
-    endpoint = TRANSLATION_ENDPOINTS.get(model_size)
+    endpoint = random.choice(TRANSLATION_ENDPOINTS_27B_BASE)
     model_id = TRANSLATION_MODEL_IDS.get(model_size)
     return model_size, endpoint, model_id
 

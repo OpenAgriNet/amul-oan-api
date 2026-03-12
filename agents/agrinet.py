@@ -2,6 +2,7 @@ from pydantic_ai import Agent, RunContext
 from helpers.utils import get_prompt, get_today_date_str
 from agents.models import LLM_MODEL
 from agents.tools import TOOLS
+from agents.tools.terms import get_ambiguity_hints_for_query
 from pydantic_ai.settings import ModelSettings
 from agents.deps import FarmerContext
 
@@ -16,7 +17,7 @@ agrinet_agent = Agent(
     tools=TOOLS,
     end_strategy='exhaustive',
     model_settings=ModelSettings(
-        max_tokens=4000,  # Reduced from 8192 to leave room for input messages and functions
+        max_tokens=4000,
         parallel_tool_calls=True,
         request_limit=10,
    )
@@ -24,15 +25,15 @@ agrinet_agent = Agent(
 
 @agrinet_agent.system_prompt(dynamic=True)
 def get_agrinet_system_prompt(ctx: RunContext):
-    # Format farmer context from JWT token
     farmer_context = ctx.deps.get_farmer_context_string()
+    ambiguity_hints = get_ambiguity_hints_for_query(ctx.deps.query)
 
     context = {
         'today_date': get_today_date_str(),
-        'farmer_context': farmer_context if farmer_context else None
+        'farmer_context': farmer_context if farmer_context else None,
+        'ambiguity_hints': ambiguity_hints if ambiguity_hints else None,
     }
 
-    # Use English-only prompt when translation pipeline is active (pre/post translation)
     if ctx.deps.use_translation_pipeline:
         return get_prompt("agrinet_system_translation_pipeline.md", context=context)
     return get_prompt("agrinet_system.md", context=context)

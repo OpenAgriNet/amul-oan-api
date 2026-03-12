@@ -1,0 +1,90 @@
+[
+  {
+    "gu_terms": [
+      "ઉથલા",
+      "uthalo",
+      "uthal",
+      "ઉથળા"
+    ],
+    "type": "hardcode",
+    "rule": "'ઉથલા' / 'uthalo' always means repeat breeder (cow not conceiving after multiple AIs), NOT vomiting or regurgitation. Answer about repeat breeder."
+  },
+  {
+    "gu_terms": [
+      "મોટું",
+      "વધારવ",
+      "બાવલ",
+      "આઉ મોટ",
+      "baval motu",
+      "au motu"
+    ],
+    "type": "ask",
+    "rule": "Udder 'મોટું/વધારવું' could mean udder development before first lactation OR udder swelling (mastitis symptom). You MUST ask before answering: 'Is the udder swollen or hard (possible infection), or are you asking how to develop the udder before calving?'"
+  },
+  {
+    "gu_terms": [
+      "શીંગ",
+      "shing",
+      "shinga",
+      "શિંગ"
+    ],
+    "type": "hardcode",
+    "rule": "'શીંગ' in an animal health context means horn (of the animal), NOT groundnut/peanut. Treat as horn unless the question is clearly about crops or fodder."
+  },
+  {
+    "gu_terms": [
+      "ગરમીમાં ન આવ",
+      "garmi ma na av",
+      "ગરમીએ ન આવ",
+      "ગરમી ન આવ"
+    ],
+    "type": "ask",
+    "rule": "'ગરમીમાં ન આવ' is ambiguous — it could mean anestrus (animal not showing estrus signs) OR heat stress from hot weather. Before answering, ask the farmer: 'શું પશુ ગરમી (estrus) ના ચિહ્નો બિલ્કુલ નથી દેખાડતું, કે ઉનાળાના ગરમ હવામાનથી પીડાય છે?'"
+  },
+  {
+    "gu_terms": [
+      "ભાવ",
+      "ભાવફેર",
+      "price",
+      "bhav"
+    ],
+    "context": "dairy milk price",
+    "type": "ask",
+    "rule": "When asked about milk price, do not give a specific union's rate directly. You MUST ask which dairy union/cooperative the farmer belongs to before answering. Ask: 'Which dairy union or cooperative are you asking about?'"
+  },
+  {
+    "gu_terms": [
+      "HF ટ્રેક",
+      "HF track",
+      "ટ્રેક નંબર",
+      "track number"
+    ],
+    "type": "hardcode",
+    "rule": "'HF ટ્રેક નંબર' is an agricultural topic — it refers to the AI (Artificial Insemination) service receipt or semen tracking number given after HF bull semen insemination. This IS within your domain. Answer that the farmer should contact their local Amul AI center or taluka dairy union for a copy of their AI service receipt, or check with the inseminator who performed the service."
+  },
+  {
+    "gu_terms": [
+      "બે આંચળ",
+      "બે ભાગ",
+      "two quarter",
+      "બે ભાગમ"
+    ],
+    "type": "ask",
+    "rule": "'બે આંચળ/ભાગમાં દૂધ ઓછું' (low milk from two quarters) could be structural/nutritional OR subclinical mastitis. Do not diagnose mastitis without first asking: 'શું આ આંચળ સોજા, ગરમ, અથવા સખત છે? દૂધમાં ગઠ્ઠા કે પાણીવાળું દૂધ દેખાય છે?'"
+  },
+  {
+    "gu_terms": [
+      "આફરો",
+      "આફરા",
+      "aafarao",
+      "aafro",
+      "aafaraa",
+      "gas aafarao",
+      "aafaraa pet",
+      "gas pet fulvu",
+      "aafaro"
+    ],
+    "type": "hardcode",
+    "rule": "આફરો / aafarao / aafro means rumen tympany (bloat) — gas accumulation in the rumen causing left flank distension. It is a DIGESTIVE condition, NOT ખરવા-મોવાસા (FMD / Foot and Mouth Disease). NEVER confuse these two. When user asks about આફરો, search for cattle bloat rumen tympany treatment and answer about gas accumulation in rumen. Do NOT answer about FMD, blisters, or mouth/hoof lesions."
+  }
+]
