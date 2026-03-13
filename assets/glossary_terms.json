@@ -1696,18 +1696,18 @@
   },
   {
     "en": "Heifer",
-    "gu": "પાડી/વોડકી",
-    "transliteration": "Padi / Vodki"
+    "gu": "પાડી",
+    "transliteration": "Padi"
   },
   {
     "en": "Heifer",
-    "gu": "પાડી/વોડકી",
-    "transliteration": "Padi / Vodki"
+    "gu": "પાડી",
+    "transliteration": "Padi"
   },
   {
     "en": "HEIFER",
-    "gu": "પાડી/વોડકી",
-    "transliteration": "Padi / Vodki"
+    "gu": "પાડી",
+    "transliteration": "Padi"
   },
   {
     "en": "Heifer Management",
@@ -1876,13 +1876,13 @@
   },
   {
     "en": "insemination (formal Sanskrit term vs farmer Gujarati term)",
-    "gu": "બીજદાન",
-    "transliteration": "insemination (formal Sanskrit term vs farmer Gujarati term)"
+    "gu": "કૃત્રિમ બીજદાન",
+    "transliteration": "Krutrim Bijdan"
   },
   {
     "en": "insemination / fertilization (livestock)",
-    "gu": "બીજ દાન",
-    "transliteration": "insemination / fertilization (livestock)"
+    "gu": "કૃત્રિમ બીજદાન",
+    "transliteration": "Krutrim Bijdan"
   },
   {
     "en": "Inter-calving Period",
@@ -2516,8 +2516,8 @@
   },
   {
     "en": "Optimal AI Time",
-    "gu": "બીજદાનનો યોગ્ય સમય",
-    "transliteration": "Bijdan no yogya samay"
+    "gu": "કૃત્રિમ બીજદાનનો યોગ્ય સમય",
+    "transliteration": "Krutrim Bijdan no yogya samay"
   },
   {
     "en": "oral dosing",
@@ -2681,13 +2681,13 @@
   },
   {
     "en": "Potassium Permanganate",
-    "gu": "પોટેશિયમ પરમેંગેનેટ",
-    "transliteration": "Potassium Permanganate"
+    "gu": "પોટેશિયમ પરમેંગેનેટના દ્રાવણ",
+    "transliteration": "Potassium Permanganate na Dravan"
   },
   {
     "en": "potassium permanganate antiseptic solution",
-    "gu": "પોટેશિયમ પરમેંગેનેટ",
-    "transliteration": "potassium permanganate antiseptic solution"
+    "gu": "પોટેશિયમ પરમેંગેનેટના દ્રાવણ",
+    "transliteration": "Potassium Permanganate na Dravan"
   },
   {
     "en": "pre-calving",
@@ -2926,8 +2926,8 @@
   },
   {
     "en": "reproduction / breeding / insemination",
-    "gu": "બીજદાન",
-    "transliteration": "reproduction / breeding / insemination"
+    "gu": "પ્રજનન / કૃત્રિમ બીજદાન",
+    "transliteration": "Prajanan / Krutrim Bijdan"
   },
   {
     "en": "Respiratory Distress",
@@ -3396,8 +3396,8 @@
   },
   {
     "en": "TDN — Total Digestible Nutrients",
-    "gu": "ટીડીએન",
-    "transliteration": "TDN — Total Digestible Nutrients"
+    "gu": "કુલ પાચ્ય પોષક તત્વ (ટીડીએન)",
+    "transliteration": "Kul Pachya Poshak Tatva (TDN)"
   },
   {
     "en": "teat",
@@ -3541,13 +3541,13 @@
   },
   {
     "en": "udder",
-    "gu": "આઉ/બાવલું",
-    "transliteration": "aau/bavlu"
+    "gu": "બાવલું",
+    "transliteration": "Bavlu"
   },
   {
     "en": "udder (whole) — teat vs udder distinction",
-    "gu": "આઉ/બાવલું",
-    "transliteration": "aau/bavlu"
+    "gu": "બાવલું",
+    "transliteration": "Bavlu"
   },
   {
     "en": "Udder / mammary gland (mastitis/disease context)",
@@ -3576,8 +3576,8 @@
   },
   {
     "en": "udder infection (mastitis context)",
-    "gu": "આઉ/બાવલાની ચેપ",
-    "transliteration": "udder infection (mastitis context)"
+    "gu": "આઉનો/બાવલાનો સોજો",
+    "transliteration": "Aau no / Bavla no Sojo"
   },
   {
     "en": "Udder Massage",
@@ -3601,8 +3601,8 @@
   },
   {
     "en": "udder vs teat distinction (aanch̲al = teat only; paaho = whole udder)",
-    "gu": "આઉ/બાવલું",
-    "transliteration": "aau/bavlu"
+    "gu": "બાવલું",
+    "transliteration": "Bavlu"
   },
   {
     "en": "Wheezing / Harsh Respiratory Sound",

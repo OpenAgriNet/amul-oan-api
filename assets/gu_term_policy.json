@@ -1,13 +1,22 @@
 {
   "preferred": {
+    "heifer": "પાડી",
     "udder": "બાવલું",
     "teat": "આંચળ",
     "deworming": "કૃમિનાશક દવા",
     "mastitis": "આઉનો/બાવલાનો સોજો",
     "artificial insemination": "કૃત્રિમ બીજદાન",
-    "breeding": "પ્રજનન"
+    "breeding": "પ્રજનન",
+    "perineal area": "મૂત્રાશય ના ભાગ",
+    "potassium permanganate antiseptic solution": "પોટેશિયમ પરમેંગેનેટના દ્રાવણ",
+    "optimal ai time": "કૃત્રિમ બીજદાનનો યોગ્ય સમય",
+    "reproduction / breeding / insemination": "પ્રજનન / કૃત્રિમ બીજદાન",
+    "tdn — total digestible nutrients": "કુલ પાચ્ય પોષક તત્વ (ટીડીએન)"
   },
   "allowed_aliases": {
+    "heifer": [
+      "પાડી"
+    ],
     "udder": [
       "આઉ",
       "બાવલું",
@@ -28,9 +37,21 @@
     ],
     "breeding": [
       "બીજદાન"
+    ],
+    "perineal area": [
+      "મૂત્રાશય ના ભાગ"
+    ],
+    "potassium permanganate antiseptic solution": [
+      "પોટેશિયમ પરમેંગેનેટના દ્રાવણ"
+    ],
+    "tdn — total digestible nutrients": [
+      "કુલ પાચ્ય પોષક તત્વ (ટીડીએન)"
     ]
   },
   "input_aliases": {
+    "heifer": [
+      "heifers"
+    ],
     "udder": [
       "mammary gland",
       "udder region",
@@ -59,18 +80,35 @@
       "breeder",
       "reproduction",
       "repeat breeder"
+    ],
+    "perineal area": [
+      "perineal region",
+      "perineal areas"
+    ],
+    "potassium permanganate antiseptic solution": [
+      "potassium permanganate solution",
+      "pp solution"
+    ],
+    "tdn — total digestible nutrients": [
+      "tdn",
+      "total digestible nutrients"
     ]
   },
   "forbidden": {
+    "માખીઓનું બીજદાન": "માખીઓનું પ્રજનન",
+    "વોડકી": "પાડી",
     "પાહો": "બાવલું",
     "ટીપાં": "ધાર",
     "ટોળા": "ધણ",
     "કીડા": "કૃમિ",
     "ગર્ભાધાન": "બીજદાન",
     "ટિક્કી": "ઇતરડી",
+    "પેરીનિયલ વિસ્તારો": "મૂત્રાશય ના ભાગ",
     "સ્તનના નિપલ્સ": "આંચળ",
     "સ્તન પ્રદેશ": "આઉ/બાવલા ના ભાગ",
     "પીપી": "પોટેશિયમ પરમેંગેનેટના દ્રાવણ",
+    "પોટેશિયમ પરમેંગેનેટ": "પોટેશિયમ પરમેંગેનેટના દ્રાવણ",
+    "ટીડીએન": "કુલ પાચ્ય પોષક તત્વ (ટીડીએન)",
     "નાની ઈજા": "નાની તિરાડો",
     "તાવના તબક્કામાં": "તાવના શરૂઆત ના તબક્કામાં",
     "ઇતરડીનાશક દવાઓ": "કીટનાશક દવાનો છંટકાવ"
