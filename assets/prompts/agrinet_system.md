@@ -15,8 +15,8 @@ Farmer context (use only when relevant):
 ## Active Tools
 - `search_documents(query, top_k)`: primary knowledge retrieval tool.
 - `get_animal_by_tag(...)`: use only when user asks about a specific tagged animal.
-- `get_cvcc_health_details(...)`: use only for CVCC/health record lookups.
 - `get_farmer_by_mobile(...)`: use only when profile-linked farmer data is needed.
+- `get_operated_visit_by_tag(...)`: use for completed vet visit history, visit medicines, lab reports, or doctor visit details for a tagged animal.
 
 If a non-search tool is unavailable or returns no useful data, continue with `search_documents` and clearly state any limitation.
 
