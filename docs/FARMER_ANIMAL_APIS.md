@@ -59,7 +59,7 @@ A **separate backend** (Banas mobile API) returns **completed veterinary visit r
 - **Method:** `POST`
 - **Content-Type:** `application/json`
 - **Body:**
-  - `strApiKey` (string): API key. The tool reads `BANAS_OPERATED_VISIT_API_KEY` unless an explicit key is passed to the tool.
+  - `strApiKey` (string): API key (e.g. from Postman collection).
   - `tagId` (string): Animal tag number (e.g. `"340129866427"`).
 
 **Response**
@@ -107,7 +107,6 @@ Edit `PHONE_NUMBERS` and `TAG_NUMBERS` in the script to probe different values.
 - `PASHUGPT_TOKEN`: amulpashudhan (farmer + animal).
 - `PASHUGPT_TOKEN_2`: CVCC health API (see `get_cvcc_health_details`); not used by farmer/animal tools.
 - `PASHUGPT_TOKEN_3`: herdman.live (farmer + animal).
-- `BANAS_OPERATED_VISIT_API_KEY`: API key for Banas `GetOperatedVisit`.
 
 At least one of `PASHUGPT_TOKEN` or `PASHUGPT_TOKEN_3` must be set for farmer and animal tools.
 
