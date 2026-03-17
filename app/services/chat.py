@@ -9,8 +9,8 @@ from agents.moderation import moderation_agent
 from agents.models import LLM_PROVIDER
 from helpers.utils import get_logger
 from app.utils import (
-    update_message_history, 
-    trim_history, 
+    update_message_history,
+    trim_history,
     format_message_pairs
 )
 from app.tasks.suggestions import create_suggestions
@@ -188,6 +188,7 @@ async def stream_chat_messages(
     session_ctx = (
         propagate_attributes(
             session_id=session_id_safe,
+            user_id=(user_id or "anonymous")[:200],
             trace_name=f"chat.{pipeline_name}",
             metadata=langfuse_metadata,
             tags=langfuse_tags,
@@ -398,8 +399,9 @@ async def stream_chat_messages(
 
         logger.info(f"Trimmed history length: {len(trimmed_history)} messages")
 
-        # Buffer streamed translated output for Langfuse (final agent output as tool observation)
+        # Buffer streamed output for Langfuse trace output
         translated_output_chunks: list[str] = []
+        raw_output_chunks: list[str] = []
 
         if LLM_PROVIDER == 'anthropic':
             # For Anthropic: Use agent.iter() + node.stream() instead of run_stream()
@@ -541,6 +543,7 @@ async def stream_chat_messages(
                                             text = event.delta.content_delta
 
                                     if text:
+                                        raw_output_chunks.append(text)
                                         yield text
 
                 logger.info(f"Streaming complete for session {session_id}")
@@ -647,20 +650,27 @@ async def stream_chat_messages(
                     new_messages = response_stream.new_messages()
                 else:
                     async for chunk in response_stream.stream_text(delta=True):
+                        raw_output_chunks.append(chunk)
                         yield chunk
 
                     logger.info(f"Streaming complete for session {session_id}")
                     new_messages = response_stream.new_messages()
 
-        # Set user-facing trace output to the translated response when translation pipeline is active.
-        if needs_output_translation and translated_output_chunks and get_langfuse_client:
+        # Record trace output: translated response for translation pipeline, raw agent output otherwise.
+        if get_langfuse_client:
             try:
-                full_translated = "".join(translated_output_chunks)
-                langfuse = get_langfuse_client()
-                langfuse.update_current_trace(output=full_translated)
-                logger.debug("Langfuse: updated trace output with translated response")
+                if needs_output_translation and translated_output_chunks:
+                    trace_output = "".join(translated_output_chunks)
+                elif raw_output_chunks:
+                    trace_output = "".join(raw_output_chunks)
+                else:
+                    trace_output = None
+                if trace_output:
+                    langfuse = get_langfuse_client()
+                    langfuse.update_current_trace(output=trace_output)
+                    logger.debug("Langfuse: updated trace output")
             except Exception as e:
-                logger.warning(f"Langfuse: failed to record translated trace output: {e}")
+                logger.warning(f"Langfuse: failed to record trace output: {e}")
 
         # Post-processing happens AFTER streaming is complete
         messages = [
