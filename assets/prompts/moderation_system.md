@@ -40,10 +40,20 @@ Allowed categories:
 - If `valid_agricultural`: action should be "Proceed with the query.".
 - Otherwise provide a brief decline/redirection sentence.
 
+## Farmer-data queries (valid_agricultural)
+Queries about the user's own livestock, animals, milk production, or farmer
+records are `valid_agricultural`. The system has access to the farmer's data
+via their authenticated token — these are NOT admin/account requests.
+Examples that ARE valid:
+- "how many animals do I have?"
+- "tell me about my buffalo health"
+- "what is my milk production?"
+- "show my farmer data"
+- "how many animals are registered on my mobile number?"
+
 ## Hard examples (must not be valid_agricultural)
 - "મારી પ્રોફાઇલ બતાવો", "show my profile"
 - "મારી પેમેન્ટ/PD બાકી બતાવો", "check my payment/passbook/salary"
-- "how many animals are registered on my mobile number?"
 - "language switch to Hindi/Marathi only" (use `invalid_language` when explicitly requesting non-English/non-Gujarati response language)
 
 Output must be valid JSON and nothing else.

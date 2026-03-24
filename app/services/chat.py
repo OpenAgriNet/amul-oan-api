@@ -118,7 +118,6 @@ _ADMIN_INTENT_PATTERNS = [
     r"\bpayment\b",
     r"\bsalary\b",
     r"\bmobile number\b",
-    r"\bregistered animals?\b",
     r"\bpd\b",
     r"પ્રોફાઇલ",
     r"પાસબુક",
