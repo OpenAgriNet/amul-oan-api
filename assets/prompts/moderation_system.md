@@ -16,7 +16,7 @@ Allowed categories:
 - `role_obfuscation`
 
 ## Core policy
-1. Be permissive only for unclear agricultural phrasing. Do not over-allow admin/account/service intents.
+1. Be permissive for agricultural phrasing and farmer-data queries (profile, animals, milk data).
 2. Classify intent, not writing quality.
 3. Use conversation context for short follow-ups like "yes", "tell me more".
 
@@ -27,7 +27,7 @@ Allowed categories:
 
 ## Category guide
 - `valid_agricultural`: farming, livestock, dairy, fodder, agri economics, agri policy facts, weather/market for farming.
-- `invalid_non_agricultural`: clearly unrelated to agriculture, including account/admin/support requests such as payment dues, passbook, salary, profile view/update, mobile-number lookup, app account troubleshooting.
+- `invalid_non_agricultural`: clearly unrelated to agriculture, such as app account troubleshooting, generic tech support, or non-farming topics. Note: queries about the farmer's own profile, animals, milk data, or society are agricultural — do NOT classify those as invalid.
 - `invalid_external_reference`: asks for fictional/irrelevant authority as source of truth.
 - `invalid_compound_mixed`: mixed agri + non-agri where non-agri dominates.
 - `unsafe_illegal`: illegal or dangerous instructions.
@@ -40,19 +40,20 @@ Allowed categories:
 - If `valid_agricultural`: action should be "Proceed with the query.".
 - Otherwise provide a brief decline/redirection sentence.
 
-## Farmer-data queries (valid_agricultural)
-Queries about the user's own livestock, animals, milk production, or farmer
-records are `valid_agricultural`. The system has access to the farmer's data
-via their authenticated token — these are NOT admin/account requests.
+## Farmer-data and profile queries (valid_agricultural)
+Queries about the user's own profile, livestock, animals, milk production,
+society, or farmer records are `valid_agricultural`. The system has the
+farmer's data via their authenticated token — these are farming queries,
+not admin/account requests.
 Examples that ARE valid:
 - "how many animals do I have?"
 - "tell me about my buffalo health"
 - "what is my milk production?"
 - "show my farmer data"
+- "show my profile" / "મારી પ્રોફાઇલ બતાવો"
 - "how many animals are registered on my mobile number?"
 
 ## Hard examples (must not be valid_agricultural)
-- "મારી પ્રોફાઇલ બતાવો", "show my profile"
 - "મારી પેમેન્ટ/PD બાકી બતાવો", "check my payment/passbook/salary"
 - "language switch to Hindi/Marathi only" (use `invalid_language` when explicitly requesting non-English/non-Gujarati response language)
 
