@@ -13,18 +13,20 @@ logger = get_logger(__name__)
 async def get_cvcc_health_details(
     tag_no: str,
     token_no: Optional[str] = None,
-    vendor_no: str = "9999999"
+    vendor_no: str = "9999999",
+    society_name: str | None = None
 ) -> str:
     """
     Fetch health-related information for an animal by tag number. This returns health-specific 
     details including treatments, vaccinations, deworming records, milk yield, farmer information, 
     and other health metrics. Use this tool when users ask about animal health, treatments, 
-    vaccinations, or medical history.
+    vaccinations, or medical history. This tool is only available if the farmer belongs to SabarKaira society.
     
     Args:
         tag_no: The tag number of the animal to fetch health details for (required)
         token_no: Token number for CVCC API authentication (optional, defaults to PASHUGPT_TOKEN_2 env var)
         vendor_no: Vendor number for CVCC API (default: 9999999)
+        society_name: The name of the society, the farmer belongs to (required, only if it is available)
         
     Returns:
         str: Raw text response from the CVCC API containing health details including Tag, 
@@ -38,6 +40,9 @@ async def get_cvcc_health_details(
             token_no = os.getenv('PASHUGPT_TOKEN_2')
             if not token_no:
                 raise ValueError("PASHUGPT_TOKEN_2 environment variable is not set and token_no not provided")
+
+        if society_name != "SabarKaira":
+            return "The farmer doesn't belong to \"SabarKaira\" society."
         
         api_url = "https://api.amuldairy.com/ai_cattle_dtl.php"
         

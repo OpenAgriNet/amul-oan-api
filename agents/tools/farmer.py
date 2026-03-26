@@ -12,7 +12,7 @@ from agents.tools.farmer_animal_backends import (
     merge_farmer_records,
     normalize_phone,
 )
-from helpers.utils import get_logger
+from helpers.utils import get_logger, is_from_society
 
 logger = get_logger(__name__)
 
@@ -58,7 +58,7 @@ async def get_farmer_data_by_mobile(mobile_number: str) -> Optional[List[Dict[st
         except Exception as e:
             logger.warning(f"amulpashudhan farmer API error for {mobile}: {e}")
 
-    if token3:
+    if token3 and is_from_society(records, "Mehsana"):
         try:
             data = await fetch_farmer_herdman(mobile, token3)
             if data:

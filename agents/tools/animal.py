@@ -18,7 +18,7 @@ from agents.tools.farmer_animal_backends import (
 logger = get_logger(__name__)
 
 
-async def get_animal_by_tag(tag_no: str) -> str:
+async def get_animal_by_tag(tag_no: str, society_name: str | None = None) -> str:
     """
     Fetch animal information by tag number. Returns details including breed,
     milking stage, pregnancy stage, lactation, date of birth, and last
@@ -26,6 +26,7 @@ async def get_animal_by_tag(tag_no: str) -> str:
 
     Args:
         tag_no: The tag number of the animal (required).
+        society_name: The name of the society, the farmer belongs to (required, only if it is available)
 
     Returns:
         str: Formatted JSON string with animal details, or a clear message if no data found.
@@ -52,7 +53,7 @@ async def get_animal_by_tag(tag_no: str) -> str:
         except Exception as e:
             logger.warning(f"amulpashudhan animal API error for tag {tag}: {e}")
 
-    if token3:
+    if token3 and society_name == "Mehsana":
         try:
             fallback = await fetch_animal_herdman(tag, token3)
             if fallback:
