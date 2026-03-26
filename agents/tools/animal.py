@@ -18,7 +18,7 @@ from agents.tools.farmer_animal_backends import (
 logger = get_logger(__name__)
 
 
-async def get_animal_by_tag(tag_no: str, society_name: str | None = None) -> str:
+async def get_animal_by_tag(tag_no: str, society_name: Optional[str] = None) -> str:
     """
     Fetch animal information by tag number. Returns details including breed,
     milking stage, pregnancy stage, lactation, date of birth, and last

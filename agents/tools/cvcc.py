@@ -14,7 +14,7 @@ async def get_cvcc_health_details(
     tag_no: str,
     token_no: Optional[str] = None,
     vendor_no: str = "9999999",
-    society_name: str | None = None
+    society_name: Optional[str] = None
 ) -> str:
     """
     Fetch health-related information for an animal by tag number. This returns health-specific 
