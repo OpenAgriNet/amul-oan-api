@@ -29,8 +29,8 @@ class AnimalRecord(BaseModel):
 
 
 class FarmerRecord(BaseModel):
-    """Single farmer record from PashuGPT APIs."""
-    model_config = ConfigDict(extra="allow")
+    """Single farmer record from PashuGPT APIs. Accepts both camelCase and snake_case keys."""
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
 
     farmerName: Optional[str] = None
     societyName: Optional[str] = None
@@ -38,6 +38,24 @@ class FarmerRecord(BaseModel):
     totalAnimals: Optional[int] = None
     tagNo: Optional[str] = None
     tagNumbers: Optional[str] = None
+
+    @classmethod
+    def model_validate(cls, obj, **kwargs):
+        """Accept snake_case keys from FarmerModel.model_dump() and map to camelCase."""
+        if isinstance(obj, dict):
+            mapped = dict(obj)
+            _SNAKE_TO_CAMEL = {
+                "farmer_name": "farmerName",
+                "society_name": "societyName",
+                "farmer_code": "farmerCode",
+                "total_animals": "totalAnimals",
+                "animal_tags": "tagNo",
+            }
+            for snake, camel in _SNAKE_TO_CAMEL.items():
+                if snake in mapped and camel not in mapped:
+                    mapped[camel] = mapped.pop(snake)
+            obj = mapped
+        return super().model_validate(obj, **kwargs)
 
 
 class FarmerSummary(BaseModel):
@@ -59,7 +77,9 @@ class FarmerDataEnvelope(BaseModel):
     def from_records(cls, records: list, source: str = "api") -> "FarmerDataEnvelope":
         """Create envelope from raw record dicts or Pydantic models."""
         farmers = [
-            FarmerRecord.model_validate(r if isinstance(r, dict) else r.model_dump())
+            FarmerRecord.model_validate(
+                r if isinstance(r, dict) else r.model_dump()
+            )
             for r in records
         ]
         return cls(
