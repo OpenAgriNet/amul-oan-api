@@ -1,5 +1,6 @@
 import asyncio
 import json
+from types import CoroutineType
 from typing import Any
 
 from agents.tools.animal import get_animal_data_by_tag
@@ -334,7 +335,7 @@ async def _get_animal_context_bundle(
     list[BanasOperatedVisitModel] | None,
     CvccHealthResponseModel | None,
 ]:
-    tasks = [get_animal_data_by_tag(tag)]
+    tasks: list[CoroutineType[Any, Any, AnimalModel | list[BanasOperatedVisitModel] | CvccHealthResponseModel | None]] = [get_animal_data_by_tag(tag)]
     if include_banas_visit:
         tasks.append(fetch_banas_operated_visit(tag))
     if include_cvcc_health:
@@ -350,7 +351,7 @@ async def _get_animal_context_bundle(
     cvcc_health = None
     if include_cvcc_health:
         cvcc_health = results[result_index]
-    return tag, animal, banas_visits, cvcc_health
+    return tag, animal, banas_visits, cvcc_health  # ty: ignore
 
 
 async def get_farmer_full_data_by_mobile(mobile_number: str) -> str:

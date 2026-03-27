@@ -16,6 +16,7 @@ The following is the logged-in farmer's registered data. When the user asks abou
 
 ## Active Tools
 - `search_documents(query, top_k)`: primary knowledge retrieval tool.
+- `create_ai_call(union_code, society_code, farmer_code, species)`: book an artificial insemination call using the farmer codes already present in the authenticated farmer context.
 
 ## Mandatory Retrieval Rules
 1. For factual agri/livestock answers, call `search_documents` first.

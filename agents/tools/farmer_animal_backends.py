@@ -18,6 +18,7 @@ from app.core.cache import (
     get_cached_api_response,
     set_cached_api_response,
 )
+from app.models.ai_call import AICallRequestModel, AICallResponseModel
 from app.config import settings
 from app.models.animal import AnimalModel
 from app.models.banas_visit import BanasOperatedVisitModel
@@ -405,6 +406,66 @@ async def fetch_cvcc_health_details(
     except Exception as e:
         logger.error(
             f"[CVCC({tag_no})] :: Request failed, due to error {str(e)}",
+            exc_info=True,
+        )
+
+
+async def create_ai_call_api(
+    request: AICallRequestModel, token: str
+) -> AICallResponseModel | None:
+    """Creates an artificial insemination call and returns the assigned technician."""
+    api_url = f"{BASE_AMULPASHUDHAN}/CreateAICall"
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(
+                api_url,
+                params=request.to_query_params(),
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            response.raise_for_status()
+            logger.info(
+                "[CreateAICall(%s,%s,%s,%s)] :: Response successfully recieved.",
+                request.union_code,
+                request.society_code,
+                request.farmer_code,
+                request.species.value,
+            )
+        response_json = response.json()
+        if not isinstance(response_json, dict):
+            raise Exception("Not a valid dict provided in the response.")
+        return AICallResponseModel.model_validate(
+            response_json, extra="ignore", by_alias=True
+        )
+    except httpx.HTTPStatusError as e:
+        logger.error(
+            "[CreateAICall(%s,%s,%s,%s)] :: Request failed with status code %s, and message = %s",
+            request.union_code,
+            request.society_code,
+            request.farmer_code,
+            request.species.value,
+            e.response.status_code,
+            e.response.text,
+            exc_info=True,
+        )
+    except json.JSONDecodeError as e:
+        logger.error(
+            "[CreateAICall(%s,%s,%s,%s)] :: Response didn't gave a valid json, failed due to decoding error %s",
+            request.union_code,
+            request.society_code,
+            request.farmer_code,
+            request.species.value,
+            str(e),
+            exc_info=True,
+        )
+    except Exception as e:
+        logger.error(
+            "[CreateAICall(%s,%s,%s,%s)] :: Request failed, due to error %s",
+            request.union_code,
+            request.society_code,
+            request.farmer_code,
+            request.species.value,
+            str(e),
             exc_info=True,
         )
 
