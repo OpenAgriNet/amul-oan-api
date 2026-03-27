@@ -1,6 +1,7 @@
 # sva/helpers/utils.py
 
 from app.models.farmer import FarmerModel
+from app.models.union import UnionName
 import os
 import re
 from typing import List, Dict
@@ -34,6 +35,13 @@ def get_today_date_str() -> str:
     ist = pytz.timezone('Asia/Kolkata')
     today = datetime.now(ist)
     return today.strftime('%A, %d %B %Y')
+
+
+def get_today_datetime_str() -> str:
+    """Get current date and time as a string in Asia/Kolkata."""
+    ist = pytz.timezone('Asia/Kolkata')
+    now = datetime.now(ist)
+    return now.strftime('%A, %d %B %Y %I:%M %p %Z')
 
 
 def get_logger(name):
@@ -269,3 +277,7 @@ def upload_audio_to_s3(audio_base64: str, session_id: str, bucket_name: str | No
 def is_from_society(records: list[FarmerModel], society_name: str) -> bool:
     return any([record.society_name == society_name for record in records])
 
+
+def is_from_union(records: list[FarmerModel], union_name: UnionName) -> bool:
+    print("Union Names:", [record.union_name for record in records])
+    return any(record.union_name == union_name.value for record in records)

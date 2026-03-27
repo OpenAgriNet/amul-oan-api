@@ -303,6 +303,8 @@ async def token_for_phone(
     farmer_records = None
     try:
         farmer_records = await get_farmer_data_by_mobile(phone)
+        if farmer_records is not None:
+            farmer_records = [record.model_dump() for record in farmer_records]
     except Exception as e:
         logger.warning(f"Failed to fetch farmer data for {phone}: {e}")
 

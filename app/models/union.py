@@ -1,0 +1,25 @@
+from enum import Enum
+
+
+class UnionName(str, Enum):
+    BANAS = "banas"
+    ANAS = "anas"
+    SABARKAIRA = "kaira"
+    SUMUL = "sumul"
+    PANCHMAHAL = "panchmahal"
+    BARODA = "baroda"
+    VALSAD = "valsad"
+    RAJKOT = "rajkot"
+    BHAVNAGAR = "bhavnagar"
+    MEHSANA = "mehsana"
+    SURENDRANAGAR = "surendranagar"
+    JAMNAGAR = "jamnagar"
+    GANDHINAGAR = "gandhinagar"
+    BHARUCH = "bharuch"
+    KUTCH = "kutch"
+    BOTAD = "botad"
+    JUNAGADH = "junagadh"
+    AMRELI = "amreli"
+    MORBI = "morbi"
+    PORBANDAR = "porbandar"
+    AHMEDABAD = "ahmedabad"

@@ -11,7 +11,8 @@ from agents.tools.farmer_animal_backends import (
     normalize_phone, merge_farmer_data,
 )
 from app.models.farmer import FarmerModel
-from helpers.utils import get_logger, is_from_society
+from app.models.union import UnionName
+from helpers.utils import get_logger, is_from_union
 
 logger = get_logger(__name__)
 
@@ -48,7 +49,7 @@ async def get_farmer_data_by_mobile(mobile_number: str) -> list[FarmerModel] | N
         except Exception as e:
             logger.warning(f"amulpashudhan farmer API error for {mobile}: {e}")
 
-    if token3 and is_from_society(records, "mehsana"):
+    if token3 and is_from_union(records, UnionName.MEHSANA):
         try:
             data = await fetch_farmer_herdman(mobile, token3)
             if data:

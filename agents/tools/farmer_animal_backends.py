@@ -18,7 +18,10 @@ from app.core.cache import (
     get_cached_api_response,
     set_cached_api_response,
 )
+from app.config import settings
 from app.models.animal import AnimalModel
+from app.models.banas_visit import BanasOperatedVisitModel
+from app.models.cvcc import CvccHealthResponseModel
 from app.models.farmer import FarmerModel, FarmerHerdmanModel
 from helpers.utils import get_logger
 
@@ -26,6 +29,8 @@ logger = get_logger(__name__)
 
 BASE_AMULPASHUDHAN = "https://api.amulpashudhan.com/configman/v1/PashuGPT"
 BASE_HERDMAN = "https://herdman.live/apis/api"
+BASE_BANAS_MOBILE = "https://banasmobileapi.amnex.com/api/FarmerVisitAPIKOS"
+BASE_CVCC = "https://api.amuldairy.com/ai_cattle_dtl.php"
 
 
 def normalize_phone(mobile: str) -> str:
@@ -34,6 +39,15 @@ def normalize_phone(mobile: str) -> str:
     if digits.startswith("91") and len(digits) > 10:
         digits = digits[2:].lstrip("0") or digits
     return digits.lstrip("0") or mobile
+
+
+def _load_json_lenient(payload: str) -> Any:
+    try:
+        return json.loads(payload)
+    except json.JSONDecodeError:
+        cleaned = re.sub(r",\s*,", ",", payload)
+        cleaned = re.sub(r",\s*(?=[}\]])", "", cleaned)
+        return json.loads(cleaned)
 
 
 # --- Farmer ---
@@ -253,6 +267,148 @@ async def fetch_animal_amulpashudhan(tag_no: str, token: str) -> AnimalModel | N
         )
 
 
+async def fetch_banas_operated_visit(
+    tag_no: str,
+) -> list[BanasOperatedVisitModel] | None:
+    """Returns operated visit list for a Banas animal tag or None on 204/error/empty."""
+    api_key = settings.banas_mobile_api_key
+    if not api_key:
+        logger.warning("BANAS_MOBILE_API_KEY is not set")
+        return None
+
+    cache_key = build_api_cache_key("banas_operated_visit", tag_no)
+    cache_hit, cached_payload = await get_cached_api_response(cache_key)
+    if cache_hit:
+        if cached_payload is None:
+            return None
+        if not isinstance(cached_payload, list):
+            logger.warning(
+                "[Cache(%s)] :: Cached payload is not a valid list, refetching.",
+                cache_key,
+            )
+        else:
+            try:
+                return [
+                    BanasOperatedVisitModel.model_validate(
+                        data, extra="ignore", by_alias=True
+                    )
+                    for data in cached_payload
+                ]
+            except Exception as e:
+                logger.warning(
+                    "[Cache(%s)] :: Failed to validate cached banas visit payload, refetching. error=%s",
+                    cache_key,
+                    str(e),
+                )
+
+    url = f"{BASE_BANAS_MOBILE}/GetOperatedVisit"
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(
+                url,
+                headers={"Content-Type": "application/json"},
+                json={"strApiKey": api_key, "tagId": tag_no},
+            )
+            response.raise_for_status()
+            logger.info(f"[BanasOperatedVisit({tag_no})] :: Response successfully recieved.")
+        if response.status_code == 204 or not (response.text or "").strip():
+            await set_cached_api_response(cache_key, None)
+            return None
+        response_json = response.json()
+        if not isinstance(response_json, list):
+            raise Exception("Not a valid list provided in the response.")
+        await set_cached_api_response(cache_key, response_json)
+        return [
+            BanasOperatedVisitModel.model_validate(
+                data, extra="ignore", by_alias=True
+            )
+            for data in response_json
+        ]
+    except httpx.HTTPStatusError as e:
+        logger.error(
+            f"[BanasOperatedVisit({tag_no})] :: Request failed with status code {e.response.status_code}, and message = {e.response.text}",
+            exc_info=True,
+        )
+    except json.JSONDecodeError as e:
+        logger.error(
+            f"[BanasOperatedVisit({tag_no})] :: Response didn't gave a valid json, failed due to decoding error {str(e)}",
+            exc_info=True,
+        )
+    except Exception as e:
+        logger.error(
+            f"[BanasOperatedVisit({tag_no})] :: Request failed, due to error {str(e)}",
+            exc_info=True,
+        )
+
+
+async def fetch_cvcc_health_details(
+    tag_no: str,
+    token: str,
+    vendor_no: str = "9999999",
+) -> CvccHealthResponseModel | None:
+    """Returns validated CVCC health details or None on 204/error/empty."""
+    cache_key = build_api_cache_key("cvcc_health", tag_no)
+    cache_hit, cached_payload = await get_cached_api_response(cache_key)
+    if cache_hit:
+        if cached_payload is None:
+            return None
+        if not isinstance(cached_payload, dict):
+            logger.warning(
+                "[Cache(%s)] :: Cached payload is not a valid dict, refetching.",
+                cache_key,
+            )
+        else:
+            try:
+                return CvccHealthResponseModel.model_validate(
+                    cached_payload, extra="ignore", by_alias=True
+                )
+            except Exception as e:
+                logger.warning(
+                    "[Cache(%s)] :: Failed to validate cached cvcc payload, refetching. error=%s",
+                    cache_key,
+                    str(e),
+                )
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(
+                BASE_CVCC,
+                headers={"Content-Type": "application/json"},
+                json={
+                    "token_no": token,
+                    "vendor_no": vendor_no,
+                    "tag_no": tag_no,
+                },
+            )
+            response.raise_for_status()
+            logger.info(f"[CVCC({tag_no})] :: Response successfully recieved.")
+        if response.status_code == 204 or not (response.text or "").strip():
+            await set_cached_api_response(cache_key, None)
+            return None
+        response_json = _load_json_lenient(response.text)
+        if not isinstance(response_json, dict):
+            raise Exception("Not a valid dict provided in the response.")
+        await set_cached_api_response(cache_key, response_json)
+        return CvccHealthResponseModel.model_validate(
+            response_json, extra="ignore", by_alias=True
+        )
+    except httpx.HTTPStatusError as e:
+        logger.error(
+            f"[CVCC({tag_no})] :: Request failed with status code {e.response.status_code}, and message = {e.response.text}",
+            exc_info=True,
+        )
+    except json.JSONDecodeError as e:
+        logger.error(
+            f"[CVCC({tag_no})] :: Response didn't gave a valid json, failed due to decoding error {str(e)}",
+            exc_info=True,
+        )
+    except Exception as e:
+        logger.error(
+            f"[CVCC({tag_no})] :: Request failed, due to error {str(e)}",
+            exc_info=True,
+        )
+
+
 def _normalize_herdman_animal(raw: Dict[str, Any]) -> Dict[str, Any]:
     """Map herdman Animal item to canonical keys."""
     # herdman: tagno, Animal Type, Breed, Milking Stage, DOB, Currant Lactation no, Last AI, Last PD, Last Calvingdate, etc.
@@ -332,7 +488,10 @@ def merge_farmer_data(data: list[FarmerModel]) -> list[FarmerModel]:
         key = f"{farmer.society_name}_{farmer.farmer_name}"
         if key in seen:
             farmer_1 = seen[key]
-            seen[key] = _merge_models(farmer_1, farmer, FarmerModel)
+            merged = _merge_models(farmer_1, farmer, FarmerModel)
+            if farmer_1.union_name is not None:
+                merged.union_name = farmer_1.union_name
+            seen[key] = merged
         else:
             seen[key] = farmer
     return list(seen.values())

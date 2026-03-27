@@ -90,6 +90,7 @@ class Settings(BaseSettings):
     inference_api_key: Optional[str] = None
     gemini_api_key: Optional[str] = None
     mapbox_api_token: Optional[str] = None
+    banas_mobile_api_key: Optional[str] = os.getenv("BANAS_MOBILE_API_KEY")
 
     # AWS Configuration
     aws_access_key_id: Optional[str] = None
