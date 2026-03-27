@@ -57,8 +57,11 @@ class FarmerDataEnvelope(BaseModel):
 
     @classmethod
     def from_records(cls, records: list, source: str = "api") -> "FarmerDataEnvelope":
-        """Create envelope from raw record dicts."""
-        farmers = [FarmerRecord.model_validate(r) if isinstance(r, dict) else r for r in records]
+        """Create envelope from raw record dicts or Pydantic models."""
+        farmers = [
+            FarmerRecord.model_validate(r if isinstance(r, dict) else r.model_dump())
+            for r in records
+        ]
         return cls(
             farmers=farmers,
             fetchedAt=datetime.now(timezone.utc).isoformat(),
