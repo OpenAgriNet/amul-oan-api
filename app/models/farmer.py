@@ -61,7 +61,7 @@ class FarmerModel(BaseModel):
         mode="before",
     )
     def transform_pronouns(cls, pronoun: str) -> str:
-        return " ".join([w.lower().strip() for w in pronoun.split()])
+        return pronoun.strip().lower()
 
 
 class FarmerHerdmanModel(BaseModel):

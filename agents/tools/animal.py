@@ -12,13 +12,12 @@ from agents.tools.farmer_animal_backends import (
     fetch_animal_amulpashudhan,
     fetch_animal_herdman,
     merge_animal_data,
-    normalize_tag,
 )
 
 logger = get_logger(__name__)
 
 
-async def get_animal_by_tag(tag_no: str, society_name: Optional[str] = None) -> str:
+async def get_animal_by_tag(tag: str, society_name: Optional[str] = None) -> str:
     """
     Fetch animal information by tag number. Returns details including breed,
     milking stage, pregnancy stage, lactation, date of birth, and last
@@ -32,7 +31,6 @@ async def get_animal_by_tag(tag_no: str, society_name: Optional[str] = None) -> 
         str: Formatted JSON string with animal details, or a clear message if no data found.
              Handles API failures, 204 No Content, and empty responses.
     """
-    tag = normalize_tag(tag_no)
     if not tag:
         return "Please provide a valid tag number."
 

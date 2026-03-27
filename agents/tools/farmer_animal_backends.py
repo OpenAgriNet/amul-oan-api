@@ -30,11 +30,6 @@ def normalize_phone(mobile: str) -> str:
     return digits.lstrip("0") or mobile
 
 
-def normalize_tag(tag_no: str) -> str:
-    """Strip whitespace from tag number."""
-    return (tag_no or "").strip()
-
-
 # --- Farmer ---
 
 
