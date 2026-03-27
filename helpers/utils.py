@@ -279,5 +279,4 @@ def is_from_society(records: list[FarmerModel], society_name: str) -> bool:
 
 
 def is_from_union(records: list[FarmerModel], union_name: UnionName) -> bool:
-    print("Union Names:", [record.union_name for record in records])
     return any(record.union_name == union_name.value for record in records)

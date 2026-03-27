@@ -10,12 +10,12 @@ import hashlib
 from typing import Optional
 
 from app.core.cache import cache
-from agents.models.farmer import FarmerDataEnvelope, FarmerRecord
+from agents.models.farmer import FarmerDataEnvelope
 from helpers.utils import get_logger
 
 logger = get_logger(__name__)
 
-FARMER_CACHE_TTL = 60 * 60 * 24  # 24 hours
+FARMER_CACHE_TTL = 60 * 60 * 24 * 17  # 17 days
 FARMER_CACHE_NAMESPACE = "farmer"
 
 

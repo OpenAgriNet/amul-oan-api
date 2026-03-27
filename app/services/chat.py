@@ -216,13 +216,16 @@ async def stream_chat_messages(
         request_id = session_id
         # Generate a unique content ID for this query
         content_id = f"query_{session_id}_{len(history)//2 + 1}"
-        #logger.info("request_id=%s user_info=%s", request_id, user_info)
+        logger.info("request_id=%s user_info=%s", request_id, user_info)
 
-        # Extract farmer context: prefer JWT 'data' field; if JWT has 'phone' and no data, fetch by phone
-        #farmer_data = user_info.get('data') if user_info else None
-        #if not farmer_data and user_info and user_info.get('phone'):
-        farmer_data = await get_farmer_full_data_by_mobile(user_info['phone'])
-        logger.info(f"[request_id=%s] :: FarmerContext: {farmer_data}")
+        # Extract farmer context from phone in JWT via cache-first fetch
+        farmer_data = ""
+        if user_info and user_info.get('phone'):
+            try:
+                farmer_data = await get_farmer_full_data_by_mobile(user_info['phone'])
+                logger.info(f"request_id={request_id} farmer_context_length={len(farmer_data)}")
+            except Exception as e:
+                logger.warning(f"request_id={request_id} farmer_context_fetch_failed={e}")
 
         processing_query = query
         processing_lang = target_lang
