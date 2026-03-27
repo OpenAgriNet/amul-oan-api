@@ -13,6 +13,12 @@ from typing import Any, Dict, Optional
 import httpx
 from pydantic import ValidationError
 
+from app.core.cache import (
+    build_api_cache_key,
+    get_cached_api_response,
+    set_cached_api_response,
+)
+from app.models.animal import AnimalModel
 from app.models.farmer import FarmerModel, FarmerHerdmanModel
 from helpers.utils import get_logger
 
@@ -37,6 +43,29 @@ async def fetch_farmer_amulpashudhan(
     mobile: str, token: str
 ) -> list[FarmerModel] | None:
     """Returns list of farmer records or None on 204/error/empty."""
+    cache_key = build_api_cache_key("amulpashudhan_farmer", mobile)
+    cache_hit, cached_payload = await get_cached_api_response(cache_key)
+    if cache_hit:
+        if cached_payload is None:
+            return None
+        if not isinstance(cached_payload, list):
+            logger.warning(
+                "[Cache(%s)] :: Cached payload is not a valid list, refetching.",
+                cache_key,
+            )
+        else:
+            try:
+                return [
+                    FarmerModel.model_validate(data, extra="ignore", by_alias=True)
+                    for data in cached_payload
+                ]
+            except Exception as e:
+                logger.warning(
+                    "[Cache(%s)] :: Failed to validate cached farmer payload, refetching. error=%s",
+                    cache_key,
+                    str(e),
+                )
+
     url = f"{BASE_AMULPASHUDHAN}/GetFarmerDetailsByMobile?mobileNumber={mobile}"
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
@@ -49,9 +78,13 @@ async def fetch_farmer_amulpashudhan(
             )
             response.raise_for_status()
             logger.info(f"[AmulPashudhan({mobile})] :: Response successfully recieved.")
+            if response.status_code == 204 or not (response.text or "").strip():
+                await set_cached_api_response(cache_key, None)
+                return None
             r_json = response.json()
             if not isinstance(r_json, list):
                 raise Exception("Not a valid list provided in the response.")
+            await set_cached_api_response(cache_key, r_json)
             return [
                 FarmerModel.model_validate(data, extra="ignore", by_alias=True)
                 for data in r_json
@@ -75,6 +108,29 @@ async def fetch_farmer_amulpashudhan(
 
 async def fetch_farmer_herdman(mobile: str, token: str) -> list[FarmerModel] | None:
     """Returns list of farmer records or None on error/empty."""
+    cache_key = build_api_cache_key("herdman_farmer", mobile)
+    cache_hit, cached_payload = await get_cached_api_response(cache_key)
+    if cache_hit:
+        if cached_payload is None:
+            return None
+        if not isinstance(cached_payload, dict):
+            logger.warning(
+                "[Cache(%s)] :: Cached payload is not a valid dict, refetching.",
+                cache_key,
+            )
+        else:
+            try:
+                data = FarmerHerdmanModel.model_validate(
+                    cached_payload, extra="ignore", by_alias=True
+                )
+                return data.farmers
+            except Exception as e:
+                logger.warning(
+                    "[Cache(%s)] :: Failed to validate cached herdman payload, refetching. error=%s",
+                    cache_key,
+                    str(e),
+                )
+
     url = f"{BASE_HERDMAN}/get-amul-farmer"
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
@@ -85,8 +141,13 @@ async def fetch_farmer_herdman(mobile: str, token: str) -> list[FarmerModel] | N
             )
             response.raise_for_status()
             logger.info(f"[Herdman({mobile})] :: Response successfully recieved")
-            data = FarmerHerdmanModel.model_validate_json(
-                response.text, extra="ignore", by_alias=True
+            if not (response.text or "").strip():
+                await set_cached_api_response(cache_key, None)
+                return None
+            response_json = response.json()
+            await set_cached_api_response(cache_key, response_json)
+            data = FarmerHerdmanModel.model_validate(
+                response_json, extra="ignore", by_alias=True
             )
             return data.farmers
     except httpx.HTTPStatusError as e:
@@ -115,28 +176,81 @@ async def fetch_farmer_herdman(mobile: str, token: str) -> list[FarmerModel] | N
 # --- Animal ---
 
 
-async def fetch_animal_amulpashudhan(tag_no: str, token: str) -> Optional[Dict[str, Any]]:
-    """Returns single animal dict or None on 204/error/empty."""
+async def fetch_animal_amulpashudhan(tag_no: str, token: str) -> AnimalModel | None:
+    """Returns a validated animal model or None on 204/error/empty."""
+    cache_key = build_api_cache_key("amulpashudhan_animal", tag_no)
+    cache_hit, cached_payload = await get_cached_api_response(cache_key)
+    if cache_hit:
+        if cached_payload is None:
+            return None
+        if not isinstance(cached_payload, dict):
+            logger.warning(
+                "[Cache(%s)] :: Cached payload is not a valid dict, refetching.",
+                cache_key,
+            )
+        else:
+            try:
+                cached_data = dict(cached_payload)
+                if cached_data.get("tagNo") and not cached_data.get("tagNumber"):
+                    cached_data["tagNumber"] = cached_data["tagNo"]
+                if cached_data.get("tagNumber") or cached_data.get("tagNo"):
+                    return AnimalModel.model_validate(
+                        cached_data, extra="ignore", by_alias=True
+                    )
+                logger.warning(
+                    "[Cache(%s)] :: Cached animal payload missing tag number, refetching.",
+                    cache_key,
+                )
+            except Exception as e:
+                logger.warning(
+                    "[Cache(%s)] :: Failed to validate cached animal payload, refetching. error=%s",
+                    cache_key,
+                    str(e),
+                )
+
     url = f"{BASE_AMULPASHUDHAN}/GetAnimalDetailsByTagNo?tagNo={tag_no}"
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
-            r = await client.get(
+            response = await client.get(
                 url,
-                headers={"accept": "application/json", "Authorization": f"Bearer {token}"},
+                headers={
+                    "accept": "application/json",
+                    "Authorization": f"Bearer {token}",
+                },
             )
-        if r.status_code == 204 or not (r.text or "").strip():
+            response.raise_for_status()
+            logger.info(
+                f"[AmulPashudhan({tag_no})] :: Response successfully recieved."
+            )
+        if response.status_code == 204 or not (response.text or "").strip():
+            await set_cached_api_response(cache_key, None)
             return None
-        if r.status_code != 200:
+        if response.status_code != 200:
             return None
-        data = json.loads(r.text)
-        if isinstance(data, dict) and data.get("tagNumber"):
-            return data
-        if isinstance(data, dict) and data.get("tagNo"):
+        data = json.loads(response.text)
+        if not isinstance(data, dict):
+            raise Exception("Not a valid dict provided in the response.")
+        if data.get("tagNo") and not data.get("tagNumber"):
             data["tagNumber"] = data["tagNo"]
-            return data
-        return None
-    except (json.JSONDecodeError, httpx.HTTPError, Exception):
-        return None
+        if data.get("tagNumber") or data.get("tagNo"):
+            await set_cached_api_response(cache_key, data)
+            return AnimalModel.model_validate(data, extra="ignore", by_alias=True)
+        raise Exception("Animal response did not contain a tag number.")
+    except httpx.HTTPStatusError as e:
+        logger.error(
+            f"[AmulPashudhan({tag_no})] :: Request failed with status code {e.response.status_code}, and message = {e.response.text}",
+            exc_info=True,
+        )
+    except json.JSONDecodeError as e:
+        logger.error(
+            f"[AmulPashudhan({tag_no})] :: Response didn't gave a valid json, failed due to decoding error {str(e)}",
+            exc_info=True,
+        )
+    except Exception as e:
+        logger.error(
+            f"[AmulPashudhan({tag_no})] :: Request failed, due to error {str(e)}",
+            exc_info=True,
+        )
 
 
 def _normalize_herdman_animal(raw: Dict[str, Any]) -> Dict[str, Any]:

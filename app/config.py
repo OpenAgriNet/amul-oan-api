@@ -63,6 +63,7 @@ class Settings(BaseSettings):
     # Cache Configuration
     default_cache_ttl: int = 60 * 60 * 24  # 24 hours
     suggestions_cache_ttl: int = 60 * 30    # 30 minutes
+    farmer_animal_api_cache_ttl: int = 60 * 60 * 24 * 30  # 30 days
 
     # Logging Configuration
     log_level: str = "INFO"

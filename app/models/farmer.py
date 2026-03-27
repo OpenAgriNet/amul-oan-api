@@ -60,8 +60,10 @@ class FarmerModel(BaseModel):
         "farmer_name",
         mode="before",
     )
-    def transform_pronouns(cls, pronoun: str) -> str:
-        return pronoun.strip().lower()
+    def transform_pronouns(cls, pronoun: str | None) -> str | None:
+        if pronoun is None:
+            return None
+        return " ".join([w.capitalize() for w in pronoun.strip().lower().split(" ")])
 
 
 class FarmerHerdmanModel(BaseModel):

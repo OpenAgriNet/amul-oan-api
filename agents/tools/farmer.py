@@ -4,7 +4,6 @@ Uses amulpashudhan.com first, then herdman.live if needed (cohesive output, fall
 """
 import json
 import os
-from typing import Any, Dict, List, Optional
 
 from agents.tools.farmer_animal_backends import (
     fetch_farmer_amulpashudhan,
@@ -17,7 +16,7 @@ from helpers.utils import get_logger, is_from_society
 logger = get_logger(__name__)
 
 
-async def get_farmer_data_by_mobile(mobile_number: str) -> Optional[List[Dict[str, Any]]]:
+async def get_farmer_data_by_mobile(mobile_number: str) -> list[FarmerModel] | None:
     """
     Fetch farmer records by mobile number (same backends as get_farmer_by_mobile).
     Returns structured list of farmer records for use by chat/service layer.
@@ -62,7 +61,7 @@ async def get_farmer_data_by_mobile(mobile_number: str) -> Optional[List[Dict[st
         logger.info(f"No farmer data found for mobile {mobile}")
         return None
 
-    return [record.model_dump() for record in merge_farmer_data(records)]
+    return merge_farmer_data(records)
 
 
 
@@ -84,5 +83,5 @@ async def get_farmer_by_mobile(mobile_number: str) -> str:
         mobile = normalize_phone(mobile_number) or mobile_number
         return "Please provide a valid mobile number." if not mobile else f"Farmer details for mobile {mobile}:\n\nNo farmer data found for this mobile number."
     mobile = normalize_phone(mobile_number)
-    formatted = json.dumps(records, indent=2, ensure_ascii=False)
+    formatted = json.dumps([record.model_dump() for record in records], indent=2, ensure_ascii=False)
     return f"Farmer details for mobile {mobile}:\n\n{formatted}"
