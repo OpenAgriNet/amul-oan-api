@@ -9,21 +9,12 @@ from typing import Any, Dict, List, Optional
 from agents.tools.farmer_animal_backends import (
     fetch_farmer_amulpashudhan,
     fetch_farmer_herdman,
-    merge_farmer_records,
-    normalize_phone,
+    normalize_phone, merge_farmer_data,
 )
+from app.models.farmer import FarmerModel
 from helpers.utils import get_logger, is_from_society
 
 logger = get_logger(__name__)
-
-
-def _has_content(rec: Dict[str, Any]) -> bool:
-    """Filter out rows that are effectively empty (e.g. totalAnimals 0 and no tagNo)."""
-    tag_no = rec.get("tagNo") or rec.get("tagNumbers")
-    total = rec.get("totalAnimals")
-    if tag_no or (total is not None and total != 0):
-        return True
-    return bool(rec.get("farmerName") or rec.get("societyName"))
 
 
 async def get_farmer_data_by_mobile(mobile_number: str) -> Optional[List[Dict[str, Any]]]:
@@ -47,34 +38,32 @@ async def get_farmer_data_by_mobile(mobile_number: str) -> Optional[List[Dict[st
         logger.error("Neither PASHUGPT_TOKEN nor PASHUGPT_TOKEN_3 is set")
         return None
 
-    records: List[Dict[str, Any]] = []
+    records: list[FarmerModel] = []
 
     if token1:
         try:
             data = await fetch_farmer_amulpashudhan(mobile, token1)
-            if data:
-                records = merge_farmer_records(records + data)
+            if data is not None:
+                records.extend(data)
                 logger.info(f"Farmer data for {mobile}: got {len(data)} record(s) from amulpashudhan")
         except Exception as e:
             logger.warning(f"amulpashudhan farmer API error for {mobile}: {e}")
 
-    if token3 and is_from_society(records, "Mehsana"):
+    if token3 and is_from_society(records, "mehsana"):
         try:
             data = await fetch_farmer_herdman(mobile, token3)
             if data:
-                records = merge_farmer_records(records + data)
+                records.extend(data)
                 logger.info(f"Farmer data for {mobile}: got {len(data)} record(s) from herdman")
         except Exception as e:
             logger.warning(f"herdman farmer API error for {mobile}: {e}")
 
-    if not records:
+    if len(records) == 0:
         logger.info(f"No farmer data found for mobile {mobile}")
         return None
 
-    filtered = [r for r in records if _has_content(r)]
-    if not filtered:
-        filtered = records
-    return filtered
+    return [record.model_dump() for record in merge_farmer_data(records)]
+
 
 
 async def get_farmer_by_mobile(mobile_number: str) -> str:

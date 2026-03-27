@@ -5,12 +5,18 @@ Internal backends for farmer and animal data from multiple APIs.
 
 Used by farmer.py and animal.py to provide cohesive tools with fallback and merged output.
 """
+from beartype.typing import TypeVar
 import json
-import os
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 import httpx
+from pydantic import ValidationError
+
+from app.models.farmer import FarmerModel, FarmerHerdmanModel
+from helpers.utils import get_logger
+
+logger = get_logger(__name__)
 
 BASE_AMULPASHUDHAN = "https://api.amulpashudhan.com/configman/v1/PashuGPT"
 BASE_HERDMAN = "https://herdman.live/apis/api"
@@ -32,69 +38,83 @@ def normalize_tag(tag_no: str) -> str:
 # --- Farmer ---
 
 
-async def fetch_farmer_amulpashudhan(mobile: str, token: str) -> Optional[List[Dict[str, Any]]]:
+async def fetch_farmer_amulpashudhan(
+    mobile: str, token: str
+) -> list[FarmerModel] | None:
     """Returns list of farmer records or None on 204/error/empty."""
     url = f"{BASE_AMULPASHUDHAN}/GetFarmerDetailsByMobile?mobileNumber={mobile}"
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
-            r = await client.get(
+            response = await client.get(
                 url,
-                headers={"accept": "application/json", "Authorization": f"Bearer {token}"},
+                headers={
+                    "accept": "application/json",
+                    "Authorization": f"Bearer {token}",
+                },
             )
-        if r.status_code == 204 or not (r.text or "").strip():
-            return None
-        if r.status_code != 200:
-            return None
-        data = json.loads(r.text)
-        if isinstance(data, list) and len(data) > 0:
-            return data
-        if isinstance(data, dict) and data.get("data") and isinstance(data["data"], list):
-            return data["data"]
-        return None
-    except (json.JSONDecodeError, httpx.HTTPError, Exception):
-        return None
+            response.raise_for_status()
+            logger.info(f"[AmulPashudhan({mobile})] :: Response successfully recieved.")
+            r_json = response.json()
+            if not isinstance(r_json, list):
+                raise Exception("Not a valid list provided in the response.")
+            return [
+                FarmerModel.model_validate(data, extra="ignore", by_alias=True)
+                for data in r_json
+            ]
+    except httpx.HTTPStatusError as e:
+        logger.error(
+            f"[AmulPashudhan({mobile})] :: Request failed with status code {e.response.status_code}, and message = {e.response.text}",
+            exc_info=True,
+        )
+    except json.JSONDecodeError as e:
+        logger.error(
+            f"[AmulPashudhan({mobile})] :: Response didn't gave a valid json, failed due to decoding error {str(e)}",
+            exc_info=True,
+        )
+    except Exception as e:
+        logger.error(
+            f"[AmulPashudhan({mobile})] :: Request failed, due to error {str(e)}",
+            exc_info=True,
+        )
 
 
-async def fetch_farmer_herdman(mobile: str, token: str) -> Optional[List[Dict[str, Any]]]:
+async def fetch_farmer_herdman(mobile: str, token: str) -> list[FarmerModel] | None:
     """Returns list of farmer records or None on error/empty."""
     url = f"{BASE_HERDMAN}/get-amul-farmer"
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
-            r = await client.get(
+            response = await client.get(
                 url,
                 params={"mobileno": mobile},
                 headers={"accept": "application/json", "api-token": f"Bearer {token}"},
             )
-        if r.status_code != 200 or not (r.text or "").strip():
-            return None
-        data = json.loads(r.text)
-        if isinstance(data, list) and len(data) > 0:
-            return data
-        if isinstance(data, dict) and data.get("data") and isinstance(data["data"], list):
-            return data["data"]
-        return None
-    except (json.JSONDecodeError, httpx.HTTPError, Exception):
-        return None
-
-
-def _farmer_record_key(rec: Dict[str, Any]) -> tuple:
-    """Key for deduplication: societyName + farmerCode."""
-    return (str(rec.get("societyName") or ""), str(rec.get("farmerCode") or ""))
-
-
-def merge_farmer_records(records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Deduplicate by societyName+farmerCode; drop entries that are all nulls."""
-    seen: set = set()
-    out: List[Dict[str, Any]] = []
-    for rec in records:
-        if not rec:
-            continue
-        key = _farmer_record_key(rec)
-        if key in seen:
-            continue
-        seen.add(key)
-        out.append(rec)
-    return out
+            response.raise_for_status()
+            logger.info(f"[Herdman({mobile})] :: Response successfully recieved")
+            data = FarmerHerdmanModel.model_validate_json(
+                response.text, extra="ignore", by_alias=True
+            )
+            return data.farmers
+    except httpx.HTTPStatusError as e:
+        logger.error(
+            f"[Herdman({mobile})] :: Request failed with status code {e.response.status_code}, and message = {e.response.text}",
+            exc_info=True,
+        )
+    except ValidationError as e:
+        for error in e.errors():
+            if error.get("type") == "model_type":
+                logger.info(
+                    f"[Herdman({mobile})] :: No information from herdman found."
+                )
+            else:
+                logger.error(
+                    f"[Herdman({mobile})] :: Failed to validated FarmerHerdmanModel, due to error {e}",
+                    exc_info=True,
+                )
+    except Exception as e:
+        logger.error(
+            f"[Herdman({mobile})] :: Request failed, due to error {str(e)}",
+            exc_info=True,
+        )
 
 
 # --- Animal ---
@@ -182,3 +202,28 @@ def merge_animal_data(primary: Optional[Dict], fallback: Optional[Dict]) -> Dict
     if fallback:
         return fallback
     return {}
+
+T = TypeVar("T", bound=FarmerModel)
+
+
+def _merge_models(u1: T, u2: T, model: type[T]) -> T:
+    return model.model_validate(
+        {
+            k: v2 if v2 is not None else v1
+            for k, (v1, v2) in {
+                k: (getattr(u1, k), getattr(u2, k)) for k in model.model_fields
+            }.items()
+        }
+    )
+
+
+def merge_farmer_data(data: list[FarmerModel]) -> list[FarmerModel]:
+    seen = {}
+    for farmer in data:
+        key = f"{farmer.society_name}_{farmer.farmer_name}"
+        if key in seen:
+            farmer_1 = seen[key]
+            seen[key] = _merge_models(farmer_1, farmer, FarmerModel)
+        else:
+            seen[key] = farmer
+    return list(seen.values())

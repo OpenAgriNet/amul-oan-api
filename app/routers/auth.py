@@ -2,6 +2,7 @@
 Simple authentication router that generates JWT tokens for the frontend.
 This closes the auth loop - FE can call this endpoint to get a valid token.
 """
+from agents.tools.farmer import get_farmer_data_by_mobile
 import os
 import uuid
 from datetime import datetime, timedelta
@@ -301,7 +302,6 @@ async def token_for_phone(
     # Fetch farmer data from PashuGPT backends
     farmer_records = None
     try:
-        from agents.tools.farmer import get_farmer_data_by_mobile
         farmer_records = await get_farmer_data_by_mobile(phone)
     except Exception as e:
         logger.warning(f"Failed to fetch farmer data for {phone}: {e}")
