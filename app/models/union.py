@@ -3,8 +3,8 @@ from enum import Enum
 
 class UnionName(str, Enum):
     BANAS = "banas"
-    ANAS = "anas"
-    SABARKAIRA = "kaira"
+    SABAR = "sabar"
+    KAIRA = "kaira"
     SUMUL = "sumul"
     PANCHMAHAL = "panchmahal"
     BARODA = "baroda"

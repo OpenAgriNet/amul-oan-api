@@ -378,7 +378,7 @@ async def get_farmer_full_data_by_mobile(mobile_number: str) -> str:
 
         tags = farmer.animal_tags or []
         include_banas_visit = is_from_union([farmer], UnionName.BANAS)
-        include_cvcc_health = is_from_union([farmer], UnionName.SABARKAIRA)
+        include_cvcc_health = is_from_union([farmer], UnionName.KAIRA)
         lines.append("")
         lines.append("### Animal tags")
         if not tags:

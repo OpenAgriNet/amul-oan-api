@@ -45,13 +45,13 @@ class FarmerModel(BaseModel):
     def transform_tagno(cls, tag_nos: str | None) -> list[str] | None:
         if tag_nos is None:
             return None
-        return [tag_no.strip() for tag_no in tag_nos.split(",")]
+        return [tag_no.strip() for tag_no in tag_nos.strip().split(",")]
 
     @field_validator("union_name", mode="before")
     def transform_union_name(cls, union_name: str | None) -> str | None:
         if union_name is None:
             return None
-        return union_name.lower()
+        return union_name.strip().lower()
 
     @field_validator(
         "farmer_name",

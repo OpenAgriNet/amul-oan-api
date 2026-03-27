@@ -29,7 +29,7 @@ async def get_cvcc_health_data_by_tag(
             return None
 
     normalized_union_name = (union_name or "").strip().lower()
-    if normalized_union_name != UnionName.SABARKAIRA.value:
+    if normalized_union_name != UnionName.KAIRA.value:
         return None
 
     try:
@@ -49,7 +49,7 @@ async def get_cvcc_health_details(
     Fetch health-related information for an animal by tag number. This returns health-specific 
     details including treatments, vaccinations, deworming records, milk yield, farmer information, 
     and other health metrics. Use this tool when users ask about animal health, treatments, 
-    vaccinations, or medical history. This tool is only available if the farmer belongs to SabarKaira union.
+    vaccinations, or medical history. This tool is only available if the farmer belongs to Kaira union.
     
     Args:
         tag_no: The tag number of the animal to fetch health details for (required)
@@ -65,8 +65,8 @@ async def get_cvcc_health_details(
     """
     try:
         normalized_union_name = (union_name or "").strip().lower()
-        if normalized_union_name != UnionName.SABARKAIRA.value:
-            return "The farmer doesn't belong to \"SabarKaira\" union."
+        if normalized_union_name != UnionName.KAIRA.value:
+            return "The farmer doesn't belong to \"Kaira\" union."
 
         data = await get_cvcc_health_data_by_tag(
             tag_no=tag_no,
