@@ -19,9 +19,11 @@ from agents.deps import FarmerContext
 from agents.farmer_context import get_farmer_full_data_by_mobile
 from app.services.translation import (
     translate_text,
-    translate_to_english_with_haiku,
+    translate_to_english_pretranslation,
     translate_text_stream_fast,
     INDIAN_LANGUAGES,
+    PRETRANSLATION_PROVIDER,
+    PRETRANSLATION_MODEL,
 )
 
 
@@ -234,11 +236,11 @@ async def stream_chat_messages(
 
         if use_translation_pipeline and source_lang.lower() in {"gu", "gujarati"}:
             logger.info(
-                "request_id=%s translation_pipeline=True pretranslating gu->en with Anthropic Haiku",
-                request_id,
+                "request_id=%s translation_pipeline=True pretranslating gu->en with %s/%s",
+                request_id, PRETRANSLATION_PROVIDER, PRETRANSLATION_MODEL,
             )
             try:
-                processing_query = await translate_to_english_with_haiku(
+                processing_query = await translate_to_english_pretranslation(
                     text=query,
                     source_lang=source_lang,
                 )

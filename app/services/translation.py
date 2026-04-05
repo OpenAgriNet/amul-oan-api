@@ -9,13 +9,19 @@ import os
 import json
 import re
 import random
+import asyncio
 import aiohttp
 from pathlib import Path
 from typing import Literal, Optional
-from anthropic import AsyncAnthropic
+from openai import AsyncOpenAI
 from helpers.utils import get_logger
 from dotenv import load_dotenv
 from agents.tools.terms import get_mini_glossary_for_text
+
+try:
+    from anthropic import AsyncAnthropic
+except ImportError:
+    AsyncAnthropic = None  # type: ignore
 
 try:
     from langfuse import get_client as get_langfuse_client
@@ -27,10 +33,18 @@ load_dotenv()
 logger = get_logger(__name__)
 
 
-ANTHROPIC_PRETRANSLATION_MODEL = os.getenv(
-    "ANTHROPIC_PRETRANSLATION_MODEL",
-    "claude-haiku-4-5",
+# Pretranslation provider — follows main LLM_PROVIDER by default.
+# Override with PRETRANSLATION_PROVIDER if you want a different provider for pretranslation.
+LLM_PROVIDER = os.getenv("LLM_PROVIDER", "openai").lower()
+PRETRANSLATION_PROVIDER = os.getenv("PRETRANSLATION_PROVIDER", LLM_PROVIDER).lower()
+PRETRANSLATION_MODEL = os.getenv(
+    "PRETRANSLATION_MODEL",
+    os.getenv("ANTHROPIC_PRETRANSLATION_MODEL", "gpt-4.1-mini")
+    if PRETRANSLATION_PROVIDER == "anthropic"
+    else "gpt-4.1-mini",
 )
+
+_openai_client: Optional[AsyncOpenAI] = None
 _anthropic_client: Optional[AsyncAnthropic] = None
 
 
@@ -335,9 +349,21 @@ async def translate_text(
         raise Exception(f"Failed to connect to translation service: {str(e)}")
 
 
-def _get_anthropic_client() -> AsyncAnthropic:
+def _get_openai_client() -> AsyncOpenAI:
+    global _openai_client
+    if _openai_client is None:
+        api_key = os.getenv("OPENAI_API_KEY")
+        if not api_key:
+            raise ValueError("OPENAI_API_KEY is required for OpenAI pre-translation")
+        _openai_client = AsyncOpenAI(api_key=api_key)
+    return _openai_client
+
+
+def _get_anthropic_client():
     global _anthropic_client
     if _anthropic_client is None:
+        if AsyncAnthropic is None:
+            raise ImportError("anthropic package not installed; set PRETRANSLATION_PROVIDER=openai")
         api_key = os.getenv("ANTHROPIC_API_KEY")
         if not api_key:
             raise ValueError("ANTHROPIC_API_KEY is required for Anthropic pre-translation")
@@ -345,55 +371,76 @@ def _get_anthropic_client() -> AsyncAnthropic:
     return _anthropic_client
 
 
-async def translate_to_english_with_haiku(
+_PRETRANSLATION_SYSTEM = (
+    "You are a precise agricultural translation engine for an Indian dairy farmer helpline. "
+    "Translate the user's message into natural English only. "
+    "Preserve meaning, livestock terminology, and formatting. "
+    "Do not answer the question. Do not add commentary."
+)
+
+
+async def _pretranslate_openai(text: str, source_name: str, source_code: str, max_tokens: int) -> str:
+    """Pretranslate using OpenAI API."""
+    client = _get_openai_client()
+    response = await asyncio.wait_for(
+        client.chat.completions.create(
+            model=PRETRANSLATION_MODEL,
+            max_completion_tokens=max_tokens,
+            temperature=0.0,
+            messages=[
+                {"role": "system", "content": _PRETRANSLATION_SYSTEM},
+                {"role": "user", "content": f"Translate this {source_name} ({source_code}) text to English.\n\n{text.strip()}"},
+            ],
+        ),
+        timeout=10.0,
+    )
+    return (response.choices[0].message.content or "").strip()
+
+
+async def _pretranslate_anthropic(text: str, source_name: str, source_code: str, max_tokens: int) -> str:
+    """Pretranslate using Anthropic API."""
+    client = _get_anthropic_client()
+    response = await client.messages.create(
+        model=PRETRANSLATION_MODEL,
+        max_tokens=max_tokens,
+        temperature=0.0,
+        system=_PRETRANSLATION_SYSTEM,
+        messages=[
+            {"role": "user", "content": f"Translate this {source_name} ({source_code}) text to English.\n\n{text.strip()}"},
+        ],
+    )
+    parts = [block.text for block in response.content if getattr(block, "type", None) == "text" and getattr(block, "text", None)]
+    return "".join(parts).strip()
+
+
+async def translate_to_english_pretranslation(
     text: str,
     source_lang: str,
     *,
     max_tokens: int = 1024,
 ) -> str:
-    """Translate input text to English using Anthropic Haiku for pipeline pre-translation."""
+    """Translate input text to English using the configured pretranslation provider.
+
+    Provider is selected by PRETRANSLATION_PROVIDER env var (defaults to LLM_PROVIDER).
+    Supports 'openai' and 'anthropic'.
+    """
     if not text or not text.strip():
         return text
 
     if source_lang.lower() in {"english", "en"}:
         return text
 
-    client = _get_anthropic_client()
     source_name = LANG_NAMES.get(source_lang.lower(), source_lang.capitalize())
     source_code = LANG_CODES.get(source_lang.lower(), source_lang.lower())
 
     langfuse = _get_langfuse()
 
+    pretranslate_fn = _pretranslate_openai if PRETRANSLATION_PROVIDER != "anthropic" else _pretranslate_anthropic
+
     if not langfuse:
-        response = await client.messages.create(
-            model=ANTHROPIC_PRETRANSLATION_MODEL,
-            max_tokens=max_tokens,
-            temperature=0.0,
-            system=(
-                "You are a precise agricultural translation engine. "
-                "Translate the user's message into natural English only. "
-                "Preserve meaning, livestock terminology, and formatting. "
-                "Do not answer the question. Do not add commentary."
-            ),
-            messages=[
-                {
-                    "role": "user",
-                    "content": (
-                        f"Translate this {source_name} ({source_code}) text to English.\n\n"
-                        f"{text.strip()}"
-                    ),
-                }
-            ],
-        )
-
-        translated_parts: list[str] = []
-        for block in response.content:
-            if getattr(block, "type", None) == "text" and getattr(block, "text", None):
-                translated_parts.append(block.text)
-
-        translated_text = "".join(translated_parts).strip()
+        translated_text = await pretranslate_fn(text, source_name, source_code, max_tokens)
         if not translated_text:
-            raise ValueError("Anthropic pre-translation returned empty output")
+            raise ValueError(f"{PRETRANSLATION_PROVIDER} pre-translation returned empty output")
         return translated_text
 
     with langfuse.start_as_current_observation(
@@ -404,43 +451,21 @@ async def translate_to_english_with_haiku(
             "target_lang": "english",
             "text": text,
         },
-        model=ANTHROPIC_PRETRANSLATION_MODEL,
+        model=PRETRANSLATION_MODEL,
         metadata={
-            "translation_provider": "anthropic",
+            "translation_provider": PRETRANSLATION_PROVIDER,
             "pipeline_stage": "query_pretranslation",
         },
     ) as observation:
-        response = await client.messages.create(
-            model=ANTHROPIC_PRETRANSLATION_MODEL,
-            max_tokens=max_tokens,
-            temperature=0.0,
-            system=(
-                "You are a precise agricultural translation engine. "
-                "Translate the user's message into natural English only. "
-                "Preserve meaning, livestock terminology, and formatting. "
-                "Do not answer the question. Do not add commentary."
-            ),
-            messages=[
-                {
-                    "role": "user",
-                    "content": (
-                        f"Translate this {source_name} ({source_code}) text to English.\n\n"
-                        f"{text.strip()}"
-                    ),
-                }
-            ],
-        )
-
-        translated_parts: list[str] = []
-        for block in response.content:
-            if getattr(block, "type", None) == "text" and getattr(block, "text", None):
-                translated_parts.append(block.text)
-
-        translated_text = "".join(translated_parts).strip()
+        translated_text = await pretranslate_fn(text, source_name, source_code, max_tokens)
         if not translated_text:
-            raise ValueError("Anthropic pre-translation returned empty output")
+            raise ValueError(f"{PRETRANSLATION_PROVIDER} pre-translation returned empty output")
         observation.update(output=translated_text)
         return translated_text
+
+
+# Backward-compatible alias
+translate_to_english_with_haiku = translate_to_english_pretranslation
 
 
 async def translate_text_stream_fast(
