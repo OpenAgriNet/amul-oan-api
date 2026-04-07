@@ -358,6 +358,18 @@ async def translate_to_english_with_haiku(
     if source_lang.lower() in {"english", "en"}:
         return text
 
+    api_key = os.getenv("ANTHROPIC_API_KEY")
+    if not api_key or not str(api_key).strip():
+        logger.info(
+            "ANTHROPIC_API_KEY missing; falling back to TranslateGemma for %s->English pre-translation",
+            source_lang,
+        )
+        return await translate_text(
+            text=text,
+            source_lang=source_lang,
+            target_lang="english",
+        )
+
     client = _get_anthropic_client()
     source_name = LANG_NAMES.get(source_lang.lower(), source_lang.capitalize())
     source_code = LANG_CODES.get(source_lang.lower(), source_lang.lower())

@@ -1,11 +1,19 @@
+import os
+
 from pydantic_ai import Agent, RunContext
 from helpers.utils import get_prompt, get_today_date_str, get_today_datetime_str
-from agents.models import LLM_MODEL
+from agents.models import LLM_MODEL, LLM_PROVIDER, LLM_MODEL_NAME
 from agents.tools import TOOLS
 from agents.tools.terms import get_ambiguity_hints_for_query
 from pydantic_ai.settings import ModelSettings
 from agents.deps import FarmerContext
 
+
+_default_max_tokens = 4000
+if LLM_PROVIDER == "vllm" and "gemma-4" in (LLM_MODEL_NAME or "").lower():
+    _default_max_tokens = 2048
+
+AGRINET_MAX_TOKENS = int(os.getenv("AGRINET_MAX_TOKENS", str(_default_max_tokens)))
 
 agrinet_agent = Agent(
     model=LLM_MODEL,
@@ -17,7 +25,7 @@ agrinet_agent = Agent(
     tools=TOOLS,
     end_strategy='exhaustive',
     model_settings=ModelSettings(
-        max_tokens=4000,
+        max_tokens=AGRINET_MAX_TOKENS,
         parallel_tool_calls=True,
         request_limit=10,
    )

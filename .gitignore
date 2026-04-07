@@ -187,8 +187,11 @@ cython_debug/
 .DS_Store
 .DS_Store
 
-# Local
+# Local (allow selected tooling scripts)
 /scripts/*
+!/scripts/__init__.py
+!/scripts/bench_random500_en_chat.py
+!/scripts/retry_chat_timeouts.py
 /tests/*
 /exploration/*
 /evals/*
