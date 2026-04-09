@@ -12,7 +12,6 @@ import random
 import aiohttp
 from pathlib import Path
 from typing import Literal, Optional
-from anthropic import AsyncAnthropic
 from helpers.utils import get_logger
 from dotenv import load_dotenv
 from agents.tools.terms import get_mini_glossary_for_text
@@ -27,11 +26,14 @@ load_dotenv()
 logger = get_logger(__name__)
 
 
-ANTHROPIC_PRETRANSLATION_MODEL = os.getenv(
-    "ANTHROPIC_PRETRANSLATION_MODEL",
-    "claude-haiku-4-5",
+GEMMA_PRETRANSLATION_MODEL = os.getenv(
+    "GEMMA_PRETRANSLATION_MODEL",
+    os.getenv("LLM_MODEL_NAME", "gemma-4-31b-it"),
 )
-_anthropic_client: Optional[AsyncAnthropic] = None
+_gemma_pretranslation_endpoint = os.getenv(
+    "INFERENCE_ENDPOINT_URL",
+    "http://10.185.25.198:8020/v1",
+).rstrip("/")
 
 
 GU_PREFERRED_TRANSLATION_RULES = [
@@ -335,65 +337,66 @@ async def translate_text(
         raise Exception(f"Failed to connect to translation service: {str(e)}")
 
 
-def _get_anthropic_client() -> AsyncAnthropic:
-    global _anthropic_client
-    if _anthropic_client is None:
-        api_key = os.getenv("ANTHROPIC_API_KEY")
-        if not api_key:
-            raise ValueError("ANTHROPIC_API_KEY is required for Anthropic pre-translation")
-        _anthropic_client = AsyncAnthropic(api_key=api_key)
-    return _anthropic_client
-
-
-async def translate_to_english_with_haiku(
+async def translate_to_english_with_gemma4(
     text: str,
     source_lang: str,
     *,
-    max_tokens: int = 1024,
+    max_tokens: int = 512,
 ) -> str:
-    """Translate input text to English using Anthropic Haiku for pipeline pre-translation."""
+    """Translate input text to English using Gemma 4 (vLLM chat/completions)."""
     if not text or not text.strip():
         return text
 
     if source_lang.lower() in {"english", "en"}:
         return text
 
-    client = _get_anthropic_client()
     source_name = LANG_NAMES.get(source_lang.lower(), source_lang.capitalize())
     source_code = LANG_CODES.get(source_lang.lower(), source_lang.lower())
 
     langfuse = _get_langfuse()
+    request_json = {
+        "model": GEMMA_PRETRANSLATION_MODEL,
+        "messages": [
+            {
+                "role": "system",
+                "content": (
+                    "You are a precise agricultural translation engine. "
+                    "Translate the user's message into natural English only. "
+                    "Preserve meaning, livestock terminology, and formatting. "
+                    "Do not answer the question. Do not add commentary."
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    f"Translate this {source_name} ({source_code}) text to English.\n\n"
+                    f"{text.strip()}"
+                ),
+            },
+        ],
+        "temperature": 0.0,
+        "max_tokens": max_tokens,
+    }
 
     if not langfuse:
-        response = await client.messages.create(
-            model=ANTHROPIC_PRETRANSLATION_MODEL,
-            max_tokens=max_tokens,
-            temperature=0.0,
-            system=(
-                "You are a precise agricultural translation engine. "
-                "Translate the user's message into natural English only. "
-                "Preserve meaning, livestock terminology, and formatting. "
-                "Do not answer the question. Do not add commentary."
-            ),
-            messages=[
-                {
-                    "role": "user",
-                    "content": (
-                        f"Translate this {source_name} ({source_code}) text to English.\n\n"
-                        f"{text.strip()}"
-                    ),
-                }
-            ],
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                f"{_gemma_pretranslation_endpoint}/chat/completions",
+                json=request_json,
+                timeout=aiohttp.ClientTimeout(total=60),
+            ) as response:
+                if response.status != 200:
+                    error_text = await response.text()
+                    raise Exception(f"Gemma pre-translation failed {response.status}: {error_text}")
+                result = await response.json()
+        translated_text = (
+            result.get("choices", [{}])[0]
+            .get("message", {})
+            .get("content", "")
+            .strip()
         )
-
-        translated_parts: list[str] = []
-        for block in response.content:
-            if getattr(block, "type", None) == "text" and getattr(block, "text", None):
-                translated_parts.append(block.text)
-
-        translated_text = "".join(translated_parts).strip()
         if not translated_text:
-            raise ValueError("Anthropic pre-translation returned empty output")
+            raise ValueError("Gemma pre-translation returned empty output")
         return translated_text
 
     with langfuse.start_as_current_observation(
@@ -404,41 +407,31 @@ async def translate_to_english_with_haiku(
             "target_lang": "english",
             "text": text,
         },
-        model=ANTHROPIC_PRETRANSLATION_MODEL,
+        model=GEMMA_PRETRANSLATION_MODEL,
         metadata={
-            "translation_provider": "anthropic",
+            "translation_provider": "gemma4_vllm",
+            "endpoint": _gemma_pretranslation_endpoint,
             "pipeline_stage": "query_pretranslation",
         },
     ) as observation:
-        response = await client.messages.create(
-            model=ANTHROPIC_PRETRANSLATION_MODEL,
-            max_tokens=max_tokens,
-            temperature=0.0,
-            system=(
-                "You are a precise agricultural translation engine. "
-                "Translate the user's message into natural English only. "
-                "Preserve meaning, livestock terminology, and formatting. "
-                "Do not answer the question. Do not add commentary."
-            ),
-            messages=[
-                {
-                    "role": "user",
-                    "content": (
-                        f"Translate this {source_name} ({source_code}) text to English.\n\n"
-                        f"{text.strip()}"
-                    ),
-                }
-            ],
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                f"{_gemma_pretranslation_endpoint}/chat/completions",
+                json=request_json,
+                timeout=aiohttp.ClientTimeout(total=60),
+            ) as response:
+                if response.status != 200:
+                    error_text = await response.text()
+                    raise Exception(f"Gemma pre-translation failed {response.status}: {error_text}")
+                result = await response.json()
+        translated_text = (
+            result.get("choices", [{}])[0]
+            .get("message", {})
+            .get("content", "")
+            .strip()
         )
-
-        translated_parts: list[str] = []
-        for block in response.content:
-            if getattr(block, "type", None) == "text" and getattr(block, "text", None):
-                translated_parts.append(block.text)
-
-        translated_text = "".join(translated_parts).strip()
         if not translated_text:
-            raise ValueError("Anthropic pre-translation returned empty output")
+            raise ValueError("Gemma pre-translation returned empty output")
         observation.update(output=translated_text)
         return translated_text
 
