@@ -5,10 +5,6 @@ from typing import AsyncIterator
 
 from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse, StreamingResponse
-<<<<<<< Updated upstream
-=======
-
->>>>>>> Stashed changes
 from app.auth.jwt_auth import get_current_user
 from app.models.requests import ChatRequest
 from app.services.chat import stream_chat_messages
@@ -65,15 +61,10 @@ async def chat_endpoint(
     )
 
     history = await _get_message_history(session_id)
-<<<<<<< Updated upstream
-    logger.debug(f"Retrieved message history for session {session_id} - length: {len(history)}")
-        
-=======
     logger.debug(
         f"Retrieved message history for session {session_id} - length: {len(history)}"
     )
 
->>>>>>> Stashed changes
     message_stream = stream_chat_messages(
         query=request.query,
         session_id=session_id,
@@ -95,9 +86,6 @@ async def chat_endpoint(
             }
         )
 
-<<<<<<< Updated upstream
-    return StreamingResponse(message_stream, media_type='text/event-stream')
-=======
     return StreamingResponse(
         sse_chat_stream(message_stream),
         media_type="text/event-stream",
@@ -122,4 +110,3 @@ async def chat_endpoint(
 #         media_type="text/event-stream",
 #         headers=SSE_HEADERS,
 #     )
->>>>>>> Stashed changes
