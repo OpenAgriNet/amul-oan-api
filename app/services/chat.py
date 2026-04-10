@@ -1,11 +1,12 @@
 from contextlib import nullcontext
 from typing import AsyncGenerator
 from functools import lru_cache
+import os
 import regex
 import re
 from agents.agrinet import agrinet_agent
 from agents.moderation import moderation_agent
-from agents.models import LLM_PROVIDER
+from agents.models import LLM_MODEL_NAME, LLM_PROVIDER
 from helpers.utils import get_logger
 from app.utils import (
     update_message_history,
@@ -45,6 +46,17 @@ class SentenceSegmenter:
 
 
 sentence_segmenter = SentenceSegmenter()
+
+
+def _chat_history_trim_max_tokens() -> int:
+    """Keep fewer past turns for 16k-context vLLM backends so system+tools+history+user fit."""
+    override = os.getenv("CHAT_HISTORY_MAX_TOKENS")
+    if override and override.isdigit():
+        return int(override)
+    if LLM_PROVIDER == "vllm" and "gemma" in LLM_MODEL_NAME.lower():
+        cap = os.getenv("CHAT_HISTORY_MAX_TOKENS_VLLM_GEMMA", "10000")
+        return int(cap) if cap.isdigit() else 10_000
+    return 80_000
 
 
 def extract_complete_sentences(text: str):
@@ -333,7 +345,7 @@ async def stream_chat_messages(
         # Run the main agent
         trimmed_history = trim_history(
             history,
-            max_tokens=80_000,
+            max_tokens=_chat_history_trim_max_tokens(),
             include_system_prompts=True,
             include_tool_calls=True
         )
