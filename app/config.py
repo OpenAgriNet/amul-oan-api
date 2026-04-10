@@ -63,7 +63,9 @@ class Settings(BaseSettings):
     # Cache Configuration
     default_cache_ttl: int = 60 * 60 * 24  # 24 hours
     suggestions_cache_ttl: int = 60 * 30    # 30 minutes
-    farmer_animal_api_cache_ttl: int = 60 * 60 * 24 * 17  # 17 days
+    farmer_animal_api_cache_ttl: int = 60 * 60 * 24 #24 hours
+    session_owner_ttl_seconds: int = int(os.getenv("SESSION_OWNER_TTL_SECONDS", "120"))
+    session_owner_refresh_interval_seconds: int = int(os.getenv("SESSION_OWNER_REFRESH_INTERVAL_SECONDS", "15"))
 
     # Logging Configuration
     log_level: str = "INFO"

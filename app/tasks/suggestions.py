@@ -4,13 +4,14 @@ Tasks for creating conversation suggestions.
 
 from fastapi import BackgroundTasks
 from helpers.utils import get_logger
-from app.utils import _get_message_history, trim_history, format_message_pairs, set_cache
+from app.redis.cache import set_cache
+from app.redis.config import SUGGESTIONS_TTL_SECONDS
+from app.redis.config import key as redis_key
+from app.utils import _get_message_history, trim_history, format_message_pairs
 from agents.suggestions import suggestions_agent
 from langcodes import Language
 
 logger = get_logger(__name__)
-
-SUGGESTIONS_CACHE_TTL = 60*30 # 30 minutes
 
 async def create_suggestions(session_id: str, target_lang: str = 'mr'):
     """
@@ -37,7 +38,8 @@ async def create_suggestions(session_id: str, target_lang: str = 'mr'):
         logger.info(f"Suggestions: {suggestions}")
         
         # Store suggestions in cache
-        result = await set_cache(f"suggestions_{session_id}_{target_lang}", suggestions, ttl=SUGGESTIONS_CACHE_TTL)
+        cache_key = redis_key("suggestions", f"{session_id}:{target_lang}")
+        result = await set_cache(cache_key, suggestions, ttl=SUGGESTIONS_TTL_SECONDS)
         logger.info(f"Suggestions saved for session {session_id}: {result}")
         
         return suggestions

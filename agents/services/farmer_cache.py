@@ -9,14 +9,11 @@ farmer cached by the chat service is available to voice and vice versa.
 import hashlib
 from typing import Optional
 
-from app.core.cache import cache
+from app.redis.cache import get_farmer_cache, set_farmer_cache
 from agents.models.farmer import FarmerDataEnvelope
 from helpers.utils import get_logger
 
 logger = get_logger(__name__)
-
-FARMER_CACHE_TTL = 60 * 60 * 24 * 17  # 17 days
-FARMER_CACHE_NAMESPACE = "farmer"
 
 
 def _cache_key(phone: str) -> str:
@@ -28,7 +25,7 @@ async def get_cached_farmer_data(phone: str) -> Optional[FarmerDataEnvelope]:
     """Retrieve cached farmer data for a phone number."""
     key = _cache_key(phone)
     try:
-        raw = await cache.get(key, namespace=FARMER_CACHE_NAMESPACE)
+        raw = await get_farmer_cache(phone)
         if raw and isinstance(raw, dict):
             envelope = FarmerDataEnvelope.model_validate(raw)
             envelope.source = "cache"
@@ -42,7 +39,7 @@ async def set_cached_farmer_data(phone: str, data: FarmerDataEnvelope) -> None:
     """Store farmer data in cache."""
     key = _cache_key(phone)
     try:
-        await cache.set(key, data.model_dump(), ttl=FARMER_CACHE_TTL, namespace=FARMER_CACHE_NAMESPACE)
+        await set_farmer_cache(phone, data.model_dump())
         logger.debug(f"Cached farmer data for phone hash {key[:8]}... ({len(data.farmers)} records)")
     except Exception as e:
         logger.warning(f"Failed to write farmer cache: {e}")
