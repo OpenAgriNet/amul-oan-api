@@ -1,6 +1,6 @@
 """
 Cache layer for farmer data fetched from PashuGPT APIs.
-Uses Redis (via aiocache) with 24h TTL. Cache key is a SHA-256 hash of the
+Uses Redis (via aiocache) with 17 days TTL. Cache key is a SHA-256 hash of the
 normalized phone number so raw phone numbers don't appear as Redis keys.
 
 Both backends share the same Redis instance and prefix (sva-cache-), so a
@@ -39,7 +39,7 @@ async def set_cached_farmer_data(phone: str, data: FarmerDataEnvelope) -> None:
     """Store farmer data in cache."""
     key = _cache_key(phone)
     try:
-        await set_farmer_cache(phone, data.model_dump())
+        await cache.set(key, data.model_dump(), ttl=FARMER_CACHE_TTL, namespace=FARMER_CACHE_NAMESPACE)
         logger.debug(f"Cached farmer data for phone hash {key[:8]}... ({len(data.farmers)} records)")
     except Exception as e:
         logger.warning(f"Failed to write farmer cache: {e}")
