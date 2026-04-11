@@ -228,6 +228,26 @@ def get_prompt(prompt_file: str, context: Dict = {}, prompt_dir: str = "assets/p
     
     return prompt
 
+
+def clean_output_by_language(text: str, lang_code: str | None) -> str:
+    """Filter model output by language-specific character constraints."""
+    if not text:
+        return text
+
+    text = text.replace("/", " or ")
+    lang = (lang_code or "").strip().lower()
+    allowed_punct = set(".!?,;:()[]{}\"'“”‘’-–—…")
+
+    def _allowed(ch: str) -> bool:
+        if ch.isspace() or ch in allowed_punct:
+            return True
+        code = ord(ch)
+        if lang == "gu":
+            return 0x0A80 <= code <= 0x0AFF
+        return True
+
+    return "".join(ch for ch in text if _allowed(ch))
+
 def upload_audio_to_s3(audio_base64: str, session_id: str, bucket_name: str | None = None) -> Dict:
     """Upload base64 encoded audio to S3.
     

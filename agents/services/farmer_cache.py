@@ -39,7 +39,7 @@ async def set_cached_farmer_data(phone: str, data: FarmerDataEnvelope) -> None:
     """Store farmer data in cache."""
     key = _cache_key(phone)
     try:
-        await cache.set(key, data.model_dump(), ttl=FARMER_CACHE_TTL, namespace=FARMER_CACHE_NAMESPACE)
+        await set_farmer_cache(phone, data.model_dump())
         logger.debug(f"Cached farmer data for phone hash {key[:8]}... ({len(data.farmers)} records)")
     except Exception as e:
         logger.warning(f"Failed to write farmer cache: {e}")

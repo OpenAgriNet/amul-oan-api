@@ -168,6 +168,47 @@ def format_message_pairs(history: List[ModelMessage], limit: int = None) -> List
     return formatted_messages
 
 
+def clean_message_history_for_openai(history: List[ModelMessage]) -> List[ModelMessage]:
+    """Remove orphaned tool-calls to prevent provider history validation errors."""
+    if not history:
+        return []
+
+    tool_calls = set()
+    tool_responses = set()
+    for message in history:
+        for part in message.parts:
+            part_kind = getattr(part, "part_kind", "")
+            tool_call_id = getattr(part, "tool_call_id", None)
+            if not tool_call_id:
+                continue
+            if part_kind == "tool-call":
+                tool_calls.add(tool_call_id)
+            elif part_kind in ("tool-return", "retry-prompt"):
+                tool_responses.add(tool_call_id)
+
+    orphaned_calls = tool_calls - tool_responses
+    if not orphaned_calls:
+        return history
+
+    cleaned_history = []
+    for message in history:
+        kept_parts = []
+        for part in message.parts:
+            part_kind = getattr(part, "part_kind", "")
+            tool_call_id = getattr(part, "tool_call_id", None)
+            if part_kind == "tool-call" and tool_call_id in orphaned_calls:
+                continue
+            if part_kind in ("tool-return", "retry-prompt") and tool_call_id in orphaned_calls:
+                continue
+            kept_parts.append(part)
+        if kept_parts:
+            m2 = deepcopy(message)
+            m2.parts = kept_parts
+            cleaned_history.append(m2)
+
+    return cleaned_history
+
+
 def trim_history(
     history: List[ModelMessage],
     max_tokens: int = 28_000,

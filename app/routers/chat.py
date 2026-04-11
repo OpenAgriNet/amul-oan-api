@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse, StreamingResponse
 from app.auth.jwt_auth import get_current_user
 from app.models.requests import ChatRequest
-from app.services.chat import stream_chat_messages
+from app.services.conversation import CHAT_CONFIG, process_conversation
 from app.utils import _get_message_history
 from helpers.utils import get_logger
 
@@ -65,15 +65,25 @@ async def chat_endpoint(
         f"Retrieved message history for session {session_id} - length: {len(history)}"
     )
 
-    message_stream = stream_chat_messages(
-        query=request.query,
-        session_id=session_id,
-        source_lang=request.source_lang,
-        target_lang=request.target_lang,
-        user_id=request.user_id,
-        history=history,
-        user_info=user_info,
-        use_translation_pipeline=request.use_translation_pipeline or False,
+    use_translation = bool(request.use_translation_pipeline)
+    # Moderation is always on for /chat (control-layer contract; not yet wired into stream_chat_messages).
+    chat_config = {
+        **CHAT_CONFIG,
+        "use_translation": use_translation,
+        "use_moderation": True,
+    }
+    message_stream = await process_conversation(
+        input_data={
+            "query": request.query,
+            "session_id": session_id,
+            "source_lang": request.source_lang,
+            "target_lang": request.target_lang,
+            "user_id": request.user_id,
+            "history": history,
+            "user_info": user_info,
+            "use_translation_pipeline": use_translation,
+        },
+        **chat_config,
     )
 
     if request.stream is False:
