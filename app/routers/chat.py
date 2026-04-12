@@ -65,7 +65,7 @@ async def chat_endpoint(
         f"Retrieved message history for session {session_id} - length: {len(history)}"
     )
 
-    use_translation = bool(request.use_translation_pipeline)
+    use_translation = request.use_translation_pipeline
     # Moderation is always on for /chat (control-layer contract; not yet wired into stream_chat_messages).
     chat_config = {
         **CHAT_CONFIG,

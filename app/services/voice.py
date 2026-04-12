@@ -31,6 +31,7 @@ from app.redis.locks import (
     refresh_session_request_ownership,
     release_session_request_ownership,
 )
+from app.services.streaming import stream_agent_response
 from app.services.feedback import (
     get_feedback_ack,
     get_feedback_question,
@@ -41,7 +42,6 @@ from app.services.stt_signals import detect_stt_signal, generate_stt_signal_resp
 from app.services.translation import (
     INDIAN_LANGUAGES,
     translate_text,
-    translate_text_stream_fast,
     translate_to_english_with_gemma4,
 )
 from app.utils import (
@@ -295,43 +295,31 @@ async def stream_voice_message(
 
         trimmed_history = trim_history(history, max_tokens=80_000, include_system_prompts=True, include_tool_calls=True)
 
+        first_chunk = False
+
+        async def _on_first_nonempty_chunk(chunk: str) -> None:
+            nonlocal first_chunk
+            if not first_chunk and chunk and chunk.strip():
+                first_chunk = True
+                if not nudge_task.done():
+                    nudge_task.cancel()
+
         async with voice_agent.run_stream(user_prompt=deps.get_user_message(), message_history=trimmed_history, deps=deps) as response_stream:
-            sentence_buffer = ""
-            translation_batch: list[str] = []
-            batch_word_count = 0
-            first_chunk = False
-
-            async for chunk in response_stream.stream_text(delta=True):
-                if await _request_is_stale("during_agent_stream"):
-                    break
-
-                if not first_chunk and chunk and chunk.strip():
-                    first_chunk = True
-                    if not nudge_task.done():
-                        nudge_task.cancel()
-
-                if not use_translation_pipeline or not needs_output_translation:
-                    yield clean_output_by_language(chunk, requested_target_lang)
-                    continue
-
-                sentence_buffer += chunk
-                complete_sentences, remaining = extract_complete_sentences(sentence_buffer)
-                for sentence in complete_sentences:
-                    translation_batch.append(sentence)
-                    batch_word_count += len(sentence.split())
-                batch_text = "".join(translation_batch)
-                if batch_text and should_translate_batch(batch_text, batch_word_count):
-                    async for translated_chunk in translate_text_stream_fast(batch_text, "english", requested_target_lang):
-                        yield clean_output_by_language(translated_chunk, requested_target_lang)
-                    translation_batch = []
-                    batch_word_count = 0
-                sentence_buffer = remaining
-
-            if use_translation_pipeline and needs_output_translation:
-                remaining_text = "".join(translation_batch) + sentence_buffer
-                if remaining_text.strip():
-                    async for translated_chunk in translate_text_stream_fast(remaining_text, "english", requested_target_lang):
-                        yield clean_output_by_language(translated_chunk, requested_target_lang)
+            async for chunk in stream_agent_response(
+                response_stream.stream_text(delta=True),
+                use_translation_pipeline=use_translation_pipeline,
+                source_lang=requested_source_lang,
+                target_lang=requested_target_lang,
+                translated_output_chunks=None,
+                extract_complete_sentences=extract_complete_sentences,
+                should_translate_batch=should_translate_batch,
+                batch_starts_new_line_or_list=None,
+                format_out=lambda t: clean_output_by_language(t, requested_target_lang),
+                on_stale=lambda: _request_is_stale("during_agent_stream"),
+                on_first_nonempty_chunk=_on_first_nonempty_chunk,
+                needs_output_translation=needs_output_translation,
+            ):
+                yield chunk
 
             new_messages = response_stream.new_messages()
 

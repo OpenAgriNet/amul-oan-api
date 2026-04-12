@@ -15,6 +15,7 @@ from app.utils import (
 )
 from agents.deps import FarmerContext
 from agents.farmer_context import get_farmer_full_data_by_mobile
+from app.services.streaming import stream_agent_response
 from app.services.translation import (
     translate_text,
     translate_to_english_with_gemma4,
@@ -148,6 +149,9 @@ async def stream_chat_messages(
     use_translation_pipeline: bool = False,
 ) -> AsyncGenerator[str, None]:
     """Async generator for streaming chat messages."""
+    source_lang = (source_lang or "gu").strip().lower()
+    target_lang = (target_lang or "gu").strip().lower()
+
     # Langfuse: propagate session_id, metadata, and tags for dashboard filtering (max 200 chars per value)
     session_id_safe = (session_id or "")[:200]
     pipeline_name = "translation" if use_translation_pipeline else "default"
@@ -292,6 +296,7 @@ async def stream_chat_messages(
         deps = FarmerContext(
             query=processing_query,
             lang_code=processing_lang,
+            target_lang=target_lang,
             farmer_info=farmer_data,
             use_translation_pipeline=use_translation_pipeline,
         )
@@ -509,95 +514,17 @@ async def stream_chat_messages(
                 deps=deps,
             ) as response_stream:
                 if needs_output_translation:
-                    # Optimised batched streaming: segment English into sentences and translate in good-sized batches
-                    sentence_buffer = ""
-                    translation_batch = []
-                    batch_word_count = 0
-
-                    async for chunk in response_stream.stream_text(delta=True):
-                        sentence_buffer += chunk
-
-                        complete_sentences, remaining = extract_complete_sentences(sentence_buffer)
-                        if complete_sentences:
-                            for sentence in complete_sentences:
-                                translation_batch.append(sentence)
-                                batch_word_count += len(sentence.split())
-
-                            batch_text = "".join(translation_batch)
-                            if should_translate_batch(batch_text, batch_word_count):
-                                if translated_output_chunks and _batch_starts_new_line_or_list(batch_text):
-                                    translated_output_chunks.append("\n")
-                                    yield "\n"
-                                try:
-                                    logger.info(
-                                        f"Translation pipeline: streaming optimised batch to {target_lang} "
-                                        f"({batch_word_count} words)"
-                                    )
-                                    async for translated_chunk in translate_text_stream_fast(
-                                        text=batch_text,
-                                        source_lang="english",
-                                        target_lang=target_lang,
-                                    ):
-                                        translated_output_chunks.append(translated_chunk)
-                                        yield translated_chunk
-                                except Exception as e:
-                                    logger.error(
-                                        f"Optimised batch translation failed, falling back to English batch: {e}"
-                                    )
-                                    translated_output_chunks.append(batch_text)
-                                    yield batch_text
-
-                                translation_batch = []
-                                batch_word_count = 0
-
-                            sentence_buffer = remaining
-
-                    # Flush remaining batches/fragments at end of stream
-                    if translation_batch:
-                        batch_text = "".join(translation_batch)
-                        if translated_output_chunks and _batch_starts_new_line_or_list(batch_text):
-                            translated_output_chunks.append("\n")
-                            yield "\n"
-                        try:
-                            logger.info(
-                                f"Translation pipeline: flushing final batch to {target_lang} "
-                                f"({batch_word_count} words)"
-                            )
-                            async for translated_chunk in translate_text_stream_fast(
-                                text=batch_text,
-                                source_lang="english",
-                                target_lang=target_lang,
-                            ):
-                                translated_output_chunks.append(translated_chunk)
-                                yield translated_chunk
-                        except Exception as e:
-                            logger.error(
-                                f"Final batch translation failed, falling back to English batch: {e}"
-                            )
-                            translated_output_chunks.append(batch_text)
-                            yield batch_text
-
-                    if sentence_buffer.strip():
-                        if translated_output_chunks and _batch_starts_new_line_or_list(sentence_buffer):
-                            translated_output_chunks.append("\n")
-                            yield "\n"
-                        try:
-                            logger.info(
-                                f"Translation pipeline: flushing tail fragment to {target_lang}"
-                            )
-                            async for translated_chunk in translate_text_stream_fast(
-                                text=sentence_buffer,
-                                source_lang="english",
-                                target_lang=target_lang,
-                            ):
-                                translated_output_chunks.append(translated_chunk)
-                                yield translated_chunk
-                        except Exception as e:
-                            logger.error(
-                                f"Tail fragment translation failed, falling back to English fragment: {e}"
-                            )
-                            translated_output_chunks.append(sentence_buffer)
-                            yield sentence_buffer
+                    async for chunk in stream_agent_response(
+                        response_stream.stream_text(delta=True),
+                        use_translation_pipeline=use_translation_pipeline,
+                        source_lang=source_lang,
+                        target_lang=target_lang,
+                        translated_output_chunks=translated_output_chunks,
+                        extract_complete_sentences=extract_complete_sentences,
+                        should_translate_batch=should_translate_batch,
+                        batch_starts_new_line_or_list=_batch_starts_new_line_or_list,
+                    ):
+                        yield chunk
 
                     logger.info(f"Streaming complete for session {session_id}")
                     new_messages = response_stream.new_messages()
