@@ -1,17 +1,17 @@
 from typing import List
-from app.core.cache import cache  # Import cache instance from core
+from app.redis.cache import get_cache as redis_get_cache, set_cache as redis_set_cache
+from app.redis.history import (
+    get_message_history,
+    get_moderation_history,
+    update_message_history as redis_update_message_history,
+    update_moderation_history as redis_update_moderation_history,
+)
 from helpers.utils import get_logger, count_tokens_for_part
 from copy import deepcopy
 from pydantic_ai.messages import (
-    ModelMessagesTypeAdapter,
     ModelMessage,
     SystemPromptPart,
 )
-from pydantic_core import to_jsonable_python
-
-HISTORY_SUFFIX = "_SVA"
-
-DEFAULT_CACHE_TTL = 60*60*2 # 2 hours
 
 logger = get_logger(__name__)
 
@@ -26,10 +26,10 @@ async def get_cache(key: str):
     Returns:
         Cached value or None if not found
     """
-    return await cache.get(key)
+    return await redis_get_cache(key)
 
 
-async def set_cache(key: str, value, ttl: int = DEFAULT_CACHE_TTL):
+async def set_cache(key: str, value, ttl: int = 60 * 60 * 24):
     """
     Set value in cache with TTL.
     
@@ -41,31 +41,25 @@ async def set_cache(key: str, value, ttl: int = DEFAULT_CACHE_TTL):
     Returns:
         True if successful
     """
-    await cache.set(key, value, ttl=ttl)
+    await redis_set_cache(key, value, ttl=ttl)
     return True
 
 
 async def _get_message_history(session_id: str) -> List[ModelMessage]:
     """Get or initialize message history."""
-    message_history = await get_cache(f"{session_id}_{HISTORY_SUFFIX}")
-    if message_history:
-        return ModelMessagesTypeAdapter.validate_python(message_history)
-    return []
+    return await get_message_history(session_id)
 
 async def _get_moderation_history(session_id: str) -> List[ModelMessage]:
     """Get or initialize moderation history."""
-    moderation_history = await get_cache(f"{session_id}_{HISTORY_SUFFIX}_MODERATION")
-    if moderation_history:
-        return ModelMessagesTypeAdapter.validate_python(moderation_history)
-    return []
+    return await get_moderation_history(session_id)
 
 async def update_message_history(session_id: str, all_messages: List[ModelMessage]):
     """Update message history."""
-    await set_cache(f"{session_id}_{HISTORY_SUFFIX}", to_jsonable_python(all_messages), ttl=DEFAULT_CACHE_TTL)
+    await redis_update_message_history(session_id, all_messages)
 
 async def update_moderation_history(session_id: str, moderation_messages: List[ModelMessage]):
     """Update moderation history."""
-    await set_cache(f"{session_id}_{HISTORY_SUFFIX}_MODERATION", to_jsonable_python(moderation_messages), ttl=DEFAULT_CACHE_TTL)
+    await redis_update_moderation_history(session_id, moderation_messages)
 
 def filter_out_tool_calls(messages: List[ModelMessage]) -> List[ModelMessage]:
     """Filter out tool calls and tool returns from the message history.
@@ -172,6 +166,47 @@ def format_message_pairs(history: List[ModelMessage], limit: int = None) -> List
         formatted_messages.append(formatted_pair)
     
     return formatted_messages
+
+
+def clean_message_history_for_openai(history: List[ModelMessage]) -> List[ModelMessage]:
+    """Remove orphaned tool-calls to prevent provider history validation errors."""
+    if not history:
+        return []
+
+    tool_calls = set()
+    tool_responses = set()
+    for message in history:
+        for part in message.parts:
+            part_kind = getattr(part, "part_kind", "")
+            tool_call_id = getattr(part, "tool_call_id", None)
+            if not tool_call_id:
+                continue
+            if part_kind == "tool-call":
+                tool_calls.add(tool_call_id)
+            elif part_kind in ("tool-return", "retry-prompt"):
+                tool_responses.add(tool_call_id)
+
+    orphaned_calls = tool_calls - tool_responses
+    if not orphaned_calls:
+        return history
+
+    cleaned_history = []
+    for message in history:
+        kept_parts = []
+        for part in message.parts:
+            part_kind = getattr(part, "part_kind", "")
+            tool_call_id = getattr(part, "tool_call_id", None)
+            if part_kind == "tool-call" and tool_call_id in orphaned_calls:
+                continue
+            if part_kind in ("tool-return", "retry-prompt") and tool_call_id in orphaned_calls:
+                continue
+            kept_parts.append(part)
+        if kept_parts:
+            m2 = deepcopy(message)
+            m2.parts = kept_parts
+            cleaned_history.append(m2)
+
+    return cleaned_history
 
 
 def trim_history(

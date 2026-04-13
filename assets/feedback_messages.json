@@ -1,0 +1,15 @@
+{
+  "question": {
+    "en": "On a scale of 1 to 5, how helpful was this call? 1 means not helpful, and 5 means very helpful.",
+    "gu": "૧ થી ૫ના પેમાને, આ કોલ તમને કેટલો ઉપયોગી લાગ્યો? ૧ એટલે બિલકુલ ઉપયોગી નહીં અને ૫ એટલે ખૂબ જ ઉપયોગી."
+  },
+  "ack_low": {
+    "en": "Sorry to hear that. Your feedback will help us improve this service for farmers.",
+    "gu": "આ સાંભળીને દુઃખ થયું. તમારો પ્રતિસાદ અમને ખેડૂતો માટે આ સેવા સુધારવામાં મદદ કરશે."
+  },
+  "ack_high": {
+    "en": "That is good to hear. Thank you for your feedback.",
+    "gu": "આ સાંભળીને ખુશી થઈ. તમારા પ્રતિસાદ માટે ખૂબ આભાર."
+  }
+}
+

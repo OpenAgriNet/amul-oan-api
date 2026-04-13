@@ -63,14 +63,22 @@ class Settings(BaseSettings):
     # Cache Configuration
     default_cache_ttl: int = 60 * 60 * 24  # 24 hours
     suggestions_cache_ttl: int = 60 * 30    # 30 minutes
-    farmer_animal_api_cache_ttl: int = 60 * 60 * 24 * 17  # 17 days
+    farmer_animal_api_cache_ttl: int = 60 * 60 * 24 #24 hours
+    feedback_state_ttl: int = int(os.getenv("FEEDBACK_STATE_TTL", str(10 * 60)))
+    enable_translation_pipeline: bool = os.getenv("ENABLE_TRANSLATION_PIPELINE", "false").lower() in {"1", "true", "yes", "on"}
+    session_owner_ttl_seconds: int = int(os.getenv("SESSION_OWNER_TTL_SECONDS", "120"))
+    session_owner_refresh_interval_seconds: int = int(os.getenv("SESSION_OWNER_REFRESH_INTERVAL_SECONDS", "15"))
 
     # Logging Configuration
     log_level: str = "INFO"
     log_format: str = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    feedback_parse_model: str = os.getenv("FEEDBACK_PARSE_MODEL", "gpt-5-mini")
 
     # External Service URLs
     telemetry_api_url: str = "https://vistaar.kenpath.ai/observability-service/action/data/v3/telemetry"
+    nudge_api_url: str = os.getenv("NUDGE_API_URL", "https://vistaar.getraya.app/api/nudge-user")
+    nudge_timeout_seconds: float = float(os.getenv("NUDGE_TIMEOUT_SECONDS", "3.0"))
+    openai_pretranslation_timeout_seconds: float = float(os.getenv("OPENAI_PRETRANSLATION_TIMEOUT_SECONDS", "10.0"))
     bhashini_api_url: str = ""
     ollama_endpoint_url: Optional[str] = None
     marqo_endpoint_url: Optional[str] = None

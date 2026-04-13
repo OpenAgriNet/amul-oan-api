@@ -1,5 +1,5 @@
 from fastapi import APIRouter, HTTPException, status
-from app.utils import cache
+from app.redis.cache import get_cache, set_cache
 from app.config import settings
 import time
 from typing import Dict, Any
@@ -14,8 +14,8 @@ async def check_cache_connection() -> Dict[str, Any]:
     try:
         test_key = "health_check_test"
         test_value = "test"
-        await cache.set(test_key, test_value, ttl=5)
-        cached_value = await cache.get(test_key)
+        await set_cache(test_key, test_value, ttl=5)
+        cached_value = await get_cache(test_key)
         return {
             "status": "healthy" if cached_value == test_value else "unhealthy",
             "latency_ms": 0  # TODO: Add actual latency measurement

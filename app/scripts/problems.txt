@@ -1,0 +1,4 @@
+MARQO and TRANSLATEGEMMA URL->ask
+
+gujarati response for english query not working, vice versa works.
+It should work when TRANSLATEGEMMA is up and running.

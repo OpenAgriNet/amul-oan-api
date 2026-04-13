@@ -1,4 +1,4 @@
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Literal
 from pydantic import BaseModel, Field, field_validator
 from langcodes import Language
 
@@ -21,9 +21,13 @@ class FarmerContext(BaseModel):
     """
     query: str = Field(description="The user's question.")
     lang_code: str = Field(description="The language code of the user's question.", default='gu')
+    target_lang: str = Field(description="The target language for response.", default='gu')
+    provider: Optional[Literal['RAYA']] = Field(default=None, description="Voice provider marker.")
     moderation_str: Optional[str] = Field(default=None, description="The moderation result of the user's question.")
     farmer_info: str = Field(description="Farmer's personal details and animals from JWT token.")
     use_translation_pipeline: bool = Field(default=False, description="When True, use English-only prompt; response is translated externally.")
+    session_id: Optional[str] = Field(default=None, description="Conversation session ID.")
+    process_id: Optional[str] = Field(default=None, description="Voice process/call fragment ID.")
 
     def update_moderation_str(self, moderation_str: str):
         """Update the moderation result of the user's question."""
