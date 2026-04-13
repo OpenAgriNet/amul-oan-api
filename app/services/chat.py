@@ -303,8 +303,8 @@ async def stream_chat_messages(
             last_response = ""
 
         try:
-            user_message    = f"{last_response}{deps.get_user_message()}"
-            moderation_run  = await moderation_agent.run(user_message)
+            user_message = f"{last_response}{deps.get_user_message()}"
+            moderation_run = await moderation_agent.run(user_message)
             moderation_data = moderation_run.output
             logger.info(
                 "request_id=%s moderation_category=%s moderation_action=%s",
@@ -314,7 +314,7 @@ async def stream_chat_messages(
             )
 
             # Track whether we should generate suggestions after streaming
-            should_generate_suggestions = moderation_data.category == "valid_agricultural"
+            should_generate_suggestions = moderation_data.category == "in_scope"
 
             if not should_generate_suggestions:
                 # Hard gate: do not run retrieval/answer agent for moderated non-agricultural requests.

@@ -17,7 +17,7 @@ class FarmerContext(BaseModel):
     Example:
         **User:** "What is the weather in Mumbai?"
         **Selected Language:** Gujarati
-        **Moderation Result:** "This is a valid agricultural question."
+        **Moderation Result:** "Proceed with the query."
     """
     query: str = Field(description="The user's question.")
     lang_code: str = Field(description="The language code of the user's question.", default='gu')

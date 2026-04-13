@@ -8,8 +8,8 @@ from agents.models import LLM_MODEL
 
 class QueryModerationResult(BaseModel):
     """Moderation result of the query."""
-    category: Literal["valid_agricultural",
-                      "invalid_language", 
+    category: Literal["in_scope",
+                      "invalid_language",
                       "invalid_non_agricultural",
                       "invalid_external_reference",
                       "invalid_compound_mixed",
