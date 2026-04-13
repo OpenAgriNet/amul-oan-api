@@ -17,7 +17,7 @@ from agents.deps import FarmerContext
 from agents.farmer_context import get_farmer_full_data_by_mobile
 from app.services.translation import (
     translate_text,
-    translate_to_english_with_gemma4,
+    translate_to_english_with_haiku,
     translate_text_stream_fast,
     INDIAN_LANGUAGES,
 )
@@ -246,7 +246,7 @@ async def stream_chat_messages(
                 request_id,
             )
             try:
-                processing_query = await translate_to_english_with_gemma4(
+                processing_query = await translate_to_english_with_haiku(
                     text=query,
                     source_lang=source_lang,
                 )
