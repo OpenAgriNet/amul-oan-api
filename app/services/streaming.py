@@ -66,6 +66,16 @@ async def stream_agent_response(
             yield chunk
         return
 
+    if needs_output_translation is None:
+        needs_output_translation = use_translation_pipeline
+
+    # Chat passthrough mode (no post-translation).
+    if not use_translation_pipeline or not needs_output_translation:
+        fmt = format_out if format_out is not None else (lambda t: t)
+        async for chunk in agent_stream:
+            yield fmt(chunk)
+        return
+
     if translated_output_chunks is None:
         raise ValueError("translated_output_chunks is required for chat translation streaming")
     if batch_starts_new_line_or_list is None:
