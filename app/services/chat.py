@@ -145,6 +145,7 @@ async def stream_chat_messages(
     user_id: str,
     history: list,
     user_info: dict,
+    background_tasks=None,
     use_translation_pipeline: bool = False,
 ) -> AsyncGenerator[str, None]:
     """Async generator for streaming chat messages."""
