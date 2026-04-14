@@ -1,49 +1,41 @@
 """
 Tasks for creating conversation suggestions.
+
+Cache writes are owned by the suggestions router (cache-aside); this module only
+generates suggestion lists from message history.
 """
 
-from fastapi import BackgroundTasks
 from helpers.utils import get_logger
-from app.redis.cache import set_cache
-from app.redis.config import SUGGESTIONS_TTL_SECONDS
-from app.redis.config import key as redis_key
 from app.utils import _get_message_history, trim_history, format_message_pairs
 from agents.suggestions import suggestions_agent
 from langcodes import Language
 
 logger = get_logger(__name__)
 
-async def create_suggestions(session_id: str, target_lang: str = 'mr'):
-    """
-    Create and save suggestions for a session
-    """
-    logger.info(f"Getting suggestions for session {session_id}")
 
-    try:
-        # Get message history
-        raw_history = await _get_message_history(session_id)
-        history = trim_history(raw_history,
-                          30_000,
-                          include_tool_calls=False,
-                          include_system_prompts=False
-                          )
-        message_pairs = "\n\n".join(format_message_pairs(history, 5))
+async def create_suggestions(session_id: str, target_lang: str = "mr") -> list:
+    """
+    Generate suggestions for a session from Redis message history (no cache I/O).
+    """
+    logger.info("Generating suggestions for session %s", session_id)
 
-        target_lang_name = Language.get(target_lang).display_name(target_lang)
-        message = f"**Conversation**\n\n{message_pairs}\n\n**Based on the conversation, suggest 3-5 questions the farmer can ask in {target_lang_name}.**"
-        
-        # Run the agent
-        agent_run = await suggestions_agent.run(message)
-        suggestions = [x for x in agent_run.output]
-        logger.info(f"Suggestions: {suggestions}")
-        
-        # Store suggestions in cache
-        cache_key = redis_key("suggestions", f"{session_id}:{target_lang}")
-        result = await set_cache(cache_key, suggestions, ttl=SUGGESTIONS_TTL_SECONDS)
-        logger.info(f"Suggestions saved for session {session_id}: {result}")
-        
-        return suggestions
-        
-    except Exception as e:
-        logger.error(f"Error creating suggestions: {str(e)}")
-        return [] 
+    raw_history = await _get_message_history(session_id)
+    history = trim_history(
+        raw_history,
+        30_000,
+        include_tool_calls=False,
+        include_system_prompts=False,
+    )
+    message_pairs = "\n\n".join(format_message_pairs(history, 5))
+
+    target_lang_name = Language.get(target_lang).display_name(target_lang)
+    message = (
+        f"**Conversation**\n\n{message_pairs}\n\n"
+        f"**Based on the conversation, suggest 3-5 questions the farmer can ask "
+        f"in {target_lang_name}.**"
+    )
+
+    agent_run = await suggestions_agent.run(message)
+    suggestions = [x for x in agent_run.output]
+    logger.info("Suggestions: %s", suggestions)
+    return suggestions
