@@ -74,7 +74,17 @@ def init_observability() -> None:
 
     client = get_client()
 
-    if client.auth_check():
+    try:
+        auth_ok = client.auth_check()
+    except Exception as exc:
+        warn_msg = f"Langfuse auth check failed ({exc}); traces will not be sent"
+        logger.warning(warn_msg)
+        print(f"❌ {warn_msg}", flush=True)
+        langfuse_client = None
+        has_otel_exporter = False
+        return
+
+    if auth_ok:
         ok_msg = "Langfuse initialized successfully (authentication verified)"
         logger.info(ok_msg)
         print(f"✅ {ok_msg}", flush=True)
