@@ -1,10 +1,15 @@
 from dotenv import load_dotenv
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-from app.config import settings
 from contextlib import asynccontextmanager
 
 load_dotenv()
+
+from app.observability import init_observability
+
+init_observability()
+
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from app.config import settings
 
 # Import all routers
 from app.routers import chat, transcribe, suggestions, tts, health, auth, user, voice
