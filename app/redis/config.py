@@ -5,7 +5,6 @@ from app.config import settings
 
 DEFAULT_CACHE_TTL_SECONDS = settings.default_cache_ttl
 MESSAGE_HISTORY_TTL_SECONDS = settings.default_cache_ttl
-SUGGESTIONS_TTL_SECONDS = settings.suggestions_cache_ttl
 FARMER_CACHE_TTL_SECONDS = settings.farmer_animal_api_cache_ttl
 FARMER_ANIMAL_API_CACHE_TTL_SECONDS = settings.farmer_animal_api_cache_ttl
 SESSION_OWNER_TTL_SECONDS = settings.session_owner_ttl_seconds

@@ -62,7 +62,6 @@ class Settings(BaseSettings):
 
     # Cache Configuration
     default_cache_ttl: int = 60 * 60 * 24  # 24 hours
-    suggestions_cache_ttl: int = 60 * 30    # 30 minutes
     farmer_animal_api_cache_ttl: int = 60 * 60 * 24 #24 hours
     feedback_state_ttl: int = int(os.getenv("FEEDBACK_STATE_TTL", str(10 * 60)))
     enable_translation_pipeline: bool = os.getenv("ENABLE_TRANSLATION_PIPELINE", "false").lower() in {"1", "true", "yes", "on"}

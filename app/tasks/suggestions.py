@@ -1,8 +1,7 @@
 """
 Tasks for creating conversation suggestions.
 
-Cache writes are owned by the suggestions router (cache-aside); this module only
-generates suggestion lists from message history.
+Generates suggestion lists from Redis message history (no suggestion-list caching here).
 """
 
 from helpers.utils import get_logger

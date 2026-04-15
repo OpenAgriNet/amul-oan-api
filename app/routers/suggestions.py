@@ -3,8 +3,6 @@ from fastapi.responses import JSONResponse
 
 from app.auth.jwt_auth import get_current_user
 from app.models.requests import SuggestionsRequest
-from app.redis.cache import get_cache, set_cache
-from app.redis.config import SUGGESTIONS_TTL_SECONDS, key as redis_key
 from app.tasks.suggestions import create_suggestions
 from helpers.utils import get_logger
 
@@ -19,23 +17,11 @@ async def suggest(
     user_info: dict = Depends(get_current_user),
 ):
     """
-    Cache-aside: read suggestions from Redis; on miss, generate, persist, then return.
+    Generate suggestions from current message history on every request.
+
+    No Redis caching: each call runs the suggestions agent against the latest history.
     """
-    cache_key = redis_key("suggestions", f"{request.session_id}:{request.target_lang}")
-
-    try:
-        suggestions = await get_cache(cache_key)
-    except Exception as e:
-        logger.warning(
-            "suggestions cache read failed for key=%s: %s",
-            cache_key,
-            e,
-            exc_info=True,
-        )
-        suggestions = None
-
-    if suggestions is not None:
-        return JSONResponse(suggestions)
+    _ = user_info  # JWT validated; reserved for future audit/rate limits
 
     try:
         suggestions = await create_suggestions(request.session_id, request.target_lang)
@@ -49,20 +35,6 @@ async def suggest(
         raise HTTPException(
             status_code=500,
             detail="Failed to generate suggestions",
-        ) from e
-
-    try:
-        await set_cache(cache_key, suggestions, ttl=SUGGESTIONS_TTL_SECONDS)
-    except Exception as e:
-        logger.error(
-            "suggestions cache write failed for key=%s: %s",
-            cache_key,
-            e,
-            exc_info=True,
-        )
-        raise HTTPException(
-            status_code=503,
-            detail="Failed to persist suggestions",
         ) from e
 
     return JSONResponse(suggestions)
