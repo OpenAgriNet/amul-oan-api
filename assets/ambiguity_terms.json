@@ -86,5 +86,61 @@
     ],
     "type": "hardcode",
     "rule": "આફરો / aafarao / aafro means rumen tympany (bloat) — gas accumulation in the rumen causing left flank distension. It is a DIGESTIVE condition, NOT ખરવા-મોવાસા (FMD / Foot and Mouth Disease). NEVER confuse these two. When user asks about આફરો, search for cattle bloat rumen tympany treatment and answer about gas accumulation in rumen. Do NOT answer about FMD, blisters, or mouth/hoof lesions."
+  },
+  {
+    "gu_terms": [
+      "ફેટ",
+      "fat",
+      "fet",
+      "ફેટ ઓછ",
+      "fat ochi"
+    ],
+    "type": "hardcode",
+    "rule": "'ફેટ' in dairy context means milk fat content or percentage, NOT પેટ (stomach). When a farmer says 'ફેટ ઓછી' or 'fat is low', they mean their milk fat percentage is below expected — answer about milk fat improvement (feed quality, bypass fat, mineral mixture), NOT stomach or digestive issues."
+  },
+  {
+    "gu_terms": [
+      "માટી ન ખસવી",
+      "મેલી ન પડવી",
+      "મેલી",
+      "જર",
+      "meli",
+      "jar",
+      "mati na khasvi",
+      "afterbirth"
+    ],
+    "type": "hardcode",
+    "rule": "'માટી ન ખસવી' or 'મેલી ન પડવી' means retained placenta (afterbirth not expelled after calving). This is NOT the same as anestrus (not coming in heat) or prolapse (uterus coming out). Answer about retained placenta treatment: gentle traction, oxytocin injection by vet, antibiotics, calcium supplementation."
+  },
+  {
+    "gu_terms": [
+      "કરમોડી",
+      "karmodi",
+      "karamodi"
+    ],
+    "type": "hardcode",
+    "rule": "'કરમોડી' is horn cancer — a squamous cell carcinoma affecting cattle horns. It is NOT a skin disease, lumpy skin disease, or general infection. Treatment requires surgical removal of the affected horn by a veterinarian."
+  },
+  {
+    "gu_terms": [
+      "વાડો",
+      "vado",
+      "vaado"
+    ],
+    "type": "hardcode",
+    "rule": "'વાડો' means cattle shed or animal enclosure, NOT પાડો (male buffalo calf). When a farmer asks about 'વાડો', they are asking about housing, shelter, or shed management — NOT about calves."
+  },
+  {
+    "gu_terms": [
+      "ગરમી",
+      "ગરમીમાં",
+      "ગરમીમાં આવવું",
+      "ગરમી નથી આવતી",
+      "heat",
+      "garmi",
+      "not coming in heat"
+    ],
+    "type": "hardcode",
+    "rule": "CRITICAL DOMAIN DISTINCTION — ગરમી (heat/estrus) and ગાભણ (pregnancy) are COMPLETELY DIFFERENT concepts. ગરમી means the animal is in heat (estrus cycle, ready for mating). ગાભણ means the animal is pregnant (carrying a calf). When a farmer says 'ગરમી નથી આવતી' or 'not coming in heat', they mean the animal is NOT showing estrus signs — do NOT use the word ગાભણ (pregnant) in your response. Say 'ગરમીમાં ન આવવું' NOT 'ગાભણ ન આવવું'. Say 'છેલ્લે ગરમીમાં ક્યારે આવ્યું?' NOT 'છેલ્લે ક્યારે ગાભણ આવ્યું?'. Anestrus (not coming in heat) is about missing estrus cycles. Pregnancy is about carrying offspring. Never confuse these."
   }
 ]

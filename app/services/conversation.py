@@ -60,13 +60,14 @@ async def process_conversation(
     )
 
     if use_stt:
-        # Voice pipeline not yet integrated into this repository.
-        # Keep lazy import so chat behavior remains unaffected.
+        # Voice pipeline: delegate by streaming chunks (async generator, not return).
         try:
             from app.services.voice import stream_voice_messages  # type: ignore
         except ImportError:
             from app.services.voice import stream_voice_message as stream_voice_messages  # type: ignore
-        return stream_voice_messages(**input_data)
-
-    return stream_chat_messages(**input_data)
+        async for chunk in stream_voice_messages(**input_data):
+            yield chunk
+    else:
+        async for chunk in stream_chat_messages(**input_data):
+            yield chunk
 

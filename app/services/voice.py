@@ -94,34 +94,86 @@ def should_translate_batch(batch_text: str, word_count: int) -> bool:
     return batch_text.rstrip().endswith((".", "!", "?"))
 
 
+# ── Greeting short-circuit helpers (keep in sync with voice regression tests) ──
+_GREETING_TOKENS = {
+    "hello",
+    "hi",
+    "hey",
+    "hlo",
+    "હલો",
+    "હેલો",
+    "નમસ્તે",
+    "નમસ્કાર",
+    "હા",
+    "नमस्ते",
+    "हेलो",
+    "हलो",
+    "namaste",
+    "halo",
+    "helo",
+    "ha hello",
+    "હા હલો",
+    "ji",
+    "જી",
+    "bolo",
+    "બોલો",
+    "ha bolo",
+    "હા બોલો",
+    "ji bolo",
+    "જી બોલો",
+}
+
+
 def _is_bare_greeting(query: str) -> bool:
+    """Return True if the query is just a greeting with no real content."""
     cleaned = re.sub(r"[*\s]+", " ", query).strip().lower()
     if not cleaned:
         return False
     cleaned = re.sub(r"[.,!?।]+$", "", cleaned).strip()
-    return cleaned in {"hello", "hi", "hey", "હેલો", "હલો", "નમસ્તે", "નમસ્કાર"}
+    if cleaned in _GREETING_TOKENS:
+        return True
+    words = cleaned.split()
+    if len(words) <= 4:
+        deduped = " ".join(dict.fromkeys(words))
+        if deduped in _GREETING_TOKENS:
+            return True
+    return False
 
 
 def _is_fragment_query(query: str) -> bool:
+    """Return True if query is too short/garbled to be a real question."""
     cleaned = re.sub(r"[*\s.,!?।]+", " ", query).strip()
-    return len(cleaned) <= 3
+    if not cleaned:
+        return True
+    if len(cleaned) <= 3:
+        return True
+    return False
+
+
+_HOLD_MSG_PATTERNS_GU = [
+    "હોલ્ડ પર",
+    "લાઇન પર રહો",
+    "લાઈન પર રહો",
+]
+_HOLD_MSG_PATTERNS_EN = [
+    "put your call on hold",
+    "call has been put on hold",
+    "call on hold",
+    "please stay on the line",
+    "please remain on the line",
+]
 
 
 def _is_hold_message(query: str) -> bool:
+    """Return True if the query looks like a carrier hold/IVR message."""
     lower = query.lower()
-    return any(
-        token in lower
-        for token in [
-            "હોલ્ડ પર",
-            "લાઇન પર રહો",
-            "લાઈન પર રહો",
-            "put your call on hold",
-            "call has been put on hold",
-            "call on hold",
-            "please stay on the line",
-            "please remain on the line",
-        ]
-    )
+    for pat in _HOLD_MSG_PATTERNS_GU:
+        if pat in lower:
+            return True
+    for pat in _HOLD_MSG_PATTERNS_EN:
+        if pat in lower:
+            return True
+    return False
 
 
 _GREETING_RESPONSES = {

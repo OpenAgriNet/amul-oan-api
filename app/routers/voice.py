@@ -94,7 +94,7 @@ async def voice_endpoint(
         "use_translation": use_translation_pipeline,
     }
 
-    message_stream = await process_conversation(
+    message_stream = process_conversation(
         input_data={
             "query": request.query,
             "session_id": session_id,
