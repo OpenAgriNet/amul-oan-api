@@ -16,6 +16,7 @@ from anthropic import AsyncAnthropic
 from helpers.utils import get_logger
 from dotenv import load_dotenv
 from agents.tools.terms import get_mini_glossary_for_text
+from agents.models import LLM_MODEL_NAME
 
 try:
     from langfuse import get_client as get_langfuse_client
@@ -333,6 +334,177 @@ async def translate_text(
     except aiohttp.ClientError as e:
         logger.error(f"Translation API connection error: {str(e)}")
         raise Exception(f"Failed to connect to translation service: {str(e)}")
+
+
+def _openai_chat_message_content(data: dict) -> str:
+    """Extract assistant text from an OpenAI-compatible chat/completions JSON body."""
+    choices = data.get("choices") or []
+    if not choices:
+        return ""
+    msg = choices[0].get("message") or {}
+    content = msg.get("content")
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, list):
+        parts: list[str] = []
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "text":
+                parts.append(str(block.get("text") or ""))
+        return "".join(parts).strip()
+    return ""
+
+
+def _inference_chat_headers() -> dict[str, str]:
+    headers: dict[str, str] = {"Content-Type": "application/json"}
+    key = (os.getenv("INFERENCE_API_KEY") or os.getenv("OPENAI_API_KEY") or "").strip()
+    if key:
+        headers["Authorization"] = f"Bearer {key}"
+    return headers
+
+
+def _resolve_pretranslation_backend() -> str:
+    """
+    Choose query→English pre-translation backend.
+    Default: Gemma on vLLM when LLM_PROVIDER=vllm; otherwise Anthropic Haiku (with TG fallback inside Haiku path).
+    Override with PRETRANSLATION_BACKEND=gemma_vllm|anthropic|translategemma
+    """
+    explicit = (os.getenv("PRETRANSLATION_BACKEND") or "").strip().lower()
+    if explicit:
+        aliases = {
+            "gemma_vllm": "gemma_vllm",
+            "vllm": "gemma_vllm",
+            "gemma": "gemma_vllm",
+            "gemma4": "gemma_vllm",
+            "anthropic": "anthropic",
+            "haiku": "anthropic",
+            "claude": "anthropic",
+            "translategemma": "translategemma",
+            "tg": "translategemma",
+        }
+        mapped = aliases.get(explicit, explicit)
+        if mapped in ("gemma_vllm", "anthropic", "translategemma"):
+            return mapped
+        logger.warning("Unknown PRETRANSLATION_BACKEND=%r; using auto selection", explicit)
+    if (os.getenv("LLM_PROVIDER") or "").lower() == "vllm":
+        return "gemma_vllm"
+    return "anthropic"
+
+
+async def translate_to_english_pretranslation(
+    text: str,
+    source_lang: str,
+    *,
+    max_tokens: int = 1024,
+) -> str:
+    """GU/indic→English pre-translation for the translation pipeline (backend from env)."""
+    backend = _resolve_pretranslation_backend()
+    if backend == "gemma_vllm":
+        return await translate_to_english_with_vllm_gemma(text, source_lang, max_tokens=max_tokens)
+    if backend == "anthropic":
+        return await translate_to_english_with_haiku(text, source_lang, max_tokens=max_tokens)
+    return await translate_text(text, source_lang, "english")
+
+
+async def translate_to_english_with_vllm_gemma(
+    text: str,
+    source_lang: str,
+    *,
+    max_tokens: int = 1024,
+) -> str:
+    """Translate to English via the chat LLM on OpenAI-compatible vLLM (e.g. Gemma 4 IT)."""
+    if not text or not text.strip():
+        return text
+    if source_lang.lower() in {"english", "en"}:
+        return text
+
+    base_url = (os.getenv("INFERENCE_ENDPOINT_URL") or "").strip().rstrip("/")
+    if not base_url:
+        raise ValueError("INFERENCE_ENDPOINT_URL is required for Gemma vLLM pre-translation")
+
+    model = (os.getenv("PRETRANSLATION_GEMMA_MODEL") or LLM_MODEL_NAME or "").strip()
+    if not model:
+        raise ValueError(
+            "No model for Gemma pre-translation: set PRETRANSLATION_GEMMA_MODEL or LLM_MODEL_NAME"
+        )
+
+    source_name = LANG_NAMES.get(source_lang.lower(), source_lang.capitalize())
+    source_code = LANG_CODES.get(source_lang.lower(), source_lang.lower())
+    system_prompt = (
+        "You are a precise agricultural translation engine. "
+        "Translate the user's message into natural English only. "
+        "Preserve meaning, livestock terminology, and formatting. "
+        "Do not answer the question. Do not add commentary."
+    )
+    user_content = (
+        f"Translate this {source_name} ({source_code}) text to English.\n\n"
+        f"{text.strip()}"
+    )
+    url = f"{base_url}/chat/completions"
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_content},
+        ],
+        "temperature": 0.0,
+        "max_tokens": max_tokens,
+    }
+    headers = _inference_chat_headers()
+    langfuse = _get_langfuse()
+
+    async def _call() -> str:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                url,
+                json=payload,
+                headers=headers,
+                timeout=aiohttp.ClientTimeout(total=120),
+            ) as response:
+                if response.status != 200:
+                    err_body = await response.text()
+                    logger.error(
+                        "Gemma pre-translation API error %s: %s",
+                        response.status,
+                        err_body[:800],
+                    )
+                    raise Exception(f"Gemma pre-translation failed with status {response.status}")
+                result = await response.json()
+                out = _openai_chat_message_content(result)
+                if not out:
+                    raise ValueError("Gemma vLLM pre-translation returned empty output")
+                return out
+
+    if not langfuse:
+        translated = await _call()
+        logger.info(
+            "Gemma vLLM pre-translation ok (%s chars -> %s chars)",
+            len(text),
+            len(translated),
+        )
+        return translated
+
+    with langfuse.start_as_current_observation(
+        name="query_pretranslation",
+        as_type="generation",
+        input={
+            "source_lang": source_lang,
+            "target_lang": "english",
+            "text": text,
+        },
+        model=model,
+        metadata={
+            "translation_provider": "gemma_vllm",
+            "pipeline_stage": "query_pretranslation",
+        },
+    ) as observation:
+        translated_text = await _call()
+        observation.update(output=translated_text)
+        logger.info(
+            "Gemma vLLM pre-translation ok (%s chars -> %s chars)",
+            len(text),
+            len(translated_text),
+        )
+        return translated_text
 
 
 def _get_anthropic_client() -> AsyncAnthropic:

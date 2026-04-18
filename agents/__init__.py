@@ -10,10 +10,14 @@ has_otel_exporter = False
 langfuse_public_key = os.getenv("LANGFUSE_PUBLIC_KEY")
 langfuse_secret_key = os.getenv("LANGFUSE_SECRET_KEY")
 if langfuse_public_key and langfuse_secret_key:
-    from langfuse import get_client
-    # Initialize Langfuse client - this registers the OTEL span processor
-    get_client()
-    has_otel_exporter = True
+    try:
+        from langfuse import get_client
+        # Initialize Langfuse client - this registers the OTEL span processor
+        get_client()
+        has_otel_exporter = True
+    except ModuleNotFoundError:
+        # Keep API startup alive when langfuse isn't installed in container image.
+        has_otel_exporter = False
 
 # Enable Pydantic AI instrumentation if at least one exporter is configured
 if has_otel_exporter:
