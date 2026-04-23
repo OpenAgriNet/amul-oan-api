@@ -20,6 +20,7 @@ class AICallRequestModel(BaseModel):
     union_code: str = Field(..., alias="unionCode")
     society_code: str = Field(..., alias="societyCode")
     farmer_code: str = Field(..., alias="farmerCode")
+    technician_id: str = Field(..., alias="userId")
     species: AISpecies
 
     def to_query_params(self) -> dict[str, str]:
@@ -27,6 +28,7 @@ class AICallRequestModel(BaseModel):
             "unionCode": self.union_code,
             "societyCode": self.society_code,
             "farmerCode": self.farmer_code,
+            "userId": self.technician_id,
             "speciesId": self.species.encrypted_species_id,
         }
 
