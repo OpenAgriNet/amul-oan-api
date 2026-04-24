@@ -26,7 +26,8 @@ async def chat_endpoint(
         f"Chat request received - session_id: {session_id}, user_id: {request.user_id}, "
         f"channel: {request.channel}, "
         f"authenticated_user: {user_info}, source_lang: {request.source_lang}, "
-        f"target_lang: {request.target_lang}, use_translation_pipeline: {request.use_translation_pipeline}, query: {request.query}"
+        f"target_lang: {request.target_lang}, "
+        f"use_translation_pipeline: {request.use_translation_pipeline}, query: {request.query}"
     )
     
     history = await _get_message_history(session_id)
