@@ -378,7 +378,6 @@ _PRETRANSLATION_SYSTEM = (
     "Do not answer the question. Do not add commentary."
 )
 
-
 async def _pretranslate_openai(text: str, source_name: str, source_code: str, max_tokens: int) -> str:
     """Pretranslate using OpenAI API."""
     client = _get_openai_client()
@@ -411,13 +410,11 @@ async def _pretranslate_anthropic(text: str, source_name: str, source_code: str,
     )
     parts = [block.text for block in response.content if getattr(block, "type", None) == "text" and getattr(block, "text", None)]
     return "".join(parts).strip()
-
-
 async def translate_to_english_pretranslation(
     text: str,
     source_lang: str,
     *,
-    max_tokens: int = 1024,
+    max_tokens: int = 512,
 ) -> str:
     """Translate input text to English using the configured pretranslation provider.
 
@@ -434,7 +431,6 @@ async def translate_to_english_pretranslation(
     source_code = LANG_CODES.get(source_lang.lower(), source_lang.lower())
 
     langfuse = _get_langfuse()
-
     pretranslate_fn = _pretranslate_openai if PRETRANSLATION_PROVIDER != "anthropic" else _pretranslate_anthropic
 
     if not langfuse:
@@ -465,6 +461,7 @@ async def translate_to_english_pretranslation(
 
 
 # Backward-compatible alias
+translate_to_english_with_gemma4 = translate_to_english_pretranslation
 translate_to_english_with_haiku = translate_to_english_pretranslation
 
 

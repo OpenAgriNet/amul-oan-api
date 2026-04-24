@@ -27,6 +27,7 @@ class Settings(BaseSettings):
     allowed_credentials: bool = True
     allowed_methods: List[str] = ["*"]
     allowed_headers: List[str] = ["*"]
+    chat_api_key: Optional[str] = os.getenv("CHAT_API_KEY")
 
     # JWT Configuration
     # Inline PEM values take precedence; if not set, keys are loaded from paths.
