@@ -32,6 +32,7 @@ class OptionalOAuth2PasswordBearer(OAuth2PasswordBearer):
 
 # OAuth2 scheme for FastAPI - optional in development
 oauth2_scheme = OptionalOAuth2PasswordBearer(tokenUrl="token")
+chat_oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token", auto_error=False)
 _PHONE_DIGITS_RE = re.compile(r"\D+")
 
 
@@ -155,7 +156,7 @@ async def get_current_user(token: str | None = Depends(oauth2_scheme)):
         )
 
 
-async def get_chat_user(request: Request, token: str | None = Depends(oauth2_scheme)):
+async def get_chat_user(request: Request, token: str | None = Depends(chat_oauth2_scheme)):
     """
     Unified auth dependency for chat.
 
