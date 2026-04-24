@@ -1,6 +1,8 @@
 import asyncio
 import jwt
 import os
+import hmac
+import re
 from dotenv import load_dotenv
 from cryptography.hazmat.primitives import serialization
 from fastapi import Depends, HTTPException, status, Request
@@ -30,6 +32,44 @@ class OptionalOAuth2PasswordBearer(OAuth2PasswordBearer):
 
 # OAuth2 scheme for FastAPI - optional in development
 oauth2_scheme = OptionalOAuth2PasswordBearer(tokenUrl="token")
+_PHONE_DIGITS_RE = re.compile(r"\D+")
+
+
+def _normalize_phone(raw: str) -> str:
+    digits = _PHONE_DIGITS_RE.sub("", raw or "")
+    if digits.startswith("91") and len(digits) > 10:
+        digits = digits[2:].lstrip("0") or digits
+    return digits.lstrip("0")
+
+
+def _validate_chat_api_key(request: Request) -> dict | None:
+    expected = (settings.chat_api_key or "").strip()
+    if not expected:
+        return None
+
+    provided = (request.headers.get("X-API-Key") or "").strip()
+    if not provided:
+        return None
+
+    if not hmac.compare_digest(provided, expected):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid API key",
+        )
+
+    raw_phone = (request.headers.get("X-User-Phone") or "").strip()
+    phone = _normalize_phone(raw_phone)
+    if not phone:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="X-User-Phone header is required with X-API-Key auth",
+        )
+
+    return {
+        "phone": phone,
+        "sub": phone,
+        "auth_type": "api_key",
+    }
 
 
 def _load_public_key():
@@ -113,3 +153,25 @@ async def get_current_user(token: str | None = Depends(oauth2_scheme)):
             detail="Token verification failed",
             headers={"WWW-Authenticate": "Bearer"},
         )
+
+
+async def get_chat_user(request: Request, token: str | None = Depends(oauth2_scheme)):
+    """
+    Unified auth dependency for chat.
+
+    Priority:
+    1. Bearer JWT for web/app clients.
+    2. X-API-Key + X-User-Phone for trusted server-side integrations like WhatsApp.
+    """
+    if token:
+        return await get_current_user(token)
+
+    api_key_identity = _validate_chat_api_key(request)
+    if api_key_identity:
+        return api_key_identity
+
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )

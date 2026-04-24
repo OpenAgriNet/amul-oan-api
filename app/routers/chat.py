@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse, StreamingResponse
-from app.auth.jwt_auth import get_current_user
+from app.auth.jwt_auth import get_chat_user
 from app.services.chat import stream_chat_messages
 from app.utils import _get_message_history
 from app.models.requests import ChatRequest
@@ -14,7 +14,7 @@ router = APIRouter(prefix="/chat", tags=["chat"])
 @router.get("/")
 async def chat_endpoint(
     request: ChatRequest = Depends(),
-    user_info: dict = Depends(get_current_user)  # Authentication required
+    user_info: dict = Depends(get_chat_user)
 ):
     """
     Chat endpoint that streams responses back to the client.
@@ -24,6 +24,7 @@ async def chat_endpoint(
     
     logger.info(
         f"Chat request received - session_id: {session_id}, user_id: {request.user_id}, "
+        f"channel: {request.channel}, "
         f"authenticated_user: {user_info}, source_lang: {request.source_lang}, "
         f"target_lang: {request.target_lang}, use_translation_pipeline: {request.use_translation_pipeline}, query: {request.query}"
     )
@@ -36,6 +37,7 @@ async def chat_endpoint(
         session_id=session_id,
         source_lang=request.source_lang,
         target_lang=request.target_lang,
+        channel=request.channel,
         user_id=request.user_id,
         history=history,
         user_info=user_info,

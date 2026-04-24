@@ -142,6 +142,7 @@ async def stream_chat_messages(
     session_id: str,
     source_lang: str,
     target_lang: str,
+    channel: str,
     user_id: str,
     history: list,
     user_info: dict,
@@ -158,6 +159,7 @@ async def stream_chat_messages(
     effective_user_id = effective_user_id[:200]
     langfuse_metadata = {
         "pipeline": pipeline_name,
+        "channel": (channel or "web")[:200],
         "source_lang": (source_lang or "unknown").lower()[:200],
         "target_lang": (target_lang or "unknown").lower()[:200],
         "user_id": effective_user_id,
@@ -182,6 +184,7 @@ async def stream_chat_messages(
                 langfuse.update_current_trace(
                     input={
                         "query": query,
+                        "channel": channel,
                         "source_lang": source_lang,
                         "target_lang": target_lang,
                         "use_translation_pipeline": use_translation_pipeline,
