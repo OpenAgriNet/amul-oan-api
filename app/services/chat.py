@@ -143,7 +143,6 @@ async def stream_chat_messages(
     source_lang: str,
     target_lang: str,
     user_id: str,
-    technician_id: str | None,
     history: list,
     user_info: dict,
     use_translation_pipeline: bool = False,
@@ -294,7 +293,6 @@ async def stream_chat_messages(
             query=processing_query,
             lang_code=processing_lang,
             farmer_info=farmer_data,
-            technician_id=technician_id,
             use_translation_pipeline=use_translation_pipeline,
         )
 

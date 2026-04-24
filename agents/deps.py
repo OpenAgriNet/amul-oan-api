@@ -23,10 +23,6 @@ class FarmerContext(BaseModel):
     lang_code: str = Field(description="The language code of the user's question.", default='gu')
     moderation_str: Optional[str] = Field(default=None, description="The moderation result of the user's question.")
     farmer_info: str = Field(description="Farmer's personal details and animals from JWT token.")
-    technician_id: Optional[str] = Field(
-        default=None,
-        description="Technician identifier used as userId for CreateAICall API.",
-    )
     use_translation_pipeline: bool = Field(default=False, description="When True, use English-only prompt; response is translated externally.")
 
     def update_moderation_str(self, moderation_str: str):
@@ -79,7 +75,6 @@ class FarmerContext(BaseModel):
         """Get the user message for the agrinet agent."""
         strings = [
             self._query_string(), 
-            f"**Technician ID:** \"{self.technician_id}\"" if self.technician_id else None,
         #self._language_string(), 
         #self._moderation_string(), 
         ]

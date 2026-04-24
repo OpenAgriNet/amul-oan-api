@@ -25,7 +25,7 @@ async def chat_endpoint(
     logger.info(
         f"Chat request received - session_id: {session_id}, user_id: {request.user_id}, "
         f"authenticated_user: {user_info}, source_lang: {request.source_lang}, "
-        f"target_lang: {request.target_lang}, technician_id: {request.technician_id}, "
+        f"target_lang: {request.target_lang}, "
         f"use_translation_pipeline: {request.use_translation_pipeline}, query: {request.query}"
     )
     
@@ -38,7 +38,6 @@ async def chat_endpoint(
         source_lang=request.source_lang,
         target_lang=request.target_lang,
         user_id=request.user_id,
-        technician_id=request.technician_id,
         history=history,
         user_info=user_info,
         use_translation_pipeline=request.use_translation_pipeline or False,

@@ -15,7 +15,7 @@ async def create_ai_call(
     union_code: str,
     society_code: str,
     farmer_code: str,
-    technician_id: str,
+    user_id: str,
     species: AISpecies,
 ) -> str:
     """
@@ -25,7 +25,7 @@ async def create_ai_call(
         union_code: Union code for the farmer from farmer context.
         society_code: Society code for the farmer from farmer context.
         farmer_code: Farmer code for the farmer from farmer context.
-        technician_id: Technician identifier to be sent as userId to external CreateAICall API.
+        user_id: Selected AI technician user identifier to be sent as userId to external CreateAICall API.
         species: Species to book the AI call for. Use `cow` or `buffalo`.
 
     Returns:
@@ -33,11 +33,11 @@ async def create_ai_call(
              or a clear message if booking fails.
     """
     logger.info(
-        "Create AI call tool invoked for union=%s society=%s farmer=%s technician=%s species=%s",
+        "Create AI call tool invoked for union=%s society=%s farmer=%s user_id=%s species=%s",
         union_code,
         society_code,
         farmer_code,
-        technician_id,
+        user_id,
         species.value,
     )
 
@@ -53,7 +53,7 @@ async def create_ai_call(
         unionCode=union_code,
         societyCode=society_code,
         farmerCode=farmer_code,
-        userId=technician_id,
+        userId=user_id,
         species=species,
     )
     response = await create_ai_call_api(request, token)

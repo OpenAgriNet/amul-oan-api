@@ -3,6 +3,10 @@ import json
 from types import CoroutineType
 from typing import Any
 
+from agents.tools.get_ai_technicians_by_society import (
+    GetAITechniciansBySocietyQueryParams,
+    get_ai_technicians_by_society,
+)
 from agents.tools.animal import get_animal_data_by_tag
 from agents.tools.cvcc import get_cvcc_health_data_by_tag
 from agents.tools.farmer import get_farmer_data_by_mobile
@@ -25,7 +29,10 @@ from app.models.cvcc import (
 )
 from app.models.farmer import FarmerModel
 from app.models.union import UnionName
-from helpers.utils import is_from_union
+from helpers.utils import get_logger, is_from_union
+
+
+logger = get_logger(__name__)
 
 
 def _format_value(value: Any) -> str:
@@ -94,6 +101,69 @@ def _append_farmer_markdown(lines: list[str], farmer: FarmerModel, index: int) -
         _add_field(lines, label, value)
     _append_section(lines, "### Herd summary", herd_fields)
     _append_section(lines, "### Milk metrics", milk_fields)
+
+
+async def _get_ai_technicians_for_farmer(
+    farmer: FarmerModel,
+) -> tuple[list[str] | None, str | None]:
+    if not farmer.union_code or not farmer.society_code:
+        return None, "AI technician lookup skipped because union code or society code is missing."
+
+    try:
+        technicians = await get_ai_technicians_by_society(
+            GetAITechniciansBySocietyQueryParams(
+                unionCode=farmer.union_code,
+                societyCode=farmer.society_code,
+            )
+        )
+    except Exception as exc:
+        logger.warning(
+            "AI technician lookup failed for farmer_code=%s union=%s society=%s error=%s",
+            farmer.farmer_code,
+            farmer.union_code,
+            farmer.society_code,
+            exc,
+        )
+        return None, "AI technician details could not be fetched right now."
+
+    if not technicians:
+        return [], None
+
+    unique_technicians: dict[str, str] = {}
+    for technician in technicians:
+        key = technician.user_id or f"{technician.full_name}|{technician.mobile_number}"
+        if key in unique_technicians:
+            continue
+        unique_technicians[key] = (
+            f"- **Name:** {technician.full_name} | "
+            f"**Mobile number:** {technician.mobile_number} | "
+            f"**user_id:** {technician.user_id}"
+        )
+
+    return list(unique_technicians.values()), None
+
+
+async def _append_ai_technicians_markdown(lines: list[str], farmer: FarmerModel) -> None:
+    lines.append("")
+    lines.append("### Available AI technicians")
+
+    technician_lines, error_message = await _get_ai_technicians_for_farmer(farmer)
+    if error_message:
+        lines.append(f"- {error_message}")
+        return
+
+    if technician_lines == []:
+        lines.append("- No AI technicians were found for this society.")
+        return
+
+    if not technician_lines:
+        lines.append("- AI technician details are unavailable.")
+        return
+
+    lines.append(
+        "- Use these details when the user wants to book an AI call. Show only name and mobile number to the user, but use the mapped `user_id` when calling `create_ai_call`."
+    )
+    lines.extend(technician_lines)
 
 def _format_medicines(medicines: list[BanasMedicineModel] | None) -> str | None:
     if not medicines:
@@ -375,6 +445,7 @@ async def get_farmer_full_data_by_mobile(mobile_number: str) -> str:
 
     for index, farmer in enumerate(farmers, start=1):
         _append_farmer_markdown(lines, farmer, index)
+        await _append_ai_technicians_markdown(lines, farmer)
 
         tags = farmer.animal_tags or []
         include_banas_visit = is_from_union([farmer], UnionName.BANAS)
