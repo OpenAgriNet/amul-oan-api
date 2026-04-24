@@ -4,6 +4,7 @@ from functools import lru_cache
 import os
 import regex
 import re
+from fastapi import BackgroundTasks
 from agents.agrinet import agrinet_agent
 from agents.moderation import moderation_agent
 from agents.models import LLM_MODEL_NAME, LLM_PROVIDER
@@ -13,13 +14,16 @@ from app.utils import (
     trim_history,
     format_message_pairs
 )
+from app.tasks.suggestions import create_suggestions
 from agents.deps import FarmerContext
 from agents.farmer_context import get_farmer_full_data_by_mobile
 from app.services.translation import (
     translate_text,
-    translate_to_english_with_gemma4,
+    translate_to_english_pretranslation,
     translate_text_stream_fast,
     INDIAN_LANGUAGES,
+    PRETRANSLATION_PROVIDER,
+    PRETRANSLATION_MODEL,
 )
 
 
@@ -146,6 +150,7 @@ async def stream_chat_messages(
     user_id: str,
     history: list,
     user_info: dict,
+    background_tasks: BackgroundTasks,
     use_translation_pipeline: bool = False,
 ) -> AsyncGenerator[str, None]:
     """Async generator for streaming chat messages."""
@@ -245,11 +250,11 @@ async def stream_chat_messages(
 
         if use_translation_pipeline and source_lang.lower() in {"gu", "gujarati"}:
             logger.info(
-                "request_id=%s translation_pipeline=True pretranslating gu->en with Gemma4",
-                request_id,
+                "request_id=%s translation_pipeline=True pretranslating gu->en with %s/%s",
+                request_id, PRETRANSLATION_PROVIDER, PRETRANSLATION_MODEL,
             )
             try:
-                processing_query = await translate_to_english_with_gemma4(
+                processing_query = await translate_to_english_pretranslation(
                     text=query,
                     source_lang=source_lang,
                 )
@@ -316,8 +321,15 @@ async def stream_chat_messages(
                 moderation_data.category,
                 moderation_data.action,
             )
-
-            if moderation_data.category != "valid_agricultural":
+            # Generate suggestions after moderation passes
+            if moderation_data.category == "valid_agricultural":
+                logger.info(f"Triggering suggestions generation for session {session_id}")
+                try:
+                    background_tasks.add_task(create_suggestions, session_id, target_lang)
+                    logger.info("Successfully added suggestions task")
+                except Exception as e:
+                    logger.error(f"Error adding suggestions task: {str(e)}")
+            else:
                 # Hard gate: do not run retrieval/answer agent for moderated non-agricultural requests.
                 decline_text = (moderation_data.action or "").strip() or (
                     "I can only answer agriculture and livestock related questions."
