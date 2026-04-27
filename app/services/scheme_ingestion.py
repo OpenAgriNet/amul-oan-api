@@ -108,7 +108,10 @@ def _slugify_fragment(value: str) -> str:
 
 
 def _build_prefixed_key(namespace: str, key: str) -> str:
-    return f"{settings.redis_key_prefix}{namespace}:{key}"
+    normalized_prefix = settings.redis_key_prefix.rstrip(":-")
+    if normalized_prefix:
+        return f"{normalized_prefix}:{namespace}:{key}"
+    return f"{namespace}:{key}"
 
 
 def build_scheme_cache_key(source_key: str) -> str:
