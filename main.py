@@ -3,6 +3,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.config import settings
 from contextlib import asynccontextmanager
+from app.tasks.scheme_scheduler import start_scheme_scheduler, stop_scheme_scheduler
 
 load_dotenv()
 
@@ -17,8 +18,10 @@ async def lifespan(app: FastAPI):
     print(f"📍 Environment: {settings.environment}")
     print(f"🔧 Debug mode: {settings.debug}")
     print(f"🌐 CORS origins: {settings.allowed_origins}")
+    await start_scheme_scheduler()
     yield
     # Shutdown
+    await stop_scheme_scheduler()
     print(f"🛑 {settings.app_name} shutting down...")
 
 # Disable API docs in production to avoid exposing full API surface
