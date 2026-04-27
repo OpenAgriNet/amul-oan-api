@@ -29,10 +29,19 @@ from app.models.cvcc import (
 )
 from app.models.farmer import FarmerModel
 from app.models.union import UnionName
+from app.services.scheme_ingestion import (
+    SchemeCacheError,
+    SchemeDependencyError,
+    get_cached_scheme_records_for_union,
+)
 from helpers.utils import get_logger, is_from_union
 
 
 logger = get_logger(__name__)
+SUPPORTED_SCHEME_CONTEXT_UNIONS = {
+    UnionName.BANAS.value,
+    UnionName.KUTCH.value,
+}
 
 
 def _format_value(value: Any) -> str:
@@ -63,6 +72,61 @@ def _append_section(lines: list[str], title: str, fields: list[tuple[str, Any]])
     lines.append("")
     lines.append(title)
     lines.extend(section_lines)
+
+
+def _collect_farmer_unions(farmers: list[FarmerModel]) -> list[str]:
+    seen: set[str] = set()
+    unions: list[str] = []
+    for farmer in farmers:
+        normalized_union = (farmer.union_name or "").strip().lower()
+        if not normalized_union or normalized_union in seen:
+            continue
+        seen.add(normalized_union)
+        unions.append(normalized_union)
+    return unions
+
+
+async def _append_union_scheme_summary_markdown(lines: list[str], farmer_unions: list[str]) -> None:
+    scheme_unions = [union_name for union_name in farmer_unions if union_name in SUPPORTED_SCHEME_CONTEXT_UNIONS]
+    if not scheme_unions:
+        return
+
+    lines.append("")
+    lines.append("## Union schemes available")
+    lines.append("- The following scheme titles are available from the union scheme cache. Use these titles and links for scheme-related questions. Retrieve full cached scheme details when the user asks about a specific scheme.")
+
+    for union_name in scheme_unions:
+        try:
+            records = await get_cached_scheme_records_for_union(union_name)
+        except SchemeDependencyError:
+            logger.warning("Union scheme summary skipped because Redis dependency is unavailable union=%s", union_name)
+            lines.append(f"- **{union_name.title()}**: Scheme cache dependency is unavailable.")
+            continue
+        except SchemeCacheError:
+            logger.warning("Union scheme summary skipped because scheme cache could not be read union=%s", union_name)
+            lines.append(f"- **{union_name.title()}**: Scheme cache could not be read.")
+            continue
+        except Exception as exc:
+            logger.warning("Union scheme summary skipped because of unexpected error union=%s error=%s", union_name, exc)
+            lines.append(f"- **{union_name.title()}**: Scheme list is temporarily unavailable.")
+            continue
+
+        if not records:
+            lines.append(f"- **{union_name.title()}**: No cached scheme list is available yet.")
+            continue
+
+        lines.append(f"- **{union_name.title()} union schemes:**")
+        seen_links: set[tuple[str, str]] = set()
+        for record in records:
+            title = record.get("scheme_title")
+            link = record.get("scheme_url")
+            if not title or not link:
+                continue
+            dedupe_key = (str(title).casefold(), str(link))
+            if dedupe_key in seen_links:
+                continue
+            seen_links.add(dedupe_key)
+            lines.append(f"  - {title}: {link}")
 
 
 def _append_farmer_markdown(lines: list[str], farmer: FarmerModel, index: int) -> None:
@@ -424,15 +488,18 @@ async def _get_animal_context_bundle(
     return tag, animal, banas_visits, cvcc_health  # ty: ignore
 
 
-async def get_farmer_full_data_by_mobile(mobile_number: str) -> str:
+async def get_farmer_context_bundle_by_mobile(mobile_number: str) -> tuple[str, list[str]]:
     farmers = await get_farmer_data_by_mobile(mobile_number)
     mobile = normalize_phone(mobile_number) or mobile_number
 
     if farmers is None:
         return (
             "# Farmer Context\n\n"
-            f"No farmer information found for mobile number `{mobile}`."
+            f"No farmer information found for mobile number `{mobile}`.",
+            [],
         )
+
+    farmer_unions = _collect_farmer_unions(farmers)
 
     lines = [
         "# Farmer Context",
@@ -442,6 +509,7 @@ async def get_farmer_full_data_by_mobile(mobile_number: str) -> str:
         f"- **Requested mobile number:** `{mobile}`",
         f"- **Matched farmer records:** {len(farmers)}",
     ]
+    await _append_union_scheme_summary_markdown(lines, farmer_unions)
 
     for index, farmer in enumerate(farmers, start=1):
         _append_farmer_markdown(lines, farmer, index)
@@ -471,4 +539,9 @@ async def get_farmer_full_data_by_mobile(mobile_number: str) -> str:
         for tag, animal, banas_visits, cvcc_health in animal_contexts:
             _append_animal_markdown(lines, tag, animal, banas_visits, cvcc_health)
 
-    return "\n".join(lines)
+    return "\n".join(lines), farmer_unions
+
+
+async def get_farmer_full_data_by_mobile(mobile_number: str) -> str:
+    farmer_context, _ = await get_farmer_context_bundle_by_mobile(mobile_number)
+    return farmer_context
