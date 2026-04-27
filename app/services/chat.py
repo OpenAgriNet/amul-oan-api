@@ -16,7 +16,7 @@ from app.utils import (
 )
 from app.tasks.suggestions import create_suggestions
 from agents.deps import FarmerContext
-from agents.farmer_context import get_farmer_full_data_by_mobile
+from agents.farmer_context import get_farmer_context_bundle_by_mobile
 from app.services.translation import (
     translate_text,
     translate_to_english_pretranslation,
@@ -237,10 +237,12 @@ async def stream_chat_messages(
 
         # Extract farmer context from phone in JWT via cache-first fetch
         farmer_data = ""
+        farmer_unions: list[str] = []
         if user_info and user_info.get('phone'):
             try:
-                farmer_data = await get_farmer_full_data_by_mobile(user_info['phone'])
+                farmer_data, farmer_unions = await get_farmer_context_bundle_by_mobile(user_info['phone'])
                 logger.info(f"request_id={request_id} farmer_context_length={len(farmer_data)}")
+                logger.info("request_id=%s farmer_unions=%s", request_id, farmer_unions)
             except Exception as e:
                 logger.warning(f"request_id={request_id} farmer_context_fetch_failed={e}")
 
@@ -301,6 +303,7 @@ async def stream_chat_messages(
             query=processing_query,
             lang_code=processing_lang,
             farmer_info=farmer_data,
+            farmer_unions=farmer_unions,
             use_translation_pipeline=use_translation_pipeline,
         )
 

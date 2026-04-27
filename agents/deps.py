@@ -23,6 +23,7 @@ class FarmerContext(BaseModel):
     lang_code: str = Field(description="The language code of the user's question.", default='gu')
     moderation_str: Optional[str] = Field(default=None, description="The moderation result of the user's question.")
     farmer_info: str = Field(description="Farmer's personal details and animals from JWT token.")
+    farmer_unions: list[str] = Field(default_factory=list, description="Normalized union names derived from the farmer context.")
     use_translation_pipeline: bool = Field(default=False, description="When True, use English-only prompt; response is translated externally.")
 
     def update_moderation_str(self, moderation_str: str):
@@ -69,6 +70,10 @@ class FarmerContext(BaseModel):
     def get_farmer_context_string(self) -> str:
         """Format farmer context information from JWT token for the system prompt."""
         return self.farmer_info
+
+    def get_preferred_union_name(self) -> Optional[str]:
+        """Get the primary farmer union name when available."""
+        return self.farmer_unions[0] if self.farmer_unions else None
 
             
     def get_user_message(self):
