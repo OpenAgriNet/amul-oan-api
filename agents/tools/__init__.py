@@ -1,6 +1,7 @@
 """Tools for the Sunbird VA API."""
 from pydantic_ai import Tool
 from agents.tools.ai_call import create_ai_call
+from agents.tools.health_call import create_health_call
 from agents.tools.search import search_documents, search_videos
 from agents.tools.terms import search_terms
 from agents.tools.union_schemes import get_union_scheme_data
@@ -28,6 +29,13 @@ TOOLS = [
 
     Tool(
         create_ai_call,
+        takes_ctx=False,
+        docstring_format='auto',
+        require_parameter_descriptions=True,
+    ),
+
+    Tool(
+        create_health_call,
         takes_ctx=False,
         docstring_format='auto',
         require_parameter_descriptions=True,
