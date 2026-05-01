@@ -42,12 +42,12 @@ class FarmerContext(BaseModel):
         """Get the moderation result of the user's question."""
         return self.moderation_str
     
-    def _language_string(self):
-        """Get the language string for the agrinet agent."""
-        if self.lang_code:
-            return f"**Selected Language:** {Language.get(self.lang_code).display_name()}"
-        else:
-            return None
+    # def _language_string(self):
+    #     """Get the language string for the agrinet agent."""
+    #     if self.lang_code:
+    #         return f"**Selected Language:** {Language.get(self.lang_code).display_name()}"
+    #     else:
+    #         return None
     
     def _query_string(self):
         """Get the query string for the agrinet agent."""
@@ -80,7 +80,7 @@ class FarmerContext(BaseModel):
         """Get the user message for the agrinet agent."""
         strings = [
             self._query_string(), 
-        self._language_string(), 
+        # self._language_string(), 
         #self._moderation_string(), 
         ]
         return "\n".join([x for x in strings if x])
