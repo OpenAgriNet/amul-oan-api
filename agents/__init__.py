@@ -10,9 +10,15 @@ has_otel_exporter = False
 langfuse_public_key = os.getenv("LANGFUSE_PUBLIC_KEY")
 langfuse_secret_key = os.getenv("LANGFUSE_SECRET_KEY")
 if langfuse_public_key and langfuse_secret_key:
-    from langfuse import get_client
-    # Initialize Langfuse client - this registers the OTEL span processor
-    get_client()
+    from langfuse import Langfuse
+
+    # Langfuse reads LANGFUSE_TRACING_ENVIRONMENT only from os.environ; if unset, the UI
+    # shows "default". Pydantic settings are not wired here — use the explicit env var or
+    # this repo default so chat traces consistently land under chat-development.
+    _langfuse_tracing_environment = (
+        os.getenv("LANGFUSE_TRACING_ENVIRONMENT") or "chat-development"
+    )
+    Langfuse(environment=_langfuse_tracing_environment)
     has_otel_exporter = True
 
 # Enable Pydantic AI instrumentation if at least one exporter is configured
