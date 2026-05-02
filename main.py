@@ -8,7 +8,7 @@ from app.tasks.scheme_scheduler import start_scheme_scheduler, stop_scheme_sched
 load_dotenv()
 
 # Import all routers
-from app.routers import chat, transcribe, suggestions, tts, health, auth, user, health_call_booking
+from app.routers import chat, transcribe, suggestions, tts, health, auth, user
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -66,4 +66,3 @@ app.include_router(suggestions.router, prefix=settings.api_prefix)
 app.include_router(tts.router, prefix=settings.api_prefix)
 app.include_router(user.router, prefix=settings.api_prefix)
 app.include_router(health.router, prefix=settings.api_prefix)
-app.include_router(health_call_booking.router, prefix=settings.api_prefix)

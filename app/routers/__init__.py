@@ -6,4 +6,3 @@ from . import suggestions
 from . import tts
 from . import health
 from . import auth
-from . import health_call_booking
