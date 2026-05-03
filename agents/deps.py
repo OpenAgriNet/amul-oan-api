@@ -80,7 +80,7 @@ class FarmerContext(BaseModel):
         """Get the user message for the agrinet agent."""
         strings = [
             self._query_string(), 
-        #self._language_string(), 
+        # self._language_string(), 
         #self._moderation_string(), 
         ]
         return "\n".join([x for x in strings if x])
