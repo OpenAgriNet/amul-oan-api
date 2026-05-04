@@ -183,6 +183,7 @@ def _format_translation_prompt(
     source_lang: str,
     target_lang: str,
     mini_glossary: Optional[str] = None,
+    max_output_chars: Optional[int] = None,
 ) -> str:
     """Format the translation prompt using TranslateGemma's official chat template.
     When target is Gujarati and mini_glossary is provided, injects a dynamic term list
@@ -213,6 +214,11 @@ def _format_translation_prompt(
             "\n\n**Gujarati Livestock Style Rules (mandatory):**\n- "
             + "\n- ".join(GU_PREFERRED_TRANSLATION_RULES)
             + "\n"
+        )
+    if max_output_chars:
+        instruction += (
+            f"\n\n**Length Rule (mandatory):** The translated response must be no more than "
+            f"{max_output_chars} characters. Preserve meaning while staying concise.\n"
         )
     instruction += f"\n\nPlease translate the following {source_name} text into {target_name}:\n\n\n{text.strip()}"
 
@@ -250,7 +256,8 @@ async def translate_text(
     target_lang: str,
     model_size: Optional[Literal["4b", "12b", "27b", "27b-base"]] = None,
     temperature: float = 0.0,
-    max_tokens: int = 2048
+    max_tokens: int = 2048,
+    max_output_chars: Optional[int] = None,
 ) -> str:
     """Translate text using TranslateGemma."""
     if not text or not text.strip():
@@ -269,7 +276,13 @@ async def translate_text(
         mini_glossary = get_mini_glossary_for_text(text, threshold=0.90, max_terms=40)
         if mini_glossary:
             logger.info(f"Translation prompt: injected mini glossary ({len(mini_glossary.splitlines())} terms)")
-    prompt = _format_translation_prompt(text, source_lang, target_lang, mini_glossary=mini_glossary)
+    prompt = _format_translation_prompt(
+        text,
+        source_lang,
+        target_lang,
+        mini_glossary=mini_glossary,
+        max_output_chars=max_output_chars,
+    )
     logger.info(f"Translating {source_lang} -> {target_lang} using {model_size} model")
 
     langfuse = _get_langfuse()
@@ -471,7 +484,8 @@ async def translate_text_stream_fast(
     target_lang: str,
     model_size: Optional[Literal["4b", "12b", "27b", "27b-base"]] = None,
     temperature: float = 0.0,
-    max_tokens: int = 2048
+    max_tokens: int = 2048,
+    max_output_chars: Optional[int] = None,
 ):
     """Stream translated text token by token (no artificial delay)."""
     if not text or not text.strip():
@@ -490,7 +504,13 @@ async def translate_text_stream_fast(
         mini_glossary = get_mini_glossary_for_text(text, threshold=0.90, max_terms=40)
         if mini_glossary:
             logger.info(f"Translation prompt: injected mini glossary ({len(mini_glossary.splitlines())} terms)")
-    prompt = _format_translation_prompt(text, source_lang, target_lang, mini_glossary=mini_glossary)
+    prompt = _format_translation_prompt(
+        text,
+        source_lang,
+        target_lang,
+        mini_glossary=mini_glossary,
+        max_output_chars=max_output_chars,
+    )
     logger.info(f"Fast streaming translation {source_lang} -> {target_lang} using {model_size} model")
 
     translated_parts: list[str] = []

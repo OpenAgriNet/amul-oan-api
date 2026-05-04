@@ -25,6 +25,7 @@ class FarmerContext(BaseModel):
     farmer_info: str = Field(description="Farmer's personal details and animals from JWT token.")
     farmer_unions: list[str] = Field(default_factory=list, description="Normalized union names derived from the farmer context.")
     use_translation_pipeline: bool = Field(default=False, description="When True, use English-only prompt; response is translated externally.")
+    response_max_chars: Optional[int] = Field(default=None, description="Optional channel-specific final response character guidance.")
 
     def update_moderation_str(self, moderation_str: str):
         """Update the moderation result of the user's question."""
@@ -74,6 +75,10 @@ class FarmerContext(BaseModel):
     def get_preferred_union_name(self) -> Optional[str]:
         """Get the primary farmer union name when available."""
         return self.farmer_unions[0] if self.farmer_unions else None
+
+    def get_response_max_chars(self) -> Optional[int]:
+        """Get channel-specific final response character guidance."""
+        return self.response_max_chars
 
             
     def get_user_message(self):

@@ -102,6 +102,14 @@ Bad query examples:
 - Include safety escalation when needed (e.g., severe symptoms -> veterinarian promptly).
 - If evidence is insufficient, say exactly: `I don't know based on the provided documents`.
 
+{% if response_max_chars %}
+## WhatsApp Response Limit
+- The final user-facing answer must be no more than {{ response_max_chars }} characters.
+- Prioritize the most useful advice first; omit background detail, long preambles, and repeated safety text.
+- Use short sentences or compact bullets when they improve readability.
+- Ask at most one brief follow-up question only if it is needed to continue.
+{% endif %}
+
 ## Citations
 - Cite only from retrieved tool output.
 - Use farmer-friendly source naming.

@@ -128,6 +128,7 @@ def should_translate_batch(batch_text: str, word_count: int) -> bool:
 
 
 logger = get_logger(__name__)
+WHATSAPP_RESPONSE_MAX_CHARS = 1600
 GENERIC_UNAVAILABLE_MESSAGE_EN = (
     "I am unable to process your request right now. Please try again later."
 )
@@ -140,6 +141,12 @@ try:
 except ImportError:
     propagate_attributes = None
     get_langfuse_client = None
+
+
+def _response_max_chars_for_channel(channel: str | None) -> int | None:
+    if (channel or "").lower() == "whatsapp":
+        return WHATSAPP_RESPONSE_MAX_CHARS
+    return None
 
 async def stream_chat_messages(
     query: str,
@@ -218,6 +225,7 @@ async def stream_chat_messages(
                         text=text_en,
                         source_lang="english",
                         target_lang=target_lang,
+                        max_output_chars=_response_max_chars_for_channel(channel),
                     )
                 except Exception as e:
                     logger.warning(
@@ -305,6 +313,7 @@ async def stream_chat_messages(
             farmer_info=farmer_data,
             farmer_unions=farmer_unions,
             use_translation_pipeline=use_translation_pipeline,
+            response_max_chars=_response_max_chars_for_channel(channel),
         )
 
         message_pairs = "\n\n".join(format_message_pairs(history, 3))
@@ -429,6 +438,7 @@ async def stream_chat_messages(
                                                         text=batch_text,
                                                         source_lang="english",
                                                         target_lang=target_lang,
+                                                        max_output_chars=deps.response_max_chars,
                                                     ):
                                                         translated_output_chunks.append(translated_chunk)
                                                         yield translated_chunk
@@ -460,6 +470,7 @@ async def stream_chat_messages(
                                 text=batch_text,
                                 source_lang="english",
                                 target_lang=target_lang,
+                                max_output_chars=deps.response_max_chars,
                             ):
                                 translated_output_chunks.append(translated_chunk)
                                 yield translated_chunk
@@ -484,6 +495,7 @@ async def stream_chat_messages(
                                 text=sentence_buffer,
                                 source_lang="english",
                                 target_lang=target_lang,
+                                max_output_chars=deps.response_max_chars,
                             ):
                                 translated_output_chunks.append(translated_chunk)
                                 yield translated_chunk
@@ -555,6 +567,7 @@ async def stream_chat_messages(
                                         text=batch_text,
                                         source_lang="english",
                                         target_lang=target_lang,
+                                        max_output_chars=deps.response_max_chars,
                                     ):
                                         translated_output_chunks.append(translated_chunk)
                                         yield translated_chunk
@@ -585,6 +598,7 @@ async def stream_chat_messages(
                                 text=batch_text,
                                 source_lang="english",
                                 target_lang=target_lang,
+                                max_output_chars=deps.response_max_chars,
                             ):
                                 translated_output_chunks.append(translated_chunk)
                                 yield translated_chunk
@@ -607,6 +621,7 @@ async def stream_chat_messages(
                                 text=sentence_buffer,
                                 source_lang="english",
                                 target_lang=target_lang,
+                                max_output_chars=deps.response_max_chars,
                             ):
                                 translated_output_chunks.append(translated_chunk)
                                 yield translated_chunk

@@ -46,6 +46,7 @@ def get_agrinet_system_prompt(ctx: RunContext):
         'today_datetime': get_today_datetime_str(),
         'farmer_context': farmer_context if farmer_context else None,
         'ambiguity_hints': ambiguity_hints if ambiguity_hints else None,
+        'response_max_chars': ctx.deps.get_response_max_chars(),
     }
 
     if ctx.deps.use_translation_pipeline:
