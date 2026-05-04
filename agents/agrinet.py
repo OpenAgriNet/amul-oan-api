@@ -36,8 +36,8 @@ agrinet_agent = Agent(
     )
 )
 
-@agrinet_agent.system_prompt(dynamic=True)
-def get_agrinet_system_prompt(ctx: RunContext):
+@agrinet_agent.instructions
+def get_agrinet_instructions(ctx: RunContext):
     farmer_context = ctx.deps.get_farmer_context_string()
     ambiguity_hints = get_ambiguity_hints_for_query(ctx.deps.query)
 

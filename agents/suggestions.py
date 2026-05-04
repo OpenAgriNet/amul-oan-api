@@ -12,7 +12,7 @@ load_dotenv()
 suggestions_agent = Agent(
     name="Suggestions Agent",
     model=LLM_MODEL,
-    system_prompt=get_prompt('suggestions_system'),
+    instructions=get_prompt('suggestions_system'),
     instrument=True,
     output_type=List[str],
     retries=1,

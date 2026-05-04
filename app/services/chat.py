@@ -373,7 +373,7 @@ async def stream_chat_messages(
         trimmed_history = trim_history(
             history,
             max_tokens=_chat_history_trim_max_tokens(),
-            include_system_prompts=True,
+            include_system_prompts=False,
             include_tool_calls=True
         )
 
