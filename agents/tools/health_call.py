@@ -42,8 +42,6 @@ async def create_health_call(
         case_type.value,
     )
 
-    logger.info("[YASHhhhhhhhhhh]begin create_health_call")
-
     token = os.getenv("PASHUGPT_TOKEN")
     if not token:
         logger.error("PASHUGPT_TOKEN is not set")

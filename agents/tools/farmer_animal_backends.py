@@ -475,7 +475,6 @@ async def create_health_call_api(
     request: HealthCallRequestModel, token: str
 ) -> HealthCallResponseModel | None:
     """Creates a health call and returns the ticket number details."""
-    print("[YASHhhhhhhhhhh]begin create_health_call_api")
     api_url = f"{BASE_AMULPASHUDHAN}/CreateHealthCall"
 
     try:
