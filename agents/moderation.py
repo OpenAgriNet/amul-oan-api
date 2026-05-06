@@ -26,7 +26,7 @@ class QueryModerationResult(BaseModel):
 moderation_agent = Agent(
     model=LLM_MODEL,
     name="Moderation Agent",
-    system_prompt=get_prompt('moderation_system'),
+    instructions=get_prompt('moderation_system'),
     instrument=True,
     output_type=QueryModerationResult,
     retries=2,

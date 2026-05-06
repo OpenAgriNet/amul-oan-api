@@ -19,6 +19,7 @@ from app.core.cache import (
     set_cached_api_response,
 )
 from app.models.ai_call import AICallRequestModel, AICallResponseModel
+from app.models.health_call import HealthCallRequestModel, HealthCallResponseModel
 from app.config import settings
 from app.models.animal import AnimalModel
 from app.models.banas_visit import BanasOperatedVisitModel
@@ -465,6 +466,70 @@ async def create_ai_call_api(
             request.society_code,
             request.farmer_code,
             request.species.value,
+            str(e),
+            exc_info=True,
+        )
+
+
+async def create_health_call_api(
+    request: HealthCallRequestModel, token: str
+) -> HealthCallResponseModel | None:
+    """Creates a health call and returns the ticket number details."""
+    api_url = f"{BASE_AMULPASHUDHAN}/CreateHealthCall"
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(
+                api_url,
+                params=request.to_query_params(),
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            response.raise_for_status()
+            logger.info(
+                "[CreateHealthCall(%s,%s,%s,%s,%s)] :: Response successfully recieved.",
+                request.union_code,
+                request.society_code,
+                request.farmer_code,
+                request.species.value,
+                request.case_type.value,
+            )
+        response_json = response.json()
+        if not isinstance(response_json, dict):
+            raise Exception("Not a valid dict provided in the response.")
+        return HealthCallResponseModel.model_validate(
+            response_json, extra="ignore", by_alias=True
+        )
+    except httpx.HTTPStatusError as e:
+        logger.error(
+            "[CreateHealthCall(%s,%s,%s,%s,%s)] :: Request failed with status code %s, and message = %s",
+            request.union_code,
+            request.society_code,
+            request.farmer_code,
+            request.species.value,
+            request.case_type.value,
+            e.response.status_code,
+            e.response.text,
+            exc_info=True,
+        )
+    except json.JSONDecodeError as e:
+        logger.error(
+            "[CreateHealthCall(%s,%s,%s,%s,%s)] :: Response didn't gave a valid json, failed due to decoding error %s",
+            request.union_code,
+            request.society_code,
+            request.farmer_code,
+            request.species.value,
+            request.case_type.value,
+            str(e),
+            exc_info=True,
+        )
+    except Exception as e:
+        logger.error(
+            "[CreateHealthCall(%s,%s,%s,%s,%s)] :: Request failed, due to error %s",
+            request.union_code,
+            request.society_code,
+            request.farmer_code,
+            request.species.value,
+            request.case_type.value,
             str(e),
             exc_info=True,
         )

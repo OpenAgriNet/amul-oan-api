@@ -36,8 +36,8 @@ agrinet_agent = Agent(
     )
 )
 
-@agrinet_agent.system_prompt(dynamic=True)
-def get_agrinet_system_prompt(ctx: RunContext):
+@agrinet_agent.instructions
+def get_agrinet_instructions(ctx: RunContext):
     farmer_context = ctx.deps.get_farmer_context_string()
     ambiguity_hints = get_ambiguity_hints_for_query(ctx.deps.query)
 
@@ -46,6 +46,7 @@ def get_agrinet_system_prompt(ctx: RunContext):
         'today_datetime': get_today_datetime_str(),
         'farmer_context': farmer_context if farmer_context else None,
         'ambiguity_hints': ambiguity_hints if ambiguity_hints else None,
+        'response_max_chars': ctx.deps.get_response_max_chars(),
     }
 
     if ctx.deps.use_translation_pipeline:
