@@ -20,10 +20,6 @@ from app.core.cache import (
 )
 from app.models.ai_call import AICallRequestModel, AICallResponseModel
 from app.models.health_call import HealthCallRequestModel, HealthCallResponseModel
-from app.models.milk_collection import (
-    FarmerMilkCollectionRequestModel,
-    FarmerMilkCollectionResponseModel,
-)
 from app.config import settings
 from app.models.animal import AnimalModel
 from app.models.banas_visit import BanasOperatedVisitModel
@@ -534,70 +530,6 @@ async def create_health_call_api(
             request.farmer_code,
             request.species.value,
             request.case_type.value,
-            str(e),
-            exc_info=True,
-        )
-
-
-async def get_farmer_milk_collection_details_api(
-    request: FarmerMilkCollectionRequestModel, token: str
-) -> FarmerMilkCollectionResponseModel | None:
-    """Fetches farmer milk collection and deduction details for a date range."""
-    api_url = f"{BASE_AMULPASHUDHAN}/FarmerMilkCollectionDetails"
-
-    try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.get(
-                api_url,
-                params=request.to_query_params(),
-                headers={"Authorization": f"Bearer {token}"},
-            )
-            response.raise_for_status()
-            logger.info(
-                "[FarmerMilkCollectionDetails(%s,%s,%s,%s,%s)] :: Response successfully recieved.",
-                request.union_code,
-                request.society_code,
-                request.farmer_code,
-                request.from_date,
-                request.to_date,
-            )
-        response_json = response.json()
-        if not isinstance(response_json, dict):
-            raise Exception("Not a valid dict provided in the response.")
-        return FarmerMilkCollectionResponseModel.model_validate(
-            response_json, extra="ignore", by_alias=True
-        )
-    except httpx.HTTPStatusError as e:
-        logger.error(
-            "[FarmerMilkCollectionDetails(%s,%s,%s,%s,%s)] :: Request failed with status code %s, and message = %s",
-            request.union_code,
-            request.society_code,
-            request.farmer_code,
-            request.from_date,
-            request.to_date,
-            e.response.status_code,
-            e.response.text,
-            exc_info=True,
-        )
-    except json.JSONDecodeError as e:
-        logger.error(
-            "[FarmerMilkCollectionDetails(%s,%s,%s,%s,%s)] :: Response didn't gave a valid json, failed due to decoding error %s",
-            request.union_code,
-            request.society_code,
-            request.farmer_code,
-            request.from_date,
-            request.to_date,
-            str(e),
-            exc_info=True,
-        )
-    except Exception as e:
-        logger.error(
-            "[FarmerMilkCollectionDetails(%s,%s,%s,%s,%s)] :: Request failed, due to error %s",
-            request.union_code,
-            request.society_code,
-            request.farmer_code,
-            request.from_date,
-            request.to_date,
             str(e),
             exc_info=True,
         )
