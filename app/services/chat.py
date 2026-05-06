@@ -340,6 +340,7 @@ async def stream_chat_messages(
                         "model_name": LLM_MODEL_NAME,
                         "query": user_message,
                         "session_id": session_id_safe,
+                        "use_translation_pipeline": bool(use_translation_pipeline),
                     },
                     model=LLM_MODEL_NAME,
                     metadata={"pipeline": pipeline_name},
