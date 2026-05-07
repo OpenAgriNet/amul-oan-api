@@ -5,6 +5,7 @@ Internal backends for farmer and animal data from multiple APIs.
 
 Used by farmer.py and animal.py to provide cohesive tools with fallback and merged output.
 """
+from contextlib import nullcontext
 from beartype.typing import TypeVar
 import json
 import re
@@ -30,6 +31,11 @@ from app.models.banas_visit import BanasOperatedVisitModel
 from app.models.cvcc import CvccHealthResponseModel
 from app.models.farmer import FarmerModel, FarmerHerdmanModel
 from helpers.utils import get_logger
+
+try:
+    from langfuse import get_client as get_langfuse_client
+except ImportError:
+    get_langfuse_client = None
 
 logger = get_logger(__name__)
 
@@ -420,28 +426,57 @@ async def create_ai_call_api(
 ) -> AICallResponseModel | None:
     """Creates an artificial insemination call and returns the assigned technician."""
     api_url = f"{BASE_AMULPASHUDHAN}/CreateAICall"
+    _lf = get_langfuse_client() if get_langfuse_client else None
+    _ai_obs_ctx = (
+        _lf.start_as_current_observation(
+            name="create_ai_call_api",
+            as_type="generation",
+            input={
+                "union_code": request.union_code,
+                "society_code": request.society_code,
+                "farmer_code": request.farmer_code,
+                "user_id": request.user_id,
+                "species": request.species.value,
+                "api_url": api_url,
+            },
+            metadata={"tool_backend": "amulpashudhan", "endpoint": "CreateAICall"},
+        )
+        if _lf
+        else nullcontext()
+    )
 
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.post(
-                api_url,
-                params=request.to_query_params(),
-                headers={"Authorization": f"Bearer {token}"},
+        with _ai_obs_ctx as ai_obs:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.post(
+                    api_url,
+                    params=request.to_query_params(),
+                    headers={"Authorization": f"Bearer {token}"},
+                )
+                response.raise_for_status()
+                logger.info(
+                    "[CreateAICall(%s,%s,%s,%s)] :: Response successfully recieved.",
+                    request.union_code,
+                    request.society_code,
+                    request.farmer_code,
+                    request.species.value,
+                )
+            response_json = response.json()
+            if not isinstance(response_json, dict):
+                raise Exception("Not a valid dict provided in the response.")
+            parsed = AICallResponseModel.model_validate(
+                response_json, extra="ignore", by_alias=True
             )
-            response.raise_for_status()
-            logger.info(
-                "[CreateAICall(%s,%s,%s,%s)] :: Response successfully recieved.",
-                request.union_code,
-                request.society_code,
-                request.farmer_code,
-                request.species.value,
-            )
-        response_json = response.json()
-        if not isinstance(response_json, dict):
-            raise Exception("Not a valid dict provided in the response.")
-        return AICallResponseModel.model_validate(
-            response_json, extra="ignore", by_alias=True
-        )
+            if ai_obs is not None:
+                ai_obs.update(
+                    output={
+                        "success": True,
+                        "status_code": response.status_code,
+                        "ticket_number": parsed.ticket_number,
+                        "ait_name": parsed.ait_name,
+                    }
+                )
+            return parsed
     except httpx.HTTPStatusError as e:
         logger.error(
             "[CreateAICall(%s,%s,%s,%s)] :: Request failed with status code %s, and message = %s",
