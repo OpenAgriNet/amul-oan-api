@@ -3,7 +3,7 @@ from datetime import datetime
 from pydantic import BaseModel, Field, field_validator
 
 
-DATE_FORMAT = "%d-%m-%Y"
+DATE_FORMAT = "%Y-%m-%d"
 
 
 class FarmerMilkCollectionRequestModel(BaseModel):
@@ -19,10 +19,11 @@ class FarmerMilkCollectionRequestModel(BaseModel):
         try:
             datetime.strptime(value, DATE_FORMAT)
         except ValueError as exc:
-            raise ValueError("Date must be in DD-MM-YYYY format.") from exc
+            raise ValueError("Date must be in YYYY-MM-DD format.") from exc
         return value
 
     def to_query_params(self) -> dict[str, str]:
+        # Dates are validated as YYYY-MM-DD; PashuGPT expects the same in query params.
         return {
             "unionCode": self.union_code,
             "societyCode": self.society_code,

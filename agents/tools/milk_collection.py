@@ -25,8 +25,8 @@ async def get_farmer_milk_collection_details(
         union_code: Union code for the farmer from farmer context.
         society_code: Society code for the farmer from farmer context.
         farmer_code: Farmer code for the farmer from farmer context.
-        fromdate: Start date in DD-MM-YYYY format.
-        todate: End date in DD-MM-YYYY format.
+        fromdate: Start date in YYYY-MM-DD format.
+        todate: End date in YYYY-MM-DD format.
 
     Returns:
         str: Formatted JSON response with milk and deduction details, or a clear failure message.
