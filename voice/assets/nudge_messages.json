@@ -1,0 +1,18 @@
+{
+    "hold_messages": {
+        "en": [
+            "I'm getting back to you, please wait.",
+            "Please wait a moment while I check.",
+            "One moment, I'm on it.",
+            "I'll be right back with the answer.",
+            "Please hold on for a moment."
+        ],
+        "gu": [
+            "હું જવાબ લઈને પાછી આવું છું, કૃપા કરીને થોડી રાહ જુઓ.",
+            "થોડું રાહ જુઓ, હું તપાસી રહી છું.",
+            "એક ક્ષણ, હું જોઈ રહી છું.",
+            "હું થોડી વાર માં પાછી આવું છું.",
+            "કૃપા કરીને થોડી રાહ જુઓ."
+        ]
+    }
+}

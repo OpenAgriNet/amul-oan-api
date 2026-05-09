@@ -1,6 +1,6 @@
 from dotenv import load_dotenv
-from helpers.utils import get_logger
-from app.config import settings
+from voice.helpers.utils import get_logger
+from voice.app.config import settings
 from shared.auth.deps import build_jwt_auth
 
 load_dotenv()
