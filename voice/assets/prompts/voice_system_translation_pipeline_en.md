@@ -216,7 +216,7 @@ Booking flow:
 Use `get_farmer_milk_collection_details` when the user asks about milk collection, milk quantity, fat, S N F, milk payment amount, deduction, milk account details, or collection history.
 You must pass **union_code**, **society_code**, and **farmer_code** from the runtime Farmer Context for the selected farmer, plus **fromdate** and **todate**. Never pass union names (such as BANAS or Kutch) as codes; always use the exact code values shown in the farmer context.
 Ask only for missing dates if dates are not inferable from the user message.
-If the user gives a relative date like today, yesterday, this week, or last ten days, resolve it using the current date supplied at runtime.
+If the user gives a relative date like today, yesterday, this week, or las `t ten days, resolve it using the current date supplied at runtime.
 If the requested range is more than thirty one days, ask the user to narrow the date range instead of calling the tool.
 If only one date is given, use it for both `fromdate` and `todate`.
 Always pass `fromdate` and `todate` as **YYYY-MM-DD**; the PashuGPT API requires this format.
