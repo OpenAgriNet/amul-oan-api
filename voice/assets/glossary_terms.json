@@ -1,0 +1,3897 @@
+[
+  {
+    "en": "6 months (age/duration)",
+    "gu": "૬ માસ",
+    "transliteration": "6 months (age/duration)"
+  },
+  {
+    "en": "ABCESS",
+    "gu": "ગુમડું ઘા ખરજવું",
+    "transliteration": "gumdu , gha , kharjavu"
+  },
+  {
+    "en": "Abnormal Symptoms",
+    "gu": "અસામાન્ય લક્ષણો",
+    "transliteration": "Asamanya Lakshan"
+  },
+  {
+    "en": "ABORTION",
+    "gu": "તરવાઈ જવું",
+    "transliteration": "tarvai javu"
+  },
+  {
+    "en": "ABORTION",
+    "gu": "પશુ તરવાઈ જવું",
+    "transliteration": "pashu tarvai javu"
+  },
+  {
+    "en": "Abscess/Tumour (localised swelling)",
+    "gu": "ગઢ/ગૂમડું",
+    "transliteration": "gadh / gumdu"
+  },
+  {
+    "en": "Acaricide (tick-killing chemical)",
+    "gu": "ઈતરડીનાશક",
+    "transliteration": "Acaricide (tick-killing chemical)"
+  },
+  {
+    "en": "Acaricide / Tickicide",
+    "gu": "બગાઈ નાશક",
+    "transliteration": ""
+  },
+  {
+    "en": "Acaricide Application",
+    "gu": "કીટનાશક દવાનો છંટકાવ",
+    "transliteration": "kitnashak davano chhantkav"
+  },
+  {
+    "en": "Acidosis",
+    "gu": "એસિડોસિસ",
+    "transliteration": "Acidosis"
+  },
+  {
+    "en": "Acorus calamus rhizome",
+    "gu": "વજ",
+    "transliteration": "વજ"
+  },
+  {
+    "en": "ACTINOBACILLOSIS",
+    "gu": "ગળામાં ચેપી ગોઠ",
+    "transliteration": "gala ma chepi ganth"
+  },
+  {
+    "en": "Active Movement",
+    "gu": "સક્રિય હલનચલન",
+    "transliteration": "Sakriya Halanchalan"
+  },
+  {
+    "en": "Adaptation",
+    "gu": "ટેવાવવું",
+    "transliteration": "Tevavvu"
+  },
+  {
+    "en": "ADHESION OF OVARY",
+    "gu": "અંડાશયનું સંલગ્નતા",
+    "transliteration": "andashay nu sanlagnta"
+  },
+  {
+    "en": "affected animals (not 'useless animals')",
+    "gu": "અસરગ્રસ્ત પશુ",
+    "transliteration": "affected animals (not 'useless animals')"
+  },
+  {
+    "en": "AGALCTIA",
+    "gu": "દૂધ ઉત્પાદનમાં ઘટાડો",
+    "transliteration": "dudh utpadan ma ghtado"
+  },
+  {
+    "en": "Age at First Calving",
+    "gu": "પહેલી વખત વિયાણની ઉંમર",
+    "transliteration": "Paheli vakhat viyan ni umar"
+  },
+  {
+    "en": "Age at First Calving (AFC)",
+    "gu": "પ્રથમ વિયાણ વખતે ઉંમર",
+    "transliteration": "pratham viyaan vakhte umar"
+  },
+  {
+    "en": "AI Technician",
+    "gu": "બીજદાન કાર્યકર",
+    "transliteration": "Bijdan karyakar"
+  },
+  {
+    "en": "Alertness",
+    "gu": "સતર્કતા",
+    "transliteration": "Satarkta"
+  },
+  {
+    "en": "ALLERGY",
+    "gu": "એલર્જી",
+    "transliteration": "alerji"
+  },
+  {
+    "en": "ALLOPACIA",
+    "gu": "વાળ ખરવા",
+    "transliteration": "val kharva"
+  },
+  {
+    "en": "Aloe Gel",
+    "gu": "કુવારપાઠાનો ગર્ભ",
+    "transliteration": "Kuvarpatha no garbh"
+  },
+  {
+    "en": "Aloe Vera",
+    "gu": "કુંવારપાઠું",
+    "transliteration": "Kuvarpathu"
+  },
+  {
+    "en": "Amla",
+    "gu": "આમળા",
+    "transliteration": "Amla"
+  },
+  {
+    "en": "Ammonia Gas",
+    "gu": "એમોનિયા ગેસ",
+    "transliteration": "Ammonia Gas"
+  },
+  {
+    "en": "AMPUTATION OF HORN",
+    "gu": "શિંગડાનું કાપવું",
+    "transliteration": "shingda nu kapvu"
+  },
+  {
+    "en": "AMPUTATION OF TAIL",
+    "gu": "પૂંછડીનું કાપવું",
+    "transliteration": "puchdi nu kapvu"
+  },
+  {
+    "en": "Anaerobic Condition",
+    "gu": "હવા રહિત અવસ્થા",
+    "transliteration": "Hawa rahit avastha"
+  },
+  {
+    "en": "Anaplasmosis",
+    "gu": "એનાપ્લાઝમોસીસ",
+    "transliteration": "Anaplasmosis"
+  },
+  {
+    "en": "Anaplasmosis",
+    "gu": "લોહીના પરોપજીવી",
+    "transliteration": "lohi na paropjivi"
+  },
+  {
+    "en": "Anestrus",
+    "gu": "વિયાણ પછી ગરમીમાં ન આવવું",
+    "transliteration": "viyaan pachi garmi ma na avavu"
+  },
+  {
+    "en": "Animal",
+    "gu": "પશુ",
+    "transliteration": "Pashu"
+  },
+  {
+    "en": "ANIMAL ACCOMODATION",
+    "gu": "ઢારિયું,",
+    "transliteration": "dhariyu"
+  },
+  {
+    "en": "Animal Behavior",
+    "gu": "પશુની વર્તણૂક",
+    "transliteration": "Pashu ni Vartanuk"
+  },
+  {
+    "en": "Animal Energy",
+    "gu": "પશુની ઉર્જા",
+    "transliteration": "Pashu ni Urja"
+  },
+  {
+    "en": "Animal Housing",
+    "gu": "પશુનું રહેઠાણ",
+    "transliteration": "Pashu nu Rahethan"
+  },
+  {
+    "en": "Animal Husbandry",
+    "gu": "પશુપાલન",
+    "transliteration": "Pashupalan"
+  },
+  {
+    "en": "Animal Husbandry Department",
+    "gu": "પશુપાલન વિભાગ",
+    "transliteration": "Pashupalan Vibhag"
+  },
+  {
+    "en": "Animal Identification",
+    "gu": "પશુઓની ઓળખ",
+    "transliteration": "Pashuoni Olakh"
+  },
+  {
+    "en": "Animal Welfare",
+    "gu": "પશુ કલ્યાણ",
+    "transliteration": "Pashu kalyan"
+  },
+  {
+    "en": "Anthelmintic / Vermicide",
+    "gu": "કૃમિનાશક",
+    "transliteration": ""
+  },
+  {
+    "en": "Anthrax",
+    "gu": "કાળીયો તાવ (એન્થ્રેક્સ)",
+    "transliteration": "Kaliyo Tav (Anthrax)"
+  },
+  {
+    "en": "ANTI RABIES VACCINATION",
+    "gu": "હડકવા વિરોધી રસીકરણ",
+    "transliteration": "hadkava virodhi rasikaran"
+  },
+  {
+    "en": "Appetite",
+    "gu": "ભૂખ",
+    "transliteration": "Bhookh"
+  },
+  {
+    "en": "Appetite Good",
+    "gu": "સારી ભૂખ",
+    "transliteration": "Sari Bhookh"
+  },
+  {
+    "en": "Appetite Loss",
+    "gu": "ભૂખ ઓછી થવી",
+    "transliteration": "Bhookh Ochhi Thavi"
+  },
+  {
+    "en": "ARTHRITIS",
+    "gu": "પગ પકડાવી જવા, જકડાઈ જવા",
+    "transliteration": "pag pakdai java , jakdai java"
+  },
+  {
+    "en": "ARTIFICIAL INSEMINATION",
+    "gu": "બીજદાન કરાવવું, ડોજ મુકાવવો",
+    "transliteration": "bijdan karavvu , doj mukavvo"
+  },
+  {
+    "en": "Artificial Insemination (AI)",
+    "gu": "કૃત્રિમ બીજદાન",
+    "transliteration": "Krutrim Beejdan"
+  },
+  {
+    "en": "Asafoetida",
+    "gu": "હીંગ",
+    "transliteration": "Hing"
+  },
+  {
+    "en": "ASCITES",
+    "gu": "પેટમાં પાણી ભરાવું",
+    "transliteration": "pet me pani bharavu"
+  },
+  {
+    "en": "ASPERMIA",
+    "gu": "ઓછા શુક્રાણુ",
+    "transliteration": "ocha shukranu"
+  },
+  {
+    "en": "ATRESIA ANI",
+    "gu": "ગુદા નો ભાગ ન હોવો",
+    "transliteration": "guda no bhag n hovo"
+  },
+  {
+    "en": "Azolla",
+    "gu": "એઝોલા",
+    "transliteration": "Azolla"
+  },
+  {
+    "en": "AZOSPERMIA",
+    "gu": "ઓછા શુક્રાણુ",
+    "transliteration": "ocha shukranu"
+  },
+  {
+    "en": "Babesiosis",
+    "gu": "બબેસીયોસીસ",
+    "transliteration": "Babesiosis"
+  },
+  {
+    "en": "BABESIOSIS",
+    "gu": "લોહીના પરોપજીવી બબેસીયા",
+    "transliteration": "lohi na paropjivi babesia"
+  },
+  {
+    "en": "Back Arch",
+    "gu": "પીઠની કમાન",
+    "transliteration": "Pith ni Kaman"
+  },
+  {
+    "en": "bacteria",
+    "gu": "બેક્ટેરિયા",
+    "transliteration": "bacteria"
+  },
+  {
+    "en": "Bacterial Disease",
+    "gu": "જીવાણુથી થતો રોગ",
+    "transliteration": "Jivanu thi thato rog"
+  },
+  {
+    "en": "Bajra",
+    "gu": "બાજરી",
+    "transliteration": "Bajra"
+  },
+  {
+    "en": "Baking Soda",
+    "gu": "ખાવાનો સોડા",
+    "transliteration": "Khava no soda"
+  },
+  {
+    "en": "balanced livestock compound feed (pashudaan)",
+    "gu": "પશુદાણ",
+    "transliteration": "balanced livestock compound feed (pashudaan)"
+  },
+  {
+    "en": "Balanced Ration",
+    "gu": "સંતુલિત આહાર",
+    "transliteration": "Santulit Aahar"
+  },
+  {
+    "en": "balanced ration / balanced diet for livestock",
+    "gu": "સમતોલ આહાર",
+    "transliteration": "balanced ration / balanced diet for livestock"
+  },
+  {
+    "en": "Banni Buffalo",
+    "gu": "બન્ની ભેંસ",
+    "transliteration": "banni bhens"
+  },
+  {
+    "en": "Bar Code",
+    "gu": "બાર કોડ",
+    "transliteration": "Bar Code"
+  },
+  {
+    "en": "Bedding Material",
+    "gu": "પાથરવાની સામગ્રી",
+    "transliteration": "Patharvani Samagri"
+  },
+  {
+    "en": "BEE STING",
+    "gu": "મધમાખીનો ડંખ",
+    "transliteration": "madhmakhi no dankh"
+  },
+  {
+    "en": "Bellowing",
+    "gu": "ભાંભરવું",
+    "transliteration": "bhambharvu"
+  },
+  {
+    "en": "Betel Leaves",
+    "gu": "નાગરવેલના પાન",
+    "transliteration": "Nagarvel na Pan"
+  },
+  {
+    "en": "bite",
+    "gu": "કરડવું/બચકું ભરવું",
+    "transliteration": "kaydu / karadiyu / kaidu / bachku bharyu / kaidyo"
+  },
+  {
+    "en": "Black Pepper",
+    "gu": "મરી",
+    "transliteration": "Mari"
+  },
+  {
+    "en": "Black Quarter (BQ)",
+    "gu": "ગાંઠિયો તાવ (બીક્યુ)",
+    "transliteration": "Ganthiyo Tav (BQ)"
+  },
+  {
+    "en": "Black Quarter disease (bacterial clostridial infection in cattle)",
+    "gu": "કાળીયા રોગ",
+    "transliteration": "Black Quarter disease (bacterial clostridial infection in cattle)"
+  },
+  {
+    "en": "blisters / vesicles (as in FMD lesions)",
+    "gu": "ફોલ્લાઓ",
+    "transliteration": "blisters / vesicles (as in FMD lesions)"
+  },
+  {
+    "en": "Bloat",
+    "gu": "આફરો",
+    "transliteration": "Aafro"
+  },
+  {
+    "en": "BLOAT",
+    "gu": "ગેસ આફરો,ફૂલી જવું,",
+    "transliteration": "ges , aafro, fuli javu"
+  },
+  {
+    "en": "BLOOD IN URINE",
+    "gu": "લોહી જરે છે",
+    "transliteration": "lohi jhare che"
+  },
+  {
+    "en": "Blood Parasite",
+    "gu": "લોહીના પરોપજીવી",
+    "transliteration": "Lohi na Paropjivi"
+  },
+  {
+    "en": "Blood Pressure",
+    "gu": "લોહીનું દબાણ",
+    "transliteration": "Lohi nu daban"
+  },
+  {
+    "en": "Blood Sample",
+    "gu": "લોહીનો નમૂનો",
+    "transliteration": "Lohi no Namuno"
+  },
+  {
+    "en": "body",
+    "gu": "શરીર",
+    "transliteration": "sharir"
+  },
+  {
+    "en": "Body condition",
+    "gu": "પશુની તંદુરસ્તી",
+    "transliteration": "pashu ni tandurasti"
+  },
+  {
+    "en": "Body Condition Score",
+    "gu": "શારીરિક અવસ્થાના ગુણાંક",
+    "transliteration": "Sharirik Avastha na Gunank"
+  },
+  {
+    "en": "Body Maintenance",
+    "gu": "શરીરનો નિભાવ",
+    "transliteration": "Sharir no Nibhav"
+  },
+  {
+    "en": "Body Movement",
+    "gu": "શરીરનું હલનચલન",
+    "transliteration": "Sharir nu Halanchalan"
+  },
+  {
+    "en": "Body Scoring (1-5)",
+    "gu": "બોડી સ્કોરિંગ",
+    "transliteration": "Body Scoring"
+  },
+  {
+    "en": "Body Temperature",
+    "gu": "શરીરનું તાપમાન",
+    "transliteration": "Sharir nu Tapman"
+  },
+  {
+    "en": "Body Weight",
+    "gu": "શરીરનું વજન",
+    "transliteration": "Sharir nu Vajan"
+  },
+  {
+    "en": "Booster Dose",
+    "gu": "બીજો ડોઝ/બૂસ્ટર",
+    "transliteration": "Booster Dose"
+  },
+  {
+    "en": "Breathing Rate",
+    "gu": "શ્વાસનો દર",
+    "transliteration": "Shwas no Dar"
+  },
+  {
+    "en": "Breeding",
+    "gu": "પ્રજનન",
+    "transliteration": "Prajanan"
+  },
+  {
+    "en": "Breeding Bull",
+    "gu": "વરડો/સાંઢ",
+    "transliteration": "vardo / sandh"
+  },
+  {
+    "en": "Breeding Policy",
+    "gu": "પશુ સંવર્ધન નીતિ",
+    "transliteration": "Pashu Sanvardhan Niti"
+  },
+  {
+    "en": "Brucellosis",
+    "gu": "ચેપી ગર્ભપાત (બ્રુસેલોસીસ)",
+    "transliteration": "Chepi Garbhapat (Brucellosis)"
+  },
+  {
+    "en": "Buffalo",
+    "gu": "ભેસ",
+    "transliteration": "bhes"
+  },
+  {
+    "en": "Buffalo",
+    "gu": "ભેંશ",
+    "transliteration": "bhensh"
+  },
+  {
+    "en": "Buffalo",
+    "gu": "ભૈંસ",
+    "transliteration": "bhains"
+  },
+  {
+    "en": "Buffalo",
+    "gu": "ભૈસ",
+    "transliteration": "bhais"
+  },
+  {
+    "en": "Buffalo",
+    "gu": "ભેન્સ",
+    "transliteration": "bhens"
+  },
+  {
+    "en": "Buffalo",
+    "gu": "ભેસ્ટ",
+    "transliteration": "bhest"
+  },
+  {
+    "en": "Buffalo",
+    "gu": "ભંચ",
+    "transliteration": "bhanch"
+  },
+  {
+    "en": "Buffalo",
+    "gu": "ભેંચ",
+    "transliteration": "bhench"
+  },
+  {
+    "en": "Buffalo",
+    "gu": "ભેન્ચ",
+    "transliteration": "bhench"
+  },
+  {
+    "en": "Buffalo",
+    "gu": "ભેંસ",
+    "transliteration": "Bhens"
+  },
+  {
+    "en": "Buffalo Bull",
+    "gu": "પાડો",
+    "transliteration": "Pado"
+  },
+  {
+    "en": "buffalo calf (male/female)",
+    "gu": "પાડું",
+    "transliteration": "buffalo calf (male/female)"
+  },
+  {
+    "en": "Bull",
+    "gu": "સાંઢ",
+    "transliteration": "saandh"
+  },
+  {
+    "en": "Bull",
+    "gu": "સાંઢ/આખલો",
+    "transliteration": "Sandh / Akhlo"
+  },
+  {
+    "en": "Bullock",
+    "gu": "બળદ",
+    "transliteration": "Balad"
+  },
+  {
+    "en": "BURN",
+    "gu": "ચામડી બળવી",
+    "transliteration": "chamdi balvi"
+  },
+  {
+    "en": "Bypass Fat",
+    "gu": "બાયપાસ ફેટ",
+    "transliteration": "Bypass Fat"
+  },
+  {
+    "en": "Bypass Protein",
+    "gu": "બાયપાસ પ્રોટીન",
+    "transliteration": "Bypass Protein"
+  },
+  {
+    "en": "c",
+    "gu": "માટી ખસવી",
+    "transliteration": "mati khasavi"
+  },
+  {
+    "en": "CAESARIAN SECTION",
+    "gu": "ઉપરથી બાળક લેવું",
+    "transliteration": "uparthi balak levu"
+  },
+  {
+    "en": "Calcium",
+    "gu": "કેલ્શિયમ",
+    "transliteration": "Calcium"
+  },
+  {
+    "en": "Calcium Deficiency",
+    "gu": "કેલ્શિયમનો અભાવ",
+    "transliteration": "Calcium no Abhav"
+  },
+  {
+    "en": "Calcium Treatment",
+    "gu": "કેલ્શિયમ સારવાર",
+    "transliteration": "કેલ્શિયમ સારવાર"
+  },
+  {
+    "en": "Calf",
+    "gu": "પાડુ/વાછરડું",
+    "transliteration": "Lavaru / Vachardu"
+  },
+  {
+    "en": "Calf (female)",
+    "gu": "વાછરડી",
+    "transliteration": "vachdi  / vachardi"
+  },
+  {
+    "en": "Calf (male)",
+    "gu": "વાછરડો",
+    "transliteration": "vachdo / vachardo"
+  },
+  {
+    "en": "CALF SCOUR",
+    "gu": "બચ્ચામાં જાડા",
+    "transliteration": "baccha ma jada"
+  },
+  {
+    "en": "Calf Starter",
+    "gu": "બચ્ચા દાણ",
+    "transliteration": "bachcha daan"
+  },
+  {
+    "en": "calf starter feed / milk replacer concentrate (bachhadaan)",
+    "gu": "બચ્ચાદાણ",
+    "transliteration": "calf starter feed / milk replacer concentrate (bachhadaan)"
+  },
+  {
+    "en": "Calf Sucking",
+    "gu": "વાછરડાનું ધાવવું",
+    "transliteration": "Vachharda nu dhavvu"
+  },
+  {
+    "en": "Calving",
+    "gu": "વિયાણ",
+    "transliteration": "viyan"
+  },
+  {
+    "en": "Calving Difficulty",
+    "gu": "મુશ્કેલ વિયાણ",
+    "transliteration": "Mushkel Viyan"
+  },
+  {
+    "en": "Calving Interval",
+    "gu": "બે વિયાણ વચ્ચેનો ગાળો",
+    "transliteration": "be viyaan vachcheno gaalo"
+  },
+  {
+    "en": "Carbohydrate",
+    "gu": "કાર્બોહાઈડ્રેટ",
+    "transliteration": "Carbohydrate"
+  },
+  {
+    "en": "Carcass",
+    "gu": "મૃતદેહ/પશુનું શબ",
+    "transliteration": "Mrutdeh/Pashu nu Shab"
+  },
+  {
+    "en": "CARDIOVASCULAR DISEASE",
+    "gu": "હૃદય રોગ",
+    "transliteration": "hriday rog"
+  },
+  {
+    "en": "Castor Oil",
+    "gu": "દિવેલ",
+    "transliteration": "Divel"
+  },
+  {
+    "en": "CASTRATION",
+    "gu": "ખસીકરણ",
+    "transliteration": "khasikaran"
+  },
+  {
+    "en": "catechu / katha herb (astringent used in livestock remedy)",
+    "gu": "કથા",
+    "transliteration": "catechu / katha herb (astringent used in livestock remedy)"
+  },
+  {
+    "en": "Catechu herb (astringent used in diarrhea remedy)",
+    "gu": "કાથો",
+    "transliteration": "Catechu herb (astringent used in diarrhea remedy)"
+  },
+  {
+    "en": "Cattle",
+    "gu": "પશુ",
+    "transliteration": "pashu"
+  },
+  {
+    "en": "Cattle Feed Plant",
+    "gu": "પશુદાણ ફેક્ટરી",
+    "transliteration": "Pashudan Factory"
+  },
+  {
+    "en": "Cattle shed",
+    "gu": "ગભાણ/કોઠાર/વાડો",
+    "transliteration": "ગભાણ / કોઠાર / વાડો"
+  },
+  {
+    "en": "Cattle Shed",
+    "gu": "વાડો",
+    "transliteration": "Cattle shed / animal shelter"
+  },
+  {
+    "en": "Cereal Crops",
+    "gu": "ધાન્ય વર્ગનો ચારો",
+    "transliteration": "Dhanya Varg no Charo"
+  },
+  {
+    "en": "Certified Seed",
+    "gu": "પ્રમાણિત બીજ",
+    "transliteration": "Pramanit Bij"
+  },
+  {
+    "en": "CERVICITIS",
+    "gu": "કમળનો સોજો",
+    "transliteration": "kamal no sojo"
+  },
+  {
+    "en": "Chaff Cutter",
+    "gu": "ચાફ કટર",
+    "transliteration": "Chaff Cutter"
+  },
+  {
+    "en": "chelated minerals (spelling correction — cheelated)",
+    "gu": "ચિલેટેડ",
+    "transliteration": "chelated minerals (spelling correction — cheelated)"
+  },
+  {
+    "en": "CHOKE",
+    "gu": "બ્લોક થવું",
+    "transliteration": "block thavu"
+  },
+  {
+    "en": "Chronic Mastitis",
+    "gu": "જૂનો બાવલાનો સોજો",
+    "transliteration": "Juno Bavla no Sojo"
+  },
+  {
+    "en": "Clean Cloth",
+    "gu": "ચોખ્ખું કપડું",
+    "transliteration": "Chokkhu kapdu"
+  },
+  {
+    "en": "Clean Milker",
+    "gu": "દોહનારની સ્વચ્છતા",
+    "transliteration": "Dohnar ni swachhta"
+  },
+  {
+    "en": "Clean Towel",
+    "gu": "ચોખ્ખો ટુવાલ",
+    "transliteration": "Chokkho Towel"
+  },
+  {
+    "en": "Cleanliness",
+    "gu": "સ્વચ્છતા",
+    "transliteration": "Swachhta"
+  },
+  {
+    "en": "Clear Eyes",
+    "gu": "ચોખ્ખી આંખો",
+    "transliteration": "Chokkhi Aankho"
+  },
+  {
+    "en": "Cloven-hoofed Animals",
+    "gu": "ફાટેલા ખુરવાળા પશુઓ",
+    "transliteration": "Fatela Khurvala Pashuo"
+  },
+  {
+    "en": "CMT Kit",
+    "gu": "સીએમટી કીટ",
+    "transliteration": "CMT Kit"
+  },
+  {
+    "en": "Cold Wave",
+    "gu": "ઠંડીની લહેર",
+    "transliteration": "Thandi ni Laher"
+  },
+  {
+    "en": "Colostrum",
+    "gu": "ખીરૂ",
+    "transliteration": "Khiru"
+  },
+  {
+    "en": "Common Salt",
+    "gu": "સામાન્ય મીઠું",
+    "transliteration": "Samanya mithu"
+  },
+  {
+    "en": "Compaction",
+    "gu": "દબાવવું",
+    "transliteration": "Dabavvu"
+  },
+  {
+    "en": "Complete Milking",
+    "gu": "પૂરેપૂરું દોહન",
+    "transliteration": "Purepuru dohan"
+  },
+  {
+    "en": "Computer Software",
+    "gu": "કોમ્પ્યુટર સોફ્ટવેર",
+    "transliteration": "Computer Software"
+  },
+  {
+    "en": "Concentrate",
+    "gu": "દાણ",
+    "transliteration": "dan"
+  },
+  {
+    "en": "Concentrated Feed",
+    "gu": "ખાણ/કણું",
+    "transliteration": "khan / kanu"
+  },
+  {
+    "en": "Conception",
+    "gu": "ગર્ભધારણ",
+    "transliteration": "Garbhadharan"
+  },
+  {
+    "en": "Conception Rate",
+    "gu": "ગર્ભાધાન દર",
+    "transliteration": "garbhadan dar"
+  },
+  {
+    "en": "Conception/Pregnancy",
+    "gu": "ગર્ભાધાન",
+    "transliteration": "Garbhadhan"
+  },
+  {
+    "en": "Concrete Floor",
+    "gu": "પાકું ભોંયતળિયું",
+    "transliteration": "Paku Bhointaliyu"
+  },
+  {
+    "en": "Constipation",
+    "gu": "કબજિયાત",
+    "transliteration": "kabajiyat"
+  },
+  {
+    "en": "Contagious Disease",
+    "gu": "સંસર્ગજન્ય રોગ",
+    "transliteration": "Sansargjanya Rog"
+  },
+  {
+    "en": "Cooling System",
+    "gu": "ઠંડક આપવાની પદ્ધતિ",
+    "transliteration": "Thandak aapvani paddhati"
+  },
+  {
+    "en": "Cooperative Society",
+    "gu": "સહકારી મંડળી",
+    "transliteration": "Sahkari Mandli"
+  },
+  {
+    "en": "Copper Deficiency",
+    "gu": "તાંબાની ઉણપ",
+    "transliteration": "Tamba ni Unap"
+  },
+  {
+    "en": "Copper Sulfate",
+    "gu": "મોરથૂથુ",
+    "transliteration": "Morthuthu"
+  },
+  {
+    "en": "Corpus Luteum (CL)",
+    "gu": "CLનો મસો",
+    "transliteration": "CL no maso"
+  },
+  {
+    "en": "Cost per Liter",
+    "gu": "લિટર દીઠ ખર્ચ",
+    "transliteration": "Liter dith kharch"
+  },
+  {
+    "en": "Cost Reduction",
+    "gu": "ખર્ચમાં ઘટાડો",
+    "transliteration": "Kharch ma Ghatado"
+  },
+  {
+    "en": "Cottonseed Cake",
+    "gu": "કપાસિયા ખોળ",
+    "transliteration": "Kapasiya Khol"
+  },
+  {
+    "en": "Covering",
+    "gu": "ઢાંકવું",
+    "transliteration": "Dhankvu"
+  },
+  {
+    "en": "Cow",
+    "gu": "ગાય",
+    "transliteration": "Gaay"
+  },
+  {
+    "en": "Cowpea",
+    "gu": "ચોળી",
+    "transliteration": "cowpea / black-eyed peas"
+  },
+  {
+    "en": "Crop Residue",
+    "gu": "પાક અવશેષ",
+    "transliteration": "Pak Avishesh"
+  },
+  {
+    "en": "crossbreed",
+    "gu": "સંકર જાત",
+    "transliteration": "sankar jaat"
+  },
+  {
+    "en": "crossbreed (spelling correction)",
+    "gu": "ક્રોસબ્રીડ",
+    "transliteration": "crossbreed (spelling correction)"
+  },
+  {
+    "en": "Crossbreeding",
+    "gu": "સંકરણ",
+    "transliteration": "Sankaran"
+  },
+  {
+    "en": "Cryocan",
+    "gu": "ક્રાયોકેન",
+    "transliteration": "Cryocan"
+  },
+  {
+    "en": "Culling",
+    "gu": "નકામા પશુને અલગ કરવા",
+    "transliteration": "nakama pashune alag karva"
+  },
+  {
+    "en": "Curiosity",
+    "gu": "જિજ્ઞાસા",
+    "transliteration": "Jignasa"
+  },
+  {
+    "en": "Curry Leaves",
+    "gu": "મીઠો લીમડો",
+    "transliteration": "Mitho Limdo"
+  },
+  {
+    "en": "CUTANIOUS FILARIASIS",
+    "gu": "હાથી પગો",
+    "transliteration": "hadi pago"
+  },
+  {
+    "en": "Cyanide Poisoning",
+    "gu": "સાયનાઇડ ઝેર",
+    "transliteration": "Cyanide Zer"
+  },
+  {
+    "en": "CYST",
+    "gu": "પાણીની કોથળી",
+    "transliteration": "panini kothli"
+  },
+  {
+    "en": "Dairy Cooperative",
+    "gu": "ડેરી સહકારી મંડળી",
+    "transliteration": "Dairy sahkari mandli"
+  },
+  {
+    "en": "Dairy Cooperative Society",
+    "gu": "સહકારી દૂધ મંડળી",
+    "transliteration": "Sahakari Dudh Mandli"
+  },
+  {
+    "en": "Dairy Development",
+    "gu": "ડેરી વિકાસ",
+    "transliteration": "Dairy Vikas"
+  },
+  {
+    "en": "dairy farming",
+    "gu": "પશુપાલન",
+    "transliteration": "deri farming / pashu palan"
+  },
+  {
+    "en": "Dairy Industry",
+    "gu": "ડેરી ઉદ્યોગ",
+    "transliteration": "Dairy Udyog"
+  },
+  {
+    "en": "Dairy Profit",
+    "gu": "ડેરી વ્યવસાયનો નફો",
+    "transliteration": "Dairy vyavasay no nafo"
+  },
+  {
+    "en": "Dam",
+    "gu": "માતા",
+    "transliteration": "Mata"
+  },
+  {
+    "en": "Data Entry",
+    "gu": "માહિતીની એન્ટ્રી",
+    "transliteration": "Mahiti ni Entry"
+  },
+  {
+    "en": "Database Management",
+    "gu": "માહિતી સંચાલન",
+    "transliteration": "Mahiti Sanchalan"
+  },
+  {
+    "en": "Decoction/Kadha",
+    "gu": "ઉકાળો",
+    "transliteration": "Ukalo"
+  },
+  {
+    "en": "Deep Burial",
+    "gu": "ખાડો ખોદી દાટવું",
+    "transliteration": "Khado Khodi Datvu"
+  },
+  {
+    "en": "Dehydration",
+    "gu": "ડિહાઈડ્રેશન",
+    "transliteration": "Dehydration"
+  },
+  {
+    "en": "DERMATITIS",
+    "gu": "ચામડીની એલર્જી",
+    "transliteration": "chamdi ni alerji"
+  },
+  {
+    "en": "Detergent",
+    "gu": "ડિટરજન્ટ",
+    "transliteration": "Detergent"
+  },
+  {
+    "en": "Deworming",
+    "gu": "કીડાનાશક દવા",
+    "transliteration": "kidanashak dava"
+  },
+  {
+    "en": "DEWORMING",
+    "gu": "કૃમિ નિવારણ દવા",
+    "transliteration": "krumi nivaran dava"
+  },
+  {
+    "en": "DEWORMING",
+    "gu": "કૃમિનાશક દવા",
+    "transliteration": "krumi nivaran dava"
+  },
+  {
+    "en": "Deworming",
+    "gu": "પેટના કીડા મારવાની દવા/કૃમિનાશક",
+    "transliteration": ""
+  },
+  {
+    "en": "Diagnosis",
+    "gu": "નિદાન",
+    "transliteration": "Nidan"
+  },
+  {
+    "en": "Diarrhea",
+    "gu": "પાતળા ઝાડા",
+    "transliteration": "patla zada"
+  },
+  {
+    "en": "Diarrhoea",
+    "gu": "ઝાડા",
+    "transliteration": "Zhada"
+  },
+  {
+    "en": "Digestibility",
+    "gu": "પાચનશક્તિ",
+    "transliteration": "Pachanshakti"
+  },
+  {
+    "en": "Disaster Management",
+    "gu": "આપત્તિ વ્યવસ્થાપન",
+    "transliteration": "Aapatti Vyavasthapan"
+  },
+  {
+    "en": "Disbudding / dehorning",
+    "gu": "શીંગ દામવા",
+    "transliteration": "Disbudding / dehorning"
+  },
+  {
+    "en": "Disease Prevention",
+    "gu": "રોગ અટકાવ",
+    "transliteration": "Rog Atkav"
+  },
+  {
+    "en": "Disinfectant",
+    "gu": "સાફસફાઈની દવા",
+    "transliteration": "Jantunashak"
+  },
+  {
+    "en": "Disinfecting Area",
+    "gu": "વિસ્તારને જંતુમુક્ત કરવો",
+    "transliteration": "Vistar ne jantumukt karvo"
+  },
+  {
+    "en": "DISLOCATION",
+    "gu": "ફોહવાઈ જવું",
+    "transliteration": "fohvai javu"
+  },
+  {
+    "en": "Disposal",
+    "gu": "નિકાલ",
+    "transliteration": "Nikal"
+  },
+  {
+    "en": "District Union",
+    "gu": "જિલ્લા સંઘ",
+    "transliteration": "Zilla Sangh"
+  },
+  {
+    "en": "Drainage System",
+    "gu": "ગટર લાઈન",
+    "transliteration": "Gatar line"
+  },
+  {
+    "en": "Drainage System",
+    "gu": "પાણી નિકાલની વ્યવસ્થા",
+    "transliteration": "Pani Nikal ni Vyavastha"
+  },
+  {
+    "en": "Drop in Milk",
+    "gu": "દૂધમાં ઘટાડો",
+    "transliteration": "dudhma ghatado"
+  },
+  {
+    "en": "Drought",
+    "gu": "દુષ્કાળ",
+    "transliteration": "Dushkal"
+  },
+  {
+    "en": "drumstick leaves (moringa)",
+    "gu": "સરગવા",
+    "transliteration": "drumstick leaves (moringa)"
+  },
+  {
+    "en": "Dry cow (non-lactating / in dry-off period)",
+    "gu": "વસૂકેલી ગાય",
+    "transliteration": "Dry cow (non-lactating / in dry-off period)"
+  },
+  {
+    "en": "Dry Fodder",
+    "gu": "સૂકો ઘાસચારો",
+    "transliteration": "Suko Ghascharo"
+  },
+  {
+    "en": "Dry Fodder",
+    "gu": "સૂકો ચારો",
+    "transliteration": "suko charo"
+  },
+  {
+    "en": "Dry Ginger",
+    "gu": "સૂંઠ",
+    "transliteration": "Sunth"
+  },
+  {
+    "en": "Dry Matter",
+    "gu": "સૂકો પદાર્થ",
+    "transliteration": "Suko Padarth"
+  },
+  {
+    "en": "Dry Period",
+    "gu": "વસૂકેલો ગાળો",
+    "transliteration": "Vasukelo Gado"
+  },
+  {
+    "en": "dry pregnant buffalo (in dry period while pregnant)",
+    "gu": "વસુકેલ ગાભણ ભેંસ",
+    "transliteration": "dry pregnant buffalo (in dry period while pregnant)"
+  },
+  {
+    "en": "Dry Straw",
+    "gu": "સૂકું પરાળ",
+    "transliteration": "Suku Paral"
+  },
+  {
+    "en": "Dry Surface",
+    "gu": "કોરી સપાટી",
+    "transliteration": "Kori sapati"
+  },
+  {
+    "en": "Drying Off",
+    "gu": "વસુકી ગયેલ પશુ",
+    "transliteration": "Vasuki gayel pashu"
+  },
+  {
+    "en": "Dullness/Depression",
+    "gu": "સુસ્તી",
+    "transliteration": "Susti"
+  },
+  {
+    "en": "Dystocia",
+    "gu": "વિયાણમાં મુશ્કેલી",
+    "transliteration": "Viyaan ma mushkeli"
+  },
+  {
+    "en": "Ear Tag",
+    "gu": "કાનની કડી",
+    "transliteration": "kaan ni kadi"
+  },
+  {
+    "en": "Ear Tag Applicator",
+    "gu": "ટેગ લગાવવાનું સાધન",
+    "transliteration": "Tag Lagavvanu Sadhan"
+  },
+  {
+    "en": "Ear Tagging Procedure",
+    "gu": "ટેગ લગાવવાની રીત",
+    "transliteration": "Tag lagavvani rit"
+  },
+  {
+    "en": "Early Treatment",
+    "gu": "વહેલી સારવાર",
+    "transliteration": "Vaheli saarvaar"
+  },
+  {
+    "en": "Early Warning",
+    "gu": "પૂર્વ ચેતવણી",
+    "transliteration": "Purva Chetavni"
+  },
+  {
+    "en": "ECTOPARASITE",
+    "gu": "ઇતેરી, ઈતડી , બગાઈ , બગાયું",
+    "transliteration": "itedi iteri itardi"
+  },
+  {
+    "en": "Ectoparasites",
+    "gu": "બાહ્ય પરોપજીવી",
+    "transliteration": "Bahya Paropjivi"
+  },
+  {
+    "en": "ECZEMA",
+    "gu": "ખંજવાળ આવવી",
+    "transliteration": "khanjval aavvi"
+  },
+  {
+    "en": "Edible Oil",
+    "gu": "ખાદ્ય તેલ",
+    "transliteration": "ખાદ્ય તેલ"
+  },
+  {
+    "en": "Efficiency",
+    "gu": "કાર્યક્ષમતા",
+    "transliteration": "Karyakshamata"
+  },
+  {
+    "en": "Embryo",
+    "gu": "ભ્રૂણ",
+    "transliteration": "bhrun"
+  },
+  {
+    "en": "Emergency Contact",
+    "gu": "ઇમરજન્સી સંપર્ક",
+    "transliteration": "Emergency Sampark"
+  },
+  {
+    "en": "Endoparasites",
+    "gu": "આંતરિક પરોપજીવી",
+    "transliteration": "Aantrik Paropjivi"
+  },
+  {
+    "en": "Energy Content",
+    "gu": "ઉર્જાનું પ્રમાણ",
+    "transliteration": "Urja nu Praman"
+  },
+  {
+    "en": "Enrichment",
+    "gu": "પોષણ ક્ષમતા વધારવી",
+    "transliteration": "Poshan kshamatavadhari"
+  },
+  {
+    "en": "ENTRITIS",
+    "gu": "ફોકવું, ઝાડા",
+    "transliteration": "fokvu , zada"
+  },
+  {
+    "en": "Environment",
+    "gu": "પર્યાવરણ",
+    "transliteration": "Paryavaran"
+  },
+  {
+    "en": "EPISTAXIS",
+    "gu": "નાકમાંથી લોહી આવવું",
+    "transliteration": "nakmathi lohi aavu"
+  },
+  {
+    "en": "Epsom salt / magnesium sulphate",
+    "gu": "મૅગ્નેશિયમ સલ્ફેટ",
+    "transliteration": "Epsom salt / magnesium sulphate"
+  },
+  {
+    "en": "estrus / heat",
+    "gu": "ગરમી",
+    "transliteration": "estrus / heat"
+  },
+  {
+    "en": "Ethnoveterinary Medicine (EVM)",
+    "gu": "ઘરગથ્થું ઉપચાર/ઘરેલુ ઉપચાર/દેશી ઉપચાર",
+    "transliteration": "ghargathhu upchar, deshi upchar"
+  },
+  {
+    "en": "Eucalyptus Oil",
+    "gu": "નિલગીરીનું તેલ",
+    "transliteration": "Nilgiri nu tel"
+  },
+  {
+    "en": "Exotic",
+    "gu": "વિદેશી જાત",
+    "transliteration": "vedheshi jaat"
+  },
+  {
+    "en": "Extension Worker",
+    "gu": "પ્રસાર કાર્યકર",
+    "transliteration": "Prasar Karyakar"
+  },
+  {
+    "en": "EYEINJURY",
+    "gu": "આંખમાં ઈજા થવી",
+    "transliteration": "aankh ma ija thavi"
+  },
+  {
+    "en": "Faecal Sample",
+    "gu": "પોદરાનો નમૂનો",
+    "transliteration": "Podra no Namuno"
+  },
+  {
+    "en": "Fan/Blower",
+    "gu": "પંખા/બ્લોઅર",
+    "transliteration": "Pankha/Blower"
+  },
+  {
+    "en": "Farmer Database",
+    "gu": "ખેડૂત માહિતી",
+    "transliteration": "Khedut Mahiti"
+  },
+  {
+    "en": "fat",
+    "gu": "ફેટ",
+    "transliteration": "fet"
+  },
+  {
+    "en": "Fat Deposition",
+    "gu": "ચરબી જમા થવી",
+    "transliteration": "Charbi Jama Thavi"
+  },
+  {
+    "en": "Fat Percentage",
+    "gu": "ફેટ ટકાવારી",
+    "transliteration": "Fat takavari"
+  },
+  {
+    "en": "Fatty Liver Syndrome",
+    "gu": "ફેટી લીવર સિન્ડ્રોમ",
+    "transliteration": "Fatty Liver Syndrome"
+  },
+  {
+    "en": "Faulty Feeding",
+    "gu": "ખામીયુક્ત ખોરાક",
+    "transliteration": "Khamiyukt Khorak"
+  },
+  {
+    "en": "Feed",
+    "gu": "ચારો",
+    "transliteration": "charo"
+  },
+  {
+    "en": "Feed Additives",
+    "gu": "ફીડ એડિટિવ્સ",
+    "transliteration": "Feed Additives"
+  },
+  {
+    "en": "Feeding Manger",
+    "gu": "ગમાણ",
+    "transliteration": "gaman"
+  },
+  {
+    "en": "Feeding Method",
+    "gu": "ખવડાવવાની પદ્ધતિ",
+    "transliteration": "Khavdavvani Paddhati"
+  },
+  {
+    "en": "feeding practices / fodder management",
+    "gu": "ચારો આપવાની પ્રક્રિયાઓ",
+    "transliteration": "feeding practices / fodder management"
+  },
+  {
+    "en": "female calves / buffalo heifers",
+    "gu": "પાડી/ભેંસો",
+    "transliteration": "Padi / Bhenso"
+  },
+  {
+    "en": "Female/Male Calf",
+    "gu": "પાડી/પાડો",
+    "transliteration": "padi / pado"
+  },
+  {
+    "en": "Fenugreek",
+    "gu": "મેથી",
+    "transliteration": "Methi"
+  },
+  {
+    "en": "Fermentation",
+    "gu": "આથવણ",
+    "transliteration": "Athvan"
+  },
+  {
+    "en": "Fertilizer",
+    "gu": "ખાતર",
+    "transliteration": "Khatar"
+  },
+  {
+    "en": "Fetus",
+    "gu": "ગર્ભ",
+    "transliteration": "garbh"
+  },
+  {
+    "en": "Fever",
+    "gu": "તાવ",
+    "transliteration": "Tav"
+  },
+  {
+    "en": "Fiber",
+    "gu": "રેસા",
+    "transliteration": "Resa"
+  },
+  {
+    "en": "First Aid",
+    "gu": "પ્રાથમિક સારવાર",
+    "transliteration": "Prathmik Saarvaar"
+  },
+  {
+    "en": "First milk streams / fore-stripping from teat",
+    "gu": "ધાર",
+    "transliteration": "First milk streams / fore-stripping from teat"
+  },
+  {
+    "en": "Flood",
+    "gu": "પૂર",
+    "transliteration": "Pur"
+  },
+  {
+    "en": "fly repellent / insect repellent for livestock (not pesticide)",
+    "gu": "માખી પ્રતિરોધક દવા",
+    "transliteration": "fly repellent / insect repellent for livestock (not pesticide)"
+  },
+  {
+    "en": "FMD",
+    "gu": "ખરવા મોવાસા",
+    "transliteration": "kharva movasa"
+  },
+  {
+    "en": "Fodder / Grass",
+    "gu": "ખડપ/ઘાસચારો",
+    "transliteration": "khadap / ghascharo"
+  },
+  {
+    "en": "Fodder Beet",
+    "gu": "ઘાસચારા બીટ",
+    "transliteration": "Ghaschara Beet"
+  },
+  {
+    "en": "Fodder Grass",
+    "gu": "ઘાસ",
+    "transliteration": "Ghas"
+  },
+  {
+    "en": "Fodder Seed",
+    "gu": "ઘાસચારાનું બીજ",
+    "transliteration": "Ghaschara nu Bij"
+  },
+  {
+    "en": "Fodder Shortage",
+    "gu": "ઘાસચારાની અછત",
+    "transliteration": "Ghaschara ni Achhat"
+  },
+  {
+    "en": "Fodder Storage",
+    "gu": "ઘાસચારાનો સંગ્રહ",
+    "transliteration": "Ghaschara no Sangrah"
+  },
+  {
+    "en": "Fodder/Grass",
+    "gu": "ઘાસચારો",
+    "transliteration": "Ghascharo"
+  },
+  {
+    "en": "foetal maceration (decomposition of retained dead foetus)",
+    "gu": "ગર્ભ મેસરેશન",
+    "transliteration": "foetal maceration (decomposition of retained dead foetus)"
+  },
+  {
+    "en": "foetal mummification (absent from answer — term to add)",
+    "gu": "ગર્ભ મમીફિકેશન",
+    "transliteration": "foetal mummification (absent from answer — term to add)"
+  },
+  {
+    "en": "Follicle",
+    "gu": "બીજમસો",
+    "transliteration": "bij maso"
+  },
+  {
+    "en": "Foot and Mouth Disease",
+    "gu": "ખરવા-મોવાસા",
+    "transliteration": "Kharva-Movasa"
+  },
+  {
+    "en": "FOOT ROT",
+    "gu": "ખરીનો રોગ",
+    "transliteration": "khari no rog"
+  },
+  {
+    "en": "Foot Rot",
+    "gu": "ફૂટ રોટ",
+    "transliteration": "Foot Rot"
+  },
+  {
+    "en": "Foot Rot",
+    "gu": "ફૂટ રોટ (ખરીનો રોગ)",
+    "transliteration": "Foot Rot (Khari no Rog)"
+  },
+  {
+    "en": "Frequent Urination",
+    "gu": "વારંવાર પેશાબ કરવો",
+    "transliteration": "varamvar peshab karvo"
+  },
+  {
+    "en": "Fresh Water",
+    "gu": "તાજું પાણી",
+    "transliteration": "Taju pani"
+  },
+  {
+    "en": "Frozen Semen",
+    "gu": "થીજવેલું વીર્ય",
+    "transliteration": "Thijvelu veerya"
+  },
+  {
+    "en": "Fungal Infection",
+    "gu": "ફૂગથી થતો રોગ",
+    "transliteration": "Fug thi thato rog"
+  },
+  {
+    "en": "Gait/Walk",
+    "gu": "ચાલ",
+    "transliteration": "Chal"
+  },
+  {
+    "en": "GANGRENE",
+    "gu": "ચામડી સુકાવવી",
+    "transliteration": "chamdi sukavvi"
+  },
+  {
+    "en": "Garlic",
+    "gu": "લસણ",
+    "transliteration": "Lasan"
+  },
+  {
+    "en": "General Inspection",
+    "gu": "પશુનું સામાન્ય નિરીક્ષણ",
+    "transliteration": "Pashu nu Samanya Nirikshan"
+  },
+  {
+    "en": "Gestation Period",
+    "gu": "ગર્ભાવસ્થાનો ગાળો",
+    "transliteration": "Garbhavasthano Gaalo"
+  },
+  {
+    "en": "Ginger",
+    "gu": "આદુ",
+    "transliteration": "Aadu"
+  },
+  {
+    "en": "Ginger Powder",
+    "gu": "આદુનો પાવડર",
+    "transliteration": "Aadu no powder"
+  },
+  {
+    "en": "Gir Breed",
+    "gu": "ગીર ઓલાદ",
+    "transliteration": "Gir Olad"
+  },
+  {
+    "en": "Global Warming",
+    "gu": "ગ્લોબલ વોર્મિંગ",
+    "transliteration": "Global Warming"
+  },
+  {
+    "en": "Government Subsidy",
+    "gu": "સરકારી સહાય/સબસિડી",
+    "transliteration": "Sarkari sahay"
+  },
+  {
+    "en": "Grain Crusher",
+    "gu": "અનાજનો ભરડો",
+    "transliteration": "Anaj no Bhardo"
+  },
+  {
+    "en": "Grazing areas / pasture",
+    "gu": "પશુ ચરાવવાની જગ્યા",
+    "transliteration": "Grazing areas / pasture"
+  },
+  {
+    "en": "Grazing Land",
+    "gu": "ચરિયાણ",
+    "transliteration": "chariyan"
+  },
+  {
+    "en": "Green Fodder",
+    "gu": "લીલો ઘાસચારો",
+    "transliteration": "Lilo Ghascharo"
+  },
+  {
+    "en": "Green Fodder",
+    "gu": "લીલો ચારો",
+    "transliteration": "lilo charo"
+  },
+  {
+    "en": "Greenhouse Gas",
+    "gu": "ગ્રીનહાઉસ ગેસ",
+    "transliteration": "Greenhouse Gas"
+  },
+  {
+    "en": "Groundnut Cake",
+    "gu": "મગફળીનો ખોળ",
+    "transliteration": "Magfali no Khol"
+  },
+  {
+    "en": "Growth Rate",
+    "gu": "વૃદ્ધિ દર",
+    "transliteration": "Vruddhi Dar"
+  },
+  {
+    "en": "HAEMATOMA",
+    "gu": "લોહી જામી જવું",
+    "transliteration": "lohi jami javu"
+  },
+  {
+    "en": "Haemorrhagic Septicaemia",
+    "gu": "ગળઘોંટુ",
+    "transliteration": "gal-ghontu"
+  },
+  {
+    "en": "haemorrhagic septicaemia / Galasundo disease (spelling correction)",
+    "gu": "ગલસુંડો",
+    "transliteration": "haemorrhagic septicaemia / Galasundo disease (spelling correction)"
+  },
+  {
+    "en": "HAEMORRHAGICSEPTICAEMIA",
+    "gu": "ગળશૂંઢો",
+    "transliteration": "galsundho"
+  },
+  {
+    "en": "Hair Color",
+    "gu": "વાળનો રંગ",
+    "transliteration": "Val no Rang"
+  },
+  {
+    "en": "Hand Wash",
+    "gu": "હાથ ધોવા",
+    "transliteration": "Hath Dhova"
+  },
+  {
+    "en": "Handbook",
+    "gu": "માર્ગદર્શિકા/પુસ્તિકા",
+    "transliteration": "Margdarshika"
+  },
+  {
+    "en": "Harvesting",
+    "gu": "કાપણી/લણણી",
+    "transliteration": "Kapni/Lanni"
+  },
+  {
+    "en": "Hay Making",
+    "gu": "બાટુ (હે) બનાવવું",
+    "transliteration": "Batu (Hay) Banavvu"
+  },
+  {
+    "en": "Health Card",
+    "gu": "આરોગ્ય કાર્ડ",
+    "transliteration": "Arogya Card"
+  },
+  {
+    "en": "Health Parameter",
+    "gu": "આરોગ્યના માપદંડ",
+    "transliteration": "Arogya na Mapdand"
+  },
+  {
+    "en": "Healthy Animal",
+    "gu": "તંદુરસ્ત પશુ",
+    "transliteration": "Tandurast Pashu"
+  },
+  {
+    "en": "Healthy Vaccination",
+    "gu": "તંદુરસ્ત પશુમાં રસીકરણ",
+    "transliteration": "Tandurast Pashu ma Rasikaran"
+  },
+  {
+    "en": "HEAT",
+    "gu": "ગરમીમાં આવવું, વેતરમો આવવું",
+    "transliteration": "garm ma aavvu, vetermo aavvu"
+  },
+  {
+    "en": "Heat / Estrus",
+    "gu": "વેતર/ગરમી",
+    "transliteration": "vetar / garami"
+  },
+  {
+    "en": "Heat / Oestrus",
+    "gu": "ગરમીમાં આવવું/વેતરમાં આવવું",
+    "transliteration": "Garmi ma avavu/Vetar ma avavu"
+  },
+  {
+    "en": "Heat Cycle",
+    "gu": "તાણ/ગરમી",
+    "transliteration": "taan / garami"
+  },
+  {
+    "en": "Heat Detection",
+    "gu": "વેતરની ઓળખ",
+    "transliteration": "Vetar ni olakh"
+  },
+  {
+    "en": "Heat Stress",
+    "gu": "ગરમીનો તણાવ",
+    "transliteration": "Garmi no Tanav"
+  },
+  {
+    "en": "Heat Stress Management",
+    "gu": "ગરમીના તણાવનું વ્યવસ્થાપન",
+    "transliteration": "Garmi na Tanav nu Vyavasthapan"
+  },
+  {
+    "en": "Heat Wave",
+    "gu": "લૂ/ગરમ પવન",
+    "transliteration": "Lu/Garm Pavan"
+  },
+  {
+    "en": "Heifer",
+    "gu": "ખડાયું/khadelu",
+    "transliteration": "khadayu / khadelu"
+  },
+  {
+    "en": "Heifer",
+    "gu": "પાડી",
+    "transliteration": "Padi"
+  },
+  {
+    "en": "Heifer",
+    "gu": "પાડી/વાછરડી/વોડકી",
+    "transliteration": "Padi / Vachardi/vodki"
+  },
+  {
+    "en": "Heifer",
+    "gu": "પાડી/વોડકી",
+    "transliteration": "Padi / Vodki"
+  },
+  {
+    "en": "HEIFER",
+    "gu": "વોડકી, ઝોટુ, પાડી",
+    "transliteration": "vodki , jotu, padi"
+  },
+  {
+    "en": "Heifer Management",
+    "gu": "પાડી-વાછરડી ઉછેર",
+    "transliteration": "padi/vachharadi ucher"
+  },
+  {
+    "en": "Hemorrhagic Septicemia (HS)",
+    "gu": "ગળસૂંઢો (એચએસ)",
+    "transliteration": "Galsundho (HS)"
+  },
+  {
+    "en": "Herbal Paste",
+    "gu": "વનસ્પતિનો લેપ",
+    "transliteration": "Vanaspati no lep"
+  },
+  {
+    "en": "Herd",
+    "gu": "ધણ",
+    "transliteration": "dhan"
+  },
+  {
+    "en": "HERNIA",
+    "gu": "આંતરડું બહાર આવવું",
+    "transliteration": "aatardu bahar aavu"
+  },
+  {
+    "en": "Hoof",
+    "gu": "ખરી",
+    "transliteration": "Khari"
+  },
+  {
+    "en": "hoof / cleft of cattle foot",
+    "gu": "ખુર",
+    "transliteration": "hoof / cleft of cattle foot"
+  },
+  {
+    "en": "HORN FRACTURE",
+    "gu": "હેગડું ભાગવું",
+    "transliteration": "hegdu bhagvu / shengdu bhangvu"
+  },
+  {
+    "en": "HORNCANCER",
+    "gu": "કરમોડી, શીંગડાનું કેન્સર",
+    "transliteration": "karmodi , shingda nu kensar"
+  },
+  {
+    "en": "Horns",
+    "gu": "શિંગડા",
+    "transliteration": "Shingda"
+  },
+  {
+    "en": "Hybrid Napier",
+    "gu": "હાઈબ્રિડ નેપિયર",
+    "transliteration": "Hybrid Napier"
+  },
+  {
+    "en": "HYGROMA",
+    "gu": "ઘૂંટણનો સોજો",
+    "transliteration": "ghuntan no sojo"
+  },
+  {
+    "en": "HYPOCALCEMIA",
+    "gu": "કેલ્શિયમની ઉણપ",
+    "transliteration": "kelsium ni unap"
+  },
+  {
+    "en": "HYPOPHOSPHETAEMIA",
+    "gu": "ફોસ્ફરસ ની ઉણપ",
+    "transliteration": "fosfaras ni unap"
+  },
+  {
+    "en": "Ice Box",
+    "gu": "બરફની પેટી",
+    "transliteration": "Baraf ni peti"
+  },
+  {
+    "en": "ichthammol ointment (black ointment for wounds/abscesses)",
+    "gu": "ઇક્થામોલ મલમ",
+    "transliteration": "ichthammol ointment (black ointment for wounds/abscesses)"
+  },
+  {
+    "en": "Ideal Condition",
+    "gu": "આદર્શ અવસ્થા",
+    "transliteration": "Adarsh Avastha"
+  },
+  {
+    "en": "Identification Tag",
+    "gu": "ઓળખની ટેગ",
+    "transliteration": "Olakh ni Tag"
+  },
+  {
+    "en": "Illustrations",
+    "gu": "ચિત્રો/ઉદાહરણ",
+    "transliteration": "Chitro/Udaharan"
+  },
+  {
+    "en": "Immunity",
+    "gu": "રોગ પ્રતિકારક શક્તિ",
+    "transliteration": "Rog Pratikarak Shakti"
+  },
+  {
+    "en": "Inbreeding",
+    "gu": "આંતરિક સંવર્ધન",
+    "transliteration": "aantarik samvardhan"
+  },
+  {
+    "en": "Income Increase",
+    "gu": "આવકમાં વધારો",
+    "transliteration": "Avak ma Vadharo"
+  },
+  {
+    "en": "indigenous",
+    "gu": "દેશી જાત",
+    "transliteration": "deshi jaat"
+  },
+  {
+    "en": "Indigestion",
+    "gu": "અજીર્ણ",
+    "transliteration": "ajirna"
+  },
+  {
+    "en": "Indigestion",
+    "gu": "અજીર્ણ/અપચો",
+    "transliteration": "Ajirna / Apacho"
+  },
+  {
+    "en": "INDIGESTION",
+    "gu": "અપચો",
+    "transliteration": "apacho"
+  },
+  {
+    "en": "Infection",
+    "gu": "ચેપ",
+    "transliteration": "Chep"
+  },
+  {
+    "en": "Infectious Disease",
+    "gu": "ચેપી રોગ",
+    "transliteration": "Chepi Rog"
+  },
+  {
+    "en": "Infectious Infertility",
+    "gu": "ચેપી વંધ્યત્વ",
+    "transliteration": "Chepi vandhyatva"
+  },
+  {
+    "en": "Infertility",
+    "gu": "વંધ્યત્વ",
+    "transliteration": "Vandhyatva"
+  },
+  {
+    "en": "Infertility Causes",
+    "gu": "વંધ્યત્વના કારણો",
+    "transliteration": "Vandhyatva na karano"
+  },
+  {
+    "en": "Insecticide",
+    "gu": "જંતુનાશક",
+    "transliteration": ""
+  },
+  {
+    "en": "Insemination",
+    "gu": "બીજદાન",
+    "transliteration": "insemination"
+  },
+  {
+    "en": "insemination / fertilization (livestock)",
+    "gu": "બીજ દાન",
+    "transliteration": "insemination / fertilization (livestock)"
+  },
+  {
+    "en": "Internal Parasites/Worms",
+    "gu": "કૃમિ/કરમિયા",
+    "transliteration": "Krimi/Karmiya"
+  },
+  {
+    "en": "Iodine Deficiency",
+    "gu": "આયોડિનની ઉણપ",
+    "transliteration": "Iodine ni Unap"
+  },
+  {
+    "en": "Iodine Solution",
+    "gu": "આયોડિનનું દ્રાવણ",
+    "transliteration": "Iodine nu dravan"
+  },
+  {
+    "en": "Irrigation",
+    "gu": "પિયત",
+    "transliteration": "Piyat"
+  },
+  {
+    "en": "its detection (subclinical mastitis test context)",
+    "gu": "આની તપાસ",
+    "transliteration": "its detection (subclinical mastitis test context)"
+  },
+  {
+    "en": "Jaffrabadi Breed",
+    "gu": "જાફરાબાદી ઓલાદ",
+    "transliteration": "Jaffrabadi Olad"
+  },
+  {
+    "en": "Jaggery",
+    "gu": "ગોળ",
+    "transliteration": "Gol"
+  },
+  {
+    "en": "Johne's disease",
+    "gu": "જોન ડીસીસ",
+    "transliteration": "Johne's disease"
+  },
+  {
+    "en": "Johne’s Disease (JD)",
+    "gu": "જેડી",
+    "transliteration": "JD"
+  },
+  {
+    "en": "Kankrej Cow",
+    "gu": "કાંકરેજી ગાય",
+    "transliteration": "kakreji gay"
+  },
+  {
+    "en": "KETOSIS",
+    "gu": "કિટોસીસ/ઊર્જાની કમીથી થતો રોગ",
+    "transliteration": "kitosis"
+  },
+  {
+    "en": "ketosis (metabolic disease in dairy cows — spelling correction)",
+    "gu": "કીટોસિસ",
+    "transliteration": "ketosis (metabolic disease in dairy cows — spelling correction)"
+  },
+  {
+    "en": "Kharai Camel",
+    "gu": "ખારાઈ ઊંટ",
+    "transliteration": "kharai oot"
+  },
+  {
+    "en": "KINKEDSCRVIX",
+    "gu": "વાંકુ કમળ",
+    "transliteration": "vanku kamal"
+  },
+  {
+    "en": "Knowledge",
+    "gu": "જ્ઞાન/માહિતી",
+    "transliteration": "Gnan/Mahiti"
+  },
+  {
+    "en": "KNUCKLING(OPR.)",
+    "gu": "ઘૂંટણે ચાલવું",
+    "transliteration": "ghuntane chalvu"
+  },
+  {
+    "en": "Lactation",
+    "gu": "દૂધાળ ગાળો",
+    "transliteration": "Dudhal Galo"
+  },
+  {
+    "en": "Lactation Cycle",
+    "gu": "વેતર",
+    "transliteration": "vetar"
+  },
+  {
+    "en": "Lactation Period",
+    "gu": "દૂધ આપવાનો ગાળો",
+    "transliteration": "dudh aapvano gaalo"
+  },
+  {
+    "en": "LAMENESS",
+    "gu": "પગ લંગડાવવો",
+    "transliteration": "pag langdavo"
+  },
+  {
+    "en": "Lameness",
+    "gu": "લંગડાપણું",
+    "transliteration": "Langdapanu"
+  },
+  {
+    "en": "lameness / limping in cattle (spelling correction)",
+    "gu": "લંગડાવું",
+    "transliteration": "lameness / limping in cattle (spelling correction)"
+  },
+  {
+    "en": "LAMINITIS(HOOF)",
+    "gu": "ખરી નો સોજો",
+    "transliteration": "khari no sojo"
+  },
+  {
+    "en": "LAMNESS",
+    "gu": "ખોડંગાય ,લંગડાય",
+    "transliteration": "khodangay / langday"
+  },
+  {
+    "en": "Landless Farmers",
+    "gu": "જમીન વિહોણા ખેડૂતો",
+    "transliteration": "Jamin Vihona Kheduto"
+  },
+  {
+    "en": "Leaching/Odor",
+    "gu": "ગંધ/વાસ",
+    "transliteration": "Gandh/Vas"
+  },
+  {
+    "en": "Legislation",
+    "gu": "કાયદો",
+    "transliteration": "Kaydo"
+  },
+  {
+    "en": "Legumes",
+    "gu": "કઠોળ વર્ગનો ચારો",
+    "transliteration": "Kathol Varg no Charo"
+  },
+  {
+    "en": "Leptospirosis",
+    "gu": "લેપ્ટોસ્પાયરોસીસ",
+    "transliteration": "Leptospirosis"
+  },
+  {
+    "en": "Lice (ectoparasite on livestock)",
+    "gu": "જૂ",
+    "transliteration": "Lice (ectoparasite on livestock)"
+  },
+  {
+    "en": "LIGHTENINGSTROKE",
+    "gu": "વીજળી પડવી",
+    "transliteration": "vijli padvi"
+  },
+  {
+    "en": "Lime Spray",
+    "gu": "ચૂનાનો છંટકાવ",
+    "transliteration": "Chuna no Chhantkav"
+  },
+  {
+    "en": "Liquid Nitrogen",
+    "gu": "પ્રવાહી નાઈટ્રોજન",
+    "transliteration": "Pravahi Nitrogen"
+  },
+  {
+    "en": "Livelihood",
+    "gu": "જીવિકા/આવકનું સાધન",
+    "transliteration": "Jivika/Avak nu Sadhan"
+  },
+  {
+    "en": "Liver Fluke",
+    "gu": "યકૃત કૃમિ",
+    "transliteration": "Yakrut Krimi"
+  },
+  {
+    "en": "Livestock",
+    "gu": "પશુઓ",
+    "transliteration": "livestock animals"
+  },
+  {
+    "en": "livestock / animal husbandry needs",
+    "gu": "પશુપાલન સંબંધિત જરૂરિયાતો",
+    "transliteration": "livestock / animal husbandry needs"
+  },
+  {
+    "en": "Livestock Health",
+    "gu": "પશુ સ્વાસ્થ્ય",
+    "transliteration": "Pashu Swasthya"
+  },
+  {
+    "en": "Livestock Wealth",
+    "gu": "પશુ ધન",
+    "transliteration": "Pashu dhan"
+  },
+  {
+    "en": "Lucerne",
+    "gu": "રજકો",
+    "transliteration": "Rajko"
+  },
+  {
+    "en": "Lumpy Skin Disease",
+    "gu": "ગાંઠિયો રોગ",
+    "transliteration": "ganthiyo rog"
+  },
+  {
+    "en": "Macerated Fetus",
+    "gu": "મૃત બાળક",
+    "transliteration": "mrut balak / mrut bacchu"
+  },
+  {
+    "en": "Machine Milking",
+    "gu": "મશીન દ્વારા દોહન",
+    "transliteration": "Machine dwara Dohan"
+  },
+  {
+    "en": "Magnesium Sulphate",
+    "gu": "મેગ્નેશિયમ સલ્ફેટ",
+    "transliteration": "Magnesium Sulphate"
+  },
+  {
+    "en": "MAGNESIUMTETANI",
+    "gu": "મગજની ચકરી નો રોગ",
+    "transliteration": "magaj ni chakri no rog"
+  },
+  {
+    "en": "Maize Gluten",
+    "gu": "મકાઈ ગ્લુટેન",
+    "transliteration": "Maize Gluten"
+  },
+  {
+    "en": "Maize Stover",
+    "gu": "મકાઈની કડબ",
+    "transliteration": "Makai ni Kadab"
+  },
+  {
+    "en": "MANGE",
+    "gu": "ખરજવું",
+    "transliteration": "kharjavu"
+  },
+  {
+    "en": "Mange",
+    "gu": "ખરજવું/મૂળ વ્યાધિ",
+    "transliteration": "Kharjavu/Mul Vyadhi"
+  },
+  {
+    "en": "Manger/Trough",
+    "gu": "ગમાણ/પીવા માટેની કુંડી",
+    "transliteration": "Gaman/Kundi"
+  },
+  {
+    "en": "Manure Disposal",
+    "gu": "છાણનો નિકાલ",
+    "transliteration": "Chhan no Nikal"
+  },
+  {
+    "en": "Mastication",
+    "gu": "ચાવવું",
+    "transliteration": "Chavvu"
+  },
+  {
+    "en": "Mastitis",
+    "gu": "આઉનો/બાવલાનો સોજો",
+    "transliteration": "Aau no / Bavla no Sojo"
+  },
+  {
+    "en": "MASTITIS",
+    "gu": "પાઠુ, બેક્ટેરિયા સૂકો ઘડીઓ બાવલા નો સોજો",
+    "transliteration": "pathu, becteria suko ghadio , bavla no sojo"
+  },
+  {
+    "en": "Mastitis Testing",
+    "gu": "મસ્ટીટીસનું પરીક્ષણ",
+    "transliteration": "Mastitis nu parikshan"
+  },
+  {
+    "en": "Medicinal Plant Use",
+    "gu": "ઔષધીય વનસ્પતિનો ઉપયોગ",
+    "transliteration": "Aushadhiya vanaspati no upyog"
+  },
+  {
+    "en": "Mehsani Breed",
+    "gu": "મહેસાણી ઓલાદ",
+    "transliteration": "Mehsani Olad"
+  },
+  {
+    "en": "Mehsani buffalo breed (spelling correction)",
+    "gu": "મહેસાણી",
+    "transliteration": "Mehsani buffalo breed (spelling correction)"
+  },
+  {
+    "en": "Message/SMS",
+    "gu": "સંદેશ",
+    "transliteration": "Sandesh"
+  },
+  {
+    "en": "Metabolic Disease",
+    "gu": "ચયાપચયના રોગો",
+    "transliteration": "Chayapachay na Rog"
+  },
+  {
+    "en": "Methane Emission",
+    "gu": "મિથેન વાયુનું ઉત્સર્જન",
+    "transliteration": "Methane Vayu nu Utsarjan"
+  },
+  {
+    "en": "Methane Reduction",
+    "gu": "મિથેન ઘટાડો",
+    "transliteration": "Methane Ghatado"
+  },
+  {
+    "en": "METRITIS",
+    "gu": "ગર્ભાશયની દીવાલ નો સોજો",
+    "transliteration": "garbhashay ni dival no sojo"
+  },
+  {
+    "en": "Milk Can",
+    "gu": "ડબ્બો/કેન",
+    "transliteration": "dabbo / ken"
+  },
+  {
+    "en": "Milk Clots",
+    "gu": "દૂધમાં ગઠ્ઠા/ફોદા",
+    "transliteration": "Dudh ma Gathha/Foda"
+  },
+  {
+    "en": "Milk Collection Center",
+    "gu": "દૂધ એકત્રીકરણ કેન્દ્ર",
+    "transliteration": "Dudh ekatrikaran kendra"
+  },
+  {
+    "en": "Milk Components",
+    "gu": "દૂધના ઘટકો",
+    "transliteration": "Dudh na ghatako"
+  },
+  {
+    "en": "Milk Fever",
+    "gu": "સૂવાનો રોગ (મિલ્ક ફીવર)/દૂધીઓ તાવ",
+    "transliteration": "Suva no Rog (Milk Fever)"
+  },
+  {
+    "en": "milk fever (hypocalcaemia post-calving)",
+    "gu": "દૂધ તાવ",
+    "transliteration": "milk fever (hypocalcaemia post-calving)"
+  },
+  {
+    "en": "Milk Hygiene",
+    "gu": "દૂધની સ્વચ્છતા",
+    "transliteration": "Dudh ni Swachhta"
+  },
+  {
+    "en": "milk leaking",
+    "gu": "દૂધ ઝરવું",
+    "transliteration": "dudh jharvu"
+  },
+  {
+    "en": "Milk Potential",
+    "gu": "દૂધ ઉત્પાદન ક્ષમતા",
+    "transliteration": "Dudh Utpadan Kshamata"
+  },
+  {
+    "en": "Milk Production",
+    "gu": "દૂધ ઉત્પાદન",
+    "transliteration": "Dudh Utpadan"
+  },
+  {
+    "en": "Milk Quality",
+    "gu": "દૂધની ગુણવત્તા",
+    "transliteration": "Dudh ni Gunvatta"
+  },
+  {
+    "en": "Milk Sample",
+    "gu": "દૂધનો નમૂનો",
+    "transliteration": "Dudh no Namuno"
+  },
+  {
+    "en": "Milk Vein",
+    "gu": "દુગ્ધશિરા",
+    "transliteration": "Dugdhashira"
+  },
+  {
+    "en": "milk veins — long and tortuous (dairy cow conformation trait)",
+    "gu": "દૂધ ની નસો લાંબી અને ગૂંચળાદાર",
+    "transliteration": "milk veins — long and tortuous (dairy cow conformation trait)"
+  },
+  {
+    "en": "MILKFEVER",
+    "gu": "સુવારોગ, દુધીયો તાવ",
+    "transliteration": "suvarog, dudhiyo tav"
+  },
+  {
+    "en": "Milking",
+    "gu": "દોહવું",
+    "transliteration": "dohvu"
+  },
+  {
+    "en": "Milking Technique",
+    "gu": "દૂધ દોહવાની રીત",
+    "transliteration": "Dudh dohvani rit"
+  },
+  {
+    "en": "Millet Stover",
+    "gu": "બાજરીની કડબ",
+    "transliteration": "Bajri ni Kadab"
+  },
+  {
+    "en": "Mineral Mixture",
+    "gu": "મિનરલ મિક્સચર",
+    "transliteration": "Mineral Mixture"
+  },
+  {
+    "en": "Mineral Mixture",
+    "gu": "ખનિજ મિશ્રણ",
+    "transliteration": "Mishran Khanij Tatvo"
+  },
+  {
+    "en": "Minerals",
+    "gu": "ખનીજ તત્વો",
+    "transliteration": "Khanij Tatvo"
+  },
+  {
+    "en": "Mixing",
+    "gu": "મિશ્રણ કરવું",
+    "transliteration": "Mishran karvu"
+  },
+  {
+    "en": "Modern Technology",
+    "gu": "આધુનિક ટેકનોલોજી",
+    "transliteration": "Adhunik Technology"
+  },
+  {
+    "en": "Moist Nose",
+    "gu": "ભેજવાળું નાક",
+    "transliteration": "Bhejvalu Nak"
+  },
+  {
+    "en": "Moisture Content",
+    "gu": "ભેજનું પ્રમાણ",
+    "transliteration": "Bhej nu Praman"
+  },
+  {
+    "en": "Molasses",
+    "gu": "ગોળની રસી",
+    "transliteration": "Gol ni Rasi"
+  },
+  {
+    "en": "Molluscicide",
+    "gu": "ગોકળગાય નાશક",
+    "transliteration": ""
+  },
+  {
+    "en": "mongoose",
+    "gu": "નોરીયો/નોળિયો",
+    "transliteration": "noriyo / નોળિયો"
+  },
+  {
+    "en": "Monitoring",
+    "gu": "દેખરેખ/નિરીક્ષણ",
+    "transliteration": "Dekhrekh/Nirikshan"
+  },
+  {
+    "en": "Mortality",
+    "gu": "મૃત્યુદર",
+    "transliteration": "mrutyudar"
+  },
+  {
+    "en": "Mounting",
+    "gu": "એકબીજા પર ચઢવું",
+    "transliteration": "Ek bija par chadhvu"
+  },
+  {
+    "en": "Mucus Discharge",
+    "gu": "લાળી પડવી",
+    "transliteration": "lali padvi"
+  },
+  {
+    "en": "mud",
+    "gu": "કાદવ/ગારો",
+    "transliteration": "kadav / garo"
+  },
+  {
+    "en": "muddy",
+    "gu": "કાદવવાળી/ગારાવાળી",
+    "transliteration": "kadavvali / garavali"
+  },
+  {
+    "en": "Mummified Fetus",
+    "gu": "મૃત બાળક",
+    "transliteration": "mrut balak / mrut bacchu"
+  },
+  {
+    "en": "Murrah Breed",
+    "gu": "મુરાહ ઓલાદ",
+    "transliteration": "Murrah Olad"
+  },
+  {
+    "en": "Murrah buffalo breed (spelling correction)",
+    "gu": "મુર્રા",
+    "transliteration": "Murrah buffalo breed (spelling correction)"
+  },
+  {
+    "en": "Mustard Cake",
+    "gu": "રાયડો ખોળ",
+    "transliteration": "Raido Khol"
+  },
+  {
+    "en": "National Plan",
+    "gu": "રાષ્ટ્રીય યોજના",
+    "transliteration": "Rashtriya Yojana"
+  },
+  {
+    "en": "Natural mating",
+    "gu": "કુદરતી ફળવણી",
+    "transliteration": "kudarati felavni"
+  },
+  {
+    "en": "NDDB Support",
+    "gu": "એનડીડીબી સહાય",
+    "transliteration": "NDDB sahay"
+  },
+  {
+    "en": "neck",
+    "gu": "ગળું",
+    "transliteration": "galu"
+  },
+  {
+    "en": "Neem",
+    "gu": "લીમડો",
+    "transliteration": "Limdo"
+  },
+  {
+    "en": "Neem Oil",
+    "gu": "લીમડાનું તેલ",
+    "transliteration": "Limda nu tel"
+  },
+  {
+    "en": "Newborn Calf Care",
+    "gu": "નવજાત પશુની સારસંભાળ",
+    "transliteration": "Navjat pashu ni Sarsambhal"
+  },
+  {
+    "en": "Normal Dung",
+    "gu": "સામાન્ય છાણ/પોદરો",
+    "transliteration": "Samanya Chhan"
+  },
+  {
+    "en": "Normal Rumination",
+    "gu": "સામાન્ય વાગોળવું",
+    "transliteration": "Samanya Vagolvu"
+  },
+  {
+    "en": "Normal Urination",
+    "gu": "સામાન્ય પેશાબ",
+    "transliteration": "Samanya Peshab"
+  },
+  {
+    "en": "nose / nostril",
+    "gu": "નાક",
+    "transliteration": "nose / nostril"
+  },
+  {
+    "en": "not getting healthy",
+    "gu": "શરીર લેતી નથી",
+    "transliteration": "sharir leti nathi"
+  },
+  {
+    "en": "Nutrients / Feed Additives",
+    "gu": "પોષક તત્વો/ફીડ એડિટિવ્સ",
+    "transliteration": "Poshak Tatvo / Feed Additives"
+  },
+  {
+    "en": "Nutrition",
+    "gu": "પોષણ",
+    "transliteration": "Poshan"
+  },
+  {
+    "en": "Nutrition Deficiency",
+    "gu": "પોષણની ઉણપ",
+    "transliteration": "Poshan ni unap"
+  },
+  {
+    "en": "Nutritive Value",
+    "gu": "પૌષ્ટિકતા",
+    "transliteration": "Paushtikta"
+  },
+  {
+    "en": "Oats",
+    "gu": "ઓટ્સ (જવ)",
+    "transliteration": "Oats (Jav)"
+  },
+  {
+    "en": "Obese Condition",
+    "gu": "મેદસ્વી/સ્થૂળ અવસ્થા",
+    "transliteration": "Medasvi Avastha"
+  },
+  {
+    "en": "Oestrous Cycle",
+    "gu": "વેતર ચક્ર",
+    "transliteration": "vetar chakra"
+  },
+  {
+    "en": "Oestrus Signs",
+    "gu": "ગરમીના લક્ષણો",
+    "transliteration": "Garmi na lakshano"
+  },
+  {
+    "en": "Oil Cake",
+    "gu": "ખોળ",
+    "transliteration": "Khol"
+  },
+  {
+    "en": "oilseed cake / de-oiled cake (feed ingredient)",
+    "gu": "તેલીબિયાં ખોળ",
+    "transliteration": "oilseed cake / de-oiled cake (feed ingredient)"
+  },
+  {
+    "en": "Online Monitoring",
+    "gu": "ઓનલાઈન દેખરેખ",
+    "transliteration": "Online Dekhrekh"
+  },
+  {
+    "en": "Optimal AI Time",
+    "gu": "કૃત્રિમ બીજદાનનો યોગ્ય સમય",
+    "transliteration": "Krutrim Bijdan no yogya samay"
+  },
+  {
+    "en": "Optimal AI Time",
+    "gu": "બીજદાનનો યોગ્ય સમય",
+    "transliteration": "Bijdan no yogya samay"
+  },
+  {
+    "en": "oral dosing",
+    "gu": "નાળ દેવી",
+    "transliteration": "naal devi"
+  },
+  {
+    "en": "orally / by mouth (drug administration route)",
+    "gu": "મોઢેથી",
+    "transliteration": "orally / by mouth (drug administration route)"
+  },
+  {
+    "en": "Organophosphorus Poisoning",
+    "gu": "ઓર્ગેનો ફોસ્ફરસ ઝેર",
+    "transliteration": "Organophosphorus Zer"
+  },
+  {
+    "en": "Ovulation",
+    "gu": "બીજ છૂટું પડવું/અંડપાત",
+    "transliteration": "bij chhutu padvu/andpaat"
+  },
+  {
+    "en": "Palatability",
+    "gu": "સ્વાદિષ્ટતા",
+    "transliteration": "Swadishtta"
+  },
+  {
+    "en": "Palpation",
+    "gu": "હાથથી દબાવીને તપાસવું",
+    "transliteration": "Hath thi Dabavi ne Tapasvu"
+  },
+  {
+    "en": "PANTING",
+    "gu": "હોફે છે",
+    "transliteration": "hoe che, hanfe che, hafe che"
+  },
+  {
+    "en": "Parasite Control",
+    "gu": "કૃમિનું નિયંત્રણ",
+    "transliteration": "Krimi nu Niyantran"
+  },
+  {
+    "en": "Parasitic Disease",
+    "gu": "પરોપજીવીથી થતો રોગ",
+    "transliteration": "Paropjivi thi thato rog"
+  },
+  {
+    "en": "parity / calving number / lactation round",
+    "gu": "વેતર",
+    "transliteration": "vetar"
+  },
+  {
+    "en": "Parturient Paresis",
+    "gu": "પાર્ટુરિયન્ટ પેરેસિસ",
+    "transliteration": "પાર્ટુરિયન્ટ પેરેસિસ"
+  },
+  {
+    "en": "Pasture Land",
+    "gu": "ગૌચર",
+    "transliteration": "Gauchar"
+  },
+  {
+    "en": "Pasture Management",
+    "gu": "ચરાણ વ્યવસ્થાપન",
+    "transliteration": "Charan Vyavasthapan"
+  },
+  {
+    "en": "pearl millet / bajra (fodder crop for cattle)",
+    "gu": "ચારો-બાજરો",
+    "transliteration": "pearl millet / bajra (fodder crop for cattle)"
+  },
+  {
+    "en": "Pediculicide / Lousicide",
+    "gu": "ઝેગુડી નાશક",
+    "transliteration": ""
+  },
+  {
+    "en": "Pedigree",
+    "gu": "વંશાવલી",
+    "transliteration": "vanshavali"
+  },
+  {
+    "en": "Pedigree Selection",
+    "gu": "વંશાવલી પસંદગી",
+    "transliteration": "Vanshavali pasandgi"
+  },
+  {
+    "en": "Performance Record",
+    "gu": "ઉત્પાદન રેકોર્ડ",
+    "transliteration": "Utpadan record"
+  },
+  {
+    "en": "Perineal Area",
+    "gu": "મૂત્રાશય ના ભાગ",
+    "transliteration": "Mutrashay na Bhag"
+  },
+  {
+    "en": "Personal Hygiene",
+    "gu": "વ્યક્તિગત સ્વચ્છતા",
+    "transliteration": "Vyaktigat Swachhta"
+  },
+  {
+    "en": "Pesticide",
+    "gu": "જીવાણુ નાશક",
+    "transliteration": ""
+  },
+  {
+    "en": "pharmacy / medicine shop (not 'society shop')",
+    "gu": "દવાની દુકાન",
+    "transliteration": "pharmacy / medicine shop (not 'society shop')"
+  },
+  {
+    "en": "Phosphorus",
+    "gu": "ફોસ્ફરસ",
+    "transliteration": "Phosphorus"
+  },
+  {
+    "en": "pica",
+    "gu": "પિકા",
+    "transliteration": "પિકા"
+  },
+  {
+    "en": "placenta",
+    "gu": "જર",
+    "transliteration": "jar"
+  },
+  {
+    "en": "Placenta",
+    "gu": "મેલી/જર",
+    "transliteration": "Meli / Jar"
+  },
+  {
+    "en": "Plastic Sheet",
+    "gu": "પ્લાસ્ટિક કાગળ",
+    "transliteration": "Plastic Kagal"
+  },
+  {
+    "en": "Poisoning Effects",
+    "gu": "ઝેરી અસરો",
+    "transliteration": "Zeri Asaro"
+  },
+  {
+    "en": "post-calving",
+    "gu": "વિયાણ પછી",
+    "transliteration": "વિયાણ પછી"
+  },
+  {
+    "en": "post-calving / after-calving care",
+    "gu": "વિયાણ પછ",
+    "transliteration": "post-calving / after-calving care"
+  },
+  {
+    "en": "Post-Calving Care",
+    "gu": "વિયાણ પછીની કાળજી",
+    "transliteration": "Viyan Pachhi ni Kalji"
+  },
+  {
+    "en": "Post-Calving Diseases",
+    "gu": "વિયાણ પછી થતા રોગો",
+    "transliteration": "Viyan Pachhi Thata Rog"
+  },
+  {
+    "en": "Post-milking Dip",
+    "gu": "દોહ્યા પછી બોળવું",
+    "transliteration": "Dohya pachhi bolvu"
+  },
+  {
+    "en": "Post-mortem",
+    "gu": "પીએમ (મૃતદેહ પરીક્ષણ)",
+    "transliteration": "PM (Mrutdeh Parikshan)"
+  },
+  {
+    "en": "Potassium Permanganate",
+    "gu": "પોટેશિયમ પરમેંગેનેટ",
+    "transliteration": "Potassium Permanganate"
+  },
+  {
+    "en": "Potassium Permanganate Solution",
+    "gu": "પોટેશિયમ પરમેંગેનેટના દ્રાવણ",
+    "transliteration": "Potassium Permanganate na Dravan"
+  },
+  {
+    "en": "pre-calving",
+    "gu": "વિયાણ પહેલા",
+    "transliteration": "વિયાણ પહેલા"
+  },
+  {
+    "en": "Pre-milking Dip",
+    "gu": "દોહતા પહેલા બોળવું",
+    "transliteration": "Dohta pahela bolvu"
+  },
+  {
+    "en": "Pre-Partum Prolapse",
+    "gu": "દેહ દેખાય છે./દેહ નીકળે છે./શરીર દેખાય છે./શરીર નીકળે છે./કાંટો દેખાય છે./કાંટો નીકળે છે./ફુલ પિછા દેખાય છે/ડીલ નીકળે છે/વાવલીયુ દેખાય છે/માટી દેખાય છે/આહ નીકળે છે",
+    "transliteration": ""
+  },
+  {
+    "en": "Pregnancy",
+    "gu": "ગર્ભ",
+    "transliteration": "garbh"
+  },
+  {
+    "en": "pregnancy / steaming-up ration for pregnant cows (gabhan daan)",
+    "gu": "ગાભણ દાણ",
+    "transliteration": "pregnancy / steaming-up ration for pregnant cows (gabhan daan)"
+  },
+  {
+    "en": "PREGNANCY DIAGNOSIS",
+    "gu": "ખાલી ગાભણ તપાસ",
+    "transliteration": "khali gabhan tapas"
+  },
+  {
+    "en": "Pregnancy Diagnosis (PD)",
+    "gu": "ગર્ભ પરીક્ષણ",
+    "transliteration": "garbh parixan"
+  },
+  {
+    "en": "pregnancy diagnosis / pregnancy check in livestock",
+    "gu": "ગાભ તપાસ",
+    "transliteration": "pregnancy diagnosis / pregnancy check in livestock"
+  },
+  {
+    "en": "Pregnancy Safe Vaccine",
+    "gu": "ગર્ભાવસ્થામાં સુરક્ષિત રસી",
+    "transliteration": "Garbhavastha ma Surakshit Rasi"
+  },
+  {
+    "en": "Pregnant",
+    "gu": "ગાભણ",
+    "transliteration": "gabhan"
+  },
+  {
+    "en": "Preservation",
+    "gu": "જાળવણી",
+    "transliteration": "Jalavni"
+  },
+  {
+    "en": "Production Drop",
+    "gu": "ઉત્પાદનમાં ઘટાડો",
+    "transliteration": "Utpadan ma Ghatado"
+  },
+  {
+    "en": "Productivity",
+    "gu": "ઉત્પાદકતા",
+    "transliteration": "Utpadakta"
+  },
+  {
+    "en": "Profitability",
+    "gu": "નફાકારકતા",
+    "transliteration": "Nafakarakta"
+  },
+  {
+    "en": "Progeny Testing",
+    "gu": "સંતતિ પરીક્ષણ",
+    "transliteration": "santati parixan"
+  },
+  {
+    "en": "Prolapse",
+    "gu": "ગર્ભાશય બહાર આવવું",
+    "transliteration": "garbhashay bahar aavavu"
+  },
+  {
+    "en": "PROLAPSE",
+    "gu": "દેહ બતાવવી, આર બતાવવું, ઘાતર બતાવવું",
+    "transliteration": "deh batavvi"
+  },
+  {
+    "en": "Prolapse",
+    "gu": "દેહ બતાવવી/આર બતાવવું (ગર્ભાશય બહાર આવવું)",
+    "transliteration": "deh batavvi / aar batavvi"
+  },
+  {
+    "en": "Proper Drainage",
+    "gu": "યોગ્ય પાણી નિકાલની વ્યવસ્થા",
+    "transliteration": "Yogya Pani Nikal ni Vyavastha"
+  },
+  {
+    "en": "Proper Growth",
+    "gu": "યોગ્ય વિકાસ",
+    "transliteration": "Yogya vikas"
+  },
+  {
+    "en": "Protein",
+    "gu": "પ્રોટીન",
+    "transliteration": "Protein"
+  },
+  {
+    "en": "Protein Content",
+    "gu": "પ્રોટીનનું પ્રમાણ",
+    "transliteration": "Protein nu Praman"
+  },
+  {
+    "en": "Protozoal Disease",
+    "gu": "પ્રજીવથી થતો રોગ",
+    "transliteration": "Prajiv thi thato rog"
+  },
+  {
+    "en": "Puberty",
+    "gu": "તરુણાવસ્થા/પુખ્તતા",
+    "transliteration": "tarunavastha/pukhtata"
+  },
+  {
+    "en": "Pulse Rate",
+    "gu": "નાડીના ધબકારા",
+    "transliteration": "Nadi na dhabkara"
+  },
+  {
+    "en": "Purchasing Animals",
+    "gu": "પશુની ખરીદી",
+    "transliteration": "Pashu ni Kharidi"
+  },
+  {
+    "en": "Purebred",
+    "gu": "શુદ્ધ ઓલાદ",
+    "transliteration": "shudhdh olad"
+  },
+  {
+    "en": "Quality Control",
+    "gu": "ગુણવત્તા નિયંત્રણ",
+    "transliteration": "Gunvatta Niyantran"
+  },
+  {
+    "en": "Quality Milk",
+    "gu": "ગુણવત્તાયુક્ત દૂધ",
+    "transliteration": "Gunvattayukt dudh"
+  },
+  {
+    "en": "Quarantine",
+    "gu": "બીજા પશુથી દૂર રાખવા",
+    "transliteration": "bija pashu thi dur rakhva"
+  },
+  {
+    "en": "Rabies",
+    "gu": "હડકવા",
+    "transliteration": "Hadakva"
+  },
+  {
+    "en": "rajko / lucerne (alfalfa fodder — mislabeled as cowpea in source doc)",
+    "gu": "રાજકો",
+    "transliteration": "rajko / lucerne (alfalfa fodder — mislabeled as cowpea in source doc)"
+  },
+  {
+    "en": "Rapid Milking",
+    "gu": "ઝડપી દોહન",
+    "transliteration": "Zadpi dohan"
+  },
+  {
+    "en": "Rathi cattle breed (spelling correction)",
+    "gu": "રાઠી",
+    "transliteration": "Rathi cattle breed (spelling correction)"
+  },
+  {
+    "en": "Record Keeping",
+    "gu": "રેકોર્ડ રાખવો",
+    "transliteration": "Record rakhvo"
+  },
+  {
+    "en": "Recovery",
+    "gu": "સાજા થવું",
+    "transliteration": "Saja Thavu"
+  },
+  {
+    "en": "Red Urine",
+    "gu": "લાલ પેશાબ",
+    "transliteration": "Lal Peshab"
+  },
+  {
+    "en": "Redness of Vulva",
+    "gu": "યોનિમાર્ગમાં લાલાશ",
+    "transliteration": "Yonimarg ma lallash"
+  },
+  {
+    "en": "Reduced Appetite",
+    "gu": "ખોરાક ઓછો લેવો",
+    "transliteration": "khorak ochcho levo"
+  },
+  {
+    "en": "Registration",
+    "gu": "નોંધણી",
+    "transliteration": "Nondhani"
+  },
+  {
+    "en": "Regulation",
+    "gu": "નિયમન",
+    "transliteration": "Niyaman"
+  },
+  {
+    "en": "Relative Humidity",
+    "gu": "સાપેક્ષ ભેજ",
+    "transliteration": "Sapeksh Bhej"
+  },
+  {
+    "en": "Repeat Breeder",
+    "gu": "ગરમીમાં ઉથલો મારતું પશુ",
+    "transliteration": "garmi ma uthlo martu pashu"
+  },
+  {
+    "en": "REPEAT BREEDING",
+    "gu": "ઠરતું નથી, ઉથલા મારવા ઝેભની, ગાભણ રહેતી નથી",
+    "transliteration": "thartu nathi / uthla marva / gabhan raheti nathi"
+  },
+  {
+    "en": "Reproduction",
+    "gu": "પ્રજનન",
+    "transliteration": "Prajanan"
+  },
+  {
+    "en": "reproduction / breeding / insemination",
+    "gu": "પ્રજનન/કૃત્રિમ બીજદાન",
+    "transliteration": "Prajanan / Krutrim Bijdan"
+  },
+  {
+    "en": "Respiratory Distress",
+    "gu": "શ્વાસમાં તકલીફ",
+    "transliteration": "Shwas ma Taklif"
+  },
+  {
+    "en": "Restlessness",
+    "gu": "બેચેની",
+    "transliteration": "becheni"
+  },
+  {
+    "en": "Retained placenta",
+    "gu": "માટી ન ખસવી",
+    "transliteration": "mati na khasavi"
+  },
+  {
+    "en": "Retained Placenta (RP)",
+    "gu": "ઝેર અટકી જવું/મેલી ન પડવી",
+    "transliteration": "zer atki javu/meli na padvi"
+  },
+  {
+    "en": "Retention of Placenta / Afterbirth retained /Placenta not expelled",
+    "gu": "જર/મેલી/ઓર ન પડવી/પડિયો અંદર અટકી ગયો/આફટર બર્થ ન નીકળવું/બચ્ચા પછી પડ લટકતું રહેવું",
+    "transliteration": "Jar/ Meli/Or na Padvi / ROP"
+  },
+  {
+    "en": "Revenue per Liter",
+    "gu": "લિટર દીઠ આવક",
+    "transliteration": "Liter dith avak"
+  },
+  {
+    "en": "RFID",
+    "gu": "આરએફઆઇડી",
+    "transliteration": "RFID"
+  },
+  {
+    "en": "Ribs",
+    "gu": "પાંસળીઓ",
+    "transliteration": "Pansalio"
+  },
+  {
+    "en": "Rice Gruel",
+    "gu": "ભાત (ચોખા) ની રાબ",
+    "transliteration": "Bhat (Chokha) ni Rab"
+  },
+  {
+    "en": "rice gruel / rice water (home remedy for calf diarrhea)",
+    "gu": "ચોખાની કંજી",
+    "transliteration": "rice gruel / rice water (home remedy for calf diarrhea)"
+  },
+  {
+    "en": "Rice Husk",
+    "gu": "ડાંગરનું ભૂસું",
+    "transliteration": "Dangar nu bhusu"
+  },
+  {
+    "en": "Rice Polish",
+    "gu": "ચોખાનું કુશળ",
+    "transliteration": "Chokha nu Kushal"
+  },
+  {
+    "en": "Rice Straw",
+    "gu": "ડાંગરનું પરળ",
+    "transliteration": "Dangar nu Paral"
+  },
+  {
+    "en": "Ringworm",
+    "gu": "ચાચર",
+    "transliteration": "ચાચર"
+  },
+  {
+    "en": "ringworm fungus (Trichophyton verrucosum) in cattle",
+    "gu": "Trichophyton verrucosum ફૂગ",
+    "transliteration": "ringworm fungus (Trichophyton verrucosum) in cattle"
+  },
+  {
+    "en": "Rotational Grazing",
+    "gu": "ફેરબદલી સાથે ચરાણ",
+    "transliteration": "Ferbadli sathe charan"
+  },
+  {
+    "en": "Roundworms",
+    "gu": "ગોળ કૃમિ",
+    "transliteration": "Gol Krimi"
+  },
+  {
+    "en": "ruminal acidosis (rumen pH drop from excess grain)",
+    "gu": "રુમીનલ એસીડોસીસ",
+    "transliteration": "ruminal acidosis (rumen pH drop from excess grain)"
+  },
+  {
+    "en": "Rumination",
+    "gu": "વાગોળવું",
+    "transliteration": "Vagolvu"
+  },
+  {
+    "en": "Rumination Rate",
+    "gu": "વાગોળવાનો દર",
+    "transliteration": "Vagolvana no Dar"
+  },
+  {
+    "en": "Rural Economy",
+    "gu": "ગ્રામીણ અર્થતંત્ર",
+    "transliteration": "Gramin Arthtantra"
+  },
+  {
+    "en": "Safe Milking",
+    "gu": "સુરક્ષિત દોહન",
+    "transliteration": "Surakshit Dohan"
+  },
+  {
+    "en": "Salt",
+    "gu": "મીઠું",
+    "transliteration": "Mithu"
+  },
+  {
+    "en": "Salt lick",
+    "gu": "મીઠાનો પથ્થર",
+    "transliteration": "chatva mate mitha no patthar"
+  },
+  {
+    "en": "Scabs",
+    "gu": "ભીંગડા",
+    "transliteration": "Bhingda"
+  },
+  {
+    "en": "Sealing",
+    "gu": "સીલ કરવું",
+    "transliteration": "Seal karvu"
+  },
+  {
+    "en": "Semen Dose",
+    "gu": "સીમેન ડોઝ",
+    "transliteration": "Semen Dose"
+  },
+  {
+    "en": "Semen Station",
+    "gu": "સીમેન સ્ટેશન",
+    "transliteration": "Semen Station"
+  },
+  {
+    "en": "Semen Straw",
+    "gu": "સીમેન સ્ટ્રો",
+    "transliteration": "semen straw"
+  },
+  {
+    "en": "Sexed Semen",
+    "gu": "સેક્સ્ડ સીમેન",
+    "transliteration": "sexed semen"
+  },
+  {
+    "en": "Sexual Maturity",
+    "gu": "જાતીય પુખ્તતા",
+    "transliteration": "Jatiya pukhtata"
+  },
+  {
+    "en": "Shade Provision",
+    "gu": "છાંયડાની વ્યવસ્થા",
+    "transliteration": "Chhayda ni Vyavastha"
+  },
+  {
+    "en": "Shade Tree",
+    "gu": "છાંયો આપતા વૃક્ષો",
+    "transliteration": "Chhayo aapta vruksho"
+  },
+  {
+    "en": "Shady Shelter",
+    "gu": "છાયાવાળું આશ્રયસ્થાન",
+    "transliteration": "Chhayavalu Ashraysthan"
+  },
+  {
+    "en": "Shatavari",
+    "gu": "શતાવરી",
+    "transliteration": "Shatavari"
+  },
+  {
+    "en": "Shiny Hair",
+    "gu": "ચમકદાર વાળ",
+    "transliteration": "Chamakdar Val"
+  },
+  {
+    "en": "Shiny Hoof",
+    "gu": "ચમકદાર ખરી",
+    "transliteration": "Chamakdar Khari"
+  },
+  {
+    "en": "Shivering",
+    "gu": "ધ્રુજારી",
+    "transliteration": "Dhrujari"
+  },
+  {
+    "en": "Sick Animal",
+    "gu": "બીમાર પશુ",
+    "transliteration": "Bimar Pashu"
+  },
+  {
+    "en": "Silage Making",
+    "gu": "સાયલેજ બનાવવું",
+    "transliteration": "Silage Banavvu"
+  },
+  {
+    "en": "Silent Heat",
+    "gu": "શાંત વેતર",
+    "transliteration": "shant vetar"
+  },
+  {
+    "en": "Silopit",
+    "gu": "સાયલોપીટ",
+    "transliteration": "Silopit"
+  },
+  {
+    "en": "Sire",
+    "gu": "પિતા",
+    "transliteration": "Pita"
+  },
+  {
+    "en": "Skeleton",
+    "gu": "હાડપિંજર",
+    "transliteration": "Hadpinjar"
+  },
+  {
+    "en": "Skill Development",
+    "gu": "કૌશલ્ય વિકાસ",
+    "transliteration": "Kaushalya Vikas"
+  },
+  {
+    "en": "Skin / Body Parts",
+    "gu": "ચામડી/ભાગો",
+    "transliteration": "Chamdi / Bhago"
+  },
+  {
+    "en": "Skin Scraping",
+    "gu": "ચામડીનો નમૂનો",
+    "transliteration": "Chamdi no Namuno"
+  },
+  {
+    "en": "Small Farmers",
+    "gu": "સીમાંત ખેડૂતો",
+    "transliteration": "Simant Kheduto"
+  },
+  {
+    "en": "Snail",
+    "gu": "શંખલું",
+    "transliteration": "Shankhlu"
+  },
+  {
+    "en": "Snake Bite",
+    "gu": "સાપ કરડવો",
+    "transliteration": "Sap Karadvo"
+  },
+  {
+    "en": "SNF",
+    "gu": "એસ.એન.એફ.",
+    "transliteration": "es en ef"
+  },
+  {
+    "en": "SNF Percentage",
+    "gu": "એસએનએફ (SNF) ટકાવારી",
+    "transliteration": "SNF takavari"
+  },
+  {
+    "en": "Soap Water",
+    "gu": "સાબુનું પાણી",
+    "transliteration": "Sabu nu pani"
+  },
+  {
+    "en": "Society Secretary",
+    "gu": "સોસાયટી ના સેક્રેટરી",
+    "transliteration": "society na secretary"
+  },
+  {
+    "en": "Soft Floor",
+    "gu": "નરમ ભોંયતળિયું",
+    "transliteration": "Naram bhointaliyu"
+  },
+  {
+    "en": "solids not fat",
+    "gu": "એસ.એન.એફ.",
+    "transliteration": "es en ef"
+  },
+  {
+    "en": "Sorghum",
+    "gu": "જુવાર",
+    "transliteration": "Juvar"
+  },
+  {
+    "en": "Sorghum Stover",
+    "gu": "જુવારની કડબ",
+    "transliteration": "Juvar ni Kadab"
+  },
+  {
+    "en": "Sowing",
+    "gu": "વાવણી",
+    "transliteration": "Vavni"
+  },
+  {
+    "en": "Spray Bottle/Can",
+    "gu": "છંટકાવ માટેનો ઝારો",
+    "transliteration": "Chhantkav mate no Zaro"
+  },
+  {
+    "en": "Sprinkler System",
+    "gu": "ફુવારા પદ્ધતિ",
+    "transliteration": "Fuwara Paddhati"
+  },
+  {
+    "en": "Stable Cleaning",
+    "gu": "ગમાણની સફાઈ",
+    "transliteration": "Gaman ni Safai"
+  },
+  {
+    "en": "Stable Fly",
+    "gu": "માખી",
+    "transliteration": "Makhi"
+  },
+  {
+    "en": "Standardization",
+    "gu": "ધોરણોનું પાલન",
+    "transliteration": "Dhorno nu Palan"
+  },
+  {
+    "en": "steaming-up (pre-calving feed increase practice for cows)",
+    "gu": "સ્ટીમીંગ-અપ",
+    "transliteration": "steaming-up (pre-calving feed increase practice for cows)"
+  },
+  {
+    "en": "Storage Pit",
+    "gu": "સંગ્રહ માટેનો ખાડો",
+    "transliteration": "Sangrah mate no Khado"
+  },
+  {
+    "en": "Straw",
+    "gu": "કડબ/ભૂસું",
+    "transliteration": "Kadab/Bhusu"
+  },
+  {
+    "en": "Straw Bedding",
+    "gu": "ઘાસનું પથારી",
+    "transliteration": "ઘાસનું પથારી"
+  },
+  {
+    "en": "Straw Treatment",
+    "gu": "કડબ પર પ્રક્રિયા",
+    "transliteration": "Kadab par prakriya"
+  },
+  {
+    "en": "Stress",
+    "gu": "તણાવ",
+    "transliteration": "Tanav"
+  },
+  {
+    "en": "Stress-free Milking",
+    "gu": "તણાવ મુક્ત દોહન",
+    "transliteration": "Tanav mukt dohan"
+  },
+  {
+    "en": "Strip Cup Test",
+    "gu": "સ્ટ્રીપ કપ ટેસ્ટ",
+    "transliteration": "Strip Cup Test"
+  },
+  {
+    "en": "Sub-clinical Detection",
+    "gu": "ગપ્ત રોગની ઓળખ",
+    "transliteration": "Gupt rog ni olakh"
+  },
+  {
+    "en": "Sub-clinical Mastitis",
+    "gu": "ગુપ્ત બાવલાનો સોજો",
+    "transliteration": "Gupt Bavla no Sojo"
+  },
+  {
+    "en": "Sub-clinical Mastitis",
+    "gu": "ગુપ્ત બાવલાનો સોજો (સૂકો ગરિયો)",
+    "transliteration": "Gupt Bavla no Sojo"
+  },
+  {
+    "en": "sub-clinical mastitis",
+    "gu": "સૂકો ગરિયો , સૂકો ગાળિયો",
+    "transliteration": "suko gariyo, suko galiyo"
+  },
+  {
+    "en": "SUBCLINICAL MASTITIS",
+    "gu": "સૂકો ઘડીયો",
+    "transliteration": "suko ghadiyo"
+  },
+  {
+    "en": "Success Rate",
+    "gu": "સફળતાનો દર",
+    "transliteration": "Safalta no Dar"
+  },
+  {
+    "en": "Sudden Death",
+    "gu": "અચાનક મૃત્યુ",
+    "transliteration": "Achanak Mrutyu"
+  },
+  {
+    "en": "Sugar/Glucose",
+    "gu": "ખાંડ/ગ્લુકોઝ",
+    "transliteration": "Khand/Glucose"
+  },
+  {
+    "en": "sulphur ointment (for mange/scabies in livestock)",
+    "gu": "ગંધક મલમ",
+    "transliteration": "sulphur ointment (for mange/scabies in livestock)"
+  },
+  {
+    "en": "Sunlight Protection",
+    "gu": "સૂર્યના કિરણોથી રક્ષણ",
+    "transliteration": "Surya na Kirno thi Rakshan"
+  },
+  {
+    "en": "Surti Breed",
+    "gu": "સુરતી ઓલાદ",
+    "transliteration": "Surti Olad"
+  },
+  {
+    "en": "Surveillance",
+    "gu": "રોગચાળાની દેખરેખ",
+    "transliteration": "Rogchala ni Dekhrekh"
+  },
+  {
+    "en": "Sustainable Dairy",
+    "gu": "ટકાઉ ડેરી ઉદ્યોગ",
+    "transliteration": "Takau dairy udyog"
+  },
+  {
+    "en": "Sustainable Farming",
+    "gu": "ટકાઉ ખેતી",
+    "transliteration": "Takau Kheti"
+  },
+  {
+    "en": "Swelling/Edema",
+    "gu": "સોજો",
+    "transliteration": "Sojo"
+  },
+  {
+    "en": "Swollen Vulva",
+    "gu": "પેશાબ પર સોજો",
+    "transliteration": "peshab par sojo"
+  },
+  {
+    "en": "Symptom",
+    "gu": "લક્ષણ",
+    "transliteration": "Lakshan"
+  },
+  {
+    "en": "Symptom Checklist",
+    "gu": "લક્ષણોની યાદી",
+    "transliteration": "Lakshano ni yadi"
+  },
+  {
+    "en": "Tail Head",
+    "gu": "પૂંછડીનું મૂળ",
+    "transliteration": "Poonchhadi nu Mul"
+  },
+  {
+    "en": "Tail Raising",
+    "gu": "પૂંછડી ઉંચી કરવી",
+    "transliteration": "Poonchhadi unchi karvi"
+  },
+  {
+    "en": "Tail Tip Necrosis",
+    "gu": "પૂંછડીનો સડો",
+    "transliteration": "Poonchhadi no Sado"
+  },
+  {
+    "en": "tapeworm",
+    "gu": "પટ્ટી",
+    "transliteration": "tapeworm"
+  },
+  {
+    "en": "Tapeworms",
+    "gu": "પટ્ટી કૃમિ",
+    "transliteration": "Patti Krimi"
+  },
+  {
+    "en": "TDN — Total Digestible Nutrients",
+    "gu": "કુલ પાચ્ય પોષક તત્વ (ટીડીએન)",
+    "transliteration": "Kul Pachya Poshak Tatva (TDN)"
+  },
+  {
+    "en": "TDN — Total Digestible Nutrients",
+    "gu": "ટીડીએન",
+    "transliteration": "TDN — Total Digestible Nutrients"
+  },
+  {
+    "en": "teat",
+    "gu": "આંચળ",
+    "transliteration": "aanchal"
+  },
+  {
+    "en": "teat cup (milking machine component — not teat/aanch̲al)",
+    "gu": "ટીટ કપ",
+    "transliteration": "teat cup (milking machine component — not teat/aanch̲al)"
+  },
+  {
+    "en": "Teat Dipping",
+    "gu": "આંચળને દ્રાવણમાં બોળવા",
+    "transliteration": "Aanchal ne dravan ma bolva"
+  },
+  {
+    "en": "Teat Disease",
+    "gu": "આંચળના રોગો",
+    "transliteration": "Aanchal na Rog"
+  },
+  {
+    "en": "Teat Health",
+    "gu": "આંચળનું આરોગ્ય",
+    "transliteration": "Aanchal nu Arogya"
+  },
+  {
+    "en": "teat orifice / teat end",
+    "gu": "આંચળ",
+    "transliteration": "aanchal"
+  },
+  {
+    "en": "Teeth/Age Determination",
+    "gu": "દાંત દ્વારા ઉંમર ની ઓળખાણ",
+    "transliteration": "Dant dwara Umarni olkhan"
+  },
+  {
+    "en": "Tethering Stake",
+    "gu": "ખીલો",
+    "transliteration": "khilo"
+  },
+  {
+    "en": "Theileriosis",
+    "gu": "થાઈલેરીયોસીસ",
+    "transliteration": "Theileriosis"
+  },
+  {
+    "en": "theileriosis treatment drug (Berenil vs Buparvaquone)",
+    "gu": "Buparvaquone",
+    "transliteration": "theileriosis treatment drug (Berenil vs Buparvaquone)"
+  },
+  {
+    "en": "Thermometer",
+    "gu": "થર્મોમીટર",
+    "transliteration": "Thermometer"
+  },
+  {
+    "en": "Three Day Sickness",
+    "gu": "વલો",
+    "transliteration": "valo"
+  },
+  {
+    "en": "Thyroid Gland",
+    "gu": "થાઈરોઈડ ગ્રંથિ",
+    "transliteration": "Thyroid Gland"
+  },
+  {
+    "en": "Ticks",
+    "gu": "ઇતરડી",
+    "transliteration": "Itardi"
+  },
+  {
+    "en": "Ticks/Flies /Ectoparasites",
+    "gu": "ઇતરડી/માખી/ઝેગુડી/ઝીંગોડી/જીંગોડી/ઝેગોડા",
+    "transliteration": "Itardi/Makhi / jhegudi /jhingodi / jhegoda"
+  },
+  {
+    "en": "Ticks/Flies /Ectoparasites  / lice",
+    "gu": "ઇતરડી/માખી/ઝેગુડી/ઝીંગોડી/જીંગોડી/ઝેગોડા/કથીરી/કથરી",
+    "transliteration": "Itardi/Makhi / jhegudi /jhingodi / jhegoda"
+  },
+  {
+    "en": "to breed / to inseminate (livestock)",
+    "gu": "ફેળવવું",
+    "transliteration": "to breed / to inseminate (livestock)"
+  },
+  {
+    "en": "TORSIONOFUTERUS",
+    "gu": "ગર્ભાશય ની આંટી",
+    "transliteration": "garbhashay ni aanti"
+  },
+  {
+    "en": "Traditional Treatment",
+    "gu": "પરંપરાગત ઉપચાર",
+    "transliteration": "Paramparagat Upchar"
+  },
+  {
+    "en": "Training",
+    "gu": "તાલીમ",
+    "transliteration": "Talim"
+  },
+  {
+    "en": "Transport",
+    "gu": "પરિવહન",
+    "transliteration": "Parivahan"
+  },
+  {
+    "en": "Tuberculosis (TB)",
+    "gu": "ક્ષય (ટીબી)",
+    "transliteration": "Kshaya (TB)"
+  },
+  {
+    "en": "Turmeric",
+    "gu": "હળદર",
+    "transliteration": "Haldar"
+  },
+  {
+    "en": "Turpentine Oil",
+    "gu": "ટર્પેન્ટાઈન તેલ",
+    "transliteration": "Turpentine Tel"
+  },
+  {
+    "en": "tweezer / forceps (veterinary instrument)",
+    "gu": "ચીમટી",
+    "transliteration": "tweezer / forceps (veterinary instrument)"
+  },
+  {
+    "en": "twins (twin foetus/calf)",
+    "gu": "જુડવા",
+    "transliteration": "twins (twin foetus/calf)"
+  },
+  {
+    "en": "Udder",
+    "gu": "આઉ/બાવલું",
+    "transliteration": "aau/bavlu"
+  },
+  {
+    "en": "udder",
+    "gu": "પાહો,",
+    "transliteration": "paho"
+  },
+  {
+    "en": "Udder",
+    "gu": "બાવલું",
+    "transliteration": "Bavlu"
+  },
+  {
+    "en": "udder affection /udder infection / mastitis",
+    "gu": "પાઠવાઈ જાય છે/પાઠુ આવી જાય છે",
+    "transliteration": "pathu aavi jay che / pathvai jay che"
+  },
+  {
+    "en": "Udder Disease",
+    "gu": "બાવલાના રોગો",
+    "transliteration": "Bavla na Rog"
+  },
+  {
+    "en": "Udder Edema",
+    "gu": "આઉનો સોજો",
+    "transliteration": "Aau no Sojo"
+  },
+  {
+    "en": "Udder Health",
+    "gu": "બાવલાનું આરોગ્ય",
+    "transliteration": "Bavla nu Arogya"
+  },
+  {
+    "en": "udder infection",
+    "gu": "આઉનો/બાવલાનો સોજો",
+    "transliteration": "Aau no / Bavla no Sojo"
+  },
+  {
+    "en": "udder infection (mastitis context)",
+    "gu": "આઉ/બાવલાની ચેપ",
+    "transliteration": "udder infection (mastitis context)"
+  },
+  {
+    "en": "Udder Massage",
+    "gu": "બાવલાની માલિશ",
+    "transliteration": "Bavla ni malish"
+  },
+  {
+    "en": "UDDER OEDEMA",
+    "gu": "અરહો",
+    "transliteration": "arho"
+  },
+  {
+    "en": "udder plural (of cows/buffaloes)",
+    "gu": "બાવલા",
+    "transliteration": "udder plural (of cows/buffaloes)"
+  },
+  {
+    "en": "Udder region / mammary area (of cow/buffalo)",
+    "gu": "આઉ",
+    "transliteration": "Udder region / mammary area (of cow/buffalo)"
+  },
+  {
+    "en": "Ulcer",
+    "gu": "ચાંદું/અલ્સર",
+    "transliteration": "Chandu/Ulcer"
+  },
+  {
+    "en": "umbilical cord",
+    "gu": "નાળ",
+    "transliteration": "umbilical cord"
+  },
+  {
+    "en": "Unique ID",
+    "gu": "યુનિક આઈડી",
+    "transliteration": "Unique ID"
+  },
+  {
+    "en": "Unusual Behavior",
+    "gu": "વિચિત્ર વર્તણૂક",
+    "transliteration": "Vichitra Vartanuk"
+  },
+  {
+    "en": "Urea Molasses Block",
+    "gu": "યુરિયા મોલાસીસ મિનરલ બ્લોક",
+    "transliteration": "Urea Molasses Mineral Block"
+  },
+  {
+    "en": "Urea Poisoning",
+    "gu": "યુરિયા ઝેર",
+    "transliteration": "Urea Zer"
+  },
+  {
+    "en": "Urea Solution",
+    "gu": "યુરિયાનું દ્રાવણ",
+    "transliteration": "Urea nu Dravan"
+  },
+  {
+    "en": "Urea Treatment",
+    "gu": "યુરિયા પ્રક્રિયા",
+    "transliteration": "Urea Prakriya"
+  },
+  {
+    "en": "Urine Sample",
+    "gu": "પેશાબનો નમૂનો",
+    "transliteration": "Peshab no Namuno"
+  },
+  {
+    "en": "Utensil Cleaning",
+    "gu": "વાસણોની સફાઈ",
+    "transliteration": "Vasano ni Safai"
+  },
+  {
+    "en": "uterine examination (not gynaecological — wrong human medical term)",
+    "gu": "ગર્ભાશયની તપાસ",
+    "transliteration": "uterine examination (not gynaecological — wrong human medical term)"
+  },
+  {
+    "en": "Uterine Involution",
+    "gu": "ગર્ભાશયનું સંકોચાવું",
+    "transliteration": "garbhashay sankochavu"
+  },
+  {
+    "en": "Uterine Prolapse",
+    "gu": "ગર્ભાશય બહાર નીકળી જવું/દિલ ધસી આવવું/વાખર (વાખોર ) નિકળવી",
+    "transliteration": "Garbhashay Bahar Nikli Javu / dil dhasi aavvu /vakhar nikalvi"
+  },
+  {
+    "en": "Uterus",
+    "gu": "ગર્ભાશય",
+    "transliteration": "Garbhashay"
+  },
+  {
+    "en": "Vaccination",
+    "gu": "રસીકરણ",
+    "transliteration": "Rasikaran"
+  },
+  {
+    "en": "Vaccination Schedule",
+    "gu": "રસીકરણનું પત્રક",
+    "transliteration": "Rasikaran nu Patrak"
+  },
+  {
+    "en": "Vaccine Potency",
+    "gu": "રસીની અસરકારકતા",
+    "transliteration": "Rasi ni asarkarakta"
+  },
+  {
+    "en": "Vaccine Storage",
+    "gu": "રસીનો સંગ્રહ",
+    "transliteration": "Rasi no Sangrah"
+  },
+  {
+    "en": "Vegetable Oil",
+    "gu": "વનસ્પતિ તેલ",
+    "transliteration": "Vanaspati tel"
+  },
+  {
+    "en": "ventilated / well-ventilated cattle shed",
+    "gu": "હવા ઉજાસ",
+    "transliteration": "ventilated / well-ventilated cattle shed"
+  },
+  {
+    "en": "Ventilation",
+    "gu": "હવાની અવરજવર",
+    "transliteration": "Hawa ni Avarjavar"
+  },
+  {
+    "en": "Very Poor Condition",
+    "gu": "ખૂબ જ ખરાબ અવસ્થા",
+    "transliteration": "Khub ja kharab avastha"
+  },
+  {
+    "en": "Vesicle",
+    "gu": "ફોડલા",
+    "transliteration": "Fodla"
+  },
+  {
+    "en": "Veterinary Advice",
+    "gu": "પશુચિકિત્સકની સલાહ",
+    "transliteration": "Pashuchikitsak ni Salah"
+  },
+  {
+    "en": "Veterinary doctor",
+    "gu": "પશુચિકિત્સક",
+    "transliteration": "pashuchikitsak"
+  },
+  {
+    "en": "Veterinary guidance",
+    "gu": "પશુ ચિકિત્સકની સલાહ",
+    "transliteration": "પશુ ચિકિત્સકની સલાહ"
+  },
+  {
+    "en": "Veterinary Hospital",
+    "gu": "પશુ દવાખાનું",
+    "transliteration": "Pashu Davakhanu"
+  },
+  {
+    "en": "Veterinary Lab",
+    "gu": "પશુ રોગ નિદાન પ્રયોગશાળા",
+    "transliteration": "Pashu Rog Nidan Prayogshala"
+  },
+  {
+    "en": "Veterinary Treatment",
+    "gu": "પશુચિકિત્સા સારવાર",
+    "transliteration": "Pashuchikitsa Saarvaar"
+  },
+  {
+    "en": "Viral Disease",
+    "gu": "વિષાણુથી થતો રોગ",
+    "transliteration": "Vishanu thi thato rog"
+  },
+  {
+    "en": "Vitamin Deficiency",
+    "gu": "વિટામિનની ઉણપ",
+    "transliteration": "Vitamin ni Unap"
+  },
+  {
+    "en": "Vitamins",
+    "gu": "વિટામિન્સ",
+    "transliteration": "Vitamins"
+  },
+  {
+    "en": "Warts",
+    "gu": "મસા",
+    "transliteration": "Masa"
+  },
+  {
+    "en": "Water intake",
+    "gu": "પાણી પીવાની માત્રા",
+    "transliteration": "pani pivani matra"
+  },
+  {
+    "en": "Water Trough Cleaning",
+    "gu": "કુંડીની સફાઈ",
+    "transliteration": "Kundi ni Safai"
+  },
+  {
+    "en": "Weaning",
+    "gu": "દૂધ છોડાવવું",
+    "transliteration": "Dudh chhodavvu"
+  },
+  {
+    "en": "Weight Loss",
+    "gu": "વજનમાં ઘટાડો",
+    "transliteration": "Vajan ma Ghatado"
+  },
+  {
+    "en": "Wheat Bran",
+    "gu": "ઘઉંનું થૂલું",
+    "transliteration": "Ghau nu Thulu"
+  },
+  {
+    "en": "Wheat Straw",
+    "gu": "ઘઉંનું ભૂસું",
+    "transliteration": "Ghau nu Bhusu"
+  },
+  {
+    "en": "Wheezing / Harsh Respiratory Sound",
+    "gu": "કર્કશ અથવા ઘરઘરાટ",
+    "transliteration": "Karkash athva Ghargharat"
+  },
+  {
+    "en": "Worm Infestation",
+    "gu": "કૃમિનો ઉપદ્રવ",
+    "transliteration": "Krimi no Upadrav"
+  },
+  {
+    "en": "WORMS",
+    "gu": "પેટમાં કીડા કરમિયા",
+    "transliteration": "vodki, jotu, karmiya"
+  },
+  {
+    "en": "Worms / helminths",
+    "gu": "કૃમિ",
+    "transliteration": "worms / helminths"
+  },
+  {
+    "en": "WOUND",
+    "gu": "ઘા",
+    "transliteration": "gha"
+  },
+  {
+    "en": "Wound Cleaning",
+    "gu": "ઘા સાફ કરવો",
+    "transliteration": "Gha saf karvo"
+  },
+  {
+    "en": "Yield",
+    "gu": "ઉતારો/પેદાશ",
+    "transliteration": "Utaro/Pedash"
+  },
+  {
+    "en": "Young calves",
+    "gu": "નાના બચ્ચા",
+    "transliteration": "Young calves"
+  },
+  {
+    "en": "zinc oxide ointment (white ointment for wounds)",
+    "gu": "ઝીંક મલમ",
+    "transliteration": "zinc oxide ointment (white ointment for wounds)"
+  },
+  {
+    "en": "Zoonotic Diseases",
+    "gu": "ઝૂનોટિક રોગો",
+    "transliteration": "Pratisancharit Rog"
+  }
+]

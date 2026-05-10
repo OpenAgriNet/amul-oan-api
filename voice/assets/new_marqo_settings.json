@@ -1,0 +1,19 @@
+{
+    "type": "structured",
+    "vectorNumericType": "float",
+    "model": "hf/multilingual-e5-large",
+    "normalizeEmbeddings": false,
+    "textPreprocessing": {
+        "splitLength": 3,
+        "splitOverlap": 1,
+        "splitMethod": "sentence"
+    },
+    "allFields": [
+        {"name": "doc_id", "type": "text", "features": ["filter"]},
+        {"name": "type", "type": "text", "features": ["filter"]},
+        {"name": "source", "type": "text", "features": ["filter"]},
+        {"name": "name", "type": "text", "features": ["filter"]},
+        {"name": "text", "type": "text", "features": ["lexical_search"]}
+    ],
+    "tensorFields": ["text"]
+}

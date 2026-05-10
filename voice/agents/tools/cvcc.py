@@ -1,0 +1,73 @@
+"""
+Tool for fetching CVCC health details by tag number from Amul Dairy API.
+Uses PASHUGPT_TOKEN_2 for authentication.
+"""
+import os
+import httpx
+from typing import Optional
+from pydantic_ai import ModelRetry
+from voice.helpers.utils import get_logger
+
+logger = get_logger(__name__)
+
+
+async def get_cvcc_health_details(
+    tag_no: str,
+    token_no: Optional[str] = None,
+    vendor_no: str = "9999999"
+) -> str:
+    """
+    Fetch health-related information for an animal by tag number. This returns health-specific
+    details including treatments, vaccinations, deworming records, milk yield, farmer information,
+    and other health metrics. Use this tool when users ask about animal health, treatments,
+    vaccinations, or medical history.
+
+    Args:
+        tag_no: The tag number of the animal to fetch health details for (required)
+        token_no: Token number for CVCC API authentication (optional, defaults to PASHUGPT_TOKEN_2 env var)
+        vendor_no: Vendor number for CVCC API (default: 9999999)
+
+    Returns:
+        str: Raw text response from the CVCC API containing health details including Tag,
+             Animal Type, Breed, Milking Stage, Pregnancy Stage, Lactation, Milk Yield,
+             Farmer information, Treatment records, Vaccination records, and Deworming records.
+             The response may be in JSON format (possibly malformed) or plain text.
+    """
+    try:
+        if not token_no:
+            token_no = os.getenv('PASHUGPT_TOKEN_2')
+            if not token_no:
+                raise ValueError("PASHUGPT_TOKEN_2 environment variable is not set and token_no not provided")
+
+        api_url = "https://api.amuldairy.com/ai_cattle_dtl.php"
+
+        logger.info(f"Fetching CVCC health details for tag: {tag_no}")
+
+        payload = {
+            "token_no": token_no,
+            "vendor_no": vendor_no,
+            "tag_no": tag_no.strip()
+        }
+
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(
+                api_url,
+                headers={
+                    'Content-Type': 'application/json',
+                },
+                json=payload
+            )
+
+            if response.status_code != 200:
+                error_text = response.text
+                logger.error(f"CVCC API error for tag {tag_no}: {response.status_code} - {error_text}")
+                raise ModelRetry(f"Failed to fetch CVCC health details: {response.status_code}")
+
+            text = response.text.strip()
+            logger.info(f"CVCC API response for tag {tag_no}: {len(text)} characters")
+
+            return f"CVCC Health Details for Tag {tag_no}:\n\n{text}"
+
+    except Exception as e:
+        logger.error(f"Error fetching CVCC health details for tag {tag_no}: {e}")
+        raise ModelRetry(f"Error fetching CVCC health details, please try again: {str(e)}")
