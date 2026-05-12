@@ -16,7 +16,7 @@ from typing import Literal, Optional
 from openai import AsyncOpenAI
 from helpers.utils import get_logger
 from dotenv import load_dotenv
-from agents.tools.terms import get_mini_glossary_for_text
+from agents.tools.terms import get_mini_glossary_for_text, get_ambiguity_hints_for_query
 
 try:
     from anthropic import AsyncAnthropic
@@ -409,6 +409,26 @@ _PRETRANSLATION_SYSTEM = (
     "Do not answer the question. Do not add commentary."
 )
 
+
+def _pretranslation_system_with_glossary(text: str) -> str:
+    """Augment the base pretranslation system prompt with any ambiguity-term
+    glossary rules that match the *original gu* input. Without this, the
+    translator hallucinates similar-but-wrong conditions for technical
+    Gujarati terms (e.g. આફરા → 'afterbirth retention', ઇતરડી → 'foot rot',
+    ખરવા-મોવાસા → 'mastitis'). The rules live in assets/ambiguity_terms.json
+    and are designed to be matched against the raw user input."""
+    hints = get_ambiguity_hints_for_query(text)
+    if not hints:
+        return _PRETRANSLATION_SYSTEM
+    return (
+        _PRETRANSLATION_SYSTEM
+        + "\n\n**Required term mappings for this input — ALWAYS follow when translating:**\n"
+        + hints
+        + "\n\nApply the mappings exactly. If a rule says term X means Y, render Y in the English output. "
+        "Do not substitute a similar-sounding condition; do not 'correct' the term to something more familiar."
+    )
+
+
 async def _pretranslate_openai(text: str, source_name: str, source_code: str, max_tokens: int) -> str:
     """Pretranslate using OpenAI API."""
     client = _get_openai_client()
@@ -418,7 +438,7 @@ async def _pretranslate_openai(text: str, source_name: str, source_code: str, ma
             max_completion_tokens=max_tokens,
             temperature=0.0,
             messages=[
-                {"role": "system", "content": _PRETRANSLATION_SYSTEM},
+                {"role": "system", "content": _pretranslation_system_with_glossary(text)},
                 {"role": "user", "content": f"Translate this {source_name} ({source_code}) text to English.\n\n{text.strip()}"},
             ],
         ),
@@ -434,7 +454,7 @@ async def _pretranslate_anthropic(text: str, source_name: str, source_code: str,
         model=PRETRANSLATION_MODEL,
         max_tokens=max_tokens,
         temperature=0.0,
-        system=_PRETRANSLATION_SYSTEM,
+        system=_pretranslation_system_with_glossary(text),
         messages=[
             {"role": "user", "content": f"Translate this {source_name} ({source_code}) text to English.\n\n{text.strip()}"},
         ],

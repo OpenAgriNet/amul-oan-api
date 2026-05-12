@@ -86,5 +86,89 @@
     ],
     "type": "hardcode",
     "rule": "આફરો / aafarao / aafro means rumen tympany (bloat) — gas accumulation in the rumen causing left flank distension. It is a DIGESTIVE condition, NOT ખરવા-મોવાસા (FMD / Foot and Mouth Disease). NEVER confuse these two. When user asks about આફરો, search for cattle bloat rumen tympany treatment and answer about gas accumulation in rumen. Do NOT answer about FMD, blisters, or mouth/hoof lesions."
+  },
+  {
+    "gu_terms": [
+      "ઇતરડી",
+      "ઈતરડી",
+      "itardi",
+      "itarli",
+      "itardee",
+      "itarli na",
+      "ઇતરડી નિયંત્રણ",
+      "ઈતરડી નિયંત્રણ"
+    ],
+    "type": "hardcode",
+    "rule": "ઇતરડી / ઈતરડી / itardi means tick (ectoparasite that attaches to livestock skin). When translating to English, always render as 'tick' or 'cattle tick'. NEVER translate as foot rot, diarrhea, termite, or any other condition. Tick control is an ectoparasite control topic — search for cattle tick control acaricide treatment."
+  },
+  {
+    "gu_terms": [
+      "ખરવા-મોવાસા",
+      "ખરવા મોવાસા",
+      "ખરવામોવાસા",
+      "ખરવામોંવાસો",
+      "ખરવા-મોવાસો",
+      "ખરવા મોવાસો",
+      "kharva movasa",
+      "kharva movaso",
+      "khurpa muvada",
+      "khurpa-muvada",
+      "ખરપા-મુવાડા",
+      "ખુરપાણ"
+    ],
+    "type": "hardcode",
+    "rule": "ખરવા-મોવાસા / ખરવામોંવાસો / khurpa-muvada means Foot-and-Mouth Disease (FMD), a viral disease causing blisters on the hooves (ખરી) and mouth (મોં). When translating to English, always render as 'Foot and Mouth Disease' or 'FMD'. NEVER translate as mastitis (which is આઉનો/બાવલાનો સોજો), Lumpy Skin Disease, or Hemorrhagic Septicemia. Vaccinate with the FMD-specific bivalent or trivalent vaccine, typically twice a year before summer and before monsoon."
+  },
+  {
+    "gu_terms": [
+      "ગાંઠિયા તાવ",
+      "ganthiya tav",
+      "ganthia tav",
+      "ganthiya taav",
+      "gathiya tav",
+      "lumpy skin",
+      "lsd",
+      "ગાંઠ વાળો રોગ"
+    ],
+    "type": "hardcode",
+    "rule": "ગાંઠિયા તાવ / ganthiya tav is Lumpy Skin Disease (LSD), a viral skin disease in cattle/buffalo characterised by raised nodules (ગાંઠ) on the skin, fever, and reduced milk yield. When translating to English, always render as 'Lumpy Skin Disease' or 'LSD'. NEVER translate as Foot-and-Mouth Disease (FMD) or Hemorrhagic Septicemia (HS) — these are different diseases with different vaccines. Vaccinate with the LSD-specific (e.g. goat-pox-based) vaccine, before the monsoon vector season."
+  },
+  {
+    "gu_terms": [
+      "થાયલેરિયા",
+      "thailaria",
+      "theileriosis",
+      "thaileria",
+      "ટિક ફીવર",
+      "tick fever",
+      "બેબેસિયા"
+    ],
+    "type": "hardcode",
+    "rule": "થાયલેરિયા / theileriosis is a tick-borne parasitic blood disease (Theileria spp.), especially fatal in crossbred / exotic cows. Symptoms: fever, anaemia, pale mucous membranes, weakness. When translating to English, always render as 'Theileriosis' or 'tick fever'. NEVER translate as malaria, foot rot, or a generic infection. Treatment is parasiticidal (e.g. Buparvaquone) under veterinary supervision; prevention is tick control."
+  },
+  {
+    "gu_terms": [
+      "ઘોડરવા",
+      "ghodarva",
+      "ઘોડેરવા",
+      "ઘોડરવો",
+      "ખુરલ અને ઘોડરવા"
+    ],
+    "type": "hardcode",
+    "rule": "ઘોડરવા / ghodarva refers to the pasterns/fetlocks of cattle and buffalo (the lower-limb joint area above the hoof). It is body anatomy of bovines, NOT donkeys, horses, or mules — the surface similarity to 'ઘોડા' (horse) is misleading. When translating to English, render as 'pasterns', 'fetlocks', or 'lower-limb joints'. Treat questions about applying medicine to ઘોડરવા as cattle/buffalo hoof and joint care, not equine care."
+  },
+  {
+    "gu_terms": [
+      "કથીરી",
+      "kathiri",
+      "મેલી",
+      "મેલી પડવી",
+      "જર",
+      "જર પડવી",
+      "retained placenta",
+      "afterbirth retention"
+    ],
+    "type": "hardcode",
+    "rule": "કથીરી / kathiri / મેલી / જર refers to retained placenta (afterbirth retention) — the placenta failing to expel within 8-12 hours after calving, risking uterine infection (metritis). When translating to English, always render as 'retained placenta' or 'afterbirth retention'. NEVER translate as Coccidiosis, parasitic infection, or any unrelated condition. Treat as a postpartum reproductive issue requiring veterinary intervention."
   }
 ]
