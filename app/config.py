@@ -46,6 +46,8 @@ class Settings(BaseSettings):
     firebase_service_account_path: Optional[str] = os.getenv("FIREBASE_SERVICE_ACCOUNT_PATH", "service-account.json")
     firebase_service_account_2: Optional[str] = os.getenv("FIREBASE_SERVICE_ACCOUNT_2")  # JSON string; overrides path if set
     firebase_service_account_path_2: Optional[str] = os.getenv("FIREBASE_SERVICE_ACCOUNT_PATH_2")
+    firebase_service_account_3: Optional[str] = os.getenv("FIREBASE_SERVICE_ACCOUNT_3")  # JSON string; overrides path if set
+    firebase_service_account_path_3: Optional[str] = os.getenv("FIREBASE_SERVICE_ACCOUNT_PATH_3")
 
     # Worker Settings
     uvicorn_workers: int = os.cpu_count() or 1

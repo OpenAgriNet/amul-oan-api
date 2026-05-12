@@ -72,10 +72,13 @@ GET /api/auth/webview-url
 | Parameter | Required | Type | Description |
 |-----------|----------|------|-------------|
 | `phone` | Yes | string | User’s phone number. It is embedded in the issued JWT and used by the FE to identify the user. Normalize format as agreed with backend (e.g. E.164). |
+| `user_type` | No | enum (`doctor` \| `farmer`) | User type embedded in the JWT. Defaults to `farmer` if omitted or empty. |
 
 **Example:**  
 `GET /api/auth/webview-url?phone=%2B919876543210`  
 (phone = `+919876543210`, URL-encoded)
+
+`GET /api/auth/webview-url?phone=%2B919876543210&user_type=doctor`
 
 ---
 
@@ -170,7 +173,7 @@ curl -X GET "https://api.example.com/api/auth/webview-url?phone=%2B919876543210"
 The `url` returned contains a query parameter `token` whose value is a JWT:
 
 - **Signed with:** Backend’s RS256 private key (`jwt_private_key.pem`).
-- **Typical claims:** `phone`, `sub` (same as phone), `iat`, `exp`, `aud`, `iss`. The FE can verify it with the backend’s public key and use `phone` (or `sub`) for identity.
+- **Typical claims:** `phone`, `sub` (same as phone), `user_type` (`doctor` or `farmer`, defaults to `farmer`), `iat`, `exp`, `aud`, `iss`. The FE can verify it with the backend’s public key and use `phone` (or `sub`) for identity and `user_type` to branch behaviour.
 - **App responsibility:** The app only needs to open the returned URL in the webview; it does not need to parse or validate the JWT. JWT handling is between the backend and the frontend.
 
 ---
@@ -179,7 +182,8 @@ The `url` returned contains a query parameter `token` whose value is a JWT:
 
 - [ ] Get FCM device token on the device (Firebase SDK).
 - [ ] Get user phone number from your auth/session.
-- [ ] Call `GET {BaseURL}/api/auth/webview-url?phone={encoded_phone}`.
+- [ ] Determine the `user_type` (`doctor` or `farmer`); omit it to default to `farmer`.
+- [ ] Call `GET {BaseURL}/api/auth/webview-url?phone={encoded_phone}&user_type={doctor|farmer}`.
 - [ ] Set `Authorization: Bearer {fcm_token}` or `X-FCM-Token: {fcm_token}`.
 - [ ] On 200, parse JSON and open `url` in webview.
 - [ ] On 401, refresh FCM token or re-auth and retry.
