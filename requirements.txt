@@ -35,7 +35,7 @@ python-decouple==3.8
 openpyxl==3.1.5
 
 ### Pydantic AI (Updated to resolve conflicts)
-pydantic-ai==1.50.0
+pydantic-ai-slim[openai,anthropic]==1.50.0
 asgiref==3.11.0
 
 # Web Server
