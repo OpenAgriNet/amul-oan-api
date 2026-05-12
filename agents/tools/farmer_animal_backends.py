@@ -5,7 +5,7 @@ Internal backends for farmer and animal data from multiple APIs.
 
 Used by farmer.py and animal.py to provide cohesive tools with fallback and merged output.
 """
-from beartype.typing import TypeVar
+from typing import TypeVar
 import json
 import re
 from typing import Any, Dict, Optional
