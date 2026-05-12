@@ -1,10 +1,14 @@
 """
 FCM token authentication for app/webview endpoints.
 Accepts token via header: Authorization: Bearer <fcm_token> or X-FCM-Token: <fcm_token>.
-Verifies token using Firebase Admin (dry_run send). Supports a primary and optional
-secondary Firebase project; if either project accepts the token, authorization is allowed.
-Service account can be provided as inline JSON (FIREBASE_SERVICE_ACCOUNT / FIREBASE_SERVICE_ACCOUNT_2)
-or as file paths (FIREBASE_SERVICE_ACCOUNT_PATH / FIREBASE_SERVICE_ACCOUNT_PATH_2); value takes precedence.
+Verifies token using Firebase Admin (dry_run send). Supports up to three Firebase
+projects (primary, secondary, tertiary); if any project accepts the token, authorization
+is allowed.
+Service account can be provided as inline JSON
+(FIREBASE_SERVICE_ACCOUNT / FIREBASE_SERVICE_ACCOUNT_2 / FIREBASE_SERVICE_ACCOUNT_3)
+or as file paths
+(FIREBASE_SERVICE_ACCOUNT_PATH / FIREBASE_SERVICE_ACCOUNT_PATH_2 / FIREBASE_SERVICE_ACCOUNT_PATH_3);
+value takes precedence.
 """
 import asyncio
 import json
@@ -50,11 +54,26 @@ def _get_secondary_credential() -> Optional[Union[str, dict]]:
     return None
 
 
+def _get_tertiary_credential() -> Optional[Union[str, dict]]:
+    """Resolve tertiary Firebase credential: inline JSON value or file path."""
+    if settings.firebase_service_account_3 and settings.firebase_service_account_3.strip():
+        try:
+            return json.loads(settings.firebase_service_account_3.strip())
+        except json.JSONDecodeError as e:
+            logger.error(f"Invalid FIREBASE_SERVICE_ACCOUNT_3 JSON: {e}")
+            return None
+    if settings.firebase_service_account_path_3:
+        path = settings.base_dir / settings.firebase_service_account_path_3
+        if path.exists():
+            return str(path)
+    return None
+
+
 def _ensure_firebase():
     """
     Lazily initialize one or more Firebase apps for FCM verification.
-    Supports a primary and an optional secondary service account.
-    Credentials from inline values (FIREBASE_SERVICE_ACCOUNT / _2) take precedence over paths.
+    Supports a primary, optional secondary, and optional tertiary service account.
+    Credentials from inline values (FIREBASE_SERVICE_ACCOUNT / _2 / _3) take precedence over paths.
     """
     global _firebase_initialized, _firebase_apps
     if _firebase_initialized:
@@ -74,6 +93,10 @@ def _ensure_firebase():
         secondary = _get_secondary_credential()
         if secondary is not None:
             firebase_configs.append(("secondary", secondary))
+
+        tertiary = _get_tertiary_credential()
+        if tertiary is not None:
+            firebase_configs.append(("tertiary", tertiary))
 
         if not firebase_configs:
             raise FileNotFoundError("No Firebase service accounts configured for FCM verification")
