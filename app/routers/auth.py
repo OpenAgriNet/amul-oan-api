@@ -5,6 +5,7 @@ This closes the auth loop - FE can call this endpoint to get a valid token.
 import os
 import uuid
 from datetime import datetime, timedelta
+from enum import Enum
 from typing import Any, Optional
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
@@ -13,7 +14,7 @@ import re
 import jwt
 from cryptography.hazmat.primitives import serialization
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.auth.fcm_auth import require_fcm_token
 from app.config import settings
@@ -24,9 +25,19 @@ logger = get_logger(__name__)
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 
+class UserType(str, Enum):
+    """User type embedded in the issued JWT. Defaults to FARMER when not specified."""
+    DOCTOR = "doctor"
+    FARMER = "farmer"
+
+
 class PhoneTokenRequest(BaseModel):
     """Request body for phone-based token generation."""
     phone: str
+    user_type: UserType = Field(
+        default=UserType.FARMER,
+        description="User type embedded in the JWT. Defaults to 'farmer' if omitted.",
+    )
 
 
 class TokenResponse(BaseModel):
@@ -55,9 +66,13 @@ def load_private_key():
         return serialization.load_pem_private_key(key_file.read(), password=None)
 
 
-def create_jwt_for_phone(phone: str, expires_days: int = 365) -> str:
+def create_jwt_for_phone(
+    phone: str,
+    user_type: UserType = UserType.FARMER,
+    expires_days: int = 365,
+) -> str:
     """
-    Create a JWT token containing the phone number, signed with jwt_private_key.pem.
+    Create a JWT token containing the phone number and user_type, signed with jwt_private_key.pem.
     Used for webview URL so the FE can identify the user.
     """
     try:
@@ -67,6 +82,7 @@ def create_jwt_for_phone(phone: str, expires_days: int = 365) -> str:
         payload = {
             "phone": phone,
             "sub": phone,
+            "user_type": user_type.value,
             "iat": int(iat.timestamp()),
             "exp": int(exp.timestamp()),
             "aud": "oan-ui-service",
@@ -188,6 +204,10 @@ def _validate_phone(raw: str) -> str:
 )
 async def get_webview_url(
     phone: str = Query(..., description="User phone number (included in issued JWT)"),
+    user_type: UserType = Query(
+        UserType.FARMER,
+        description="User type ('doctor' or 'farmer'); embedded in the JWT. Defaults to 'farmer'.",
+    ),
     _fcm_token: str = Depends(require_fcm_token),
 ) -> Any:
     """
@@ -199,9 +219,10 @@ async def get_webview_url(
 
     **Params:**
     - `phone` (query, required) — User phone number; issued JWT will contain this.
+    - `user_type` (query, optional) — `doctor` or `farmer`; embedded in the JWT. Defaults to `farmer`.
 
     **Response:** JSON with `url` (string): FE base URL from `APP_FE_URL` with `token={jwt}` added as query param.
-    The JWT is signed with `jwt_private_key.pem` and contains `phone` (and standard claims).
+    The JWT is signed with `jwt_private_key.pem` and contains `phone`, `user_type` (and standard claims).
     """
     phone = _validate_phone(phone)
     if not settings.app_fe_url or not settings.app_fe_url.strip():
@@ -209,7 +230,7 @@ async def get_webview_url(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="APP_FE_URL not configured",
         )
-    token = create_jwt_for_phone(phone)
+    token = create_jwt_for_phone(phone, user_type=user_type)
     url = _build_webview_url(settings.app_fe_url, token)
     return {"url": url}
 
@@ -262,7 +283,7 @@ async def token_for_phone(
     Requires `api_key` query parameter matching `DEMO_UI_API_KEY` env var.
     """
     phone = _validate_phone(body.phone)
-    token = create_jwt_for_phone(phone)
+    token = create_jwt_for_phone(phone, user_type=body.user_type)
 
     # Build webview URL if configured
     url = None
