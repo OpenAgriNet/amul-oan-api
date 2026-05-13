@@ -16,7 +16,7 @@ from typing import Literal, Optional
 from openai import AsyncOpenAI
 from helpers.utils import get_logger
 from dotenv import load_dotenv
-from agents.tools.terms import get_mini_glossary_for_text
+from agents.tools.terms import get_mini_glossary_for_text, get_ambiguity_hints_for_query
 
 try:
     from anthropic import AsyncAnthropic
@@ -35,14 +35,17 @@ logger = get_logger(__name__)
 
 # Pretranslation provider — follows main LLM_PROVIDER by default.
 # Override with PRETRANSLATION_PROVIDER if you want a different provider for pretranslation.
+# Supported: "openai" | "anthropic" | "vllm" (OpenAI-compatible endpoint, e.g. local Gemma 4 via vLLM).
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "openai").lower()
 PRETRANSLATION_PROVIDER = os.getenv("PRETRANSLATION_PROVIDER", LLM_PROVIDER).lower()
-PRETRANSLATION_MODEL = os.getenv(
-    "PRETRANSLATION_MODEL",
-    os.getenv("ANTHROPIC_PRETRANSLATION_MODEL", "gpt-4.1-mini")
-    if PRETRANSLATION_PROVIDER == "anthropic"
-    else "gpt-4.1-mini",
-)
+if PRETRANSLATION_PROVIDER == "anthropic":
+    _PRETRANSLATION_MODEL_DEFAULT = os.getenv("ANTHROPIC_PRETRANSLATION_MODEL", "claude-haiku-4-5")
+elif PRETRANSLATION_PROVIDER == "vllm":
+    # vLLM speaks OpenAI-compatible API; default to the configured main LLM.
+    _PRETRANSLATION_MODEL_DEFAULT = os.getenv("LLM_MODEL_NAME", "gemma-4-31b-it")
+else:
+    _PRETRANSLATION_MODEL_DEFAULT = "gpt-4.1-mini"
+PRETRANSLATION_MODEL = os.getenv("PRETRANSLATION_MODEL", _PRETRANSLATION_MODEL_DEFAULT)
 
 _openai_client: Optional[AsyncOpenAI] = None
 _anthropic_client: Optional[AsyncAnthropic] = None
@@ -363,12 +366,27 @@ async def translate_text(
 
 
 def _get_openai_client() -> AsyncOpenAI:
+    """Return an OpenAI-compatible async client.
+
+    When PRETRANSLATION_PROVIDER=vllm, point the OpenAI client at the local
+    vLLM `INFERENCE_ENDPOINT_URL` (e.g. http://10.185.25.198:8020/v1) so the
+    same chat-completions call path serves an OSS model like Gemma 4 31B IT.
+    """
     global _openai_client
     if _openai_client is None:
-        api_key = os.getenv("OPENAI_API_KEY")
-        if not api_key:
-            raise ValueError("OPENAI_API_KEY is required for OpenAI pre-translation")
-        _openai_client = AsyncOpenAI(api_key=api_key)
+        if PRETRANSLATION_PROVIDER == "vllm":
+            base_url = os.getenv("INFERENCE_ENDPOINT_URL", "").rstrip("/")
+            if not base_url:
+                raise ValueError(
+                    "INFERENCE_ENDPOINT_URL is required when PRETRANSLATION_PROVIDER=vllm"
+                )
+            api_key = os.getenv("INFERENCE_API_KEY") or "dummy"
+            _openai_client = AsyncOpenAI(api_key=api_key, base_url=base_url)
+        else:
+            api_key = os.getenv("OPENAI_API_KEY")
+            if not api_key:
+                raise ValueError("OPENAI_API_KEY is required for OpenAI pre-translation")
+            _openai_client = AsyncOpenAI(api_key=api_key)
     return _openai_client
 
 
@@ -391,6 +409,26 @@ _PRETRANSLATION_SYSTEM = (
     "Do not answer the question. Do not add commentary."
 )
 
+
+def _pretranslation_system_with_glossary(text: str) -> str:
+    """Augment the base pretranslation system prompt with any ambiguity-term
+    glossary rules that match the *original gu* input. Without this, the
+    translator hallucinates similar-but-wrong conditions for technical
+    Gujarati terms (e.g. આફરા → 'afterbirth retention', ઇતરડી → 'foot rot',
+    ખરવા-મોવાસા → 'mastitis'). The rules live in assets/ambiguity_terms.json
+    and are designed to be matched against the raw user input."""
+    hints = get_ambiguity_hints_for_query(text)
+    if not hints:
+        return _PRETRANSLATION_SYSTEM
+    return (
+        _PRETRANSLATION_SYSTEM
+        + "\n\n**Required term mappings for this input — ALWAYS follow when translating:**\n"
+        + hints
+        + "\n\nApply the mappings exactly. If a rule says term X means Y, render Y in the English output. "
+        "Do not substitute a similar-sounding condition; do not 'correct' the term to something more familiar."
+    )
+
+
 async def _pretranslate_openai(text: str, source_name: str, source_code: str, max_tokens: int) -> str:
     """Pretranslate using OpenAI API."""
     client = _get_openai_client()
@@ -400,7 +438,7 @@ async def _pretranslate_openai(text: str, source_name: str, source_code: str, ma
             max_completion_tokens=max_tokens,
             temperature=0.0,
             messages=[
-                {"role": "system", "content": _PRETRANSLATION_SYSTEM},
+                {"role": "system", "content": _pretranslation_system_with_glossary(text)},
                 {"role": "user", "content": f"Translate this {source_name} ({source_code}) text to English.\n\n{text.strip()}"},
             ],
         ),
@@ -416,7 +454,7 @@ async def _pretranslate_anthropic(text: str, source_name: str, source_code: str,
         model=PRETRANSLATION_MODEL,
         max_tokens=max_tokens,
         temperature=0.0,
-        system=_PRETRANSLATION_SYSTEM,
+        system=_pretranslation_system_with_glossary(text),
         messages=[
             {"role": "user", "content": f"Translate this {source_name} ({source_code}) text to English.\n\n{text.strip()}"},
         ],
