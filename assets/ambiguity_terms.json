@@ -294,7 +294,7 @@
       "કરમોદી"
     ],
     "type": "hardcode",
-    "rule": "કરમોડી / karmodi is a context-dependent local Gujarati ailment term. (a) In a HOOF / paw / FOOT context (પગ, ખુર, hoof, walking) → 'foot rot' / 'hoof infection / interdigital infection'. (b) In a SKIN / hair / coat context (ચામડી, વાળ, ગાંઠ, lesion, રિંગ) → 'ringworm' / 'dermatophytosis' / 'skin fungal infection'. (c) Otherwise (generic 'કરમોડી થઈ ગઈ', no anatomical hint) → 'lameness' / 'unable to walk / weak limb'. Never translate as Foot-and-Mouth Disease (that is ખરવા-મોવાસા). Use the context cues in the same sentence to pick the right rendering."
+    "rule": "કરમોડી / karmodi is a context-dependent local Gujarati ailment term. **Default rendering is 'lameness' or 'unable to walk' UNLESS clear anatomical cues are present.** (a) Only if HOOF / paw cues appear in the same sentence (પગ, ખુર, hoof, interdigital, walking-pain) → render as 'foot rot' / 'hoof infection / interdigital infection'. (b) Only if SKIN cues appear (ચામડી, વાળ, ગાંઠ, lesion, રિંગ, ring) → render as 'ringworm' / 'dermatophytosis' / 'skin fungal infection'. (c) For anything else (e.g. 'મારા બળદ ને કરમોડી થય છે' with NO body-part hint) → render as 'lameness' or 'leg weakness'. **Do NOT default to foot rot.** Never translate as Foot-and-Mouth Disease (that is ખરવા-મોવાસા)."
   },
   {
     "gu_terms": [
@@ -362,5 +362,32 @@
     ],
     "type": "hardcode",
     "rule": "'દામ્યા' / 'દામેલ' applied to a calf's or heifer's horn (શીંગ) means **dehorning / disbudding** — surgical or hot-iron removal of horns or horn buds. It is NOT 'branding', 'tagging', 'tying', or 'naming'. The shared root with 'દામ' (price/value) is misleading. Translate as 'dehorning' (mature animals with grown horns) or 'disbudding' (young calves with horn buds). Treat the question as wound healing, dehorning aftercare, or horn-removal technique."
+  },
+  {
+    "gu_terms": [
+      "પાહો નહિ મુકતી",
+      "પાહો નથી મુકતી",
+      "પાહો મુકતી નથી",
+      "પાહો નહિ મૂકતી",
+      "પાહો મુક",
+      "પાહો છૂટતો નથી",
+      "પાહો છૂટતી નથી",
+      "પાહો છોડતી નથી",
+      "paaho",
+      "pao mukti"
+    ],
+    "type": "hardcode",
+    "rule": "'પાહો મુકવો' / 'પાહો છોડવો' in a buffalo / cow dairy context refers to the **milk let-down reflex** — the cow or buffalo releasing milk for milking or for the calf. 'પાહો નહિ મુકતી' = 'she is not letting down milk' (a common problem after the calf dies, the calf is taken away, or the animal is stressed). It is NOT about a male calf, a bottle/nipple, or any social rejection between calves. Translate as 'not letting down milk' or 'milk let-down is failing / inhibited'. Treat the question as a milk let-down / oxytocin / dam-calf bond question."
+  },
+  {
+    "gu_terms": [
+      "શંકર ગાય",
+      "શંકર ગાયો",
+      "શંકર વાછરડી",
+      "shankar gay",
+      "shankar cow"
+    ],
+    "type": "hardcode",
+    "rule": "'શંકર ગાય' (Shankar cow / Shankar gai) is a colloquial regional Gujarati label for a **specific local crossbred / improved breed cow** common in the Banaskantha-Patan-Mehsana belt. When used as a noun phrase with 'ગાય' / 'ગાયો' / 'વાછરડી', keep the proper-noun form 'Shankar cow' (or 'Shankar gai') in English. **Do NOT normalize the breed name to 'crossbred', 'Sahiwal', 'Holstein', 'HF', 'Jersey', or any other specific breed** — the speaker is asking specifically about Shankar-type animals. Translate the rest of the sentence normally but preserve 'Shankar' as the breed identifier."
   }
 ]
