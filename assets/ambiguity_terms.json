@@ -4,14 +4,10 @@
       "ઉથલા",
       "uthalo",
       "uthal",
-      "ઉથળા",
-      "રેલી",
-      "રેલ",
-      "reli",
-      "rel"
+      "ઉથળા"
     ],
     "type": "hardcode",
-    "rule": "'ઉથલા' / 'uthalo' / 'રેલી' / 'રેલ' all refer to repeat breeder (cow not conceiving after multiple AIs), NOT vomiting, regurgitation, or a personal name. Answer about repeat breeder."
+    "rule": "'ઉથલા' / 'uthalo' / 'ઉથળા' in a livestock context means **repeat breeder** (cow not conceiving after multiple AIs / inseminations). NOT vomiting, regurgitation, or a personal name. Answer about repeat breeder."
   },
   {
     "gu_terms": [
@@ -195,20 +191,17 @@
   },
   {
     "gu_terms": [
-      "વેતર",
       "વેતરે આવેલ",
       "વેતરે આવેલી",
       "વેતરમાં આવેલ",
-      "vetar",
       "vetare aaval",
       "ડુટો પાક્યો",
       "duto pakyo",
-      "ડુટો પાક્યો સ",
       "હાંહ આવી",
       "hansh aavi"
     ],
     "type": "hardcode",
-    "rule": "વેતર / વેતરે આવેલ / ડુટો પાક્યો all describe a cow or buffalo being **in heat (estrus / oestrus)** — the reproductive cycle when the animal is ready for breeding. They do NOT mean lactation, calving, milk let-down, or 'udder ripening'. When translating to English, render as 'in heat' or 'in estrus / oestrus'. Treat as a breeding-readiness question."
+    "rule": "'વેતરે આવેલ' / 'વેતરમાં આવેલ' / 'ડુટો પાક્યો' / 'હાંહ આવી' describe a cow or buffalo being **in heat (estrus / oestrus)** — the reproductive cycle when the animal is ready for breeding. NOTE: this rule applies only to the full phrases above; the bare word 'વેતર' / 'વેતરી' / 'વેતરિયું' usually refers to a **calving/parity** (first-parity, second-parity etc.), e.g. 'પ્રથમ વેતરી ભેંસ' = 'first-parity / first-calving buffalo'. Use 'in heat' for the listed phrases ONLY; use 'first-parity' or 'lactation cycle' for bare વેતરી forms."
   },
   {
     "gu_terms": [
@@ -294,20 +287,6 @@
   },
   {
     "gu_terms": [
-      "સંકર",
-      "સંકર ગાય",
-      "સંકર વાછરડી",
-      "સંકર ગાયો",
-      "sankar",
-      "sankar gay",
-      "crossbred",
-      "cross bred"
-    ],
-    "type": "hardcode",
-    "rule": "સંકર (sankar) in a livestock context means **crossbred** (e.g. Holstein-Friesian × indigenous, Jersey × indigenous) — NOT a person's name 'Shankar' or any deity reference, even though the spelling is similar. Translate as 'crossbred cow' / 'crossbred heifer'. Note: 'શંકર' with the dental 'શ' may also appear and is the same term in non-standard spelling — treat the same way unless the surrounding text is clearly about a person."
-  },
-  {
-    "gu_terms": [
       "કરમોડી",
       "karmodi",
       "ખરમોડી",
@@ -315,7 +294,7 @@
       "કરમોદી"
     ],
     "type": "hardcode",
-    "rule": "કરમોડી / karmodi is a local Gujarati term for **foot rot / hoof infection** in cattle and bullocks (a bacterial/fungal infection of the interdigital cleft and hoof tissue). NOT Foot-and-Mouth Disease (that is ખરવા-મોવાસા). Translate as 'foot rot' or 'hoof infection'. Treat as a hoof-care / interdigital infection question."
+    "rule": "કરમોડી / karmodi is a context-dependent local Gujarati ailment term. (a) In a HOOF / paw / FOOT context (પગ, ખુર, hoof, walking) → 'foot rot' / 'hoof infection / interdigital infection'. (b) In a SKIN / hair / coat context (ચામડી, વાળ, ગાંઠ, lesion, રિંગ) → 'ringworm' / 'dermatophytosis' / 'skin fungal infection'. (c) Otherwise (generic 'કરમોડી થઈ ગઈ', no anatomical hint) → 'lameness' / 'unable to walk / weak limb'. Never translate as Foot-and-Mouth Disease (that is ખરવા-મોવાસા). Use the context cues in the same sentence to pick the right rendering."
   },
   {
     "gu_terms": [
@@ -324,7 +303,7 @@
       "પથરી"
     ],
     "type": "hardcode",
-    "rule": "પાથરી / pathri in a livestock-clinical context refers to **urinary or kidney stones / urolithiasis / calculi** in the urinary tract. NOT a discharge or diarrhea. Translate as 'urinary stones', 'urolithiasis', or 'calculi'. Treat as a urinary tract obstruction issue, often with straining (jor karvu / paathri kaadhva)."
+    "rule": "પાથરી / pathri is context-dependent. (a) In a URINARY context — words like પેશાબ, urine, ગાંઠ, kidney, મૂત્ર, blockage — translate as 'urinary stones / urolithiasis / kidney stones / calculi'. (b) In a GI / digestive context — words like ઝાડા (diarrhea), discharge, જોર (straining), constipation, વાચ્ચે — translate as 'straining / tenesmus / pushing'. (c) If context is unclear, render literally as 'straining' (the more common everyday meaning). NEVER auto-default to urinary stones; pick based on adjacent words."
   },
   {
     "gu_terms": [
@@ -359,5 +338,29 @@
     ],
     "type": "hardcode",
     "rule": "કપાસીયો / કપાસનું ખોળ is **cottonseed cake** — a high-protein livestock concentrate feed made from defatted cotton seeds. It is NOT 'cotton', the plant, or any non-feed item. Translate as 'cottonseed cake'. Treat as a concentrate/feed-related question (digestibility, gossypol caution, ratio with green/dry fodder)."
+  },
+  {
+    "gu_terms": [
+      "હડકવા",
+      "hadkva",
+      "hadakva",
+      "hadakwa",
+      "હડકવો",
+      "હડક્વા"
+    ],
+    "type": "hardcode",
+    "rule": "હડકવા / hadkva in a cattle / buffalo / dog context means **rabies / hydrophobia** — the lethal zoonotic viral disease transmitted via the bite of an infected animal (commonly a stray dog). It is NOT Foot-and-Mouth Disease (FMD = ખરવા-મોવાસા), NOT tuberculosis (TB), NOT Lumpy Skin Disease (LSD = ગાંઠિયા તાવ). Translate as 'rabies' or 'hydrophobia'. Treat questions about milk consumption, vaccination, dog bite, or quarantine as rabies-related zoonosis questions, where the standard advice is post-exposure prophylaxis (anti-rabies vaccine) for any humans potentially exposed."
+  },
+  {
+    "gu_terms": [
+      "દામ્યા",
+      "દામેલ",
+      "દામવું",
+      "damya",
+      "damvu",
+      "દામ આપ"
+    ],
+    "type": "hardcode",
+    "rule": "'દામ્યા' / 'દામેલ' applied to a calf's or heifer's horn (શીંગ) means **dehorning / disbudding** — surgical or hot-iron removal of horns or horn buds. It is NOT 'branding', 'tagging', 'tying', or 'naming'. The shared root with 'દામ' (price/value) is misleading. Translate as 'dehorning' (mature animals with grown horns) or 'disbudding' (young calves with horn buds). Treat the question as wound healing, dehorning aftercare, or horn-removal technique."
   }
 ]
