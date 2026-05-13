@@ -377,17 +377,17 @@
       "pao mukti"
     ],
     "type": "hardcode",
-    "rule": "'પાહો મુકવો' / 'પાહો છોડવો' in a buffalo / cow dairy context refers to the **milk let-down reflex** — the cow or buffalo releasing milk for milking or for the calf. 'પાહો નહિ મુકતી' = 'she is not letting down milk' (a common problem after the calf dies, the calf is taken away, or the animal is stressed). It is NOT about a male calf, a bottle/nipple, or any social rejection between calves. Translate as 'not letting down milk' or 'milk let-down is failing / inhibited'. Treat the question as a milk let-down / oxytocin / dam-calf bond question."
+    "rule": "'પાહો મુકવો' / 'પાહો છોડવો' / 'પાહો છૂટવો' in a buffalo / cow dairy context refers to **the cow or buffalo accepting / allowing the calf to suckle and triggering the milk let-down reflex**. 'પાહો નહિ મુકતી' literally means 'she is not letting (the calf) approach / suckle' and idiomatically means 'she is refusing to nurse the calf / milk let-down is inhibited' (a common problem when the calf has died, has been removed, or the dam is stressed). It is NOT about a male calf, a bottle / nipple, or social rejection between calves. Render the meaning as 'not letting the calf suckle / nurse' or 'not letting down milk' depending on which is more natural in the sentence. Treat the question as a milk let-down / oxytocin / dam-calf bond issue."
   },
   {
     "gu_terms": [
       "શંકર ગાય",
       "શંકર ગાયો",
-      "શંકર વાછરડી",
+      "શંકરી ગાય",
       "shankar gay",
       "shankar cow"
     ],
     "type": "hardcode",
-    "rule": "'શંકર ગાય' (Shankar cow / Shankar gai) is a colloquial regional Gujarati label for a **specific local crossbred / improved breed cow** common in the Banaskantha-Patan-Mehsana belt. When used as a noun phrase with 'ગાય' / 'ગાયો' / 'વાછરડી', keep the proper-noun form 'Shankar cow' (or 'Shankar gai') in English. **Do NOT normalize the breed name to 'crossbred', 'Sahiwal', 'Holstein', 'HF', 'Jersey', or any other specific breed** — the speaker is asking specifically about Shankar-type animals. Translate the rest of the sentence normally but preserve 'Shankar' as the breed identifier."
+    "rule": "'શંકર ગાય' / 'શંકર ગાયો' (Shankar cow / Shankar gai) is a colloquial regional Gujarati label for a **specific local crossbred / improved breed cow** common in the Banaskantha-Patan-Mehsana belt. When used together with the noun 'ગાય' / 'ગાયો' specifically, keep the proper-noun form 'Shankar cow' / 'Shankar gai' in English and do NOT normalize the breed name to 'crossbred', 'Sahiwal', 'Holstein', 'HF', or 'Jersey'. NOTE: The bare word 'શંકર' / 'સંકર' on its own — or when paired with 'વાછરડી', 'જાનવર', 'પશુ' or in a question about breed STANDARDS / criteria / definitions — usually means the generic adjective 'crossbred'; in that case translate as 'crossbred'. The Shankar=proper-noun rule applies only when the surrounding sentence is asking about specific Shankar-type cows (e.g. buying / selling / characteristics of a Shankar cow)."
   }
 ]

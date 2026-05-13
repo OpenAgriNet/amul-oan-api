@@ -417,7 +417,7 @@ def _pretranslation_system_with_glossary(text: str) -> str:
     Gujarati terms (e.g. આફરા → 'afterbirth retention', ઇતરડી → 'foot rot',
     ખરવા-મોવાસા → 'mastitis'). The rules live in assets/ambiguity_terms.json
     and are designed to be matched against the raw user input."""
-    hints = get_ambiguity_hints_for_query(text)
+    hints = get_ambiguity_hints_for_query(text, include_ask=False)
     if not hints:
         return _PRETRANSLATION_SYSTEM
     return (
