@@ -355,7 +355,7 @@ def _load_ambiguity_terms() -> list:
 _AMBIGUITY_TERMS = _load_ambiguity_terms()
 
 
-def get_ambiguity_hints_for_query(query: str, threshold: float = 0.80) -> str:
+def get_ambiguity_hints_for_query(query: str, threshold: float = 0.80, include_ask: bool = True) -> str:
     """
     Fuzzy-match incoming query (any language) against ambiguity_terms.json.
     Returns a formatted string of matching rules to inject into the system prompt,
@@ -365,6 +365,11 @@ def get_ambiguity_hints_for_query(query: str, threshold: float = 0.80) -> str:
         query: The raw user query string.
         threshold: Minimum similarity 0-1 (default 0.80, lower than glossary since
                    Gujarati term matching is fuzzier).
+        include_ask: If False, skip entries with type == "ask" (those rules tell
+                     the answering agent to ask a clarifying question and must
+                     NOT leak into the pretranslation prompt — otherwise the
+                     translator dutifully appends the clarifying question to
+                     its English output).
 
     Returns:
         Formatted rules string, e.g.:
@@ -384,6 +389,8 @@ def get_ambiguity_hints_for_query(query: str, threshold: float = 0.80) -> str:
         gu_terms = entry.get("gu_terms", [])
         rule = entry.get("rule", "").strip()
         if not rule or not gu_terms:
+            continue
+        if not include_ask and entry.get("type") == "ask":
             continue
 
         # Check each trigger term against the query using substring + fuzzy
