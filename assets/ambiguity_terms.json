@@ -270,7 +270,14 @@
       "ગાય કાચી",
       "ભેંસ કાચી",
       "kachi cow",
-      "fresh cow"
+      "fresh cow",
+      "દિવસ કાચી",
+      "દિવસથી કાચી",
+      "દિવસની કાચી",
+      "મહિને કાચી",
+      "મહિનાની કાચી",
+      "દિવસ થયા કાચી",
+      "વ્યાયેલી કાચી"
     ],
     "type": "hardcode",
     "rule": "'કાચી' applied to a cow or buffalo in a post-calving context means **fresh (recently calved)** — within the first ~2-3 weeks after calving. It does NOT mean 'dry' (the opposite — that is 'ડ્રાય' / 'સૂકી'), 'raw', or 'young'. Translate as 'fresh' or 'recently calved'. Note that 4-day-fresh cows showing heat are showing 'fresh heat' (early postpartum estrus), often pathological and warranting veterinary review."
@@ -389,5 +396,32 @@
     ],
     "type": "hardcode",
     "rule": "'શંકર ગાય' / 'શંકર ગાયો' (Shankar cow / Shankar gai) is a colloquial regional Gujarati label for a **specific local crossbred / improved breed cow** common in the Banaskantha-Patan-Mehsana belt. When used together with the noun 'ગાય' / 'ગાયો' specifically, keep the proper-noun form 'Shankar cow' / 'Shankar gai' in English and do NOT normalize the breed name to 'crossbred', 'Sahiwal', 'Holstein', 'HF', or 'Jersey'. NOTE: The bare word 'શંકર' / 'સંકર' on its own — or when paired with 'વાછરડી', 'જાનવર', 'પશુ' or in a question about breed STANDARDS / criteria / definitions — usually means the generic adjective 'crossbred'; in that case translate as 'crossbred'. The Shankar=proper-noun rule applies only when the surrounding sentence is asking about specific Shankar-type cows (e.g. buying / selling / characteristics of a Shankar cow)."
+  },
+  {
+    "gu_terms": [
+      "વાવાની",
+      "વાવા",
+      "ભેંસ વાવા",
+      "ભેંસ વાવાની",
+      "ગાય વાવા",
+      "ગાય વાવાની",
+      "વાવાની છે",
+      "વાવાની સે"
+    ],
+    "type": "hardcode",
+    "rule": "'વાવા' / 'વાવાની' in dairy/livestock context is a colloquial term for the **buffalo or cow calf** (a young / newborn animal still being suckled). It is NOT a proper name. Translate as 'calf' (or 'buffalo calf' / 'cow calf' when the parent animal is named in the sentence)."
+  },
+  {
+    "gu_terms": [
+      "રેલી",
+      "મારી રેલી",
+      "રેલીને",
+      "રેલી ગાય",
+      "રેલી ભેંસ",
+      "રેલીને બે વર્ષ",
+      "રેલીની"
+    ],
+    "type": "hardcode",
+    "rule": "'રેલી' (and inflected forms 'રેલીને', 'રેલીની') is a colloquial term for a **heifer** — a young female cow or buffalo that has not yet calved. It is NOT a proper name. Translate as 'heifer'."
   }
 ]
