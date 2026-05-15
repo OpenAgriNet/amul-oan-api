@@ -1,7 +1,6 @@
 """
 Tool for fetching farmer milk collection and deduction details.
 """
-import json
 import os
 
 from agents.tools.farmer_animal_backends import get_farmer_milk_collection_details_api
@@ -9,6 +8,78 @@ from app.models.milk_collection import FarmerMilkCollectionRequestModel
 from helpers.utils import get_logger
 
 logger = get_logger(__name__)
+
+
+def _escape_markdown_cell(value: str) -> str:
+    """Escape markdown table delimiter characters in cell content."""
+    return value.replace("|", "\\|")
+
+
+def _format_number(value: float, decimals: int = 2) -> str:
+    """Format numeric values for compact table display."""
+    return f"{value:.{decimals}f}"
+
+
+def _build_markdown_table(headers: list[str], rows: list[list[str]]) -> str:
+    """Create a markdown table with fixed headers and row ordering."""
+    header_line = f"| {' | '.join(headers)} |"
+    separator_line = f"| {' | '.join(['---'] * len(headers))} |"
+    row_lines = [
+        f"| {' | '.join(_escape_markdown_cell(cell) for cell in row)} |"
+        for row in rows
+    ]
+    return "\n".join([header_line, separator_line, *row_lines])
+
+
+def _format_milk_collection_markdown(response) -> str:
+    """
+    Format tool response as deterministic markdown tables for frontend rendering.
+    """
+    sections: list[str] = []
+
+    sections.append("### Milk Collection")
+    if response.milk:
+        milk_rows = [
+            [
+                record.date,
+                record.shift,
+                _format_number(record.qty, 2),
+                _format_number(record.fat, 2),
+                _format_number(record.snf, 2),
+                _format_number(record.amount, 2),
+            ]
+            for record in response.milk
+        ]
+        sections.append(
+            _build_markdown_table(
+                ["Date", "Shift", "Qty (L)", "FAT", "SNF", "Amount"],
+                milk_rows,
+            )
+        )
+    else:
+        sections.append("No milk records found for the selected date range.")
+
+    sections.append("")
+    sections.append("### Deductions")
+    if response.deduction:
+        deduction_rows = [
+            [
+                record.date,
+                record.account_name,
+                _format_number(record.amount, 2),
+            ]
+            for record in response.deduction
+        ]
+        sections.append(
+            _build_markdown_table(
+                ["Date", "Account", "Amount"],
+                deduction_rows,
+            )
+        )
+    else:
+        sections.append("No deductions found for the selected date range.")
+
+    return "\n".join(sections)
 
 
 async def get_farmer_milk_collection_details(
@@ -29,7 +100,7 @@ async def get_farmer_milk_collection_details(
         todate: End date in YYYY-MM-DD format.
 
     Returns:
-        str: Formatted JSON response with milk and deduction details, or a clear failure message.
+        str: Deterministic markdown tables for milk and deductions, or a clear failure message.
     """
     logger.info(
         "Farmer milk collection tool invoked for union=%s society=%s farmer=%s from=%s to=%s",
@@ -79,7 +150,7 @@ async def get_farmer_milk_collection_details(
             "Unable to fetch milk collection details at the moment."
         )
 
-    formatted = json.dumps(response.model_dump(by_alias=True), indent=2, ensure_ascii=False)
+    formatted = _format_milk_collection_markdown(response)
     logger.info(
         "Farmer milk collection lookup succeeded for union=%s society=%s farmer=%s from=%s to=%s milk_records=%s deductions=%s",
         union_code,

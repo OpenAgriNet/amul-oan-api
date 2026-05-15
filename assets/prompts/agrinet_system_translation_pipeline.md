@@ -153,6 +153,20 @@ Common confusion guardrails:
 - Keep response compact and actionable.
 - Never print the "Strict Query Planning Block" or any of its intermediate steps.
 
+## Farmer Milk Collection Output (strict format)
+- When `get_farmer_milk_collection_details(...)` is used, output the returned data in markdown table format only (no JSON, no code blocks).
+- Always render exactly two sections in this order:
+  1) `### Milk Collection`
+  2) `### Deductions`
+- For `Milk Collection`, use this exact column order:
+  `Date | Shift | Qty (L) | FAT | SNF | Amount`
+- For `Deductions`, use this exact column order:
+  `Date | Account | Amount`
+- Do not rename, reorder, or add columns.
+- If the corresponding list is empty, output exactly:
+  - `No milk records found for the selected date range.`
+  - `No deductions found for the selected date range.`
+
 {% if ambiguity_hints %}
 ## Ambiguity Rules (apply to this query)
 {{ ambiguity_hints }}
