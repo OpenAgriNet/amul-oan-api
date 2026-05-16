@@ -12,6 +12,7 @@ class FarmerContext(BaseModel):
         moderation_str (Optional[str]): The moderation result of the user's question.
         farmer_info (Optional[Dict[str, Any]]): Farmer's personal details and animals from JWT token.
         use_translation_pipeline (bool): When True, agent responds in English only; translation happens pre/post.
+        channel (str): The calling channel — "web", "voice", or "whatsapp".
 
 
     Example:
@@ -26,6 +27,7 @@ class FarmerContext(BaseModel):
     farmer_unions: list[str] = Field(default_factory=list, description="Normalized union names derived from the farmer context.")
     use_translation_pipeline: bool = Field(default=False, description="When True, use English-only prompt; response is translated externally.")
     response_max_chars: Optional[int] = Field(default=None, description="Optional channel-specific final response character guidance.")
+    channel: str = Field(default="web", description="Calling channel: web, voice, or whatsapp.")
 
     def update_moderation_str(self, moderation_str: str):
         """Update the moderation result of the user's question."""
@@ -80,12 +82,86 @@ class FarmerContext(BaseModel):
         """Get channel-specific final response character guidance."""
         return self.response_max_chars
 
+    def get_dynamic_context_block(self) -> str:
+        """Build the per-request dynamic context that was previously in the system prompt.
+
+        This block is prepended to the user message so the LLM sees it each turn,
+        but the system prompt remains static and cacheable.
+
+        Includes:
+          - Current date/time
+          - Farmer profile (if available)
+          - WhatsApp response limit (if applicable)
+          - Ambiguity hints (if any)
+          - Channel-specific instructions
+        """
+        from helpers.utils import get_today_date_str, get_today_datetime_str
+        from agents.tools.terms import get_ambiguity_hints_for_query
+
+        lines = []
+
+        # Date context
+        lines.append(f"Today's date: {get_today_date_str()}")
+        if not self.use_translation_pipeline:
+            lines.append(f"Current date and time: {get_today_datetime_str()}")
+        lines.append("")
+
+        # Channel hint (voice gets concise, spoken-friendly guidance)
+        if self.channel == "voice":
+            lines.append("## Channel: Voice")
+            lines.append("- The user is interacting via voice. Keep responses short and spoken-friendly.")
+            lines.append("- Avoid markdown formatting, bullet lists, and long enumerations.")
+            lines.append("- Prefer 2-3 clear sentences over structured layouts.")
+            lines.append("")
+
+        # Farmer profile
+        farmer_context = self.get_farmer_context_string()
+        if farmer_context:
+            lines.append("## Farmer Profile (from authenticated session)")
+            lines.append("The following is the logged-in farmer's registered data. When the user asks about their profile, account, animals, society, milk data, or any personal farming details, answer directly from this context. If a specific field is null or 0, say that data is not available for that field.")
+            lines.append(farmer_context)
+            lines.append("")
+
+        # Response length constraint (WhatsApp)
+        max_chars = self.get_response_max_chars()
+        if max_chars:
+            lines.append("## WhatsApp Response Limit")
+            if self.use_translation_pipeline:
+                lines.append(f"- The final translated user-facing answer must be no more than {max_chars} characters.")
+                lines.append("- Write the English source answer extra concisely so translation can stay within the limit.")
+            else:
+                lines.append(f"- The final user-facing answer must be no more than {max_chars} characters.")
+            lines.append("- Prioritize the most useful advice first; omit background detail, long preambles, and repeated safety text.")
+            lines.append("- Use short sentences or compact bullets when they improve readability.")
+            lines.append("- Ask at most one brief follow-up question only if it is needed to continue.")
+            lines.append("")
+
+        # Ambiguity hints
+        ambiguity_hints = get_ambiguity_hints_for_query(self.query)
+        if ambiguity_hints:
+            lines.append("## Ambiguity Rules (apply to this query)")
+            lines.append(ambiguity_hints)
+            lines.append("")
+
+        return "\n".join(lines)
+
             
     def get_user_message(self):
-        """Get the user message for the agrinet agent."""
-        strings = [
-            self._query_string(), 
-        # self._language_string(), 
-        #self._moderation_string(), 
-        ]
-        return "\n".join([x for x in strings if x])
+        """Get the user message for the agrinet agent.
+
+        The message is structured as:
+          1. Dynamic context block (date, farmer profile, constraints, etc.)
+          2. The user's actual query
+
+        This approach keeps the system prompt static (cacheable by LLM providers)
+        while ensuring all per-request dynamic content reaches the model.
+        """
+        dynamic_block = self.get_dynamic_context_block()
+        query = self._query_string()
+        
+        parts = []
+        if dynamic_block.strip():
+            parts.append(dynamic_block.rstrip())
+        parts.append(query)
+        return "\n\n".join(parts)
+

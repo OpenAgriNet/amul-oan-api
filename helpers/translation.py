@@ -1,8 +1,18 @@
 """
-Translation Class
-- Handles translation of data structures while preserving non-string values -> using Depth First Search (DFS)
-- Supports Google and Bhashini APIs.
-- Can exclude specific keys from translation.
+DEPRECATED — This module is unused dead code.
+
+All active translation logic is in ``app/services/translation.py``
+(TranslateGemma vLLM + LLM pretranslation).  Neither ``BhashiniTranslator``
+nor ``GoogleTranslator`` is imported anywhere in the codebase.
+
+This file is kept temporarily for reference and will be removed in a
+future cleanup pass.  Do NOT add new code here.
+
+Original description:
+  Translation Class
+  - Handles translation of data structures while preserving non-string values -> using Depth First Search (DFS)
+  - Supports Google and Bhashini APIs.
+  - Can exclude specific keys from translation.
 """
 import os
 import re
