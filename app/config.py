@@ -72,6 +72,13 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     log_format: str = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 
+    # Telemetry Queue Configuration
+    telemetry_queue_max_size: int = 1000
+    telemetry_queue_max_retries: int = 3
+    telemetry_queue_retry_base_delay_ms: int = 250
+    telemetry_queue_retry_max_delay_ms: int = 4000
+    telemetry_dead_letter_max: int = 200
+
     # External Service URLs
     telemetry_api_url: str = "https://vistaar.kenpath.ai/observability-service/action/data/v3/telemetry"
     bhashini_api_url: str = ""
