@@ -7,7 +7,7 @@ from app.auth.jwt_auth import get_current_user
 
 router = APIRouter(prefix="/suggest", tags=["suggest"])
 SUGGESTIONS_PENDING_TTL = 30
-SUGGESTIONS_WAIT_TIMEOUT_SECONDS = 6.0
+SUGGESTIONS_WAIT_TIMEOUT_SECONDS = 8.0
 SUGGESTIONS_WAIT_INTERVAL_SECONDS = 0.2
 
 @router.get("/")
