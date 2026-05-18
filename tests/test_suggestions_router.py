@@ -6,18 +6,11 @@ from app.models.requests import SuggestionsRequest
 
 
 def test_suggest_returns_cached_suggestions_without_regeneration(monkeypatch):
-    calls = {"create": 0}
-
     async def fake_get_cache(key):
         assert key == "suggestions_session-1_gu"
         return ["cached question"]
 
-    async def fake_create_suggestions(session_id, target_lang):
-        calls["create"] += 1
-        return ["generated question"]
-
     monkeypatch.setattr(suggestions_router, "get_cache", fake_get_cache)
-    monkeypatch.setattr(suggestions_router, "create_suggestions", fake_create_suggestions)
 
     response = asyncio.run(
         suggestions_router.suggest(
@@ -27,21 +20,14 @@ def test_suggest_returns_cached_suggestions_without_regeneration(monkeypatch):
     )
 
     assert json.loads(response.body) == ["cached question"]
-    assert calls["create"] == 0
 
 
-def test_suggest_generates_suggestions_on_cache_miss(monkeypatch):
+def test_suggest_returns_empty_on_cache_miss_without_pending(monkeypatch):
     async def fake_get_cache(key):
-        assert key == "suggestions_session-2_mr"
+        assert key in {"suggestions_session-2_mr", "suggestions_session-2_mr:pending"}
         return None
 
-    async def fake_create_suggestions(session_id, target_lang):
-        assert session_id == "session-2"
-        assert target_lang == "mr"
-        return ["generated question"]
-
     monkeypatch.setattr(suggestions_router, "get_cache", fake_get_cache)
-    monkeypatch.setattr(suggestions_router, "create_suggestions", fake_create_suggestions)
 
     response = asyncio.run(
         suggestions_router.suggest(
@@ -50,4 +36,31 @@ def test_suggest_generates_suggestions_on_cache_miss(monkeypatch):
         )
     )
 
-    assert json.loads(response.body) == ["generated question"]
+    assert json.loads(response.body) == []
+
+
+def test_suggest_waits_for_pending_cache_fill(monkeypatch):
+    calls = {"suggestions_reads": 0}
+    monkeypatch.setattr(suggestions_router, "SUGGESTIONS_WAIT_TIMEOUT_SECONDS", 1.0)
+    monkeypatch.setattr(suggestions_router, "SUGGESTIONS_WAIT_INTERVAL_SECONDS", 0.0)
+
+    async def fake_get_cache(key):
+        if key == "suggestions_session-3_hi":
+            calls["suggestions_reads"] += 1
+            if calls["suggestions_reads"] >= 2:
+                return ["fresh question"]
+            return None
+        if key == "suggestions_session-3_hi:pending":
+            return True
+        return None
+
+    monkeypatch.setattr(suggestions_router, "get_cache", fake_get_cache)
+
+    response = asyncio.run(
+        suggestions_router.suggest(
+            request=SuggestionsRequest(session_id="session-3", target_lang="hi"),
+            user_info={"sub": "user-3"},
+        )
+    )
+
+    assert json.loads(response.body) == ["fresh question"]

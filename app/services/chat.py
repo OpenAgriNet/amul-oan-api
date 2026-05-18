@@ -12,9 +12,11 @@ from helpers.utils import get_logger
 from app.utils import (
     update_message_history,
     trim_history,
-    format_message_pairs
+    format_message_pairs,
+    set_cache,
 )
 from app.tasks.suggestions import create_suggestions
+from app.core.cache import cache
 from agents.deps import FarmerContext
 from agents.farmer_context import get_farmer_context_bundle_by_mobile
 from app.services.translation import (
@@ -129,6 +131,7 @@ def should_translate_batch(batch_text: str, word_count: int) -> bool:
 
 logger = get_logger(__name__)
 WHATSAPP_RESPONSE_MAX_CHARS = 1600
+SUGGESTIONS_PENDING_TTL = 30
 GENERIC_UNAVAILABLE_MESSAGE_EN = (
     "I am unable to process your request right now. Please try again later."
 )
@@ -368,6 +371,11 @@ async def stream_chat_messages(
                 if moderation_data.category == "valid_agricultural":
                     logger.info(f"Triggering suggestions generation for session {session_id}")
                     try:
+                        suggestions_cache_key = f"suggestions_{session_id}_{target_lang}"
+                        status_key = f"{suggestions_cache_key}:pending"
+                        # Mark pending and clear stale suggestions so callers wait for fresh output.
+                        await set_cache(status_key, True, ttl=SUGGESTIONS_PENDING_TTL)
+                        await cache.delete(suggestions_cache_key)
                         background_tasks.add_task(create_suggestions, session_id, target_lang)
                         logger.info("Successfully added suggestions task")
                     except Exception as e:
