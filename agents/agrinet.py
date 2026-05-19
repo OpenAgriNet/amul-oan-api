@@ -20,6 +20,28 @@ def _agrinet_max_output_tokens() -> int:
     return 4000
 
 
+# ──────────────────────────────────────────────────────────────────────
+# Prompt caching optimisation
+# ──────────────────────────────────────────────────────────────────────
+# The system prompt is now split into two layers:
+#
+#   1. STATIC system prompt  (role=system)  – identity, rules, tools.
+#      Identical across every request → cached by the LLM provider.
+#      Template files: agrinet_system_static.md / agrinet_system_translation_pipeline_static.md
+#
+#   2. DYNAMIC context block (role=user)   – date, farmer profile, ambiguity hints.
+#      Injected per-request as a prefix to the user message.
+#      Built by FarmerContext.get_dynamic_context_block().
+#
+# The old dynamic templates (agrinet_system.md, agrinet_system_translation_pipeline.md)
+# are preserved for backward compatibility but are no longer used by default.
+# ──────────────────────────────────────────────────────────────────────
+
+# Pre-load static prompts at module level (they never change at runtime)
+_STATIC_PROMPT = get_prompt("agrinet_system_static.md")
+_STATIC_PROMPT_TRANSLATION = get_prompt("agrinet_system_translation_pipeline_static.md")
+
+
 agrinet_agent = Agent(
     model=LLM_MODEL,
     name="Amul AI Agent",
@@ -38,17 +60,9 @@ agrinet_agent = Agent(
 
 @agrinet_agent.instructions
 def get_agrinet_instructions(ctx: RunContext):
-    farmer_context = ctx.deps.get_farmer_context_string()
-    ambiguity_hints = get_ambiguity_hints_for_query(ctx.deps.query)
-
-    context = {
-        'today_date': get_today_date_str(),
-        'today_datetime': get_today_datetime_str(),
-        'farmer_context': farmer_context if farmer_context else None,
-        'ambiguity_hints': ambiguity_hints if ambiguity_hints else None,
-        'response_max_chars': ctx.deps.get_response_max_chars(),
-    }
-
+    # Return the pre-loaded static prompt.
+    # All dynamic content is now in the user message (see FarmerContext.get_dynamic_context_block).
     if ctx.deps.use_translation_pipeline:
-        return get_prompt("agrinet_system_translation_pipeline.md", context=context)
-    return get_prompt("agrinet_system.md", context=context)
+        return _STATIC_PROMPT_TRANSLATION
+    return _STATIC_PROMPT
+

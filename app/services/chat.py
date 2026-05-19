@@ -322,6 +322,7 @@ async def stream_chat_messages(
             farmer_unions=farmer_unions,
             use_translation_pipeline=use_translation_pipeline,
             response_max_chars=_response_max_chars_for_channel(channel),
+            channel=channel or "web",
         )
 
         message_pairs = "\n\n".join(format_message_pairs(history, 3))

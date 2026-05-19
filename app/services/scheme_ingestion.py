@@ -26,7 +26,6 @@ SCHEME_CACHE_NAMESPACE = "milk_producer_schemes"
 SCHEME_LOCK_NAMESPACE = "milk_producer_schemes_locks"
 SCHEME_LOCK_TTL_SECONDS = 60 * 15
 HTTP_TIMEOUT_SECONDS = 30.0
-_redis_client = None
 
 
 class SchemeIngestionError(Exception):
@@ -140,40 +139,22 @@ def get_sources_for_union(union_name: str) -> tuple[SchemeSource, ...]:
 
 
 async def get_redis_client():
-    global _redis_client
-    if _redis_client is not None:
-        logger.info("Reusing existing Redis client for scheme ingestion")
-        return _redis_client
+    """Return the shared Redis client.
 
+    Delegates to the centralised factory in ``app.core.redis`` so that
+    all Redis connections share one configuration and one connection pool.
+    Wraps import/connection errors in SchemeDependencyError / SchemeCacheError
+    to preserve the existing exception contract.
+    """
     try:
-        import redis.asyncio as redis
-    except ModuleNotFoundError as exc:
-        logger.exception("Redis dependency is unavailable for scheme ingestion")
-        raise SchemeDependencyError("redis is not installed") from exc
-
-    logger.info(
-        "Creating Redis client for scheme ingestion host=%s port=%s db=%s prefix=%s",
-        settings.redis_host,
-        settings.redis_port,
-        settings.redis_db,
-        settings.redis_key_prefix,
-    )
-    try:
-        _redis_client = redis.Redis(
-            host=settings.redis_host,
-            port=settings.redis_port,
-            db=settings.redis_db,
-            password=settings.redis_password,
-            decode_responses=True,
-            socket_connect_timeout=settings.redis_socket_connect_timeout,
-            socket_timeout=settings.redis_socket_timeout,
-            retry_on_timeout=settings.redis_retry_on_timeout,
-            max_connections=settings.redis_max_connections,
-        )
+        from app.core.redis import get_shared_redis_client
+        return await get_shared_redis_client()
+    except RuntimeError as exc:
+        # redis package not installed
+        raise SchemeDependencyError(str(exc)) from exc
     except Exception as exc:
-        logger.exception("Failed to initialize Redis client for scheme ingestion")
-        raise SchemeCacheError("failed to initialize Redis client") from exc
-    return _redis_client
+        logger.exception("Failed to obtain shared Redis client for scheme ingestion")
+        raise SchemeCacheError("failed to obtain shared Redis client") from exc
 
 
 async def cache_source_records(source_key: str, records: list[dict[str, Any]], redis_client=None) -> None:

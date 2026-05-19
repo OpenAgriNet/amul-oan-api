@@ -8,7 +8,7 @@ from app.tasks.scheme_scheduler import start_scheme_scheduler, stop_scheme_sched
 load_dotenv()
 
 # Import all routers
-from app.routers import chat, transcribe, suggestions, tts, health, auth, user
+from app.routers import chat, chat_v2, transcribe, suggestions, tts, health, auth, user
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -61,6 +61,7 @@ async def root():
 # Include all routers with API prefix from settings
 app.include_router(auth.router, prefix=settings.api_prefix)  # Auth router (no auth required)
 app.include_router(chat.router, prefix=settings.api_prefix)
+app.include_router(chat_v2.router, prefix=settings.api_prefix)
 app.include_router(transcribe.router, prefix=settings.api_prefix)
 app.include_router(suggestions.router, prefix=settings.api_prefix)
 app.include_router(tts.router, prefix=settings.api_prefix)
