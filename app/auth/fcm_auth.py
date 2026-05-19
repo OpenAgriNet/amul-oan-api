@@ -122,26 +122,88 @@ def _ensure_firebase():
         )
 
 
-def verify_fcm_token(fcm_token: str) -> bool:
-    """
-    Verify FCM token via Firebase dry_run send.
-    Tries the primary and (if configured) secondary Firebase app; returns True if any accepts the token.
-    """
-    _ensure_firebase()
+def _verify_against_app_sync(fcm_token: str, app_name: str, app: object) -> bool:
+    """Single-app verification (sync). Returns True if Firebase accepts the token."""
     from firebase_admin import messaging, exceptions as fcm_exceptions
 
     message = messaging.Message(token=fcm_token)
+    try:
+        messaging.send(message, dry_run=True, app=app)
+        logger.debug(f"FCM token valid for app: {app_name}")
+        return True
+    except fcm_exceptions.FirebaseError as e:
+        logger.debug(f"FCM verification failed for app {app_name}: {e.code} - {e}")
+    except Exception as e:
+        logger.debug(f"FCM verification error for app {app_name}: {e}")
+    return False
+
+
+def verify_fcm_token(fcm_token: str) -> bool:
+    """
+    Verify FCM token via Firebase dry_run send (sequential).
+
+    Retained for backwards compatibility with synchronous callers. New
+    async code paths should prefer :func:`verify_fcm_token_async`, which
+    validates against all configured projects concurrently and returns as
+    soon as any one accepts the token.
+    """
+    _ensure_firebase()
     for app_name, app in _firebase_apps.items():
-        try:
-            messaging.send(message, dry_run=True, app=app)
-            logger.debug(f"FCM token valid for app: {app_name}")
+        if _verify_against_app_sync(fcm_token, app_name, app):
             return True
-        except fcm_exceptions.FirebaseError as e:
-            logger.debug(f"FCM verification failed for app {app_name}: {e.code} - {e}")
-        except Exception as e:
-            logger.debug(f"FCM verification error for app {app_name}: {e}")
     logger.warning("FCM token invalid for all configured Firebase apps")
     return False
+
+
+async def verify_fcm_token_async(fcm_token: str) -> bool:
+    """
+    Verify FCM token by checking all configured Firebase apps concurrently.
+
+    Returns ``True`` as soon as any project accepts the token; outstanding
+    checks are then cancelled. With N configured projects this turns the
+    verification latency from O(N · T) (sequential dry-run sends, where T
+    is the per-call Firebase round-trip) into O(T) in the common case
+    where the user's token belongs to one of the configured projects.
+
+    The Firebase Admin SDK exposes only a synchronous ``messaging.send``,
+    so each per-app check is offloaded to a worker thread via
+    :func:`asyncio.to_thread`. The async wrapper here is the
+    coordination layer that makes them race.
+    """
+    _ensure_firebase()
+    if not _firebase_apps:
+        logger.warning("FCM token rejected: no Firebase apps initialized")
+        return False
+
+    tasks = [
+        asyncio.create_task(
+            asyncio.to_thread(_verify_against_app_sync, fcm_token, name, app),
+            name=f"fcm-verify[{name}]",
+        )
+        for name, app in _firebase_apps.items()
+    ]
+
+    try:
+        for finished in asyncio.as_completed(tasks):
+            try:
+                if await finished:
+                    return True
+            except Exception as e:  # noqa: BLE001
+                # One task failing unexpectedly must never abort the race:
+                # a different project may still accept the token. Log and
+                # keep waiting on the remaining tasks ("any success wins").
+                # (CancelledError is BaseException, so a real cancel of this
+                # coroutine still propagates.)
+                logger.debug(f"FCM verification task errored, ignoring: {e}")
+                continue
+        logger.warning("FCM token invalid for all configured Firebase apps")
+        return False
+    finally:
+        # Cancel any still-pending verifications so we don't keep threads
+        # blocked on Firebase round-trips after we already have an answer.
+        for task in tasks:
+            if not task.done():
+                task.cancel()
 
 
 def get_fcm_token_from_request(request: Request) -> Optional[str]:
@@ -169,8 +231,9 @@ async def require_fcm_token(request: Request) -> str:
             detail="Missing FCM token. Provide Authorization: Bearer <fcm_token> or X-FCM-Token: <fcm_token>",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    # Firebase SDK is sync; run in thread pool to avoid blocking the event loop
-    if not await asyncio.to_thread(verify_fcm_token, token):
+    # Concurrent verification across all configured Firebase projects;
+    # returns on first success without blocking the event loop.
+    if not await verify_fcm_token_async(token):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or expired FCM token",
