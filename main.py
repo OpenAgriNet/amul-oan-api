@@ -4,11 +4,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.config import settings
 from contextlib import asynccontextmanager
 from app.tasks.scheme_scheduler import start_scheme_scheduler, stop_scheme_scheduler
+from app.tasks.telemetry_queue import start_telemetry_worker, stop_telemetry_worker
 
 load_dotenv()
 
 # Import all routers
-from app.routers import chat, transcribe, suggestions, tts, health, auth, user
+from app.routers import chat, transcribe, suggestions, tts, health, auth, user, telemetry
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -18,10 +19,12 @@ async def lifespan(app: FastAPI):
     print(f"📍 Environment: {settings.environment}")
     print(f"🔧 Debug mode: {settings.debug}")
     print(f"🌐 CORS origins: {settings.allowed_origins}")
+    await start_telemetry_worker()
     await start_scheme_scheduler()
     yield
     # Shutdown
     await stop_scheme_scheduler()
+    await stop_telemetry_worker()
     print(f"🛑 {settings.app_name} shutting down...")
 
 # Disable API docs in production to avoid exposing full API surface
@@ -66,3 +69,6 @@ app.include_router(suggestions.router, prefix=settings.api_prefix)
 app.include_router(tts.router, prefix=settings.api_prefix)
 app.include_router(user.router, prefix=settings.api_prefix)
 app.include_router(health.router, prefix=settings.api_prefix)
+# Keep telemetry path compatible with existing frontend calls:
+# /observability-service/action/data/v3/telemetry
+app.include_router(telemetry.router)
