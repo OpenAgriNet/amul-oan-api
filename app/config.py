@@ -78,6 +78,12 @@ class Settings(BaseSettings):
     telemetry_queue_retry_base_delay_ms: int = 250
     telemetry_queue_retry_max_delay_ms: int = 4000
     telemetry_dead_letter_max: int = 200
+    telemetry_ingest_max_body_bytes: int = 256 * 1024
+    telemetry_ingest_max_string_len_default: int = 1000
+    telemetry_ingest_max_question_text_len: int = 2000
+    telemetry_ingest_max_answer_text_len: int = 12000
+    telemetry_ingest_max_feedback_text_len: int = 4000
+    telemetry_ingest_max_error_text_len: int = 2000
 
     # External Service URLs
     telemetry_api_url: str = "https://vistaar.kenpath.ai/observability-service/action/data/v3/telemetry"

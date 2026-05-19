@@ -1,8 +1,11 @@
+import json
 from typing import Any
 
-from fastapi import APIRouter, Request, status
+from fastapi import APIRouter, Depends, Request, status
 from fastapi.responses import JSONResponse
 
+from app.auth.jwt_auth import get_chat_user
+from app.config import settings
 from app.services.telemetry_normalizer import normalize_telemetry_payload
 from app.tasks.telemetry_queue import enqueue_canonical_telemetry_event, get_telemetry_queue_stats
 from helpers.utils import get_logger
@@ -12,16 +15,65 @@ logger = get_logger(__name__)
 router = APIRouter(prefix="/observability-service", tags=["telemetry"])
 
 
+def _truncate_string(value: str, max_len: int) -> str:
+    return value if len(value) <= max_len else value[:max_len]
+
+
+def _sanitize_telemetry_payload(value: Any, parent_key: str | None = None) -> Any:
+    if isinstance(value, dict):
+        return {k: _sanitize_telemetry_payload(v, k) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_sanitize_telemetry_payload(item, parent_key) for item in value]
+    if isinstance(value, str):
+        if parent_key == "questionText":
+            return _truncate_string(value, settings.telemetry_ingest_max_question_text_len)
+        if parent_key == "answerText":
+            return _truncate_string(value, settings.telemetry_ingest_max_answer_text_len)
+        if parent_key == "feedbackText":
+            return _truncate_string(value, settings.telemetry_ingest_max_feedback_text_len)
+        if parent_key == "errorText":
+            return _truncate_string(value, settings.telemetry_ingest_max_error_text_len)
+        return _truncate_string(value, settings.telemetry_ingest_max_string_len_default)
+    return value
+
+
 @router.post("/action/data/v3/telemetry")
-async def ingest_telemetry(request: Request) -> JSONResponse:
+async def ingest_telemetry(
+    request: Request,
+    _user_info: dict = Depends(get_chat_user),
+) -> JSONResponse:
     """
     Compatibility telemetry ingest endpoint.
 
     Accepts frontend telemetry payloads (single events or Sunbird SDK batch envelopes),
     validates supported schemas, normalizes them, and enqueues for async Langfuse delivery.
     """
+    content_length = request.headers.get("content-length")
+    if content_length:
+        try:
+            if int(content_length) > settings.telemetry_ingest_max_body_bytes:
+                logger.warning("telemetry_ingest rejected=body_too_large content_length=%s", content_length)
+                return JSONResponse(
+                    status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                    content={"status": "error", "detail": "Payload too large"},
+                )
+        except ValueError:
+            logger.warning("telemetry_ingest invalid_content_length=%s", content_length)
+            return JSONResponse(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                content={"status": "error", "detail": "Invalid Content-Length header"},
+            )
+
     try:
-        payload: Any = await request.json()
+        raw_body = await request.body()
+        if len(raw_body) > settings.telemetry_ingest_max_body_bytes:
+            logger.warning("telemetry_ingest rejected=body_too_large bytes=%s", len(raw_body))
+            return JSONResponse(
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                content={"status": "error", "detail": "Payload too large"},
+            )
+
+        payload: Any = json.loads(raw_body)
     except Exception:
         logger.warning("telemetry_ingest invalid_json=True")
         return JSONResponse(
@@ -36,12 +88,13 @@ async def ingest_telemetry(request: Request) -> JSONResponse:
             content={"status": "error", "detail": "Payload must be a JSON object"},
         )
 
-    normalize_status, canonical_events, reason = normalize_telemetry_payload(payload)
+    sanitized_payload = _sanitize_telemetry_payload(payload)
+    normalize_status, canonical_events, reason = normalize_telemetry_payload(sanitized_payload)
     if normalize_status == "invalid":
         logger.warning(
             "telemetry_ingest accepted=False validation_error=True reason=%s keys=%s",
             reason,
-            sorted(payload.keys()),
+            sorted(sanitized_payload.keys()),
         )
         return JSONResponse(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -52,7 +105,7 @@ async def ingest_telemetry(request: Request) -> JSONResponse:
         logger.info(
             "telemetry_ingest accepted=True normalized=False reason=%s keys=%s",
             reason,
-            sorted(payload.keys()),
+            sorted(sanitized_payload.keys()),
         )
         return JSONResponse(
             status_code=status.HTTP_202_ACCEPTED,

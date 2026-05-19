@@ -1,4 +1,5 @@
 import json
+import asyncio
 from contextlib import nullcontext
 from typing import Literal
 
@@ -36,7 +37,7 @@ def _stringify_metadata_for_propagation(metadata: dict) -> dict[str, str]:
     return safe
 
 
-def write_canonical_event_to_langfuse(
+async def write_canonical_event_to_langfuse(
     canonical: CanonicalTelemetryEvent,
 ) -> tuple[WriteStatus, str | None]:
     """
@@ -103,9 +104,10 @@ def write_canonical_event_to_langfuse(
 
         # Langfuse export is async/OTEL-backed; enqueue success does not guarantee remote ingest.
         # Try best-effort flush to surface immediate transport errors when supported.
+        # flush() can block due to network/export work, so run it off the event loop.
         if hasattr(langfuse, "flush"):
             try:
-                langfuse.flush()
+                await asyncio.to_thread(langfuse.flush)
             except Exception as flush_exc:
                 logger.warning(
                     "Langfuse flush failed event_name=%s sid=%s qid=%s error=%s",

@@ -77,6 +77,16 @@ async def stop_telemetry_worker() -> None:
     if _worker_task is None:
         return
 
+    # Best-effort semantics: shutdown is intentionally lossy.
+    # We enqueue a sentinel and stop the worker once it is observed; events queued
+    # after the sentinel are not guaranteed to be processed before process exit.
+    pending_before_stop = _queue.qsize()
+    if pending_before_stop > 0:
+        logger.warning(
+            "Telemetry worker stopping with best-effort semantics pending_events=%s",
+            pending_before_stop,
+        )
+
     try:
         await _queue.put(None)
         await _worker_task
@@ -110,7 +120,7 @@ async def _process_with_retries(event: CanonicalTelemetryEvent) -> None:
     attempts = 0
     while True:
         attempts += 1
-        status, reason = write_canonical_event_to_langfuse(event)
+        status, reason = await write_canonical_event_to_langfuse(event)
 
         if status == "queued":
             _stats["processed_ok"] += 1
