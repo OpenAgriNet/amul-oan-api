@@ -162,8 +162,17 @@ async def verify_fcm_token_async(fcm_token: str) -> bool:
 
     try:
         for finished in asyncio.as_completed(tasks):
-            if await finished:
-                return True
+            try:
+                if await finished:
+                    return True
+            except Exception as e:  # noqa: BLE001
+                # One task failing unexpectedly must never abort the race:
+                # a different project may still accept the token. Log and
+                # keep waiting on the remaining tasks ("any success wins").
+                # (CancelledError is BaseException, so a real cancel of this
+                # coroutine still propagates.)
+                logger.debug(f"FCM verification task errored, ignoring: {e}")
+                continue
         logger.warning("FCM token invalid for all configured Firebase apps")
         return False
     finally:

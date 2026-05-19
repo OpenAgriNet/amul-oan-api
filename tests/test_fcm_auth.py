@@ -162,3 +162,17 @@ def test_async_verify_returns_on_first_success_without_waiting_for_slow_app(
     assert elapsed < 0.20, (
         f"first-success short-circuit not honoured (took {elapsed:.3f}s)"
     )
+
+
+def test_async_verify_one_task_raising_does_not_abort_the_race(monkeypatch):
+    """An unexpected exception in one app's task must not prevent another
+    app from validating the token ("any success wins" must hold even when
+    a loser raises instead of returning False)."""
+
+    def _fake(fcm_token: str, app_name: str, app: object) -> bool:
+        if app_name == "default":
+            raise RuntimeError("unexpected boom in one verification task")
+        return True  # secondary accepts
+
+    monkeypatch.setattr(fcm_auth, "_verify_against_app_sync", _fake)
+    assert asyncio.run(fcm_auth.verify_fcm_token_async("token")) is True
