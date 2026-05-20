@@ -233,6 +233,21 @@ async def stream_chat_messages(
                 #this is the same as the update_current_trace method,
                 #but it is more explicit about the type of the output
                 # and is supported by the latest version of the langfuse SDK.
+                # Emit a categorical pipeline_variant score attached to the
+                # *current trace*. Langfuse rolls this up to the session view,
+                # so a Sessions filter "pipeline_variant = oss" works directly.
+                # `score_id` is deterministic per session so subsequent traces
+                # in the same session upsert the same score (no duplicates).
+                try:
+                    langfuse.score_current_trace(
+                        name="pipeline_variant",
+                        value=pipeline_variant,
+                        data_type="CATEGORICAL",
+                        score_id=f"variant-{session_id_safe}",
+                        comment="Sticky pipeline variant for this session",
+                    )
+                except Exception as e:
+                    logger.warning("Langfuse: pipeline_variant score failed: %s", e)
             except Exception as e:
                 logger.warning("Langfuse: failed to set trace input: %s", e)
 
