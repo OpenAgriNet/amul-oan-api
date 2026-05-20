@@ -5,6 +5,7 @@ Tasks for creating conversation suggestions.
 from contextlib import nullcontext
 from helpers.utils import get_logger
 from app.utils import _get_message_history, trim_history, format_message_pairs, set_cache
+from app.core.cache import cache
 from agents.models import LLM_MODEL_NAME
 from agents.suggestions import suggestions_agent
 from langcodes import Language
@@ -25,6 +26,7 @@ async def create_suggestions(session_id: str, target_lang: str = 'mr'):
     """
     logger.info(f"Getting suggestions for session {session_id}")
 
+    status_key = f"suggestions_{session_id}_{target_lang}:pending"
     try:
         # Get message history
         raw_history = await _get_message_history(session_id)
@@ -89,3 +91,8 @@ async def create_suggestions(session_id: str, target_lang: str = 'mr'):
     except Exception as e:
         logger.error(f"Error creating suggestions: {str(e)}")
         return [] 
+    finally:
+        try:
+            await cache.delete(status_key)
+        except Exception as e:
+            logger.warning(f"Error clearing suggestions pending status for session {session_id}: {e}")

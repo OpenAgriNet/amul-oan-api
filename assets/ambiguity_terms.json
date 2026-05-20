@@ -7,7 +7,7 @@
       "ઉથળા"
     ],
     "type": "hardcode",
-    "rule": "'ઉથલા' / 'uthalo' always means repeat breeder (cow not conceiving after multiple AIs), NOT vomiting or regurgitation. Answer about repeat breeder."
+    "rule": "'ઉથલા' / 'uthalo' / 'ઉથળા' in a livestock context means **repeat breeder** (cow not conceiving after multiple AIs / inseminations). NOT vomiting, regurgitation, or a personal name. Answer about repeat breeder."
   },
   {
     "gu_terms": [
@@ -114,10 +114,15 @@
       "khurpa muvada",
       "khurpa-muvada",
       "ખરપા-મુવાડા",
-      "ખુરપાણ"
+      "ખુરપાણ",
+      "ખરવારા",
+      "ખરવારાનો",
+      "ખરવારાનો રોગ",
+      "kharvara",
+      "kharvaaraano"
     ],
     "type": "hardcode",
-    "rule": "ખરવા-મોવાસા / ખરવામોંવાસો / khurpa-muvada means Foot-and-Mouth Disease (FMD), a viral disease causing blisters on the hooves (ખરી) and mouth (મોં). When translating to English, always render as 'Foot and Mouth Disease' or 'FMD'. NEVER translate as mastitis (which is આઉનો/બાવલાનો સોજો), Lumpy Skin Disease, or Hemorrhagic Septicemia. Vaccinate with the FMD-specific bivalent or trivalent vaccine, typically twice a year before summer and before monsoon."
+    "rule": "ખરવા-મોવાસા / ખરવામોંવાસો / ખરવારા / khurpa-muvada / kharvara all refer to Foot-and-Mouth Disease (FMD), a viral disease causing blisters on the hooves (ખરી) and mouth (મોં). When translating to English, always render as 'Foot and Mouth Disease' or 'FMD'. NEVER translate as foot rot, mastitis (which is આઉનો/બાવલાનો સોજો), Lumpy Skin Disease, or Hemorrhagic Septicemia. Vaccinate with the FMD-specific bivalent or trivalent vaccine, typically twice a year before summer and before monsoon."
   },
   {
     "gu_terms": [
@@ -170,5 +175,253 @@
     ],
     "type": "hardcode",
     "rule": "કથીરી / kathiri / મેલી / જર refers to retained placenta (afterbirth retention) — the placenta failing to expel within 8-12 hours after calving, risking uterine infection (metritis). When translating to English, always render as 'retained placenta' or 'afterbirth retention'. NEVER translate as Coccidiosis, parasitic infection, or any unrelated condition. Treat as a postpartum reproductive issue requiring veterinary intervention."
+  },
+  {
+    "gu_terms": [
+      "બીજદાન",
+      "beejdan",
+      "beejdaan",
+      "bijdan",
+      "beech daan",
+      "beech-daan",
+      "બીજ દાન"
+    ],
+    "type": "hardcode",
+    "rule": "બીજદાન / beejdan / beech daan in a dairy / livestock context means **Artificial Insemination (AI)** of cattle and buffalo. It is NOT seed sowing, seeding, planting, or any crop activity, even though the literal translation suggests so. When translating to English, always render as 'artificial insemination' or 'AI'. Treat all questions about timing, technique, or technicians for બીજદાન as AI booking / AI procedure questions."
+  },
+  {
+    "gu_terms": [
+      "વેતરે આવેલ",
+      "વેતરે આવેલી",
+      "વેતરમાં આવેલ",
+      "vetare aaval",
+      "ડુટો પાક્યો",
+      "duto pakyo",
+      "હાંહ આવી",
+      "hansh aavi"
+    ],
+    "type": "hardcode",
+    "rule": "'વેતરે આવેલ' / 'વેતરમાં આવેલ' / 'ડુટો પાક્યો' / 'હાંહ આવી' describe a cow or buffalo being **in heat (estrus / oestrus)** — the reproductive cycle when the animal is ready for breeding. NOTE: this rule applies only to the full phrases above; the bare word 'વેતર' / 'વેતરી' / 'વેતરિયું' usually refers to a **calving/parity** (first-parity, second-parity etc.), e.g. 'પ્રથમ વેતરી ભેંસ' = 'first-parity / first-calving buffalo'. Use 'in heat' for the listed phrases ONLY; use 'first-parity' or 'lactation cycle' for bare વેતરી forms."
+  },
+  {
+    "gu_terms": [
+      "ઠરવું",
+      "ઠરે એવું નથી",
+      "ઠરી જવી",
+      "tharvu",
+      "tharu",
+      "thari javi",
+      "ગાભણ બેસતી નથી"
+    ],
+    "type": "hardcode",
+    "rule": "ઠરવું / ઠરી જવી / 'ઠરે એવું નથી' in livestock context means **to conceive / become pregnant**. 'Cow won't ઠરે' = 'cow won't conceive'. It does NOT mean to recover from illness, settle down, or cool down. Translate as 'conceive' or 'become pregnant'."
+  },
+  {
+    "gu_terms": [
+      "ઓલાદ",
+      "olad",
+      "ઓલાદો"
+    ],
+    "type": "hardcode",
+    "rule": "ઓલાદ / olad means **offspring / progeny** of a livestock animal. It does NOT mean breed (નસલ). 'How many ઓલાદ has this buffalo given' = 'how many offspring has this buffalo given'. Translate as 'offspring' or 'progeny'."
+  },
+  {
+    "gu_terms": [
+      "માટી ખસવી",
+      "માટી ખસી",
+      "માટી ખસી જવી",
+      "mati khasvi",
+      "mati khasi",
+      "mati khasi javi",
+      "prolapse",
+      "uterine prolapse",
+      "rectal prolapse"
+    ],
+    "type": "hardcode",
+    "rule": "માટી ખસવી / માટી ખસી જવી is the local Gujarati term for **uterine or rectal prolapse** (the uterus or rectum slipping out). It is NOT a placenta issue (that is મેલી / કથીરી / જર) and NOT just 'slipping' in a generic sense. When translating to English, render as 'uterine prolapse' or 'rectal prolapse' depending on context; if unclear, just 'prolapse'. Treat as a surgical / urgent veterinary emergency. Dietary questions about prolapse-prone animals are about prolapse, NOT about placenta retention."
+  },
+  {
+    "gu_terms": [
+      "બાવળામાં આરહો",
+      "બાવલામાં આરહો",
+      "આરહો",
+      "બાવલા આરહો"
+    ],
+    "type": "hardcode",
+    "rule": "આરહો in the context of 'બાવલા' / 'બાવળા' (udder) means **udder swelling / inflammation** — likely mastitis-adjacent or mechanical swelling post-calving. It does NOT mean 'madness', 'restlessness', or 'ketosis'. Translate as 'udder swelling' or 'inflammation in the udder'. Treat as a clinical udder issue; if questions involve applying tamarind, jaggery, lemon, or topical remedies, address them as topical udder applications, not oral fever drenches."
+  },
+  {
+    "gu_terms": [
+      "આડી પડી",
+      "આડું પડ્યું",
+      "આડી પડેલી",
+      "aadi padi",
+      "aadu padyu",
+      "ગાય આડી પડી",
+      "ભેંસ આડી પડી"
+    ],
+    "type": "hardcode",
+    "rule": "આડી પડી / આડું પડ્યું in a livestock-distress context means the animal is **lying down and unable to stand / recumbent** (a 'downer' cow or buffalo). It is NOT about urinating, soiling, or any unrelated activity. Translate as 'recumbent', 'unable to stand', or 'down-and-out'. Treat as a serious clinical emergency requiring urgent veterinary attention (could be milk fever, ketosis, calving paralysis, fracture, or other downer cow syndrome causes)."
+  },
+  {
+    "gu_terms": [
+      "કાચી ગાય",
+      "કાચી ભેંસ",
+      "ગાય કાચી",
+      "ભેંસ કાચી",
+      "kachi cow",
+      "fresh cow",
+      "દિવસ કાચી",
+      "દિવસથી કાચી",
+      "દિવસની કાચી",
+      "મહિને કાચી",
+      "મહિનાની કાચી",
+      "દિવસ થયા કાચી",
+      "વ્યાયેલી કાચી"
+    ],
+    "type": "hardcode",
+    "rule": "'કાચી' applied to a cow or buffalo in a post-calving context means **fresh (recently calved)** — within the first ~2-3 weeks after calving. It does NOT mean 'dry' (the opposite — that is 'ડ્રાય' / 'સૂકી'), 'raw', or 'young'. Translate as 'fresh' or 'recently calved'. Note that 4-day-fresh cows showing heat are showing 'fresh heat' (early postpartum estrus), often pathological and warranting veterinary review."
+  },
+  {
+    "gu_terms": [
+      "જોંટી",
+      "જોંતી",
+      "jonti",
+      "જોટ્ટી"
+    ],
+    "type": "hardcode",
+    "rule": "જોંટી / jonti is a local Gujarati / Kutchi term for a **young female buffalo / heifer (pre-first-calving)**. It is NOT a proper name. Translate as 'heifer' or 'young female buffalo'. Treat questions about her age, heat onset, or feeding the same as standard buffalo heifer questions."
+  },
+  {
+    "gu_terms": [
+      "કરમોડી",
+      "karmodi",
+      "ખરમોડી",
+      "karmoda",
+      "કરમોદી"
+    ],
+    "type": "hardcode",
+    "rule": "કરમોડી / karmodi is a context-dependent local Gujarati ailment term. **Default rendering is 'lameness' or 'unable to walk' UNLESS clear anatomical cues are present.** (a) Only if HOOF / paw cues appear in the same sentence (પગ, ખુર, hoof, interdigital, walking-pain) → render as 'foot rot' / 'hoof infection / interdigital infection'. (b) Only if SKIN cues appear (ચામડી, વાળ, ગાંઠ, lesion, રિંગ, ring) → render as 'ringworm' / 'dermatophytosis' / 'skin fungal infection'. (c) For anything else (e.g. 'મારા બળદ ને કરમોડી થય છે' with NO body-part hint) → render as 'lameness' or 'leg weakness'. **Do NOT default to foot rot.** Never translate as Foot-and-Mouth Disease (that is ખરવા-મોવાસા)."
+  },
+  {
+    "gu_terms": [
+      "પાથરી",
+      "pathri",
+      "પથરી"
+    ],
+    "type": "hardcode",
+    "rule": "પાથરી / pathri is context-dependent. (a) In a URINARY context — words like પેશાબ, urine, ગાંઠ, kidney, મૂત્ર, blockage — translate as 'urinary stones / urolithiasis / kidney stones / calculi'. (b) In a GI / digestive context — words like ઝાડા (diarrhea), discharge, જોર (straining), constipation, વાચ્ચે — translate as 'straining / tenesmus / pushing'. (c) If context is unclear, render literally as 'straining' (the more common everyday meaning). NEVER auto-default to urinary stones; pick based on adjacent words."
+  },
+  {
+    "gu_terms": [
+      "ઠંડી પડી જવી",
+      "ઠંડી પડી જવું",
+      "ઠંડી પડી",
+      "thandi padi javi",
+      "thandi padi"
+    ],
+    "type": "hardcode",
+    "rule": "'ઠંડી પડી જવી' applied to a cow or buffalo soon after calving means **milk fever / hypocalcemia / parturient paresis** — a serious post-calving metabolic emergency where the animal becomes shivery, cold to the touch, and may go down. It is NOT a viral common cold or upper respiratory infection. Translate as 'milk fever' or 'hypocalcemia / postpartum chills'. Treat as an urgent veterinary call (calcium therapy)."
+  },
+  {
+    "gu_terms": [
+      "કાંધ આવવી",
+      "કાંધ આવી",
+      "કાંધ આવેલી",
+      "kandh aavvi",
+      "kandh aavi"
+    ],
+    "type": "hardcode",
+    "rule": "'કાંધ આવવી' in the context of bullocks / draught cattle refers to **yoke sores / galling** on the neck or shoulder caused by ill-fitting yokes or prolonged work. NOT a general 'shoulder soreness'. Translate as 'yoke sores' or 'galling'. Treat the question as one of yoke-fit, work duration, and wound-care for the neck."
+  },
+  {
+    "gu_terms": [
+      "કપાસીયો",
+      "કપાસિયો",
+      "kapasiyo",
+      "kapasyo",
+      "કપાસનું ખોળ",
+      "કપાસ ખોળ"
+    ],
+    "type": "hardcode",
+    "rule": "કપાસીયો / કપાસનું ખોળ is **cottonseed cake** — a high-protein livestock concentrate feed made from defatted cotton seeds. It is NOT 'cotton', the plant, or any non-feed item. Translate as 'cottonseed cake'. Treat as a concentrate/feed-related question (digestibility, gossypol caution, ratio with green/dry fodder)."
+  },
+  {
+    "gu_terms": [
+      "હડકવા",
+      "hadkva",
+      "hadakva",
+      "hadakwa",
+      "હડકવો",
+      "હડક્વા"
+    ],
+    "type": "hardcode",
+    "rule": "હડકવા / hadkva in a cattle / buffalo / dog context means **rabies / hydrophobia** — the lethal zoonotic viral disease transmitted via the bite of an infected animal (commonly a stray dog). It is NOT Foot-and-Mouth Disease (FMD = ખરવા-મોવાસા), NOT tuberculosis (TB), NOT Lumpy Skin Disease (LSD = ગાંઠિયા તાવ). Translate as 'rabies' or 'hydrophobia'. Treat questions about milk consumption, vaccination, dog bite, or quarantine as rabies-related zoonosis questions, where the standard advice is post-exposure prophylaxis (anti-rabies vaccine) for any humans potentially exposed."
+  },
+  {
+    "gu_terms": [
+      "દામ્યા",
+      "દામેલ",
+      "દામવું",
+      "damya",
+      "damvu",
+      "દામ આપ"
+    ],
+    "type": "hardcode",
+    "rule": "'દામ્યા' / 'દામેલ' applied to a calf's or heifer's horn (શીંગ) means **dehorning / disbudding** — surgical or hot-iron removal of horns or horn buds. It is NOT 'branding', 'tagging', 'tying', or 'naming'. The shared root with 'દામ' (price/value) is misleading. Translate as 'dehorning' (mature animals with grown horns) or 'disbudding' (young calves with horn buds). Treat the question as wound healing, dehorning aftercare, or horn-removal technique."
+  },
+  {
+    "gu_terms": [
+      "પાહો નહિ મુકતી",
+      "પાહો નથી મુકતી",
+      "પાહો મુકતી નથી",
+      "પાહો નહિ મૂકતી",
+      "પાહો મુક",
+      "પાહો છૂટતો નથી",
+      "પાહો છૂટતી નથી",
+      "પાહો છોડતી નથી",
+      "paaho",
+      "pao mukti"
+    ],
+    "type": "hardcode",
+    "rule": "'પાહો મુકવો' / 'પાહો છોડવો' / 'પાહો છૂટવો' in a buffalo / cow dairy context refers to **the cow or buffalo accepting / allowing the calf to suckle and triggering the milk let-down reflex**. 'પાહો નહિ મુકતી' literally means 'she is not letting (the calf) approach / suckle' and idiomatically means 'she is refusing to nurse the calf / milk let-down is inhibited' (a common problem when the calf has died, has been removed, or the dam is stressed). It is NOT about a male calf, a bottle / nipple, or social rejection between calves. Render the meaning as 'not letting the calf suckle / nurse' or 'not letting down milk' depending on which is more natural in the sentence. Treat the question as a milk let-down / oxytocin / dam-calf bond issue."
+  },
+  {
+    "gu_terms": [
+      "શંકર ગાય",
+      "શંકર ગાયો",
+      "શંકરી ગાય",
+      "shankar gay",
+      "shankar cow"
+    ],
+    "type": "hardcode",
+    "rule": "'શંકર ગાય' / 'શંકર ગાયો' (Shankar cow / Shankar gai) is a colloquial regional Gujarati label for a **specific local crossbred / improved breed cow** common in the Banaskantha-Patan-Mehsana belt. When used together with the noun 'ગાય' / 'ગાયો' specifically, keep the proper-noun form 'Shankar cow' / 'Shankar gai' in English and do NOT normalize the breed name to 'crossbred', 'Sahiwal', 'Holstein', 'HF', or 'Jersey'. NOTE: The bare word 'શંકર' / 'સંકર' on its own — or when paired with 'વાછરડી', 'જાનવર', 'પશુ' or in a question about breed STANDARDS / criteria / definitions — usually means the generic adjective 'crossbred'; in that case translate as 'crossbred'. The Shankar=proper-noun rule applies only when the surrounding sentence is asking about specific Shankar-type cows (e.g. buying / selling / characteristics of a Shankar cow)."
+  },
+  {
+    "gu_terms": [
+      "વાવાની",
+      "વાવા",
+      "ભેંસ વાવા",
+      "ભેંસ વાવાની",
+      "ગાય વાવા",
+      "ગાય વાવાની",
+      "વાવાની છે",
+      "વાવાની સે"
+    ],
+    "type": "hardcode",
+    "rule": "'વાવા' / 'વાવાની' in dairy/livestock context is a colloquial term for the **buffalo or cow calf** (a young / newborn animal still being suckled). It is NOT a proper name. Translate as 'calf' (or 'buffalo calf' / 'cow calf' when the parent animal is named in the sentence)."
+  },
+  {
+    "gu_terms": [
+      "રેલી",
+      "મારી રેલી",
+      "રેલીને",
+      "રેલી ગાય",
+      "રેલી ભેંસ",
+      "રેલીને બે વર્ષ",
+      "રેલીની"
+    ],
+    "type": "hardcode",
+    "rule": "'રેલી' (and inflected forms 'રેલીને', 'રેલીની') is a colloquial term for a **heifer** — a young female cow or buffalo that has not yet calved. It is NOT a proper name. Translate as 'heifer'."
   }
 ]

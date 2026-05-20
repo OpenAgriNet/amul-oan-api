@@ -50,6 +50,48 @@ PRETRANSLATION_MODEL = os.getenv("PRETRANSLATION_MODEL", _PRETRANSLATION_MODEL_D
 _openai_client: Optional[AsyncOpenAI] = None
 _anthropic_client: Optional[AsyncAnthropic] = None
 
+# OSS pretranslation (vLLM) — used per-request only for sticky 'oss' sessions,
+# independent of the startup PRETRANSLATION_PROVIDER so legacy sessions are
+# completely unaffected. Mirrors the dev OSS pipeline.
+OSS_INFERENCE_ENDPOINT_URL = os.getenv("OSS_INFERENCE_ENDPOINT_URL", "").rstrip("/")
+OSS_INFERENCE_API_KEY = os.getenv("OSS_INFERENCE_API_KEY") or "dummy"
+OSS_PRETRANSLATION_MODEL = os.getenv(
+    "OSS_PRETRANSLATION_MODEL", os.getenv("OSS_LLM_MODEL_NAME", "gemma-4-31b-it")
+)
+_oss_pretrans_client: Optional[AsyncOpenAI] = None
+
+
+def _get_oss_pretranslation_client() -> AsyncOpenAI:
+    """OpenAI-compatible client pinned to the OSS vLLM endpoint."""
+    global _oss_pretrans_client
+    if _oss_pretrans_client is None:
+        if not OSS_INFERENCE_ENDPOINT_URL:
+            raise ValueError(
+                "OSS_INFERENCE_ENDPOINT_URL is required for OSS pretranslation"
+            )
+        _oss_pretrans_client = AsyncOpenAI(
+            api_key=OSS_INFERENCE_API_KEY, base_url=OSS_INFERENCE_ENDPOINT_URL
+        )
+    return _oss_pretrans_client
+
+
+async def _pretranslate_oss(text: str, source_name: str, source_code: str, max_tokens: int) -> str:
+    """Pretranslate via the OSS vLLM endpoint (per-request; legacy untouched)."""
+    client = _get_oss_pretranslation_client()
+    response = await asyncio.wait_for(
+        client.chat.completions.create(
+            model=OSS_PRETRANSLATION_MODEL,
+            max_completion_tokens=max_tokens,
+            temperature=0.0,
+            messages=[
+                {"role": "system", "content": _pretranslation_system_with_glossary(text)},
+                {"role": "user", "content": f"Translate this {source_name} ({source_code}) text to English.\n\n{text.strip()}"},
+            ],
+        ),
+        timeout=10.0,
+    )
+    return (response.choices[0].message.content or "").strip()
+
 
 GU_PREFERRED_TRANSLATION_RULES = [
     "Use farmer-preferred Gujarati livestock terms.",
@@ -417,7 +459,7 @@ def _pretranslation_system_with_glossary(text: str) -> str:
     Gujarati terms (e.g. આફરા → 'afterbirth retention', ઇતરડી → 'foot rot',
     ખરવા-મોવાસા → 'mastitis'). The rules live in assets/ambiguity_terms.json
     and are designed to be matched against the raw user input."""
-    hints = get_ambiguity_hints_for_query(text)
+    hints = get_ambiguity_hints_for_query(text, include_ask=False)
     if not hints:
         return _PRETRANSLATION_SYSTEM
     return (
@@ -466,11 +508,14 @@ async def translate_to_english_pretranslation(
     source_lang: str,
     *,
     max_tokens: int = 512,
+    provider: Optional[str] = None,
 ) -> str:
-    """Translate input text to English using the configured pretranslation provider.
+    """Translate input text to English using a pretranslation provider.
 
-    Provider is selected by PRETRANSLATION_PROVIDER env var (defaults to LLM_PROVIDER).
-    Supports 'openai' and 'anthropic'.
+    By default the provider is selected by the PRETRANSLATION_PROVIDER env var
+    (defaults to LLM_PROVIDER); supports 'openai' and 'anthropic'. Pass
+    ``provider="vllm"`` (or "oss") to force the per-request OSS vLLM endpoint
+    for a sticky 'oss' session without affecting legacy sessions.
     """
     if not text or not text.strip():
         return text
@@ -482,12 +527,19 @@ async def translate_to_english_pretranslation(
     source_code = LANG_CODES.get(source_lang.lower(), source_lang.lower())
 
     langfuse = _get_langfuse()
-    pretranslate_fn = _pretranslate_openai if PRETRANSLATION_PROVIDER != "anthropic" else _pretranslate_anthropic
+    if provider in ("vllm", "oss"):
+        effective_provider = "vllm"
+        effective_model = OSS_PRETRANSLATION_MODEL
+        pretranslate_fn = _pretranslate_oss
+    else:
+        effective_provider = PRETRANSLATION_PROVIDER
+        effective_model = PRETRANSLATION_MODEL
+        pretranslate_fn = _pretranslate_openai if PRETRANSLATION_PROVIDER != "anthropic" else _pretranslate_anthropic
 
     if not langfuse:
         translated_text = await pretranslate_fn(text, source_name, source_code, max_tokens)
         if not translated_text:
-            raise ValueError(f"{PRETRANSLATION_PROVIDER} pre-translation returned empty output")
+            raise ValueError(f"{effective_provider} pre-translation returned empty output")
         return translated_text
 
     with langfuse.start_as_current_observation(
@@ -498,15 +550,15 @@ async def translate_to_english_pretranslation(
             "target_lang": "english",
             "text": text,
         },
-        model=PRETRANSLATION_MODEL,
+        model=effective_model,
         metadata={
-            "translation_provider": PRETRANSLATION_PROVIDER,
+            "translation_provider": effective_provider,
             "pipeline_stage": "query_pretranslation",
         },
     ) as observation:
         translated_text = await pretranslate_fn(text, source_name, source_code, max_tokens)
         if not translated_text:
-            raise ValueError(f"{PRETRANSLATION_PROVIDER} pre-translation returned empty output")
+            raise ValueError(f"{effective_provider} pre-translation returned empty output")
         observation.update(output=translated_text)
         return translated_text
 
