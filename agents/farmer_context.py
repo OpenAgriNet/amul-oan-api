@@ -93,7 +93,7 @@ async def _append_union_scheme_summary_markdown(lines: list[str], farmer_unions:
 
     lines.append("")
     lines.append("## Union schemes available")
-    lines.append("- The following scheme titles are available from the union scheme cache. Use these titles and links for scheme-related questions. Retrieve full cached scheme details when the user asks about a specific scheme.")
+    lines.append("- The following scheme titles are available from the union scheme cache. Use these titles for scheme-related questions. Retrieve full cached scheme details when the user asks about a specific scheme. Do not share source links unless the user explicitly asks for them.")
 
     for union_name in scheme_unions:
         try:
@@ -116,17 +116,16 @@ async def _append_union_scheme_summary_markdown(lines: list[str], farmer_unions:
             continue
 
         lines.append(f"- **{union_name.title()} union schemes:**")
-        seen_links: set[tuple[str, str]] = set()
+        seen_titles: set[str] = set()
         for record in records:
             title = record.get("scheme_title")
-            link = record.get("scheme_url")
-            if not title or not link:
+            if not title:
                 continue
-            dedupe_key = (str(title).casefold(), str(link))
-            if dedupe_key in seen_links:
+            dedupe_key = str(title).casefold()
+            if dedupe_key in seen_titles:
                 continue
-            seen_links.add(dedupe_key)
-            lines.append(f"  - {title}: {link}")
+            seen_titles.add(dedupe_key)
+            lines.append(f"  - {title}")
 
 
 def _append_farmer_markdown(lines: list[str], farmer: FarmerModel, index: int) -> None:
