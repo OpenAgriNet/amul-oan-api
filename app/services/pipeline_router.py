@@ -24,12 +24,18 @@ from app.core.cache import cache
 from agents.models import oss_model_available
 from helpers.utils import get_logger
 
+try:
+    from langfuse import get_client as get_langfuse_client
+except ImportError:  # langfuse optional at import time
+    get_langfuse_client = None  # type: ignore[assignment]
+
 logger = get_logger(__name__)
 
 LEGACY = "legacy"
 OSS = "oss"
 
 _KEY_PREFIX = "pipeline_variant:"
+_SCORE_NAME = "pipeline_variant"
 
 
 def _deterministic_variant(session_id: str) -> str:
@@ -63,5 +69,23 @@ async def resolve_pipeline_variant(session_id: str) -> str:
         await cache.set(key, variant, ttl=settings.oss_variant_ttl)
     except Exception as e:  # persistence is best-effort; assignment still stable
         logger.warning("pipeline_router: cache write failed for %s: %s", session_id, e)
+
+    # Emit a session-scoped categorical Langfuse score on first-time assignment
+    # only (cache-miss path). Lets the Sessions view in Langfuse be filtered by
+    # pipeline_variant directly without aggregating per-trace tags. Best-effort:
+    # any failure here is logged but does not affect the request path.
+    if get_langfuse_client is not None:
+        try:
+            get_langfuse_client().create_score(
+                name=_SCORE_NAME,
+                value=variant,
+                data_type="CATEGORICAL",
+                session_id=session_id,
+                comment="Sticky pipeline variant assigned at session start",
+            )
+        except Exception as e:
+            logger.warning(
+                "pipeline_router: langfuse session score failed for %s: %s", session_id, e
+            )
 
     return variant
