@@ -126,6 +126,12 @@ class Settings(BaseSettings):
     oss_inference_endpoint_url: Optional[str] = os.getenv("OSS_INFERENCE_ENDPOINT_URL")
     oss_llm_model_name: Optional[str] = os.getenv("OSS_LLM_MODEL_NAME")
     oss_variant_ttl: int = int(os.getenv("OSS_VARIANT_TTL", str(60 * 60 * 24 * 7)))  # 7d sticky
+    # Scheme tool union scoping:
+    # true  -> require authenticated farmer union to match a supported scheme union
+    # false -> testing mode; allow any farmer union and fall back to supported unions
+    scheme_require_union_auth: bool = os.getenv("SCHEME_REQUIRE_UNION_AUTH", "true").strip().lower() in {
+        "1", "true", "yes", "on"
+    }
 
     class Config:
         env_file = ".env"
