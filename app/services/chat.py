@@ -7,7 +7,13 @@ import re
 from fastapi import BackgroundTasks
 from agents.agrinet import agrinet_agent
 from agents.moderation import moderation_agent
-from agents.models import LLM_MODEL_NAME, LLM_PROVIDER
+from agents.models import (
+    LLM_MODEL_NAME,
+    LLM_PROVIDER,
+    OSS_LLM_MODEL_NAME,
+    get_model_for_variant,
+    provider_for_variant,
+)
 from helpers.utils import get_logger
 from app.utils import (
     update_message_history,
@@ -54,12 +60,19 @@ class SentenceSegmenter:
 sentence_segmenter = SentenceSegmenter()
 
 
-def _chat_history_trim_max_tokens() -> int:
-    """Keep fewer past turns for 16k-context vLLM backends so system+tools+history+user fit."""
+def _chat_history_trim_max_tokens(variant: str = "legacy") -> int:
+    """Keep fewer past turns for smaller-context vLLM backends so system+tools+history+user fit.
+
+    OSS sessions get the gemma cap regardless of the startup provider, so a
+    canary OSS session on a prod box running anthropic-as-default still respects
+    the gemma context window (tune via CHAT_HISTORY_MAX_TOKENS_VLLM_GEMMA).
+    """
     override = os.getenv("CHAT_HISTORY_MAX_TOKENS")
     if override and override.isdigit():
         return int(override)
-    if LLM_PROVIDER == "vllm" and "gemma" in LLM_MODEL_NAME.lower():
+    is_oss_gemma = variant == "oss" and "gemma" in (OSS_LLM_MODEL_NAME or "").lower()
+    is_startup_vllm_gemma = LLM_PROVIDER == "vllm" and "gemma" in LLM_MODEL_NAME.lower()
+    if is_oss_gemma or is_startup_vllm_gemma:
         cap = os.getenv("CHAT_HISTORY_MAX_TOKENS_VLLM_GEMMA", "10000")
         return int(cap) if cap.isdigit() else 10_000
     return 80_000
@@ -162,8 +175,17 @@ async def stream_chat_messages(
     user_info: dict,
     background_tasks: BackgroundTasks,
     use_translation_pipeline: bool = False,
+    pipeline_variant: str = "legacy",
 ) -> AsyncGenerator[str, None]:
     """Async generator for streaming chat messages."""
+    # OSS sticky variant => run the dev OSS path (translation pipeline + vLLM
+    # agent model). 'legacy' keeps the current prod behaviour byte-for-byte;
+    # with OSS_PIPELINE_PCT=0 every session is 'legacy'.
+    is_oss = pipeline_variant == "oss"
+    use_translation_pipeline = bool(use_translation_pipeline) or is_oss
+    request_model = get_model_for_variant(pipeline_variant)
+    request_provider = provider_for_variant(pipeline_variant)
+    request_model_name = OSS_LLM_MODEL_NAME if is_oss else LLM_MODEL_NAME
     # Langfuse: propagate session_id, metadata, and tags for dashboard filtering (max 200 chars per value)
     session_id_safe = (session_id or "")[:200]
     pipeline_name = "translation" if use_translation_pipeline else "default"
@@ -178,8 +200,9 @@ async def stream_chat_messages(
         "source_lang": (source_lang or "unknown").lower()[:200],
         "target_lang": (target_lang or "unknown").lower()[:200],
         "user_id": effective_user_id,
+        "variant": pipeline_variant,
     }
-    langfuse_tags = [f"pipeline:{pipeline_name}"]
+    langfuse_tags = [f"pipeline:{pipeline_name}", f"variant:{pipeline_variant}"]
     session_ctx = (
         propagate_attributes(
             session_id=session_id_safe,
@@ -267,14 +290,19 @@ async def stream_chat_messages(
         needs_output_translation = use_translation_pipeline and target_lang.lower() in INDIAN_LANGUAGES
 
         if use_translation_pipeline and source_lang.lower() in {"gu", "gujarati"}:
+            pretrans_provider = "vllm" if is_oss else None
             logger.info(
-                "request_id=%s translation_pipeline=True pretranslating gu->en with %s/%s",
-                request_id, PRETRANSLATION_PROVIDER, PRETRANSLATION_MODEL,
+                "request_id=%s translation_pipeline=True variant=%s pretranslating gu->en with %s/%s",
+                request_id,
+                pipeline_variant,
+                pretrans_provider or PRETRANSLATION_PROVIDER,
+                request_model_name if is_oss else PRETRANSLATION_MODEL,
             )
             try:
                 processing_query = await translate_to_english_pretranslation(
                     text=query,
                     source_lang=source_lang,
+                    provider=pretrans_provider,
                 )
                 processing_lang = "en"
                 logger.info(
@@ -352,7 +380,7 @@ async def stream_chat_messages(
                 else nullcontext()
             )
             with _mod_obs_ctx as mod_obs:
-                moderation_run = await moderation_agent.run(user_message)
+                moderation_run = await moderation_agent.run(user_message, model=request_model)
                 moderation_data = moderation_run.output
                 logger.info(
                     "request_id=%s moderation_category=%s moderation_action=%s",
@@ -411,7 +439,7 @@ async def stream_chat_messages(
         # Run the main agent
         trimmed_history = trim_history(
             history,
-            max_tokens=_chat_history_trim_max_tokens(),
+            max_tokens=_chat_history_trim_max_tokens(pipeline_variant),
             include_system_prompts=False,
             include_tool_calls=True
         )
@@ -430,22 +458,23 @@ async def stream_chat_messages(
                 as_type="generation",
                 input={
                     "action": moderation_data.action,
-                    "model_name": LLM_MODEL_NAME,
+                    "model_name": request_model_name,
                 },
-                model=LLM_MODEL_NAME,
-                metadata={"pipeline": pipeline_name},
+                model=request_model_name,
+                metadata={"pipeline": pipeline_name, "variant": pipeline_variant},
             )
             if _lf_ag
             else nullcontext()
         )
 
         with _agrinet_obs_ctx as agrinet_obs:
-            if LLM_PROVIDER == 'anthropic':
+            if request_provider == 'anthropic':
                 # For Anthropic: Use agent.iter() + node.stream() instead of run_stream()
                 async with agrinet_agent.iter(
                     user_prompt=user_message,
                     message_history=trimmed_history,
                     deps=deps,
+                    model=request_model,
                 ) as agent_run:
                     if needs_output_translation:
                         # Optimised batched streaming for Anthropic as well
@@ -590,6 +619,7 @@ async def stream_chat_messages(
                     user_prompt=user_message,
                     message_history=trimmed_history,
                     deps=deps,
+                    model=request_model,
                 ) as response_stream:
                     if needs_output_translation:
                         # Optimised batched streaming: segment English into sentences and translate in good-sized batches

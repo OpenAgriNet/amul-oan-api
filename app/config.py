@@ -119,6 +119,14 @@ class Settings(BaseSettings):
     llm_model_name: Optional[str] = None
     marqo_index_name: Optional[str] = None
 
+    # OSS pipeline sticky %-split (0 = disabled; prod behaviour unchanged).
+    # A session is bucketed deterministically by session_id; OSS_PIPELINE_PCT
+    # percent of sessions route to the OSS pipeline (vLLM translation path).
+    oss_pipeline_pct: int = int(os.getenv("OSS_PIPELINE_PCT", "0"))
+    oss_inference_endpoint_url: Optional[str] = os.getenv("OSS_INFERENCE_ENDPOINT_URL")
+    oss_llm_model_name: Optional[str] = os.getenv("OSS_LLM_MODEL_NAME")
+    oss_variant_ttl: int = int(os.getenv("OSS_VARIANT_TTL", str(60 * 60 * 24 * 7)))  # 7d sticky
+
     class Config:
         env_file = ".env"
         extra = 'ignore'  # Ignore extra fields from .env

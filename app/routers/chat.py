@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, BackgroundTasks
 from fastapi.responses import JSONResponse, StreamingResponse
 from app.auth.jwt_auth import get_chat_user
 from app.services.chat import stream_chat_messages
+from app.services.pipeline_router import resolve_pipeline_variant
 from app.utils import _get_message_history
 from app.models.requests import ChatRequest
 from helpers.utils import get_logger
@@ -33,7 +34,10 @@ async def chat_endpoint(
     
     history = await _get_message_history(session_id)
     logger.debug(f"Retrieved message history for session {session_id} - length: {len(history)}")
-        
+
+    # Sticky per-session OSS/legacy routing (no-op while OSS_PIPELINE_PCT=0).
+    pipeline_variant = await resolve_pipeline_variant(session_id)
+
     message_stream = stream_chat_messages(
         query=request.query,
         session_id=session_id,
@@ -45,6 +49,7 @@ async def chat_endpoint(
         user_info=user_info,
         background_tasks=background_tasks,
         use_translation_pipeline=request.use_translation_pipeline or False,
+        pipeline_variant=pipeline_variant,
     )
 
     if request.stream is False:
