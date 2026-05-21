@@ -132,6 +132,20 @@ class Settings(BaseSettings):
     scheme_require_union_auth: bool = os.getenv("SCHEME_REQUIRE_UNION_AUTH", "true").strip().lower() in {
         "1", "true", "yes", "on"
     }
+    # Scheme lookup source rollout mode:
+    # - redis: Keep existing Redis-backed lookup behavior only.
+    # - marqo: Read schemes from Marqo only (no Redis read fallback in tools).
+    # - auto: Preferred path is Marqo, with Redis fallback for resilience.
+    # Note: default remains `redis` to preserve current behavior until rollout.
+    scheme_lookup_source: str = os.getenv("SCHEME_LOOKUP_SOURCE", "redis").strip().lower()
+    # Dedicated Marqo index for union scheme chunks used by scheme lookup tools.
+    scheme_marqo_index_name: str = os.getenv("SCHEME_MARQO_INDEX_NAME", "union-schemes-index")
+    # Chunking knobs for scheme ingestion into Marqo.
+    # Chunks are approximately target size with overlap to preserve context continuity.
+    scheme_chunk_target_chars: int = int(os.getenv("SCHEME_CHUNK_TARGET_CHARS", "900"))
+    scheme_chunk_overlap_chars: int = int(os.getenv("SCHEME_CHUNK_OVERLAP_CHARS", "120"))
+    # Default result window for scheme detail retrieval from Marqo.
+    scheme_marqo_top_k: int = int(os.getenv("SCHEME_MARQO_TOP_K", "8"))
 
     class Config:
         env_file = ".env"
