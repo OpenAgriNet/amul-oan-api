@@ -174,7 +174,7 @@ async def stream_chat_messages(
     history: list,
     user_info: dict,
     background_tasks: BackgroundTasks,
-    use_translation_pipeline: bool = False,
+    use_translation_pipeline: bool = True,
     pipeline_variant: str = "legacy",
 ) -> AsyncGenerator[str, None]:
     """Async generator for streaming chat messages."""
