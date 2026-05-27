@@ -48,7 +48,7 @@ async def chat_endpoint(
         history=history,
         user_info=user_info,
         background_tasks=background_tasks,
-        use_translation_pipeline=request.use_translation_pipeline or False,
+        use_translation_pipeline=request.use_translation_pipeline if request.use_translation_pipeline is not None else True,
         pipeline_variant=pipeline_variant,
     )
 
