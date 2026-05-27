@@ -8,7 +8,7 @@ class ChatRequest(BaseModel):
     target_lang: str = Field('gu', description="Target language code")
     channel: Literal['web', 'whatsapp'] = Field('web', description="Calling channel")
     user_id: str = Field('anonymous', description="User identifier")
-    use_translation_pipeline: Optional[bool] = Field(False, description="When True, use Gemma pre/post translation (query→en→agent→target_lang)")
+    use_translation_pipeline: Optional[bool] = Field(True, description="When True, use Gemma pre/post translation (query→en→agent→target_lang)")
     stream: Optional[bool] = Field(True, description="When True (default), return SSE stream. When False, return a single JSON response.")
 
 class TranscribeRequest(BaseModel):
