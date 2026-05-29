@@ -1,7 +1,9 @@
 """Tools for the Sunbird VA API."""
-from pydantic_ai import Tool
+from pydantic_ai import Tool, RunContext
+from pydantic_ai.tools import ToolDefinition
 from app.config import settings
-from agents.tools.beckn_search import search_government_schemes
+from agents.deps import FarmerContext
+from agents.tools.beckn_search import search_government_schemes, is_government_scheme_query
 from agents.tools.ai_call import create_ai_call
 from agents.tools.health_call import create_health_call
 from agents.tools.milk_collection import get_farmer_milk_collection_details
@@ -12,22 +14,35 @@ from agents.tools.union_schemes import get_union_scheme_data
 # from agents.tools.cvcc import get_cvcc_health_details
 # from agents.tools.farmer import get_farmer_by_mobile
 
+async def _suppress_docs_for_scheme_queries(ctx: RunContext[FarmerContext], tool_def: ToolDefinition):
+    """DEMO: force the Beckn path for government-scheme questions.
+
+    When beckn is enabled and the (English) query is a government-scheme query, hide
+    `search_documents` so the agent must use `search_government_schemes` — the agent
+    otherwise often answers schemes from RAG and never hits the live Vistaar network.
+    """
+    if settings.beckn_enabled and is_government_scheme_query(ctx.deps.query):
+        return None
+    return tool_def
+
+
 TOOLS = [
     # # Search Terms
     # Tool(
     #     search_terms,
     #     takes_ctx=False,
-    #     docstring_format='auto', 
+    #     docstring_format='auto',
     #     require_parameter_descriptions=True,
 
     # ),
 
-    # Search Documents
+    # Search Documents (suppressed for government-scheme queries when beckn is on)
     Tool(
         search_documents,
         takes_ctx=False, # No context is needed for this tool
-        docstring_format='auto', 
+        docstring_format='auto',
         require_parameter_descriptions=True,
+        prepare=_suppress_docs_for_scheme_queries,
     ),
 
     Tool(

@@ -12,8 +12,21 @@ from agents.tools import beckn_search
 from agents.tools.beckn_search import (
     _candidate_queries,
     _extract_items,
+    is_government_scheme_query,
     search_government_schemes,
 )
+
+
+def test_is_government_scheme_query():
+    assert is_government_scheme_query("Tell me about the Kisan Credit Card")
+    assert is_government_scheme_query("KCC eligibility")
+    assert is_government_scheme_query("how to apply for crop insurance")
+    assert is_government_scheme_query("pm-kisan documents")
+    assert is_government_scheme_query("what government schemes are there")
+    # not a scheme query -> RAG stays available
+    assert not is_government_scheme_query("my cow has a fever")
+    assert not is_government_scheme_query("best fodder for buffalo")
+    assert not is_government_scheme_query("")
 
 
 def test_candidate_queries_maps_natural_phrasings_to_vistaar_keys():

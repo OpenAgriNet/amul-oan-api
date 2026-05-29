@@ -41,6 +41,29 @@ _SCHEME_ALIASES = {
 }
 
 
+# Generic phrasings that clearly indicate a government-scheme intent even without
+# naming a specific scheme. Kept conservative so we don't suppress RAG for vague
+# questions Vistaar can't answer.
+_GENERIC_SCHEME_TERMS = (
+    "government scheme", "govt scheme", "central scheme", "state scheme",
+    "sarkari yojana", "government subsidy scheme", "pradhan mantri",
+)
+
+
+def is_government_scheme_query(query: str) -> bool:
+    """True when the query is about a government scheme the Beckn/Vistaar network covers.
+
+    Used to FORCE the Beckn path for the demo: when this is true we suppress the RAG
+    tool so the agent must call search_government_schemes. Runs on the English query
+    (the translation pipeline translates gu->en before the agent, so this is robust).
+    """
+    low = (query or "").casefold()
+    for key, aliases in _SCHEME_ALIASES.items():
+        if key.casefold() in low or any(alias in low for alias in aliases):
+            return True
+    return any(term in low for term in _GENERIC_SCHEME_TERMS)
+
+
 def _candidate_queries(query: str) -> list[str]:
     """Map a free-text scheme query to the keys Vistaar matches, then the raw query."""
     raw = (query or "").strip()
