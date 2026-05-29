@@ -127,6 +127,14 @@ class Settings(BaseSettings):
     oss_llm_model_name: Optional[str] = os.getenv("OSS_LLM_MODEL_NAME")
     oss_variant_ttl: int = int(os.getenv("OSS_VARIANT_TTL", str(60 * 60 * 24 * 7)))  # 7d sticky
 
+    # Beckn "network of networks" government-scheme discovery (DEMO STACK ONLY).
+    # Off by default so the tool never appears in normal dev/prod images; the demo
+    # image sets BECKN_ENABLED=true. AMUL_BAP_URL points at the netofnet orchestrator.
+    beckn_enabled: bool = os.getenv("BECKN_ENABLED", "false").lower() == "true"
+    amul_bap_url: Optional[str] = os.getenv(
+        "AMUL_BAP_URL", "https://bap-amul.netofnet.theflywheel.in"
+    )
+
     class Config:
         env_file = ".env"
         extra = 'ignore'  # Ignore extra fields from .env

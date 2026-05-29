@@ -7,6 +7,7 @@ from agents.tools import TOOLS
 from agents.tools.terms import get_ambiguity_hints_for_query
 from pydantic_ai.settings import ModelSettings
 from agents.deps import FarmerContext
+from app.config import settings
 
 
 def _agrinet_max_output_tokens() -> int:
@@ -47,6 +48,7 @@ def get_agrinet_instructions(ctx: RunContext):
         'farmer_context': farmer_context if farmer_context else None,
         'ambiguity_hints': ambiguity_hints if ambiguity_hints else None,
         'response_max_chars': ctx.deps.get_response_max_chars(),
+        'beckn_enabled': settings.beckn_enabled,
     }
 
     if ctx.deps.use_translation_pipeline:

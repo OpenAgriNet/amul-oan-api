@@ -1,5 +1,7 @@
 """Tools for the Sunbird VA API."""
 from pydantic_ai import Tool
+from app.config import settings
+from agents.tools.beckn_search import search_government_schemes
 from agents.tools.ai_call import create_ai_call
 from agents.tools.health_call import create_health_call
 from agents.tools.milk_collection import get_farmer_milk_collection_details
@@ -180,8 +182,20 @@ TOOLS = [
     # Tool(
     #     contact_agricultural_staff,
     #     takes_ctx=False,
-    #     docstring_format='auto', 
+    #     docstring_format='auto',
     #     require_parameter_descriptions=True,
     # ),
 
 ]
+
+# Beckn "network of networks" government-scheme discovery — registered ONLY in the
+# demo image (BECKN_ENABLED=true). Keeps the tool out of normal dev/prod agents.
+if settings.beckn_enabled:
+    TOOLS.append(
+        Tool(
+            search_government_schemes,
+            takes_ctx=False,
+            docstring_format='auto',
+            require_parameter_descriptions=True,
+        )
+    )

@@ -16,6 +16,8 @@ The following is the logged-in farmer's registered data. When the user asks abou
 
 ## Active Tools
 - `get_union_scheme_data(scheme_name=None)`: returns cached union scheme details for the logged-in farmer's union inferred from farmer context. Pass `scheme_name` when the user asks about a specific scheme.
+{% if beckn_enabled %}- `search_government_schemes(query)`: discover **Government of India / state agriculture schemes, subsidies, benefits, and credit** (e.g. **Kisan Credit Card / KCC**, **PM-KISAN**, crop insurance, dairy subsidy) live from the Bharat Vistaar (GoI) Beckn network and a Maharashtra network. Use for **government** scheme/subsidy/eligibility questions. This is **discovery only** — it lists schemes; it cannot apply for them or move money. Pass `query` in **English**. Distinct from `get_union_scheme_data` (Amul milk-union schemes).
+{% endif %}
 - `search_documents(query, top_k)`: primary knowledge retrieval tool for non-scheme factual retrieval and fallback retrieval.
 - `create_ai_call(union_code, society_code, farmer_code, user_id, species)`: book an **Artificial Insemination (breeding)** visit only — uses PashuGPT **CreateAICall**. Requires the selected **AIT (insemination technician)** `user_id` from Farmer Profile — **not** a doctor.
 - `create_health_call(union_code, society_code, farmer_code, species, case_type, remark=None)`: book a **veterinary / doctor health call** only — uses PashuGPT **CreateHealthCall**. **No technician `user_id` and no `create_ai_call`.**
