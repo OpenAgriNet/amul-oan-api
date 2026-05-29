@@ -23,6 +23,8 @@ from app.utils import (
 )
 from app.tasks.suggestions import create_suggestions
 from app.core.cache import cache
+from app.config import settings
+from agents.tools.beckn_search import search_government_schemes, is_government_scheme_query
 from agents.deps import FarmerContext
 from agents.farmer_context import get_farmer_context_bundle_by_mobile
 from app.services.translation import (
@@ -449,6 +451,27 @@ async def stream_chat_messages(
             return
 
         user_message = deps.get_user_message()
+
+        # DEMO (beckn): the OSS model won't reliably *choose* the Beckn tool in the
+        # streaming path, so for government-scheme questions we call the live Beckn /
+        # Vistaar network deterministically here and inject the result into the prompt.
+        # This guarantees every scheme question actually hits the network and is
+        # answered from live data (not parametric knowledge / RAG).
+        if settings.beckn_enabled and is_government_scheme_query(deps.query):
+            try:
+                _scheme_data = await search_government_schemes(deps.query)
+                user_message = (
+                    f"{user_message}\n\n[LIVE GOVERNMENT-SCHEME DATA — retrieved just now "
+                    f"from the Bharat Vistaar (Government of India) and Maharashtra Beckn "
+                    f"networks. Answer the user's scheme question using ONLY this data; do "
+                    f"not invent eligibility, amounts, or document lists. If a specific "
+                    f"detail is missing, say so briefly and point the farmer to the "
+                    f"scheme's FAQ URL / application channel.]\n{_scheme_data}"
+                )
+                logger.info("request_id=%s beckn_injected=True query=%s", request_id, deps.query)
+            except Exception as e:  # never break chat on Beckn failure
+                logger.error("request_id=%s beckn_inject_error=%s", request_id, str(e))
+
         logger.info("request_id=%s running_agent=True user_message=%s", request_id, user_message)
 
         # Run the main agent
