@@ -22,8 +22,12 @@ def test_candidate_queries_maps_natural_phrasings_to_vistaar_keys():
     assert _candidate_queries("tell me about pm-kisan") == ["PMKISAN", "tell me about pm-kisan"]
     # already a key -> just the key
     assert _candidate_queries("KCC") == ["KCC"]
+    # more Vistaar schemes
+    assert _candidate_queries("crop insurance") == ["PMFBY", "crop insurance"]
+    assert _candidate_queries("irrigation subsidy") == ["PMKSY", "irrigation subsidy"]
+    assert _candidate_queries("organic farming scheme") == ["PKVY", "organic farming scheme"]
     # unknown scheme -> raw only
-    assert _candidate_queries("crop insurance") == ["crop insurance"]
+    assert _candidate_queries("tractor subsidy") == ["tractor subsidy"]
     assert _candidate_queries("") == []
 
 

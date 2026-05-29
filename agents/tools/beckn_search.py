@@ -35,6 +35,9 @@ _BECKN_TIMEOUT_S = 35.0
 _SCHEME_ALIASES = {
     "KCC": ("kisan credit card", "kcc", "kisan credit", "credit card", "farm credit", "crop loan"),
     "PMKISAN": ("pm-kisan", "pmkisan", "pm kisan", "samman nidhi", "kisan samman", "income support"),
+    "PMFBY": ("pmfby", "fasal bima", "crop insurance", "fasal", "pradhan mantri fasal"),
+    "PMKSY": ("pmksy", "sinchayee", "irrigation", "krishi sinchayee", "drip", "micro irrigation"),
+    "PKVY": ("pkvy", "paramparagat", "organic farming", "organic"),
 }
 
 
