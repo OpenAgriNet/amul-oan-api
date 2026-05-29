@@ -28,6 +28,49 @@ logger = get_logger(__name__)
 # on_search callbacks, so the client timeout sits just above that.
 _BECKN_TIMEOUT_S = 35.0
 
+# The Vistaar Dev sandbox catalog matches on near-exact keys (e.g. "KCC",
+# "PMKISAN") and returns nothing for natural phrasings ("Kisan Credit Card",
+# "PM-KISAN", "credit"). The agent phrases queries freely, so we translate common
+# phrasings to the keys Vistaar actually matches and try those first.
+_SCHEME_ALIASES = {
+    "KCC": ("kisan credit card", "kcc", "kisan credit", "credit card", "farm credit", "crop loan"),
+    "PMKISAN": ("pm-kisan", "pmkisan", "pm kisan", "samman nidhi", "kisan samman", "income support"),
+}
+
+
+def _candidate_queries(query: str) -> list[str]:
+    """Map a free-text scheme query to the keys Vistaar matches, then the raw query."""
+    raw = (query or "").strip()
+    low = raw.casefold()
+    candidates: list[str] = []
+    for key, aliases in _SCHEME_ALIASES.items():
+        if key.casefold() in low or any(alias in low for alias in aliases):
+            candidates.append(key)
+    if raw and raw not in candidates:
+        candidates.append(raw)
+    return candidates or ([raw] if raw else [])
+
+
+async def _call_bap(url: str, query: str) -> dict | None:
+    """One best-effort POST to the BAP. Returns the parsed payload or None on failure."""
+    try:
+        async with httpx.AsyncClient(timeout=_BECKN_TIMEOUT_S) as client:
+            response = await client.post(
+                url,
+                headers={"Content-Type": "application/json"},
+                json={"query": query},
+            )
+            response.raise_for_status()
+            payload = response.json()
+            return payload if isinstance(payload, dict) else None
+    except httpx.HTTPStatusError as e:
+        logger.error("[Beckn] search failed status=%s query=%s", e.response.status_code, query)
+    except httpx.TimeoutException:
+        logger.error("[Beckn] search timed out query=%s", query)
+    except Exception as e:  # noqa: BLE001 - degrade to cache, surface clean text
+        logger.error("[Beckn] search error query=%s: %s", query, str(e))
+    return None
+
 
 def _extract_items(leg: dict | None) -> list[dict]:
     """Flatten one leg's Beckn on_search catalog into a list of scheme items.
@@ -87,30 +130,17 @@ async def search_government_schemes(query: str) -> str:
     cache_key = build_api_cache_key("beckn_schemes", (query or "").strip().casefold())
     url = settings.amul_bap_url.rstrip("/") + "/search"
 
-    # --- live call (best effort) ---
-    payload = None
-    try:
-        async with httpx.AsyncClient(timeout=_BECKN_TIMEOUT_S) as client:
-            response = await client.post(
-                url,
-                headers={"Content-Type": "application/json"},
-                json={"query": query},
-            )
-            response.raise_for_status()
-            payload = response.json()
-    except httpx.HTTPStatusError as e:
-        logger.error("[Beckn] search failed status=%s", e.response.status_code)
-    except httpx.TimeoutException:
-        logger.error("[Beckn] search timed out query=%s", query)
-    except Exception as e:  # noqa: BLE001 - degrade to cache, surface clean text
-        logger.error("[Beckn] search error: %s", str(e))
-
-    if isinstance(payload, dict):
+    # --- live call: try mapped scheme keys then the raw query, take first with items ---
+    for cand in _candidate_queries(query):
+        payload = await _call_bap(url, cand)
+        if not isinstance(payload, dict):
+            continue
         errors = payload.get("errors") or {}
         vistaar_items = _extract_items(payload.get("moa"))
         mh_items = _extract_items(payload.get("mh"))
         if vistaar_items or mh_items:
             result = {
+                "query_matched": cand,
                 "vistaar_goi_schemes": vistaar_items,
                 "maharashtra_network": mh_items,
                 "unavailable_networks": {
@@ -119,15 +149,13 @@ async def search_government_schemes(query: str) -> str:
                 },
             }
             logger.info(
-                "[Beckn] live query=%s vistaar=%s mh=%s errors=%s",
-                query, len(vistaar_items), len(mh_items), errors,
+                "[Beckn] live query=%s matched=%s vistaar=%s mh=%s errors=%s",
+                query, cand, len(vistaar_items), len(mh_items), errors,
             )
-            # Last-known-good for the next time the flaky public BAP is down.
+            # Last-known-good for the next time the BAP / Vistaar is flaky.
             await set_cached_api_response(cache_key, result)
             return json.dumps(result, indent=2, ensure_ascii=False)
-        logger.warning("[Beckn] live returned no items query=%s errors=%s; trying cache", query, errors)
-    else:
-        logger.warning("[Beckn] live call failed query=%s; trying cache", query)
+    logger.warning("[Beckn] no items for any candidate of query=%s; trying cache", query)
 
     # --- fallback: serve last-known-good so a flaky BAP doesn't break the demo ---
     hit, cached = await get_cached_api_response(cache_key)

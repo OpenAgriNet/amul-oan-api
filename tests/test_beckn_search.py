@@ -9,7 +9,22 @@ import asyncio
 import httpx
 
 from agents.tools import beckn_search
-from agents.tools.beckn_search import _extract_items, search_government_schemes
+from agents.tools.beckn_search import (
+    _candidate_queries,
+    _extract_items,
+    search_government_schemes,
+)
+
+
+def test_candidate_queries_maps_natural_phrasings_to_vistaar_keys():
+    # natural phrasing -> mapped key first, raw query kept as fallback
+    assert _candidate_queries("Kisan Credit Card") == ["KCC", "Kisan Credit Card"]
+    assert _candidate_queries("tell me about pm-kisan") == ["PMKISAN", "tell me about pm-kisan"]
+    # already a key -> just the key
+    assert _candidate_queries("KCC") == ["KCC"]
+    # unknown scheme -> raw only
+    assert _candidate_queries("crop insurance") == ["crop insurance"]
+    assert _candidate_queries("") == []
 
 
 def _run(coro):
