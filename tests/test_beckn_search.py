@@ -66,8 +66,44 @@ def test_extract_items_vistaar_shape():
             "name": "Kisan Credit Card",
             "description": "Credit for farmers",
             "id": "PMKISAN-101",
+            "details": {},
         }
     ]
+
+
+def test_extract_items_surfaces_tag_details():
+    """Vistaar packs the real content (eligibility, application, ...) into tags."""
+    leg = {
+        "message": {
+            "catalog": {
+                "providers": [
+                    {
+                        "descriptor": {"name": "SchemeFinder"},
+                        "items": [
+                            {
+                                "id": "kcc",
+                                "descriptor": {"name": "Kisan Credit Card"},
+                                "tags": [
+                                    {
+                                        "descriptor": {"name": "Scheme Details"},
+                                        "list": [
+                                            {"descriptor": {"name": "Scheme Eligibility"}, "value": "Any owner-cultivator..."},
+                                            {"descriptor": {"name": "Scheme Application"}, "value": "Apply at nearest bank branch"},
+                                            {"descriptor": {"name": "FAQ URL"}, "value": "https://myscheme.gov.in/schemes/kcc"},
+                                        ],
+                                    }
+                                ],
+                            }
+                        ],
+                    }
+                ]
+            }
+        }
+    }
+    item = _extract_items(leg)[0]
+    assert item["details"]["Scheme Application"] == "Apply at nearest bank branch"
+    assert item["details"]["Scheme Eligibility"].startswith("Any owner-cultivator")
+    assert item["details"]["FAQ URL"].endswith("/schemes/kcc")
 
 
 def test_extract_items_mock_slash_shape():
@@ -93,6 +129,7 @@ def test_extract_items_mock_slash_shape():
             "name": "Weather Advisory (MH)",
             "description": "",
             "id": "mh-w-basic",
+            "details": {},
         }
     ]
 

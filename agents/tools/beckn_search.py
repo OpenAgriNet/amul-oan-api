@@ -75,6 +75,24 @@ async def _call_bap(url: str, query: str) -> dict | None:
     return None
 
 
+def _extract_item_details(item: dict) -> dict:
+    """Flatten Beckn item ``tags`` into a {field: value} dict.
+
+    Vistaar packs the real scheme content (Introduction, Benefits, Eligibility,
+    Application, FAQ URL, ...) into ``item.tags[].list[]`` rather than the
+    descriptor. Without this the model only sees the scheme name.
+    """
+    details: dict[str, str] = {}
+    for tag in item.get("tags") or []:
+        for entry in tag.get("list") or []:
+            ed = entry.get("descriptor") or {}
+            name = ed.get("name") or ed.get("code")
+            value = entry.get("value")
+            if name and value is not None and str(value).strip():
+                details[str(name)] = str(value)
+    return details
+
+
 def _extract_items(leg: dict | None) -> list[dict]:
     """Flatten one leg's Beckn on_search catalog into a list of scheme items.
 
@@ -82,6 +100,9 @@ def _extract_items(leg: dict | None) -> list[dict]:
       - Vistaar uses ``message.catalog.providers[]``
       - the MH mock uses the Beckn 1.x slash convention
         ``message.catalog["bpp/providers"][]``
+
+    Each item carries the descriptor name/desc plus a ``details`` dict flattened
+    from the Beckn ``tags`` (the rich scheme content lives there).
     """
     if not isinstance(leg, dict):
         return []
@@ -94,14 +115,17 @@ def _extract_items(leg: dict | None) -> list[dict]:
         for item in provider.get("items") or []:
             item = item or {}
             descriptor = item.get("descriptor") or {}
+            details = _extract_item_details(item)
             items.append(
                 {
                     "provider": provider_name,
-                    "name": descriptor.get("name") or "",
+                    "name": descriptor.get("name") or details.get("Title") or "",
                     "description": descriptor.get("short_desc")
                     or descriptor.get("long_desc")
+                    or details.get("Scheme Introduction")
                     or "",
                     "id": item.get("id") or "",
+                    "details": details,
                 }
             )
     return items
