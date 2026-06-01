@@ -174,11 +174,12 @@ def _resolve_final_top_k(requested_top_k: int) -> int:
     Resolve final top_k with contract caps.
 
     Contract:
-    - MARQO_DEFAULT_FINAL_CHUNKS (default 12)
-    - MARQO_MAX_FINAL_CHUNKS (default 20)
+    - MARQO_DEFAULT_FINAL_CHUNKS (default 8): chunks served by default AND the
+      effective per-request cap — a larger requested top_k is trimmed down to it.
+    - MARQO_MAX_FINAL_CHUNKS (default 20): absolute hard ceiling.
     - hard cap at 20
     """
-    default_final = max(1, _parse_int_env("MARQO_DEFAULT_FINAL_CHUNKS", 12))
+    default_final = max(1, _parse_int_env("MARQO_DEFAULT_FINAL_CHUNKS", 8))
     env_cap = max(1, _parse_int_env("MARQO_MAX_FINAL_CHUNKS", 20))
     hard_cap = min(env_cap, 20)
 
@@ -190,7 +191,11 @@ def _resolve_final_top_k(requested_top_k: int) -> int:
     if requested <= 0:
         requested = default_final
 
-    return max(1, min(requested, hard_cap))
+    # default_final is the effective serving cap: trimming retrieved chunks from
+    # 12 -> 8 cuts the bulk of the answer agent's 2nd-pass prefill (each chunk is
+    # a full doc excerpt), shortening time-to-first-token. A larger request is
+    # capped here; revert by setting MARQO_DEFAULT_FINAL_CHUNKS=12.
+    return max(1, min(requested, default_final, hard_cap))
 
 
 def _expand_query_by_profile(query: str, profile: str) -> str:
@@ -346,8 +351,8 @@ class SearchHit(BaseModel):
 
 
 async def search_documents(
-    query: str, 
-    top_k: int = 12, 
+    query: str,
+    top_k: int = 8,
 ) -> str:
     """
     Semantic retrieval over veterinary/agri documents.
@@ -369,7 +374,7 @@ async def search_documents(
     
     Args:
         query: English keyword query for retrieval (required). Keep compact and intent-aligned.
-        top_k: Requested number of final results (contract-clamped, default: 12)
+        top_k: Requested number of final results (contract-clamped, default: 8)
         
     Returns:
         search_results: Formatted list of documents

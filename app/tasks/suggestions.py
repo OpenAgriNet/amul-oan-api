@@ -6,7 +6,12 @@ from contextlib import nullcontext
 from helpers.utils import get_logger
 from app.utils import _get_message_history, trim_history, format_message_pairs, set_cache
 from app.core.cache import cache
-from agents.models import LLM_MODEL_NAME
+from agents.models import (
+    LLM_MODEL_NAME,
+    OSS_LLM_MODEL_NAME,
+    get_model_for_variant,
+    oss_model_available,
+)
 from agents.suggestions import suggestions_agent
 from langcodes import Language
 
@@ -20,11 +25,20 @@ except ImportError:
     propagate_attributes = None
     get_langfuse_client = None
 
-async def create_suggestions(session_id: str, target_lang: str = 'mr'):
+async def create_suggestions(session_id: str, target_lang: str = 'mr', variant: str = "legacy"):
     """
     Create and save suggestions for a session
     """
     logger.info(f"Getting suggestions for session {session_id}")
+
+    # Run suggestions on the same backend as the session's pipeline: OSS sessions
+    # use the self-hosted gemma model (no API cost; completes full-OSS for chat),
+    # legacy stays on the default model. Falls back to the default model if OSS
+    # is unconfigured.
+    sug_model = get_model_for_variant(variant)
+    sug_model_name = (
+        OSS_LLM_MODEL_NAME if (variant == "oss" and oss_model_available()) else LLM_MODEL_NAME
+    )
 
     status_key = f"suggestions_{session_id}_{target_lang}:pending"
     try:
@@ -61,10 +75,10 @@ async def create_suggestions(session_id: str, target_lang: str = 'mr'):
                 input={
                     "session_id": session_id,
                     "target_lang": target_lang,
-                    "model_name": LLM_MODEL_NAME,
+                    "model_name": sug_model_name,
                     "message": message,
                 },
-                model=LLM_MODEL_NAME,
+                model=sug_model_name,
                 metadata={"task": "suggestions", "target_lang": (target_lang or "unknown")[:200]},
             )
             if _lf
@@ -73,7 +87,7 @@ async def create_suggestions(session_id: str, target_lang: str = 'mr'):
 
         with session_ctx:
             with _suggestions_obs_ctx as sug_obs:
-                agent_run = await suggestions_agent.run(message)
+                agent_run = await suggestions_agent.run(message, model=sug_model)
                 suggestions = [x for x in agent_run.output]
                 if sug_obs is not None:
                     sug_obs.update(
