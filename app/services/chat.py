@@ -383,12 +383,15 @@ async def stream_chat_messages(
                     name="Moderation",
                     as_type="generation",
                     input={
-                        "model_name": LLM_MODEL_NAME,
+                        # Actual model the moderation_agent.run uses below
+                        # (gemma for OSS, legacy model otherwise) — not LLM_MODEL_NAME,
+                        # which mislabeled OSS gemma moderation as gpt in dashboards.
+                        "model_name": request_model_name,
                         "query": user_message,
                         "session_id": session_id_safe,
                         "use_translation_pipeline": bool(use_translation_pipeline),
                     },
-                    model=LLM_MODEL_NAME,
+                    model=request_model_name,
                     metadata={"pipeline": pipeline_name},
                 )
                 if _lf_mod
@@ -419,7 +422,7 @@ async def stream_chat_messages(
                         # Mark pending and clear stale suggestions so callers wait for fresh output.
                         await set_cache(status_key, True, ttl=SUGGESTIONS_PENDING_TTL)
                         await cache.delete(suggestions_cache_key)
-                        background_tasks.add_task(create_suggestions, session_id, target_lang)
+                        background_tasks.add_task(create_suggestions, session_id, target_lang, pipeline_variant)
                         logger.info("Successfully added suggestions task")
                     except Exception as e:
                         logger.error(f"Error adding suggestions task: {str(e)}")
@@ -452,11 +455,17 @@ async def stream_chat_messages(
         logger.info("request_id=%s running_agent=True user_message=%s", request_id, user_message)
 
         # Run the main agent
+        # Strip prior-turn tool calls + their search_documents results from the
+        # replayed history. The agent re-searches fresh every turn, so the only
+        # effect of keeping them was dragging old RAG chunks forward and bloating
+        # prefill (the gemma 10k history budget was mostly stale doc text). The
+        # current turn's search is unaffected — it runs live inside the agent
+        # loop, not via message_history. Suggestions already runs this way.
         trimmed_history = trim_history(
             history,
             max_tokens=_chat_history_trim_max_tokens(pipeline_variant),
             include_system_prompts=False,
-            include_tool_calls=True
+            include_tool_calls=False
         )
 
         logger.info(f"Trimmed history length: {len(trimmed_history)} messages")
