@@ -6,6 +6,7 @@ from typing import Any
 from pydantic_ai import RunContext
 
 from agents.deps import FarmerContext
+from app.config import settings
 from app.models.union import UnionName
 from app.services.scheme_ingestion import (
     SchemeCacheError,
@@ -48,43 +49,54 @@ async def get_union_scheme_data(ctx: RunContext[FarmerContext], scheme_name: str
     farmer_unions = [union_name.strip().lower() for union_name in ctx.deps.farmer_unions if union_name]
     normalized_union_name = next((union_name for union_name in farmer_unions if union_name in SUPPORTED_SCHEME_UNIONS), None)
     normalized_scheme_name = scheme_name.strip() if scheme_name else None
+    require_union_auth = settings.scheme_require_union_auth
     logger.info(
-        "Union scheme tool invoked farmer_unions=%s selected_union=%s scheme_name=%s",
+        "Union scheme tool invoked farmer_unions=%s selected_union=%s scheme_name=%s require_union_auth=%s",
         farmer_unions,
         normalized_union_name,
         normalized_scheme_name,
+        require_union_auth,
     )
-    if not normalized_union_name:
-        logger.warning("Union scheme tool could not infer a supported union from farmer context farmer_unions=%s", farmer_unions)
-        return "Scheme data is unavailable because the farmer union could not be determined from the current farmer context."
+    target_unions: list[str] = []
+    if require_union_auth:
+        if not normalized_union_name:
+            logger.warning(
+                "Union scheme tool could not infer a supported union from farmer context farmer_unions=%s",
+                farmer_unions,
+            )
+            return "Scheme data is unavailable because the farmer union could not be determined from the current farmer context."
+        target_unions = [normalized_union_name]
+    else:
+        if normalized_union_name:
+            target_unions = [normalized_union_name]
+        else:
+            target_unions = sorted(SUPPORTED_SCHEME_UNIONS)
+            logger.info(
+                "Union scheme tool bypassed union auth for testing; using supported unions=%s",
+                target_unions,
+            )
 
-    if normalized_union_name not in SUPPORTED_SCHEME_UNIONS:
-        logger.warning("Union scheme tool received unsupported union normalized_union_name=%s", normalized_union_name)
-        return (
-            "Scheme data is only available for supported unions: "
-            f"{', '.join(sorted(SUPPORTED_SCHEME_UNIONS))}."
-        )
+    records: list[dict[str, Any]] = []
+    for union_name in target_unions:
+        try:
+            UnionName(union_name)
+        except ValueError:
+            logger.warning("Union scheme tool failed enum validation union_name=%s", union_name)
+            continue
 
-    try:
-        UnionName(normalized_union_name)
-    except ValueError:
-        logger.warning("Union scheme tool failed enum validation normalized_union_name=%s", normalized_union_name)
-        return (
-            "Scheme data is only available for supported unions: "
-            f"{', '.join(sorted(SUPPORTED_SCHEME_UNIONS))}."
-        )
+        try:
+            union_records = await get_cached_scheme_records_for_union(union_name)
+        except SchemeDependencyError:
+            logger.exception("Union scheme tool failed because Redis dependency is unavailable")
+            return "Scheme data is temporarily unavailable because the cache dependency is not installed."
+        except SchemeCacheError:
+            logger.exception("Union scheme tool failed because scheme cache access failed")
+            return "Scheme data is temporarily unavailable because the cache could not be read."
+        except Exception:
+            logger.exception("Union scheme tool failed due to unexpected error for union=%s", union_name)
+            return "Scheme data is temporarily unavailable due to an unexpected error."
 
-    try:
-        records = await get_cached_scheme_records_for_union(normalized_union_name)
-    except SchemeDependencyError:
-        logger.exception("Union scheme tool failed because Redis dependency is unavailable")
-        return "Scheme data is temporarily unavailable because the cache dependency is not installed."
-    except SchemeCacheError:
-        logger.exception("Union scheme tool failed because scheme cache access failed")
-        return "Scheme data is temporarily unavailable because the cache could not be read."
-    except Exception:
-        logger.exception("Union scheme tool failed due to unexpected error for union=%s", normalized_union_name)
-        return "Scheme data is temporarily unavailable due to an unexpected error."
+        records.extend(union_records)
 
     if normalized_scheme_name:
         records = _filter_scheme_records(records, normalized_scheme_name)
@@ -97,16 +109,13 @@ async def get_union_scheme_data(ctx: RunContext[FarmerContext], scheme_name: str
 
     if not records:
         logger.info(
-            "Union scheme tool found no cached data for union=%s scheme_name=%s",
-            normalized_union_name,
+            "Union scheme tool found no cached data for unions=%s scheme_name=%s",
+            target_unions,
             normalized_scheme_name,
         )
         if normalized_scheme_name:
-            return (
-                f"Scheme data for '{normalized_scheme_name}' is not available yet "
-                f"for union '{normalized_union_name}'."
-            )
-        return f"Scheme data is not available yet for union '{normalized_union_name}'."
+            return f"Scheme data for '{normalized_scheme_name}' is not available yet for supported unions."
+        return "Scheme data is not available yet for supported unions."
 
-    logger.info("Union scheme tool returning cached data for union=%s record_count=%s", normalized_union_name, len(records))
+    logger.info("Union scheme tool returning cached data for unions=%s record_count=%s", target_unions, len(records))
     return json.dumps(records, indent=2, ensure_ascii=False)
