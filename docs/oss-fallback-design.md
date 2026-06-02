@@ -408,11 +408,34 @@ These were open during design and have been decided (2026-06-01):
   would reorder that concurrency — it needs care and validation in a real voice
   env.
 
-**Validation caveat:** streaming changes could not be run locally (pytest absent
-from the venv; agents need live endpoints). Logic is verified via a standalone
-harness against the real module (29 checks). The agent-streaming wiring in
-amul `chat.py` must be validated in a real environment behind the kill-switch
-before `OSS_PIPELINE_PCT` is ramped.
+### Tool re-run safety (booking idempotency) — DONE
+
+First-token-commit fallback **re-runs the whole agent on the managed model** if
+OSS fails before the first text token. Because the agent executes tool-calls
+*before* producing final text, a re-run re-executes any tools already called —
+including **side-effecting write tools**. An audit found the write tools
+`create_ai_call` (`POST /CreateAICall`) and `create_health_call`
+(`POST /CreateHealthCall`) could **double-book** on a fallback re-run:
+
+- **amul**: both were unguarded (and took no session context). Fixed by plumbing
+  `session_id` into `FarmerContext` and adding a per-session cooldown cache
+  (`ai_call_booked` / `health_call_booked`) so a re-run short-circuits.
+- **voice**: `create_ai_call` was already guarded; `create_health_call` was not
+  (only `ensure_in_scope`). Added the same cooldown guard.
+
+This is a **prerequisite for enabling `FALLBACK_ENABLED`** on any path that runs
+the chat agent — now satisfied in both services. Any *future* write tool must be
+idempotency-guarded (per-session cooldown or dedup key) before fallback is
+enabled, or it risks double-firing on a re-run.
+
+**Validation caveat:** pytest now runs (installed in both venvs; voice async
+tests need `-o asyncio_mode=auto`). The fallback module, voice moderation, and
+booking-idempotency tests pass; amul suite is green and voice has only
+pre-existing `amul-dev` failures (unrelated prompt/matcher/fixture assertions).
+What still cannot be exercised locally is the **live agent stream** (agents need
+real endpoints), so the agent-streaming wiring in amul `chat.py` must be
+validated in a real environment behind the kill-switch before `OSS_PIPELINE_PCT`
+is ramped.
 
 **Deviation from design (noted):** `emit()` records fallback events to a
 **structured log line** (canonical, always-available source for the
