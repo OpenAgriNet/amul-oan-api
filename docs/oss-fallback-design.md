@@ -377,8 +377,21 @@ These were open during design and have been decided (2026-06-01):
   `FALLBACK_ENABLED` (default off), on branch `feat/oss-fallback` in both
   services. amul: pretranslation, moderation, suggestions. voice: pretranslation
   (moderation deferred — open item). Unit tests included.
-- **Increment 2 (NEXT)** — core chat streaming (`stream_with_fallback`,
-  first-token commit) in both services.
+- **Increment 2 (amul DONE; voice deferred)** — `stream_with_fallback`
+  (first-token commit) added and tested in both services. amul core chat is
+  wired behind `FALLBACK_ENABLED` (proven anthropic/run_stream blocks kept as the
+  disabled path). Voice core-chat wiring is **deferred** (open item): its
+  run_stream loop interleaves the deferred moderation gate (resolved after the
+  stream opens, before tokens emit, relying on the agent running prefill/tools
+  concurrently) plus staleness/nudge handling, so a lazy fallback-wrapped stream
+  would reorder that concurrency — it needs care and validation in a real voice
+  env.
+
+**Validation caveat:** streaming changes could not be run locally (pytest absent
+from the venv; agents need live endpoints). Logic is verified via a standalone
+harness against the real module (29 checks). The agent-streaming wiring in
+amul `chat.py` must be validated in a real environment behind the kill-switch
+before `OSS_PIPELINE_PCT` is ramped.
 
 **Deviation from design (noted):** `emit()` records fallback events to a
 **structured log line** (canonical, always-available source for the
@@ -399,4 +412,8 @@ event type is added there.
 - **TranslateGemma as a pretranslation quality tier.** Kept dropped by default
   (#7). Re-add as a middle tier only if measured to pretranslate gu→en better
   than the managed model.
+- **Voice core-chat streaming fallback.** Primitive (`stream_with_fallback`) is
+  in place and tested, but not wired into voice's `run_stream` loop because of
+  the deferred-moderation-gate concurrency model (see Implementation status).
+  Needs a focused change validated in a real voice environment.
 ```
