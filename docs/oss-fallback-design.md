@@ -338,6 +338,102 @@ request still tries OSS first (paying the timeout once on a down node).
 
 ---
 
+## Voice request flow (with fallback)
+
+How a single voice turn flows with `FALLBACK_ENABLED=true`. The moderation,
+pretranslation, and agent stages run **concurrently** (the agent is eager-started
+as a task), so happy-path latency is unchanged; the moderation verdict is
+resolved before any audio is emitted.
+
+```
+                          ┌─────────────────────────────────────────┐
+   Farmer speaks (e.g.    │           VOICE TURN (one utterance)      │
+   Gujarati) ───────────► └─────────────────────────────────────────┘
+                                            │
+                                            ▼
+                          resolve_pipeline_variant(session_id)      ◄── sticky in Redis
+                            → "oss"  (OSS_PIPELINE_PCT)                  (router; unchanged)
+                            → "legacy" otherwise
+                                            │
+                                            ▼
+        ┌──────────────────────── PARALLEL (latency optimization) ───────────────────────┐
+        │                                                                                  │
+        │   ① MODERATION (deferred gate)        ② PRETRANSLATION (gu→en)   ③ AGENT (eager) │
+        │   check_moderation(variant)           translate_to_english_...   run_stream(...) │
+        │        │                                   │                          │          │
+        │   execute_with_fallback                execute_with_fallback     stream_with_    │
+        │   ┌────────────────┐                   ┌────────────────┐        fallback        │
+        │   │ OSS vLLM gemma │                   │ OSS vLLM gemma │        (first token    │
+        │   └──────┬─────────┘                   └──────┬─────────┘         pulled as a    │
+        │     fail │ (timeout/5xx/conn)            fail │                   task → agent    │
+        │          ▼                                    ▼                   starts NOW)     │
+        │   ┌────────────────┐                   ┌────────────────┐             │          │
+        │   │ managed OpenAI │                   │ managed (gpt5- │             │          │
+        │   └──────┬─────────┘                   │  mini, OpenAI) │             │          │
+        │     both │ fail                        └──────┬─────────┘             │          │
+        │          ▼                                both │ fail                 │          │
+        │   FAIL-CLOSED  ✗                              ▼                       │          │
+        │   ("unavailable")                       degrade: raw/empty            │          │
+        │                                         (request continues)           │          │
+        └──────────┬───────────────────────────────────┬──────────────────────┬──────────┘
+                   │                                    │                       │
+                   └─────────────► MODERATION GATE ◄────┘                       │
+                                   (resolve verdict BEFORE                      │
+                                    emitting any audio)                         │
+                                        │                                       │
+                          rejected?  ───┤                                       │
+                              yes ──────┴──► decline message ──► END            │
+                              no                                                │
+                                        └───────────────────────────────────────┘
+                                                          │
+                                                          ▼
+                                       ④ CORE-CHAT first-token commit
+                                          (see detail below)
+                                                          │  English tokens
+                                                          ▼
+                                       ⑤ OUTPUT TRANSLATION (en→gu)
+                                          TranslateGemma, per sentence-batch
+                                                          │  spoken audio
+                                                          ▼
+                                       Farmer hears answer ► new_messages → history
+```
+
+**④ Core-chat first-token commit (zoomed in):**
+
+```
+        agent run_stream(OSS gemma)  ── streaming English tokens ──►
+                   │
+          first token arrives?
+                   │
+        ┌──────────┴───────────────────────────────┐
+        │ BEFORE first token                        │  AFTER first token
+        │ (farmer has heard nothing)                │  (farmer already hearing audio)
+        ▼                                           ▼
+   OSS fails (timeout 8s / conn / 5xx / OOM)   OSS fails mid-answer
+        │                                           │
+        ▼                                           ▼
+   silently swap to managed OpenAI            can't swap → emit canned
+   → farmer never notices  ✓                  "having trouble, try again" line
+        │                                           │
+        ▼                                           ▼
+   stream managed answer                       end turn (partial + canned tail)
+```
+
+Notes:
+- **Different terminal behavior per pipeline** (deliberate): moderation
+  **fail-closed**; pretranslation **degrades** (request continues); core-chat
+  **silent swap** pre-first-token, **canned line** post-first-token.
+- For a **legacy** session each chain is a single `[managed]` tier (no OSS, no
+  fallback). With `FALLBACK_ENABLED=false` every chain collapses to one tier =
+  today's exact behavior.
+- Booking tools (`create_ai_call` / `create_health_call`) are idempotency-guarded
+  so the agent re-run on a fallback can't double-book (see Tool re-run safety).
+- Every fallback emits an `oss_fallback` event → the `fallback_rate` metric.
+- amul (chat) is the same shape minus the voice-specific deferred-gate/nudge
+  machinery; its core-chat fallback streams text instead of audio.
+
+---
+
 ## Rollout (lowest blast radius first)
 
 1. **Module + telemetry**, wired into **pretranslation** first — it already has
