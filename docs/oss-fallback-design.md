@@ -373,13 +373,31 @@ These were open during design and have been decided (2026-06-01):
 - **TranslateGemma quality tier → NOT pursued.** Decided not needed: the
   pretranslation fallback stays `OSS → managed → degrade` with TranslateGemma
   dropped (#7). No quality-eval / re-add planned.
+- **Voice moderation → match chat (variant-routed + fallback + fail-closed). DONE.**
+  Team confirmed (2026-06-02) that the prior voice behaviors were *misses*, not
+  design: voice moderation now (a) routes by the session `pipeline_variant`
+  through the OSS→managed `execute_with_fallback` chain like amul, and (b) **fails
+  closed** (a new `unavailable` reject verdict with a generic "try again" decline)
+  instead of fail-open. Gated behind `FALLBACK_ENABLED`; legacy path unchanged.
+  Robust: failing closed only triggers when *both* OSS and managed fail, so it
+  does not drop live calls on a single-provider blip.
+  - **Consequence (accepted):** matching the split means *legacy* voice sessions
+    run moderation on the managed model, not the fast in-cluster OSS path
+    (~1.5s vs ~0.2s per the code's perf note). Inherent to "same split as chat".
+    If that latency matters, the alternative is "OSS-primary-always + managed
+    fallback" — flag if you want that instead.
+  - **Correction to earlier audit:** an early note here called voice moderation
+    "managed-only (OpenAI)". That was stale — current code defaults it to OSS
+    (`VOICE_MODERATION_PROVIDER=vllm`) as a *global* toggle (not variant-routed).
+    The change above replaces that global toggle with per-session variant routing.
 
 ## Implementation status
 
 - **Increment 1 (DONE)** — `app/services/fallback.py` + unary pipelines, behind
   `FALLBACK_ENABLED` (default off), on branch `feat/oss-fallback` in both
   services. amul: pretranslation, moderation, suggestions. voice: pretranslation
-  (moderation deferred — open item). Unit tests included.
+  and **moderation** (variant-routed + fallback + fail-closed; see Resolved
+  decisions). Unit tests included.
 - **Increment 2 (amul DONE; voice deferred)** — `stream_with_fallback`
   (first-token commit) added and tested in both services. amul core chat is
   wired behind `FALLBACK_ENABLED` (proven anthropic/run_stream blocks kept as the
@@ -406,22 +424,6 @@ event type is added there.
 
 ## Open items
 
-- **Voice moderation fail-open vs fail-closed.** Voice moderation is managed-only
-  (OpenAI) and a deferred parallel gate; it currently fails *open* by design
-  ("a flaky check must never drop a live call"). Whether to flip it to
-  fail-closed per decision #2 is deferred — it is not an OSS-reliability surface,
-  and failing closed on a live phone call drops the farmer's call on an OpenAI
-  blip. Decide as its own follow-up.
-  - **CLARIFYING QUESTION FOR THE TEAM:** Why is voice *moderation* pinned to
-    OpenAI and never routed to OSS Gemma, while amul moderation runs on the
-    session's variant (OSS for OSS sessions)? Is that deliberate (a fixed managed
-    safety gate to leave alone) or an un-migrated TODO (should eventually run on
-    OSS like amul)? The answer settles the fail posture: if it's a deliberate
-    managed gate, fail-open is reasonable and #2's fail-closed need not apply to
-    voice; if it's a migration gap, voice moderation becomes a future OSS surface
-    that needs the OSS→managed fallback with a deliberate fail posture.
-    (NB: this is about voice *moderation*, not the voice *chat* agent — the chat
-    agent DOES run on OSS for OSS sessions.)
 - **Voice core-chat streaming fallback.** Primitive (`stream_with_fallback`) is
   in place and tested, but not wired into voice's `run_stream` loop because of
   the deferred-moderation-gate concurrency model (see Implementation status).
