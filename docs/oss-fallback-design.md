@@ -370,6 +370,9 @@ These were open during design and have been decided (2026-06-01):
 - **Suggestions → joins OSS with managed fallback.** As suggestions moves onto
   OSS, it uses the same `execute_with_fallback` chain (OSS → managed) rather
   than staying managed-only.
+- **TranslateGemma quality tier → NOT pursued.** Decided not needed: the
+  pretranslation fallback stays `OSS → managed → degrade` with TranslateGemma
+  dropped (#7). No quality-eval / re-add planned.
 
 ## Implementation status
 
@@ -409,11 +412,20 @@ event type is added there.
   fail-closed per decision #2 is deferred — it is not an OSS-reliability surface,
   and failing closed on a live phone call drops the farmer's call on an OpenAI
   blip. Decide as its own follow-up.
-- **TranslateGemma as a pretranslation quality tier.** Kept dropped by default
-  (#7). Re-add as a middle tier only if measured to pretranslate gu→en better
-  than the managed model.
+  - **CLARIFYING QUESTION FOR THE TEAM:** Why is voice *moderation* pinned to
+    OpenAI and never routed to OSS Gemma, while amul moderation runs on the
+    session's variant (OSS for OSS sessions)? Is that deliberate (a fixed managed
+    safety gate to leave alone) or an un-migrated TODO (should eventually run on
+    OSS like amul)? The answer settles the fail posture: if it's a deliberate
+    managed gate, fail-open is reasonable and #2's fail-closed need not apply to
+    voice; if it's a migration gap, voice moderation becomes a future OSS surface
+    that needs the OSS→managed fallback with a deliberate fail posture.
+    (NB: this is about voice *moderation*, not the voice *chat* agent — the chat
+    agent DOES run on OSS for OSS sessions.)
 - **Voice core-chat streaming fallback.** Primitive (`stream_with_fallback`) is
   in place and tested, but not wired into voice's `run_stream` loop because of
   the deferred-moderation-gate concurrency model (see Implementation status).
-  Needs a focused change validated in a real voice environment.
+  Needs a focused change validated in a real voice environment. Interim
+  guardrail: keep `OSS_PIPELINE_PCT=0` for voice until wired (amul core-chat is
+  wired and can ramp independently).
 ```
