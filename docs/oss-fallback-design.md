@@ -440,15 +440,44 @@ Notes:
    a fallback chain, so we swap bespoke logic for the standard one and validate
    telemetry at near-zero risk. Bonus: drop the TranslateGemma stopgap and point
    the fallback at managed (restores the pre-OSS arrangement).
-2. **Moderation + suggestions** — unary, low risk. amul moderation adopts the
-   standard chain (already fail-closed); voice moderation is managed-only and its
-   fail-open→closed flip is deferred (open item).
+2. **Moderation + suggestions** — unary, low risk. Both services' moderation now
+   use the standard chain and **fail closed** (voice moved off its old global
+   provider + fail-open); suggestions joins the chain.
 3. **Core chat** — the streaming executor (the high-value gap). Validate
    first-token commit behind `FALLBACK_ENABLED` before ramping `OSS_PIPELINE_PCT`.
 
 The payoff: `OSS_PIPELINE_PCT` can be raised with confidence — a bad OSS node
 degrades to managed and shows up on the dashboard instead of breaking farmer
 requests.
+
+### Staging validation checklist
+
+The hard gate before enabling in prod. Everything ships behind
+`FALLBACK_ENABLED=false`, so merging is safe; this checklist is what makes
+flipping it on safe. Do it in **staging** on a host/tunnel that can reach the OSS
++ TranslateGemma endpoints.
+
+- [ ] **Fault-injection tests pass** (OSS forced dead → managed) for **both**
+      services:
+      `RUN_FALLBACK_INTEGRATION=1 OPENAI_API_KEY=… LLM_MODEL_NAME=… pytest tests/test_fallback_integration.py -o asyncio_mode=auto`
+- [ ] **Enable `FALLBACK_ENABLED=true` in staging only.** Confirm a normal
+      chat + voice turn works on **both** variants (`oss` and `legacy`).
+- [ ] **Forced-failure smoke test** — point `OSS_INFERENCE_ENDPOINT_URL` at a
+      dead endpoint in staging; confirm chat + voice turns still complete on
+      managed, and an `oss_fallback` log line / metric appears
+      (`pipeline × reason × endpoint`).
+- [ ] **Voice core-chat on a live call** (highest risk — validate first):
+      happy-path time-to-first-token unchanged (eager-start parallelism intact);
+      pre-first-token OSS failure → silent managed swap; mid-utterance failure →
+      localized "try again" line.
+- [ ] **Moderation fail-closed** verified (both): when OSS + managed both fail,
+      the turn is blocked (not passed through). Voice no longer fails open.
+- [ ] **Booking idempotency** verified: an induced fallback re-run does **not**
+      create a duplicate `CreateAICall` / `CreateHealthCall` booking.
+- [ ] **Prod enable + ramp:** set `FALLBACK_ENABLED=true` in prod, then ramp /
+      confirm `OSS_PIPELINE_PCT` while watching `fallback_rate` by
+      `pipeline × reason × endpoint`. Kill-switch (`FALLBACK_ENABLED=false`)
+      stays the instant rollback.
 
 ## Resolved decisions
 
