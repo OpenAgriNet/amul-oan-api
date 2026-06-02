@@ -27,7 +27,7 @@ call-site.
 | # | Decision | Note |
 |---|----------|------|
 | 1 | Fall back on **infra failures only** (timeout, connection, 5xx, 429, OOM) | `cancelled` and `bad_output` do **not** fall back |
-| 2 | **Moderation fails CLOSED** | If the gate can't run even after managed fallback, the request is **blocked**, not passed through. **Voice changes from fail-open to fail-closed.** |
+| 2 | **Moderation fails CLOSED (amul)** | amul: if the gate can't run even after managed fallback, the request is **blocked**, not passed through. Voice moderation is managed-only (not an OSS surface) and the fail-open→closed flip is an **OPEN item** (live-call UX trade-off) — see Open items. |
 | 3 | **`bad_output` does NOT fall back** | Schema/validation failures stay on the same model (pydantic-ai retries); recorded but not masked by a managed call |
 | 4 | **Suggestions joins OSS with managed fallback** | Uses the same chain as it migrates, not managed-only |
 | 5 | Core-chat streaming uses **first-token commit** | Silent fallback only *before* the first token; mid-stream failure → localized error tail |
@@ -308,13 +308,15 @@ Call-site references:
   model; the original history does not justify keeping it by default. This is
   scoped to **pretranslation** (input → English); output translation is
   TranslateGemma-only and out of scope (no OSS tier exists there).
-- **Moderation standardizes on fail-CLOSED.** Today the services disagree (voice
-  fails *open* → `in_scope`; amul fails *closed*). **Decision:** both fail
-  **closed** — the chain runs OSS → managed moderation, and if that terminal
-  attempt also fails, the request is blocked with a localized "try again later"
-  message rather than passed through unmoderated. Voice must be changed from its
-  current fail-open behavior to match. Safety is prioritized over availability
-  for the moderation gate specifically.
+- **Moderation fail-CLOSED (amul); voice is an OPEN item.** amul already fails
+  closed and now runs OSS → managed moderation; if that terminal attempt also
+  fails, the request is blocked with a localized "try again later" message
+  rather than passed through unmoderated. **Voice is different:** its moderation
+  is managed-only (OpenAI) and a deferred parallel gate — it never runs on OSS,
+  so the OSS→managed fallback does not apply. Voice currently fails *open* by
+  design ("a flaky check must never drop a live call"). Flipping it to
+  fail-closed is deferred as an open item because of that live-call UX
+  trade-off (see Open items).
 
 ### Configuration (per pipeline, both services)
 
@@ -342,8 +344,9 @@ request still tries OSS first (paying the timeout once on a down node).
    a fallback chain, so we swap bespoke logic for the standard one and validate
    telemetry at near-zero risk. Bonus: drop the TranslateGemma stopgap and point
    the fallback at managed (restores the pre-OSS arrangement).
-2. **Moderation + suggestions** — unary, low risk. Moderation adopts the
-   standard chain and switches voice to fail-closed.
+2. **Moderation + suggestions** — unary, low risk. amul moderation adopts the
+   standard chain (already fail-closed); voice moderation is managed-only and its
+   fail-open→closed flip is deferred (open item).
 3. **Core chat** — the streaming executor (the high-value gap). Validate
    first-token commit behind `FALLBACK_ENABLED` before ramping `OSS_PIPELINE_PCT`.
 
@@ -355,9 +358,10 @@ requests.
 
 These were open during design and have been decided (2026-06-01):
 
-- **Moderation → fail-CLOSED.** If the moderation gate can't run even after the
-  managed fallback, the request is blocked, not passed through. Voice changes
-  from its current fail-open behavior to match. Safety over availability.
+- **Moderation → fail-CLOSED (amul).** If the moderation gate can't run even
+  after the managed fallback, the request is blocked, not passed through. amul
+  already behaves this way. Voice moderation is managed-only and the
+  fail-open→closed flip is deferred (see Open items). Safety over availability.
 - **`BAD_OUTPUT` → does NOT trigger fallback.** Schema/validation failures are
   owned by pydantic-ai's per-agent retries on the same model; once exhausted,
   the failure surfaces to the call-site's degrade path rather than burning a
@@ -366,4 +370,33 @@ These were open during design and have been decided (2026-06-01):
 - **Suggestions → joins OSS with managed fallback.** As suggestions moves onto
   OSS, it uses the same `execute_with_fallback` chain (OSS → managed) rather
   than staying managed-only.
+
+## Implementation status
+
+- **Increment 1 (DONE)** — `app/services/fallback.py` + unary pipelines, behind
+  `FALLBACK_ENABLED` (default off), on branch `feat/oss-fallback` in both
+  services. amul: pretranslation, moderation, suggestions. voice: pretranslation
+  (moderation deferred — open item). Unit tests included.
+- **Increment 2 (NEXT)** — core chat streaming (`stream_with_fallback`,
+  first-token commit) in both services.
+
+**Deviation from design (noted):** `emit()` records fallback events to a
+**structured log line** (canonical, always-available source for the
+`oss_fallback` rate) plus best-effort Langfuse trace tag and Sentry breadcrumb —
+*not* the canonical telemetry queue. That queue (`CanonicalTelemetryEvent`) is
+purpose-built for farmer Q&A analytics; routing ops events through it would need
+a new event type and risks polluting that pipeline. Revisit if/when a fallback
+event type is added there.
+
+## Open items
+
+- **Voice moderation fail-open vs fail-closed.** Voice moderation is managed-only
+  (OpenAI) and a deferred parallel gate; it currently fails *open* by design
+  ("a flaky check must never drop a live call"). Whether to flip it to
+  fail-closed per decision #2 is deferred — it is not an OSS-reliability surface,
+  and failing closed on a live phone call drops the farmer's call on an OpenAI
+  blip. Decide as its own follow-up.
+- **TranslateGemma as a pretranslation quality tier.** Kept dropped by default
+  (#7). Re-add as a middle tier only if measured to pretranslate gu→en better
+  than the managed model.
 ```
