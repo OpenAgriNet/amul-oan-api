@@ -20,7 +20,7 @@ import asyncio
 import time
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Awaitable, Callable, Optional
+from typing import Any, AsyncIterator, Awaitable, Callable, Optional
 
 from app.config import settings
 from agents.models import (
@@ -315,3 +315,116 @@ async def execute_with_fallback(
             )
             if not will_fall_back:
                 raise
+
+
+async def _aclose(agen) -> None:
+    close = getattr(agen, "aclose", None)
+    if close is not None:
+        try:  # pragma: no cover - best effort cleanup
+            await close()
+        except Exception:
+            pass
+
+
+async def stream_with_fallback(
+    *,
+    pipeline: str,
+    session_id: str,
+    variant: str,
+    make_stream: Callable[[Attempt], AsyncIterator[Any]],
+) -> AsyncIterator[Any]:
+    """Stream a chain tier with *first-token commit* semantics.
+
+    ``make_stream(attempt)`` returns an async iterator of chunks (e.g. English
+    text deltas from an agent run on ``attempt.model``). The first yielded chunk
+    is the **commit point**:
+
+    * Failure BEFORE the first chunk, on a fallbackable reason and not the last
+      tier -> silently swap to the next tier (the client has seen nothing).
+    * Failure before the first chunk that is non-fallbackable or on the last tier
+      -> re-raise (no tokens sent; caller handles it as today).
+    * Failure AFTER the first chunk -> the client already has partial output, so a
+      transparent swap is impossible; the exception propagates (no worse than
+      today). The per-attempt timeout therefore bounds time-to-first-token only.
+
+    Every classified failure is recorded via ``emit`` (``committed`` distinguishes
+    pre- from post-commit).
+    """
+    chain = attempt_chain(variant, pipeline)
+    last_exc: Optional[BaseException] = None
+    for i, attempt in enumerate(chain):
+        t0 = time.monotonic()
+        agen = make_stream(attempt).__aiter__()
+
+        # ── first chunk (commit point), bounded by the per-attempt deadline ──
+        try:
+            if attempt.timeout is None:
+                first = await agen.__anext__()
+            else:
+                first = await asyncio.wait_for(agen.__anext__(), attempt.timeout)
+        except StopAsyncIteration:
+            await _aclose(agen)
+            return  # empty but successful stream
+        except asyncio.CancelledError:
+            await _aclose(agen)
+            raise
+        except Exception as exc:
+            await _aclose(agen)
+            reason = classify(exc)
+            is_last = i == len(chain) - 1
+            will_fall_back = reason in FALLBACKABLE and not is_last
+            emit(
+                FallbackEvent(
+                    pipeline=pipeline,
+                    session_id=session_id,
+                    from_variant=attempt.kind,
+                    to_variant=chain[i + 1].kind if will_fall_back else None,
+                    reason=reason,
+                    error_class=type(exc).__name__,
+                    error_detail=str(exc)[:500],
+                    oss_endpoint=attempt.endpoint,
+                    oss_model=attempt.model_name,
+                    latency_ms=int((time.monotonic() - t0) * 1000),
+                    fell_back=will_fall_back,
+                    committed=False,
+                )
+            )
+            last_exc = exc
+            if will_fall_back:
+                continue
+            raise
+
+        # ── committed: client now receives this tier's output ──
+        yield first
+        try:
+            async for chunk in agen:
+                yield chunk
+        except asyncio.CancelledError:
+            await _aclose(agen)
+            raise
+        except Exception as exc:
+            await _aclose(agen)
+            emit(
+                FallbackEvent(
+                    pipeline=pipeline,
+                    session_id=session_id,
+                    from_variant=attempt.kind,
+                    to_variant=None,
+                    reason=classify(exc),
+                    error_class=type(exc).__name__,
+                    error_detail=str(exc)[:500],
+                    oss_endpoint=attempt.endpoint,
+                    oss_model=attempt.model_name,
+                    latency_ms=int((time.monotonic() - t0) * 1000),
+                    fell_back=False,
+                    committed=True,
+                )
+            )
+            raise
+        else:
+            await _aclose(agen)
+        return
+
+    # All tiers failed before commit.
+    if last_exc is not None:
+        raise last_exc

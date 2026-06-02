@@ -23,7 +23,7 @@ from app.utils import (
 )
 from app.tasks.suggestions import create_suggestions
 from app.config import settings
-from app.services.fallback import execute_with_fallback
+from app.services.fallback import execute_with_fallback, stream_with_fallback
 from app.core.cache import cache
 from agents.deps import FarmerContext
 from agents.farmer_context import get_farmer_context_bundle_by_mobile
@@ -534,7 +534,133 @@ async def stream_chat_messages(
         )
 
         with _agrinet_obs_ctx as agrinet_obs:
-            if request_provider == 'anthropic':
+            if settings.fallback_enabled:
+                # Core-chat streaming with OSS -> managed first-token-commit fallback.
+                # _make_agent_text_stream produces the English token stream for one
+                # attempt (anthropic via .iter, else via .run_stream); stream_with_fallback
+                # swaps OSS -> managed only BEFORE the first token, then the existing
+                # translate/raw downstream logic runs unchanged. new_messages is captured
+                # into _stream_holder by whichever attempt completes.
+                _stream_holder: dict = {}
+
+                async def _make_agent_text_stream(attempt):
+                    if attempt.provider == 'anthropic':
+                        async with agrinet_agent.iter(
+                            user_prompt=user_message,
+                            message_history=trimmed_history,
+                            deps=deps,
+                            model=attempt.model,
+                        ) as agent_run:
+                            async for node in agent_run:
+                                if type(node).__name__ == 'ModelRequestNode':
+                                    async with node.stream(agent_run.ctx) as request_stream:
+                                        async for event in request_stream:
+                                            event_type = type(event).__name__
+                                            text = None
+                                            if event_type == 'PartStartEvent' and hasattr(event, 'part'):
+                                                if type(event.part).__name__ == 'TextPart' and hasattr(event.part, 'content'):
+                                                    text = event.part.content
+                                            elif event_type == 'PartDeltaEvent' and hasattr(event, 'delta'):
+                                                if type(event.delta).__name__ == 'TextPartDelta':
+                                                    text = event.delta.content_delta
+                                            if text:
+                                                yield text
+                            _stream_holder["new_messages"] = agent_run.result.new_messages()
+                    else:
+                        async with agrinet_agent.run_stream(
+                            user_prompt=user_message,
+                            message_history=trimmed_history,
+                            deps=deps,
+                            model=attempt.model,
+                        ) as response_stream:
+                            async for chunk in response_stream.stream_text(delta=True):
+                                yield chunk
+                            _stream_holder["new_messages"] = response_stream.new_messages()
+
+                async def _stream_to_client(english_src):
+                    if needs_output_translation:
+                        sentence_buffer = ""
+                        translation_batch = []
+                        batch_word_count = 0
+                        async for chunk in english_src:
+                            sentence_buffer += chunk
+                            complete_sentences, remaining = extract_complete_sentences(sentence_buffer)
+                            if complete_sentences:
+                                for sentence in complete_sentences:
+                                    translation_batch.append(sentence)
+                                    batch_word_count += len(sentence.split())
+                                batch_text = "".join(translation_batch)
+                                if should_translate_batch(batch_text, batch_word_count):
+                                    if translated_output_chunks and _batch_starts_new_line_or_list(batch_text):
+                                        translated_output_chunks.append("\n")
+                                        yield "\n"
+                                    try:
+                                        async for translated_chunk in translate_text_stream_fast(
+                                            text=batch_text,
+                                            source_lang="english",
+                                            target_lang=target_lang,
+                                            max_output_chars=deps.response_max_chars,
+                                        ):
+                                            translated_output_chunks.append(translated_chunk)
+                                            yield translated_chunk
+                                    except Exception as e:
+                                        logger.error(f"Optimised batch translation failed, falling back to English batch: {e}")
+                                        translated_output_chunks.append(batch_text)
+                                        yield batch_text
+                                    translation_batch = []
+                                    batch_word_count = 0
+                                sentence_buffer = remaining
+                        if translation_batch:
+                            batch_text = "".join(translation_batch)
+                            if translated_output_chunks and _batch_starts_new_line_or_list(batch_text):
+                                translated_output_chunks.append("\n")
+                                yield "\n"
+                            try:
+                                async for translated_chunk in translate_text_stream_fast(
+                                    text=batch_text,
+                                    source_lang="english",
+                                    target_lang=target_lang,
+                                    max_output_chars=deps.response_max_chars,
+                                ):
+                                    translated_output_chunks.append(translated_chunk)
+                                    yield translated_chunk
+                            except Exception as e:
+                                logger.error(f"Final batch translation failed, falling back to English batch: {e}")
+                                translated_output_chunks.append(batch_text)
+                                yield batch_text
+                        if sentence_buffer.strip():
+                            if translated_output_chunks and _batch_starts_new_line_or_list(sentence_buffer):
+                                translated_output_chunks.append("\n")
+                                yield "\n"
+                            try:
+                                async for translated_chunk in translate_text_stream_fast(
+                                    text=sentence_buffer,
+                                    source_lang="english",
+                                    target_lang=target_lang,
+                                    max_output_chars=deps.response_max_chars,
+                                ):
+                                    translated_output_chunks.append(translated_chunk)
+                                    yield translated_chunk
+                            except Exception as e:
+                                logger.error(f"Tail fragment translation failed, falling back to English fragment: {e}")
+                                translated_output_chunks.append(sentence_buffer)
+                                yield sentence_buffer
+                    else:
+                        async for chunk in english_src:
+                            raw_output_chunks.append(chunk)
+                            yield chunk
+
+                english_src = stream_with_fallback(
+                    pipeline="chat",
+                    session_id=session_id_safe,
+                    variant=pipeline_variant,
+                    make_stream=_make_agent_text_stream,
+                )
+                async for _out in _stream_to_client(english_src):
+                    yield _out
+                logger.info(f"Streaming complete for session {session_id}")
+                new_messages = _stream_holder.get("new_messages", [])
+            elif request_provider == 'anthropic':
                 # For Anthropic: Use agent.iter() + node.stream() instead of run_stream()
                 async with agrinet_agent.iter(
                     user_prompt=user_message,

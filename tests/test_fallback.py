@@ -165,3 +165,75 @@ def test_legacy_session_no_fallback_attempted(oss_enabled):
         )
     assert calls == ["managed"]  # only one tier for legacy sessions
     assert len(oss_enabled) == 1 and oss_enabled[0].fell_back is False
+
+
+# ── stream_with_fallback() (first-token commit) ──────────────────────────────
+
+async def _collect(agen):
+    return [c async for c in agen]
+
+
+def test_stream_success_on_oss_no_fallback(oss_enabled):
+    async def make_stream(attempt):
+        for c in ["a", "b", "c"]:
+            yield f"{attempt.kind}:{c}"
+
+    chunks = asyncio.run(
+        _collect(fb.stream_with_fallback(
+            pipeline="chat", session_id="s", variant="oss", make_stream=make_stream))
+    )
+    assert chunks == ["oss:a", "oss:b", "oss:c"]
+    assert oss_enabled == []
+
+
+def test_stream_precommit_failure_swaps_to_managed(oss_enabled):
+    async def make_stream(attempt):
+        if attempt.kind == "oss":
+            raise ConnectionError("refused")  # before any yield
+            yield  # pragma: no cover - makes this an async generator
+        for c in ["x", "y"]:
+            yield f"managed:{c}"
+
+    chunks = asyncio.run(
+        _collect(fb.stream_with_fallback(
+            pipeline="chat", session_id="s", variant="oss", make_stream=make_stream))
+    )
+    assert chunks == ["managed:x", "managed:y"]
+    assert len(oss_enabled) == 1
+    ev = oss_enabled[0]
+    assert ev.committed is False and ev.fell_back is True and ev.reason is FallbackReason.CONNECTION
+
+
+def test_stream_postcommit_failure_propagates(oss_enabled):
+    async def make_stream(attempt):
+        yield f"{attempt.kind}:first"
+        raise ConnectionError("died mid-stream")
+
+    got = []
+
+    async def drive():
+        async for c in fb.stream_with_fallback(
+            pipeline="chat", session_id="s", variant="oss", make_stream=make_stream
+        ):
+            got.append(c)
+
+    with pytest.raises(ConnectionError):
+        asyncio.run(drive())
+    assert got == ["oss:first"]              # committed chunk reached the client
+    assert len(oss_enabled) == 1
+    assert oss_enabled[0].committed is True and oss_enabled[0].fell_back is False
+
+
+def test_stream_precommit_bad_output_does_not_swap(oss_enabled):
+    class UnexpectedModelBehavior(Exception):
+        pass
+
+    async def make_stream(attempt):
+        raise UnexpectedModelBehavior("schema")
+        yield  # pragma: no cover
+
+    with pytest.raises(UnexpectedModelBehavior):
+        asyncio.run(_collect(fb.stream_with_fallback(
+            pipeline="chat", session_id="s", variant="oss", make_stream=make_stream)))
+    assert len(oss_enabled) == 1
+    assert oss_enabled[0].committed is False and oss_enabled[0].fell_back is False
