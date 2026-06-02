@@ -22,6 +22,8 @@ from app.utils import (
     set_cache,
 )
 from app.tasks.suggestions import create_suggestions
+from app.config import settings
+from app.services.fallback import execute_with_fallback
 from app.core.cache import cache
 from agents.deps import FarmerContext
 from agents.farmer_context import get_farmer_context_bundle_by_mobile
@@ -313,47 +315,79 @@ async def stream_chat_messages(
                 pretrans_provider or PRETRANSLATION_PROVIDER,
                 request_model_name if is_oss else PRETRANSLATION_MODEL,
             )
-            try:
-                processing_query = await translate_to_english_pretranslation(
-                    text=query,
-                    source_lang=source_lang,
-                    provider=pretrans_provider,
-                )
-                processing_lang = "en"
-                logger.info(
-                    "request_id=%s pretranslation_success=True source_preview=%s translated_preview=%s",
-                    request_id,
-                    query[:80],
-                    processing_query[:80],
-                )
-            except Exception as e:
-                logger.error(
-                    "request_id=%s pretranslation_success=False source_lang=%s error=%s",
-                    request_id,
-                    source_lang,
-                    e,
-                )
+            if settings.fallback_enabled:
+                # Standard OSS -> managed fallback. Drops the legacy TranslateGemma
+                # stopgap (decision #7): TranslateGemma is also self-hosted vLLM, so
+                # it shared a failure domain with the OSS pretranslation it backed up.
                 try:
-                    logger.info(
-                        "request_id=%s pretranslation_fallback=translategemma source_lang=%s",
-                        request_id,
-                        source_lang,
-                    )
-                    processing_query = await translate_text(
-                        text=query,
-                        source_lang=source_lang,
-                        target_lang="english",
+                    processing_query = await execute_with_fallback(
+                        pipeline="pretranslation",
+                        session_id=session_id_safe,
+                        variant=pipeline_variant,
+                        run=lambda a: translate_to_english_pretranslation(
+                            text=query,
+                            source_lang=source_lang,
+                            provider="vllm" if a.kind == "oss" else None,
+                        ),
                     )
                     processing_lang = "en"
-                except Exception as fallback_error:
+                    logger.info(
+                        "request_id=%s pretranslation_success=True source_preview=%s translated_preview=%s",
+                        request_id,
+                        query[:80],
+                        processing_query[:80],
+                    )
+                except Exception as e:
                     logger.error(
-                        "request_id=%s pretranslation_fallback_failed=True source_lang=%s error=%s",
+                        "request_id=%s pretranslation_success=False (all tiers) source_lang=%s error=%s",
                         request_id,
                         source_lang,
-                        fallback_error,
+                        e,
                     )
                     processing_query = query
                     processing_lang = target_lang
+            else:
+                try:
+                    processing_query = await translate_to_english_pretranslation(
+                        text=query,
+                        source_lang=source_lang,
+                        provider=pretrans_provider,
+                    )
+                    processing_lang = "en"
+                    logger.info(
+                        "request_id=%s pretranslation_success=True source_preview=%s translated_preview=%s",
+                        request_id,
+                        query[:80],
+                        processing_query[:80],
+                    )
+                except Exception as e:
+                    logger.error(
+                        "request_id=%s pretranslation_success=False source_lang=%s error=%s",
+                        request_id,
+                        source_lang,
+                        e,
+                    )
+                    try:
+                        logger.info(
+                            "request_id=%s pretranslation_fallback=translategemma source_lang=%s",
+                            request_id,
+                            source_lang,
+                        )
+                        processing_query = await translate_text(
+                            text=query,
+                            source_lang=source_lang,
+                            target_lang="english",
+                        )
+                        processing_lang = "en"
+                    except Exception as fallback_error:
+                        logger.error(
+                            "request_id=%s pretranslation_fallback_failed=True source_lang=%s error=%s",
+                            request_id,
+                            source_lang,
+                            fallback_error,
+                        )
+                        processing_query = query
+                        processing_lang = target_lang
         if use_translation_pipeline and needs_output_translation:
             # Agent responds in English; response will be translated to target_lang downstream
             processing_lang = "en"
@@ -398,7 +432,15 @@ async def stream_chat_messages(
                 else nullcontext()
             )
             with _mod_obs_ctx as mod_obs:
-                moderation_run = await moderation_agent.run(user_message, model=request_model)
+                if settings.fallback_enabled:
+                    moderation_run = await execute_with_fallback(
+                        pipeline="moderation",
+                        session_id=session_id_safe,
+                        variant=pipeline_variant,
+                        run=lambda a: moderation_agent.run(user_message, model=a.model),
+                    )
+                else:
+                    moderation_run = await moderation_agent.run(user_message, model=request_model)
                 moderation_data = moderation_run.output
                 logger.info(
                     "request_id=%s moderation_category=%s moderation_action=%s",
