@@ -524,15 +524,32 @@ the chat agent — now satisfied in both services. Any *future* write tool must 
 idempotency-guarded (per-session cooldown or dedup key) before fallback is
 enabled, or it risks double-firing on a re-run.
 
-**Validation caveat:** pytest now runs (installed in both venvs; voice async
-tests need `-o asyncio_mode=auto`). The fallback module, voice moderation, and
-booking-idempotency tests pass; amul suite is green and voice has only
-pre-existing `amul-dev` failures (unrelated prompt/matcher/fixture assertions).
-What still cannot be exercised locally is the **live agent stream** (agents need
-real endpoints), so the agent-streaming wiring in **both** amul `chat.py` and
-voice `voice.py` must be validated in a real environment behind the kill-switch
-before `OSS_PIPELINE_PCT` is ramped. The voice wiring is the higher-risk of the
-two (most intricate function, eager-start concurrency) — validate it first.
+### Test coverage
+
+Automated (pytest; voice async needs `-o asyncio_mode=auto`):
+
+- **Engine** (`test_fallback.py`, both services, 19 each) — `classify`,
+  `attempt_chain`, `execute_with_fallback`, `stream_with_fallback` (incl.
+  first-token commit, no-fallback-on-bad_output).
+- **Voice moderation wiring** (`test_voice_moderation_fallback.py`, 11) —
+  variant routing, both-tiers→fail-closed, valid-reject-no-fallback, legacy path.
+- **Suggestions wiring** (amul `test_suggestions_fallback.py`) — routes through
+  the chain, degrades to `[]`.
+- **Booking idempotency** — amul + voice `test_booking_idempotency.py`
+  (`create_ai_call`/`create_health_call` hit the API once across a re-run).
+- **Fault-injection integration** (`test_fallback_integration.py`, both,
+  **skip-by-default**) — with the OSS endpoint dead, a real moderation run
+  (unary) and core-chat `run_stream` (streaming, pre-first-token swap) fall back
+  to the managed model and emit an `oss_fallback` event. Run in staging/CI:
+  `RUN_FALLBACK_INTEGRATION=1 OPENAI_API_KEY=… pytest tests/test_fallback_integration.py -o asyncio_mode=auto`.
+
+**Still validated only by the integration test / staging (not unit-tested):** the
+amul moderation & pretranslation *call-sites* (inline in `stream_chat_messages`,
+not extractable) and the **live agent stream** for both endpoints (eager-start
+concurrency, gate ordering). These need a real environment behind the kill-switch
+before `OSS_PIPELINE_PCT` is ramped — **validate voice core-chat first** (most
+intricate function). The fault-injection test is the substitute for "can't run
+streaming locally"; run it in staging as the gate.
 
 **Deviation from design (noted):** `emit()` records fallback events to a
 **structured log line** (canonical, always-available source for the
