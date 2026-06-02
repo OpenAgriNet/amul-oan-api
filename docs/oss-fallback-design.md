@@ -32,7 +32,7 @@ call-site.
 | 4 | **Suggestions joins OSS with managed fallback** | Uses the same chain as it migrates, not managed-only |
 | 5 | Core-chat streaming uses **first-token commit** | Silent fallback only *before* the first token; mid-stream failure → localized error tail |
 | 6 | **Per-attempt timeouts mandatory** | Fixes chat having no timeout today (~600s hangs) |
-| 7 | Pretranslation fallback retargeted to **managed** | Today it falls back to TranslateGemma — *also self-hosted*, so both die together |
+| 7 | Pretranslation fallback flips back to **managed** (drop TranslateGemma) | TranslateGemma was only a timeout stopgap from when **GPT** was primary; left in place after the OSS swap, so both tiers now share vLLM infra and die together. Restore `OSS → managed → degrade`. |
 | 8 | **Circuit breaker deferred**; module **mirrored** per service (not shared) | Seams left for both |
 
 **Metric this unlocks:** `fallback_rate = fallbacks / oss_attempts`, sliced by
@@ -294,9 +294,20 @@ Call-site references:
 - **Per-attempt timeouts everywhere.** Chat has none today (httpx default
   ~600s); a hung node can stall a live request for minutes. The executor makes
   the timeout mandatory per attempt.
-- **Correlated-failure gap in pretranslation.** Today the fallback target is
-  TranslateGemma, also self-hosted — a GPU/node outage takes out both tiers.
-  The standard chain ends at a **managed** model.
+- **Pretranslation fallback flips back to managed (drop TranslateGemma).** The
+  current `OSS Gemma → TranslateGemma` chain is an artifact, not a design:
+  TranslateGemma was added only as a **timeout stopgap** when **GPT** was the
+  pretranslation primary (the smaller GPT models occasionally timed out), and it
+  was never removed when the primary was swapped to OSS Gemma during the
+  migration. Both tiers now run on self-hosted vLLM, so a GPU/node outage takes
+  them out together — the fallback no longer protects against the failure it now
+  faces. **Fix:** restore the pre-OSS arrangement with the primary inverted —
+  `OSS Gemma (vLLM) → managed GPT/Anthropic → safe degrade` — giving an
+  independent failure domain for the backstop. Keep TranslateGemma as a middle
+  tier *only* if it is measured to pretranslate gu→en better than the managed
+  model; the original history does not justify keeping it by default. This is
+  scoped to **pretranslation** (input → English); output translation is
+  TranslateGemma-only and out of scope (no OSS tier exists there).
 - **Moderation standardizes on fail-CLOSED.** Today the services disagree (voice
   fails *open* → `in_scope`; amul fails *closed*). **Decision:** both fail
   **closed** — the chain runs OSS → managed moderation, and if that terminal
@@ -329,7 +340,8 @@ request still tries OSS first (paying the timeout once on a down node).
 
 1. **Module + telemetry**, wired into **pretranslation** first — it already has
    a fallback chain, so we swap bespoke logic for the standard one and validate
-   telemetry at near-zero risk. Bonus: repoint its terminal attempt to managed.
+   telemetry at near-zero risk. Bonus: drop the TranslateGemma stopgap and point
+   the fallback at managed (restores the pre-OSS arrangement).
 2. **Moderation + suggestions** — unary, low risk. Moderation adopts the
    standard chain and switches voice to fail-closed.
 3. **Core chat** — the streaming executor (the high-value gap). Validate
