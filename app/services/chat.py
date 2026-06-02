@@ -394,6 +394,7 @@ async def stream_chat_messages(
 
         deps = FarmerContext(
             query=processing_query,
+            session_id=session_id,
             lang_code=processing_lang,
             farmer_info=farmer_data,
             farmer_unions=farmer_unions,

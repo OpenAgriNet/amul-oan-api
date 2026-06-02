@@ -4,7 +4,11 @@ Tool for booking a health call for a farmer.
 import os
 from contextlib import nullcontext
 
+from pydantic_ai import RunContext
+
+from agents.deps import FarmerContext
 from agents.tools.farmer_animal_backends import create_health_call_api
+from app.core.cache import cache
 from app.models.ai_call import AISpecies
 from app.models.health_call import HealthCallRequestModel, HealthCaseType
 from helpers.utils import get_logger
@@ -16,8 +20,15 @@ except ImportError:
 
 logger = get_logger(__name__)
 
+# One booking per session per 30 min. Also makes this tool idempotent against an
+# agent re-run (OSS->managed streaming fallback re-executes tool calls): a second
+# invocation in the same session short-circuits instead of double-booking.
+HEALTH_CALL_COOLDOWN_TTL = 60 * 30  # 30 minutes
+HEALTH_CALL_CACHE_NAMESPACE = "health_call_booked"
+
 
 async def create_health_call(
+    ctx: RunContext[FarmerContext],
     union_code: str,
     society_code: str,
     farmer_code: str,
@@ -47,6 +58,22 @@ async def create_health_call(
         species.value,
         case_type.value,
     )
+
+    # Idempotency / cooldown: one booking per session. Guards against an agent
+    # re-run (OSS->managed streaming fallback) re-firing this write tool.
+    session_id = ctx.deps.session_id if ctx and ctx.deps else None
+    if session_id:
+        try:
+            existing = await cache.get(session_id, namespace=HEALTH_CALL_CACHE_NAMESPACE)
+            if existing:
+                logger.info("Health call already booked for session %s, skipping", session_id)
+                return (
+                    "This session already has an active health call booking. "
+                    "Please try again later or contact your society for assistance."
+                )
+        except Exception as e:
+            logger.warning("Failed to check health call cooldown: %s", e)
+
     _lf = get_langfuse_client() if get_langfuse_client else None
     _health_tool_input = {
         "union_code": union_code,
@@ -120,6 +147,18 @@ async def create_health_call(
                 except Exception:
                     pass
             return failure_message
+
+        # Mark this session as booked so a re-run (or retry) does not double-book.
+        if session_id:
+            try:
+                await cache.set(
+                    session_id,
+                    {"ticket": response.ticket_number, "species": species.value},
+                    ttl=HEALTH_CALL_COOLDOWN_TTL,
+                    namespace=HEALTH_CALL_CACHE_NAMESPACE,
+                )
+            except Exception as e:
+                logger.warning("Failed to set health call cooldown: %s", e)
 
         ticket_number = response.ticket_number
         logger.info(
