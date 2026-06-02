@@ -398,15 +398,15 @@ These were open during design and have been decided (2026-06-01):
   services. amul: pretranslation, moderation, suggestions. voice: pretranslation
   and **moderation** (variant-routed + fallback + fail-closed; see Resolved
   decisions). Unit tests included.
-- **Increment 2 (amul DONE; voice deferred)** — `stream_with_fallback`
-  (first-token commit) added and tested in both services. amul core chat is
-  wired behind `FALLBACK_ENABLED` (proven anthropic/run_stream blocks kept as the
-  disabled path). Voice core-chat wiring is **deferred** (open item): its
-  run_stream loop interleaves the deferred moderation gate (resolved after the
-  stream opens, before tokens emit, relying on the agent running prefill/tools
-  concurrently) plus staleness/nudge handling, so a lazy fallback-wrapped stream
-  would reorder that concurrency — it needs care and validation in a real voice
-  env.
+- **Increment 2 (DONE, both services)** — `stream_with_fallback` (first-token
+  commit) in both. amul core chat wired behind `FALLBACK_ENABLED` (proven
+  blocks kept as the disabled path). **Voice core chat now wired too**: the
+  token-consumer loop is extracted into a shared nested function; the agent is
+  eager-started as a task so it runs in parallel with the moderation gate
+  (happy-path latency unchanged); a pre-first-token OSS failure swaps to managed
+  silently, a post-first-token failure emits a localized canned line; 8s
+  first-token budget. **Not validated on a live call** — rests on the tested
+  `stream_with_fallback` primitive + mandatory staging validation before enable.
 
 ### Tool re-run safety (booking idempotency) — DONE
 
@@ -433,9 +433,10 @@ tests need `-o asyncio_mode=auto`). The fallback module, voice moderation, and
 booking-idempotency tests pass; amul suite is green and voice has only
 pre-existing `amul-dev` failures (unrelated prompt/matcher/fixture assertions).
 What still cannot be exercised locally is the **live agent stream** (agents need
-real endpoints), so the agent-streaming wiring in amul `chat.py` must be
-validated in a real environment behind the kill-switch before `OSS_PIPELINE_PCT`
-is ramped.
+real endpoints), so the agent-streaming wiring in **both** amul `chat.py` and
+voice `voice.py` must be validated in a real environment behind the kill-switch
+before `OSS_PIPELINE_PCT` is ramped. The voice wiring is the higher-risk of the
+two (most intricate function, eager-start concurrency) — validate it first.
 
 **Deviation from design (noted):** `emit()` records fallback events to a
 **structured log line** (canonical, always-available source for the
@@ -447,10 +448,13 @@ event type is added there.
 
 ## Open items
 
-- **Voice core-chat streaming fallback.** Primitive (`stream_with_fallback`) is
-  in place and tested, but not wired into voice's `run_stream` loop because of
-  the deferred-moderation-gate concurrency model (see Implementation status).
-  Needs a focused change validated in a real voice environment. Interim
-  guardrail: keep `OSS_PIPELINE_PCT=0` for voice until wired (amul core-chat is
-  wired and can ramp independently).
+All designed pipelines are now implemented (both services) behind
+`FALLBACK_ENABLED`. No open *build* items remain. What's left is **rollout**, not
+code:
+
+1. Team review of the PRs (amul → `main`, voice → `amul-dev`).
+2. **Staging validation of the live agent streaming** (voice first — highest
+   risk), then enable `FALLBACK_ENABLED` and watch the `oss_fallback` metric.
+3. Standing rule: any *future* write tool must be idempotency-guarded before
+   fallback is enabled (see Tool re-run safety).
 ```
