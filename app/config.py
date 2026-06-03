@@ -133,6 +133,10 @@ class Settings(BaseSettings):
         "1", "true", "yes", "on"
     }
 
+    # Ambiguity-term fuzzy-match cutoff (0-1) for get_ambiguity_hints_for_query.
+    # Overridable via env; defaults to 0.80 (prior hard-coded behaviour).
+    ambiguity_match_threshold: float = float(os.getenv("AMBIGUITY_MATCH_THRESHOLD", "0.80"))
+
     class Config:
         env_file = ".env"
         extra = 'ignore'  # Ignore extra fields from .env

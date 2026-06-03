@@ -355,7 +355,7 @@ def _load_ambiguity_terms() -> list:
 _AMBIGUITY_TERMS = _load_ambiguity_terms()
 
 
-def get_ambiguity_hints_for_query(query: str, threshold: float = 0.80, include_ask: bool = True) -> str:
+def get_ambiguity_hints_for_query(query: str, threshold: float | None = None, include_ask: bool = True) -> str:
     """
     Fuzzy-match incoming query (any language) against ambiguity_terms.json.
     Returns a formatted string of matching rules to inject into the system prompt,
@@ -363,8 +363,9 @@ def get_ambiguity_hints_for_query(query: str, threshold: float = 0.80, include_a
 
     Args:
         query: The raw user query string.
-        threshold: Minimum similarity 0-1 (default 0.80, lower than glossary since
-                   Gujarati term matching is fuzzier).
+        threshold: Minimum similarity 0-1. When None (default), falls back to
+                   settings.ambiguity_match_threshold, then to 0.80. Lower than
+                   glossary matching since Gujarati term matching is fuzzier.
         include_ask: If False, skip entries with type == "ask" (those rules tell
                      the answering agent to ask a clarifying question and must
                      NOT leak into the pretranslation prompt — otherwise the
@@ -378,6 +379,14 @@ def get_ambiguity_hints_for_query(query: str, threshold: float = 0.80, include_a
     """
     if not query or not _AMBIGUITY_TERMS:
         return ""
+
+    # Allow callers to override; fall back to env setting, then hard-coded default
+    if threshold is None:
+        try:
+            from app.config import settings as _settings
+            threshold = _settings.ambiguity_match_threshold
+        except Exception:
+            threshold = 0.80
 
     score_cutoff = int(threshold * 100)
     matched_rules = []
