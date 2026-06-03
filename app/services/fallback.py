@@ -18,6 +18,8 @@ from __future__ import annotations
 
 import asyncio
 import time
+
+import anyio
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, AsyncIterator, Awaitable, Callable, Optional
@@ -291,7 +293,8 @@ async def execute_with_fallback(
         try:
             if attempt.timeout is None:
                 return await run(attempt)
-            return await asyncio.wait_for(run(attempt), attempt.timeout)
+            with anyio.fail_after(attempt.timeout):
+                return await run(attempt)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -354,24 +357,45 @@ async def stream_with_fallback(
     last_exc: Optional[BaseException] = None
     for i, attempt in enumerate(chain):
         t0 = time.monotonic()
-        agen = make_stream(attempt).__aiter__()
+        committed = False
 
-        # ── first chunk (commit point), bounded by the per-attempt deadline ──
+        # IMPORTANT: consume the agent generator with a plain `async for`. Do NOT
+        # wrap it in asyncio.wait_for / anyio.fail_after / a separate task —
+        # pydantic-ai's run_stream opens an anyio cancel scope *inside* make_stream
+        # that stays open across the `yield`, so any external timeout/task wrapper
+        # unwinds the scopes out of order ("cancel scope in a different task" /
+        # "not the current task's cancel scope"). `async for` lets Python manage the
+        # generator lifecycle in this task. A first-token deadline, if wanted, is
+        # applied INSIDE make_stream (same frame as run_stream).
         try:
-            if attempt.timeout is None:
-                first = await agen.__anext__()
-            else:
-                first = await asyncio.wait_for(agen.__anext__(), attempt.timeout)
-        except StopAsyncIteration:
-            await _aclose(agen)
-            return  # empty but successful stream
+            async for chunk in make_stream(attempt):
+                committed = True
+                yield chunk
+            return  # stream finished cleanly
         except asyncio.CancelledError:
-            await _aclose(agen)
             raise
         except Exception as exc:
-            await _aclose(agen)
             reason = classify(exc)
             is_last = i == len(chain) - 1
+            if committed:
+                # Client already received output — a transparent swap is impossible.
+                emit(
+                    FallbackEvent(
+                        pipeline=pipeline,
+                        session_id=session_id,
+                        from_variant=attempt.kind,
+                        to_variant=None,
+                        reason=reason,
+                        error_class=type(exc).__name__,
+                        error_detail=str(exc)[:500],
+                        oss_endpoint=attempt.endpoint,
+                        oss_model=attempt.model_name,
+                        latency_ms=int((time.monotonic() - t0) * 1000),
+                        fell_back=False,
+                        committed=True,
+                    )
+                )
+                raise
             will_fall_back = reason in FALLBACKABLE and not is_last
             emit(
                 FallbackEvent(
@@ -394,35 +418,8 @@ async def stream_with_fallback(
                 continue
             raise
 
-        # ── committed: client now receives this tier's output ──
-        yield first
-        try:
-            async for chunk in agen:
-                yield chunk
-        except asyncio.CancelledError:
-            await _aclose(agen)
-            raise
-        except Exception as exc:
-            await _aclose(agen)
-            emit(
-                FallbackEvent(
-                    pipeline=pipeline,
-                    session_id=session_id,
-                    from_variant=attempt.kind,
-                    to_variant=None,
-                    reason=classify(exc),
-                    error_class=type(exc).__name__,
-                    error_detail=str(exc)[:500],
-                    oss_endpoint=attempt.endpoint,
-                    oss_model=attempt.model_name,
-                    latency_ms=int((time.monotonic() - t0) * 1000),
-                    fell_back=False,
-                    committed=True,
-                )
-            )
-            raise
-        else:
-            await _aclose(agen)
+    if last_exc is not None:
+        raise last_exc
         return
 
     # All tiers failed before commit.
