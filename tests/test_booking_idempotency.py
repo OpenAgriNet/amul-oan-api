@@ -21,16 +21,30 @@ def _ctx(session_id):
 
 
 def _patch_cache(monkeypatch, module):
+    """In-memory cache simulating Redis: add() is atomic SET-NX (raises if key
+    exists), shared by try_reserve/release_reservation and the tool's set/get."""
     store = {}
 
-    async def fake_get(key, namespace=None):
-        return store.get((namespace, key))
+    async def fake_add(key, value, ttl=None, namespace=None):
+        k = (namespace, key)
+        if k in store:
+            raise ValueError("key exists")  # aiocache add == Redis SET NX
+        store[k] = value
+        return True
 
     async def fake_set(key, value, ttl=None, namespace=None):
         store[(namespace, key)] = value
 
-    monkeypatch.setattr(module.cache, "get", fake_get)
+    async def fake_get(key, namespace=None):
+        return store.get((namespace, key))
+
+    async def fake_delete(key, namespace=None):
+        store.pop((namespace, key), None)
+
+    monkeypatch.setattr(module.cache, "add", fake_add)
     monkeypatch.setattr(module.cache, "set", fake_set)
+    monkeypatch.setattr(module.cache, "get", fake_get)
+    monkeypatch.setattr(module.cache, "delete", fake_delete)
     monkeypatch.setenv("PASHUGPT_TOKEN", "tok")
     return store
 
@@ -73,6 +87,33 @@ def test_health_call_idempotent_on_rerun(monkeypatch):
     assert calls["n"] == 1
     assert "booked successfully" in r1
     assert "already" in r2.lower()
+
+
+def test_ai_call_concurrent_submits_book_once(monkeypatch):
+    """Two concurrent submits for the same session (double-tap / retry) must
+    result in exactly ONE booking — the atomic reservation closes the
+    check-then-set race."""
+    _patch_cache(monkeypatch, ai_mod)
+    calls = {"n": 0}
+
+    async def fake_api(request, token):
+        calls["n"] += 1
+        await asyncio.sleep(0.02)  # booking latency — the window two requests race in
+        return SimpleNamespace(ticket_number=f"T{calls['n']}", ait_name="AIT", model_dump=lambda: {})
+
+    monkeypatch.setattr(ai_mod, "create_ai_call_api", fake_api)
+    species = next(iter(AISpecies))
+
+    async def go():
+        return await asyncio.gather(
+            ai_mod.create_ai_call(_ctx("sX"), "U", "S", "F", "t", species),
+            ai_mod.create_ai_call(_ctx("sX"), "U", "S", "F", "t", species),
+        )
+
+    r1, r2 = asyncio.run(go())
+    assert calls["n"] == 1  # booking API hit exactly once despite the race
+    assert any("booked successfully" in r for r in (r1, r2))
+    assert any("already" in r.lower() for r in (r1, r2))
 
 
 def test_no_session_id_does_not_crash(monkeypatch):
