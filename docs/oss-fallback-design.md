@@ -576,15 +576,24 @@ including **side-effecting write tools**. An audit found the write tools
 (`POST /CreateHealthCall`) could **double-book** on a fallback re-run:
 
 - **amul**: both were unguarded (and took no session context). Fixed by plumbing
-  `session_id` into `FarmerContext` and adding a per-session cooldown cache
-  (`ai_call_booked` / `health_call_booked`) so a re-run short-circuits.
-- **voice**: `create_ai_call` was already guarded; `create_health_call` was not
-  (only `ensure_in_scope`). Added the same cooldown guard.
+  `session_id` into `FarmerContext` and reserving per session.
+- **voice**: `create_ai_call` had a check-then-set cooldown; `create_health_call`
+  had none. Both brought onto the same reservation.
+
+**Guard = atomic reservation, not check-then-set.** Each booking tool calls
+`cache.try_reserve(session_id, ns, ttl)` — a Redis **SET NX** (via `aiocache.add`)
+immediately before the write. First caller wins; a fallback re-run **or a
+concurrent duplicate submit** (double-tap / client retry / SSE reconnect — chat
+turns aren't serialized server-side) short-circuits with "already booked".
+`release_reservation` is called if the booking API itself fails, so a genuine
+retry can re-book. Because the reservation lives in **shared Redis**, this holds
+across multiple backend containers. Fail-open on a cache blip (a booking must not
+be blocked by a Redis hiccup). Namespaces: `ai_call_booked` / `health_call_booked`.
 
 This is a **prerequisite for enabling `FALLBACK_ENABLED`** on any path that runs
-the chat agent — now satisfied in both services. Any *future* write tool must be
-idempotency-guarded (per-session cooldown or dedup key) before fallback is
-enabled, or it risks double-firing on a re-run.
+the chat agent — now satisfied in both services. Any *future* write tool must use
+the same atomic reservation before fallback is enabled, or it risks double-firing
+on a re-run or a concurrent submit.
 
 ### Test coverage
 
