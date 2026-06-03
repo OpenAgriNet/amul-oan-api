@@ -7,7 +7,7 @@ from pydantic_ai import RunContext
 
 from agents.deps import FarmerContext
 from app.config import settings
-from app.models.union import UnionName
+from app.models.union import UnionName, canonical_union_name
 from app.services.scheme_ingestion import (
     SchemeCacheError,
     SchemeDependencyError,
@@ -46,7 +46,9 @@ async def get_union_scheme_data(ctx: RunContext[FarmerContext], scheme_name: str
     Returns:
         A JSON-formatted string of cached scheme records, or a clear no-data message.
     """
-    farmer_unions = [union_name.strip().lower() for union_name in ctx.deps.farmer_unions if union_name]
+    # Normalize each raw union name (dairy brand / spelling variant, e.g. "sarhad"
+    # for Kutch) to its canonical UnionName value before matching the supported set.
+    farmer_unions = [canonical_union_name(union_name) for union_name in ctx.deps.farmer_unions if union_name]
     normalized_union_name = next((union_name for union_name in farmer_unions if union_name in SUPPORTED_SCHEME_UNIONS), None)
     normalized_scheme_name = scheme_name.strip() if scheme_name else None
     require_union_auth = settings.scheme_require_union_auth
