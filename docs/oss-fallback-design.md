@@ -457,8 +457,11 @@ The hard gate before enabling in prod. Everything ships behind
 flipping it on safe. Do it in **staging** on a host/tunnel that can reach the OSS
 + TranslateGemma endpoints.
 
-- [ ] **Fault-injection tests pass** (OSS forced dead → managed) for **both**
-      services:
+- [x] **Fault-injection tests pass** (OSS forced dead → managed) for **both**
+      services — done via an SSH tunnel to the UAT vLLM (2026-06-03). amul
+      streaming, voice unary moderation, and voice core-chat streaming all fall
+      back to the managed model on a dead OSS endpoint. *This run found and fixed
+      a real bug — see Validation findings below.*
       `RUN_FALLBACK_INTEGRATION=1 OPENAI_API_KEY=… LLM_MODEL_NAME=… pytest tests/test_fallback_integration.py -o asyncio_mode=auto`
 - [ ] **Enable `FALLBACK_ENABLED=true` in staging only.** Confirm a normal
       chat + voice turn works on **both** variants (`oss` and `legacy`).
@@ -478,6 +481,36 @@ flipping it on safe. Do it in **staging** on a host/tunnel that can reach the OS
       confirm `OSS_PIPELINE_PCT` while watching `fallback_rate` by
       `pipeline × reason × endpoint`. Kill-switch (`FALLBACK_ENABLED=false`)
       stays the instant rollback.
+
+### Validation findings (run 1 — 2026-06-03)
+
+Running the fault-injection step against the **real** agent caught what the
+mock-based unit tests could not:
+
+1. **Streaming fallback crashed with pydantic-ai's anyio `run_stream`** ("cancel
+   scope exited in a different task"). Cause: `stream_with_fallback` wrapped the
+   agent generator's first token in `asyncio.wait_for` (voice also used
+   `asyncio.create_task`), but `run_stream` opens an anyio cancel scope *inside*
+   the generator that stays open across the `yield`. **FIXED** — consume with a
+   plain `async for` (no external timeout/task wrapper); voice pulls the first
+   token in the consumer task (parallelism preserved via the background
+   `moderation_task`). Re-validated: both services fall back cleanly.
+   - **Follow-up:** the explicit per-attempt first-token timeout was removed
+     (external wrapping is anyio-incompatible). Infra failures (conn/5xx/OOM)
+     fall back via exceptions; a *silent* OSS hang now relies on the OSS model's
+     HTTP client timeout. Bound the OSS model's httpx read timeout (currently
+     600s) to ~8s, or apply `anyio.fail_after` INSIDE `make_stream` (same frame
+     as `run_stream`).
+2. **Managed moderation/pretranslation model must be FAST.** `gpt-5.1` (a
+   reasoning model) exceeds the 10s moderation timeout → the managed tier times
+   out → fail-closed. Use a fast model (gpt-4.1-mini / gpt-5-mini) for the
+   managed safety/translation tiers, or raise the timeout.
+3. **Verify the managed tier is an independent failure domain in prod.** In the
+   local voice `.env`, `LLM_PROVIDER=vllm` made the core-chat "managed" tier the
+   *same* vLLM endpoint as OSS, and `PRETRANSLATION_PROVIDER=vllm` points
+   `_get_openai_client()` at the cluster too. Confirm prod's managed tiers
+   actually resolve to OpenAI/Anthropic (independent of the OSS vLLM), else the
+   fallback retries the same box.
 
 ## Resolved decisions
 
