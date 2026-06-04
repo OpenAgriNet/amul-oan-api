@@ -40,6 +40,32 @@ def build_api_cache_key(api_name: str, number: str) -> str:
     return f"{api_name}:{number}"
 
 
+async def try_reserve(key: str, namespace: str, ttl: int) -> bool:
+    """Atomically reserve a key (Redis SET NX). Returns True if newly reserved
+    (caller owns it and should proceed), False if a reservation already exists
+    (caller should skip). On a cache error, returns True (proceed UNGUARDED) — a
+    booking must not be blocked by a transient cache blip. Used to make
+    side-effecting tools safe against concurrent duplicate submits + fallback
+    re-runs across containers (shared Redis)."""
+    try:
+        await cache.add(key, True, ttl=ttl, namespace=namespace)
+        return True
+    except ValueError:
+        return False
+    except Exception as e:  # cache unavailable -> fail-open on the guard
+        logger.warning("Reservation add failed (%s:%s): %s; proceeding unguarded", namespace, key, str(e))
+        return True
+
+
+async def release_reservation(key: str, namespace: str) -> None:
+    """Release a reservation so a genuine retry can proceed (e.g. the booking
+    API call failed). Best-effort."""
+    try:
+        await cache.delete(key, namespace=namespace)
+    except Exception as e:
+        logger.warning("Reservation release failed (%s:%s): %s", namespace, key, str(e))
+
+
 async def get_cached_api_response(cache_key: str) -> tuple[bool, Any]:
     try:
         cached_value = await cache.get(cache_key)
