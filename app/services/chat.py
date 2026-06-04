@@ -23,7 +23,7 @@ from app.utils import (
 )
 from app.tasks.suggestions import create_suggestions
 from app.config import settings
-from app.services.fallback import execute_with_fallback, stream_with_fallback
+from app.services.fallback import execute_with_fallback, stream_with_fallback, with_first_token_deadline
 from app.core.cache import cache
 from agents.deps import FarmerContext
 from agents.farmer_context import get_farmer_context_bundle_by_mobile
@@ -544,7 +544,7 @@ async def stream_chat_messages(
                 # into _stream_holder by whichever attempt completes.
                 _stream_holder: dict = {}
 
-                async def _make_agent_text_stream(attempt):
+                async def _raw_agent_text_stream(attempt):
                     if attempt.provider == 'anthropic':
                         async with agrinet_agent.iter(
                             user_prompt=user_message,
@@ -577,6 +577,14 @@ async def stream_chat_messages(
                             async for chunk in response_stream.stream_text(delta=True):
                                 yield chunk
                             _stream_holder["new_messages"] = response_stream.new_messages()
+
+                async def _make_agent_text_stream(attempt):
+                    # Bound time-to-first-token (attempt.timeout) so a silent OSS
+                    # hang swaps to managed before any token reaches the client; the
+                    # deadline disarms after the first token, so the rest streams on
+                    # the model's normal read-timeout.
+                    async for chunk in with_first_token_deadline(attempt, _raw_agent_text_stream(attempt)):
+                        yield chunk
 
                 async def _stream_to_client(english_src):
                     if needs_output_translation:

@@ -10,13 +10,19 @@ falling back on infrastructure errors, and recording every failure for the
 Gated by ``settings.fallback_enabled`` (default off): when disabled, callers keep
 their existing code path, so merging this changes nothing until it is flipped on.
 
-Streaming core-chat fallback (``stream_with_fallback``, first-token commit) is a
-later increment and intentionally not implemented here.
+Core-chat streaming uses ``stream_with_fallback`` (first-token commit): an OSS
+failure *before* the first token swaps to managed transparently; once the first
+token has reached the caller a swap is impossible, so the error propagates.
+``with_first_token_deadline`` bounds time-to-first-token only (it disarms after the
+first token, so mid-stream tool round-trips / slow generation are unaffected) —
+the streaming path cannot use an external ``anyio.fail_after`` (see the note in
+``stream_with_fallback``).
 """
 
 from __future__ import annotations
 
 import asyncio
+import math
 import time
 
 import anyio
@@ -320,6 +326,35 @@ async def execute_with_fallback(
                 raise
 
 
+async def with_first_token_deadline(attempt: Attempt, agen: AsyncIterator[Any]) -> AsyncIterator[Any]:
+    """Wrap an agent token stream with a *time-to-first-token* deadline.
+
+    ``attempt.timeout`` bounds only the wait for the FIRST item; the deadline is
+    disarmed the moment the first item is yielded, so legitimate mid-stream gaps
+    (tool round-trips, slow generation) are NOT aborted — that is why we cannot
+    just shorten the model's httpx read-timeout, which can't tell a silent
+    pre-first-token hang from a normal inter-token gap.
+
+    Raises ``TimeoutError`` if the first item does not arrive in time (which
+    ``classify`` maps to ``TIMEOUT`` -> fallbackable, so ``stream_with_fallback``
+    swaps to the next tier before any token reached the caller). No-op when
+    ``attempt.timeout`` is None (fallback disabled).
+
+    Implemented as a cancel scope in the SAME task as ``agen`` (an ``async for``,
+    not a wrapping task), so pydantic-ai's internal ``run_stream`` cancel scope
+    unwinds in order — see the note in ``stream_with_fallback``.
+    """
+    ttft = attempt.timeout
+    with anyio.move_on_after(ttft if ttft is not None else math.inf) as scope:
+        async for item in agen:
+            scope.deadline = math.inf  # first token in — disarm; let the rest stream freely
+            yield item
+    if scope.cancelled_caught:
+        raise TimeoutError(
+            f"OSS first-token deadline exceeded ({ttft}s) [{attempt.kind}/{attempt.endpoint}]"
+        )
+
+
 async def _aclose(agen) -> None:
     close = getattr(agen, "aclose", None)
     if close is not None:
@@ -365,8 +400,9 @@ async def stream_with_fallback(
         # that stays open across the `yield`, so any external timeout/task wrapper
         # unwinds the scopes out of order ("cancel scope in a different task" /
         # "not the current task's cancel scope"). `async for` lets Python manage the
-        # generator lifecycle in this task. A first-token deadline, if wanted, is
-        # applied INSIDE make_stream (same frame as run_stream).
+        # generator lifecycle in this task. The time-to-first-token deadline is
+        # applied by callers wrapping make_stream in `with_first_token_deadline`
+        # (a cancel scope in this same task, disarmed after the first token).
         try:
             async for chunk in make_stream(attempt):
                 committed = True
@@ -418,10 +454,6 @@ async def stream_with_fallback(
                 continue
             raise
 
-    if last_exc is not None:
-        raise last_exc
-        return
-
-    # All tiers failed before commit.
+    # All tiers failed before commit (every fallbackable tier swapped, last raised).
     if last_exc is not None:
         raise last_exc
