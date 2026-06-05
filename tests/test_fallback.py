@@ -237,3 +237,71 @@ def test_stream_precommit_bad_output_does_not_swap(oss_enabled):
             pipeline="chat", session_id="s", variant="oss", make_stream=make_stream)))
     assert len(oss_enabled) == 1
     assert oss_enabled[0].committed is False and oss_enabled[0].fell_back is False
+
+
+# ── with_first_token_deadline() (time-to-first-token bound) ──────────────────
+
+def _attempt(timeout):
+    return fb.Attempt(kind="oss", model=object(), model_name="gemma-test",
+                      provider="vllm", endpoint="http://oss:8020/v1", timeout=timeout)
+
+
+def test_ttft_slow_first_token_raises_timeout():
+    """First token later than the deadline -> TimeoutError (classify -> TIMEOUT)."""
+    async def raw(attempt):
+        await asyncio.sleep(0.20)
+        yield "late"
+
+    async def drive():
+        return await _collect(fb.with_first_token_deadline(_attempt(0.05), raw(None)))
+
+    with pytest.raises(TimeoutError):
+        asyncio.run(drive())
+    assert classify(TimeoutError("x")) is FallbackReason.TIMEOUT
+
+
+def test_ttft_disarmed_after_first_token_allows_long_gap():
+    """The deadline must bound ONLY time-to-first-token: a long gap AFTER the
+    first token (e.g. a tool round-trip) must not abort the stream."""
+    async def raw(attempt):
+        yield "first"                 # arrives immediately, well within deadline
+        await asyncio.sleep(0.15)     # > deadline, but post-first-token -> allowed
+        yield "second"
+
+    out = asyncio.run(_collect(fb.with_first_token_deadline(_attempt(0.05), raw(None))))
+    assert out == ["first", "second"]
+
+
+def test_ttft_none_is_noop():
+    """timeout=None (fallback disabled) -> no deadline, slow first token is fine."""
+    async def raw(attempt):
+        await asyncio.sleep(0.05)
+        yield "ok"
+
+    out = asyncio.run(_collect(fb.with_first_token_deadline(_attempt(None), raw(None))))
+    assert out == ["ok"]
+
+
+def test_ttft_timeout_triggers_fallback_to_managed(oss_enabled):
+    """End to end: a silent OSS first-token hang swaps to managed before commit."""
+    async def make_stream(attempt):
+        async for c in fb.with_first_token_deadline(attempt, _raw(attempt)):
+            yield c
+
+    async def _raw(attempt):
+        if attempt.kind == "oss":
+            await asyncio.sleep(0.30)     # exceeds the oss attempt timeout
+            yield "oss-never"             # pragma: no cover
+        else:
+            yield "managed:ok"
+
+    # Tight oss timeout so the test is fast; managed has its own (longer) budget.
+    oss_enabled  # fixture active
+    import app.config as _cfg
+    _cfg.settings.fallback_chat_oss_timeout_ms = 50
+    chunks = asyncio.run(_collect(fb.stream_with_fallback(
+        pipeline="chat", session_id="s", variant="oss", make_stream=make_stream)))
+    assert chunks == ["managed:ok"]
+    reasons = [e.reason for e in oss_enabled]
+    assert FallbackReason.TIMEOUT in reasons
+    assert oss_enabled[0].fell_back is True and oss_enabled[0].committed is False
