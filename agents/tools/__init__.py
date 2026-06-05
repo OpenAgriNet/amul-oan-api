@@ -5,7 +5,7 @@ from agents.tools.health_call import create_health_call
 from agents.tools.milk_collection import get_farmer_milk_collection_details
 from agents.tools.search import search_documents, search_videos
 from agents.tools.terms import search_terms
-from agents.tools.union_schemes import get_union_scheme_data
+from agents.tools.union_schemes import get_union_scheme_data, prepare_get_union_scheme_data
 # from agents.tools.animal import get_animal_by_tag
 # from agents.tools.cvcc import get_cvcc_health_details
 # from agents.tools.farmer import get_farmer_by_mobile
@@ -55,6 +55,7 @@ TOOLS = [
         takes_ctx=True,
         docstring_format='auto',
         require_parameter_descriptions=False,
+        prepare=prepare_get_union_scheme_data,
     ),
 
     # # Get Animal by Tag (temporarily disabled)
