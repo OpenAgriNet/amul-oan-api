@@ -305,3 +305,33 @@ def test_ttft_timeout_triggers_fallback_to_managed(oss_enabled):
     reasons = [e.reason for e in oss_enabled]
     assert FallbackReason.TIMEOUT in reasons
     assert oss_enabled[0].fell_back is True and oss_enabled[0].committed is False
+
+
+def test_ttft_aclose_midstream_is_clean():
+    """Client disconnect mid-stream: aclosing the wrapper must not raise or leak,
+    and must close the underlying source generator (regression: the old cancel-scope
+    impl threw 'exit cancel scope in a different task' / 'aclose: already running')."""
+    state = {"source_closed": False}
+
+    async def raw(attempt):
+        try:
+            for i in range(20):
+                await asyncio.sleep(0.01)
+                yield f"c{i}"
+        finally:
+            state["source_closed"] = True
+
+    async def go():
+        agen = fb.with_first_token_deadline(_attempt(1.0), raw(None))
+        out = []
+        async for c in agen:
+            out.append(c)
+            if len(out) == 2:
+                await agen.aclose()  # simulate client disconnect
+                break
+        await asyncio.sleep(0.05)  # let the drained task unwind
+        return out
+
+    out = asyncio.run(go())
+    assert out == ["c0", "c1"]
+    assert state["source_closed"] is True
