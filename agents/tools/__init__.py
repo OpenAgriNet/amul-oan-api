@@ -30,14 +30,14 @@ TOOLS = [
 
     Tool(
         create_ai_call,
-        takes_ctx=False,
+        takes_ctx=True,  # needs ctx.deps.session_id for the booking idempotency guard
         docstring_format='auto',
         require_parameter_descriptions=True,
     ),
 
     Tool(
         create_health_call,
-        takes_ctx=False,
+        takes_ctx=True,  # needs ctx.deps.session_id for the booking idempotency guard
         docstring_format='auto',
         require_parameter_descriptions=True,
     ),

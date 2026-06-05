@@ -20,6 +20,7 @@ class FarmerContext(BaseModel):
         **Moderation Result:** "This is a valid agricultural question."
     """
     query: str = Field(description="The user's question.")
+    session_id: Optional[str] = Field(default=None, description="Session id, used for booking-tool idempotency guards (e.g. one AI/health call per session).")
     lang_code: str = Field(description="The language code of the user's question.", default='gu')
     moderation_str: Optional[str] = Field(default=None, description="The moderation result of the user's question.")
     farmer_info: str = Field(description="Farmer's personal details and animals from JWT token.")
