@@ -16,10 +16,11 @@ HISTORY_SUFFIX = "_SVA"
 SESSION_OWNER_SUFFIX = "_active_request"
 SESSION_EPOCH_SUFFIX = "_request_epoch"
 
-# Conversation-history retention in Redis (env HISTORY_CACHE_TTL_SECONDS, default
-# 2h). Sessions are ephemeral — each chat-app open / each ~20min call is its own
-# session — so this is a non-load-bearing rolling window; it just needs to exceed
-# one session, which 2h does for both chat and voice.
+# Conversation-history retention in Redis (env HISTORY_CACHE_TTL_SECONDS, default 2h).
+# Rolling inactivity window: update_message_history rewrites the key with this TTL
+# each turn, so history expires this long after the last turn. session_id is
+# client-supplied and the backend enforces no session/call length, so the only
+# requirement is TTL > the gap between turns; exact value is non-load-bearing.
 DEFAULT_CACHE_TTL = settings.history_cache_ttl_seconds
 
 logger = get_logger(__name__)

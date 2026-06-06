@@ -74,10 +74,11 @@ class Settings(BaseSettings):
     # Cache Configuration
     default_cache_ttl: int = 60 * 60 * 24  # 24 hours
     # Conversation-history retention in Redis (app/utils.py DEFAULT_CACHE_TTL).
-    # Sessions are ephemeral (each chat-app open is a new session; each call is a
-    # new session capped at ~20min), so this is a non-load-bearing rolling window
-    # that only needs to comfortably exceed one session. 2h does, for both chat
-    # and voice (voice's old 24h was incidental, not required). Env-overridable.
+    # Rolling inactivity window: update_message_history rewrites the key with this
+    # TTL every turn, so history expires this long after the LAST turn. session_id
+    # is client-supplied and the backend enforces no session/call length, so the
+    # only requirement is TTL > the gap between turns — exact value is
+    # non-load-bearing (2h is generous slack; voice's old 24h was incidental).
     history_cache_ttl_seconds: int = int(os.getenv("HISTORY_CACHE_TTL_SECONDS", str(60 * 60 * 2)))
     suggestions_cache_ttl: int = 60 * 30    # 30 minutes
     farmer_animal_api_cache_ttl: int = 60 * 60 * 24 * 17  # 17 days
