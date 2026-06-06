@@ -16,9 +16,10 @@ HISTORY_SUFFIX = "_SVA"
 SESSION_OWNER_SUFFIX = "_active_request"
 SESSION_EPOCH_SUFFIX = "_request_epoch"
 
-# Conversation + moderation history retention in Redis. Config-overridable via
-# HISTORY_CACHE_TTL_SECONDS; defaults to 2h — chat's proven production value.
-# The voice surface ran 24h and can raise it per-deploy via env, no code change.
+# Conversation-history retention in Redis (env HISTORY_CACHE_TTL_SECONDS, default
+# 2h). Sessions are ephemeral — each chat-app open / each ~20min call is its own
+# session — so this is a non-load-bearing rolling window; it just needs to exceed
+# one session, which 2h does for both chat and voice.
 DEFAULT_CACHE_TTL = settings.history_cache_ttl_seconds
 
 logger = get_logger(__name__)
