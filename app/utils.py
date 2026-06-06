@@ -1,5 +1,8 @@
+import uuid
+from dataclasses import dataclass
 from typing import List
-from app.core.cache import cache  # Import cache instance from core
+from app.core.cache import cache, redis_client, build_cache_key  # Import cache instance from core
+from app.config import settings
 from helpers.utils import get_logger, count_tokens_for_part
 from copy import deepcopy
 from pydantic_ai.messages import (
@@ -10,10 +13,83 @@ from pydantic_ai.messages import (
 from pydantic_core import to_jsonable_python
 
 HISTORY_SUFFIX = "_SVA"
+SESSION_OWNER_SUFFIX = "_active_request"
+SESSION_EPOCH_SUFFIX = "_request_epoch"
 
-DEFAULT_CACHE_TTL = 60*60*2 # 2 hours
+# Conversation + moderation history retention in Redis. Config-overridable via
+# HISTORY_CACHE_TTL_SECONDS; defaults to 2h — chat's proven production value.
+# The voice surface ran 24h and can raise it per-deploy via env, no code change.
+DEFAULT_CACHE_TTL = settings.history_cache_ttl_seconds
 
 logger = get_logger(__name__)
+
+
+@dataclass(frozen=True)
+class SessionRequestOwner:
+    session_id: str
+    request_token: str
+    epoch: int
+
+
+def _session_owner_key(session_id: str) -> str:
+    return build_cache_key(f"{session_id}_{SESSION_OWNER_SUFFIX}")
+
+
+def _session_epoch_key(session_id: str) -> str:
+    return build_cache_key(f"{session_id}_{SESSION_EPOCH_SUFFIX}")
+
+
+async def claim_session_request_ownership(session_id: str) -> SessionRequestOwner:
+    epoch = await redis_client.incr(_session_epoch_key(session_id))
+    request_token = f"{epoch}:{uuid.uuid4()}"
+    await redis_client.set(
+        _session_owner_key(session_id),
+        request_token,
+        ex=settings.session_owner_ttl_seconds,
+    )
+    return SessionRequestOwner(session_id=session_id, request_token=request_token, epoch=int(epoch))
+
+
+async def is_session_request_owner(owner: SessionRequestOwner | None) -> bool:
+    if owner is None:
+        return False
+    current = await redis_client.get(_session_owner_key(owner.session_id))
+    return current == owner.request_token
+
+
+async def refresh_session_request_ownership(owner: SessionRequestOwner | None) -> bool:
+    if owner is None:
+        return False
+    refreshed = await redis_client.eval(
+        """
+        if redis.call('get', KEYS[1]) == ARGV[1] then
+            return redis.call('expire', KEYS[1], tonumber(ARGV[2]))
+        end
+        return 0
+        """,
+        1,
+        _session_owner_key(owner.session_id),
+        owner.request_token,
+        str(settings.session_owner_ttl_seconds),
+    )
+    return bool(refreshed)
+
+
+async def release_session_request_ownership(owner: SessionRequestOwner | None) -> bool:
+    if owner is None:
+        return False
+    deleted = await redis_client.eval(
+        """
+        if redis.call('get', KEYS[1]) == ARGV[1] then
+            return redis.call('del', KEYS[1])
+        end
+        return 0
+        """,
+        1,
+        _session_owner_key(owner.session_id),
+        owner.request_token,
+    )
+    return bool(deleted)
 
 # Cache utility functions
 async def get_cache(key: str):
@@ -45,27 +121,64 @@ async def set_cache(key: str, value, ttl: int = DEFAULT_CACHE_TTL):
     return True
 
 
+# pydantic-ai usage integer fields. The 0.2.4 schema (request_tokens /
+# response_tokens / total_tokens / requests) and the 1.x schema (input_tokens /
+# output_tokens / cache_* tokens) both store these as ints, but legacy turns
+# where the model reported no usage (streamed / vLLM-gemma responses) persisted
+# them as null. The 1.x ModelMessagesTypeAdapter requires int, so loading that
+# history raises ValidationError. Coerce nulls to 0 on read.
+_USAGE_INT_FIELDS = (
+    "requests", "request_tokens", "response_tokens", "total_tokens",
+    "input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens",
+    "input_audio_tokens", "cache_audio_read_tokens", "output_audio_tokens",
+)
+
+
+def _sanitize_legacy_usage(message_history):
+    """Coerce null usage token counts in cached history to 0 so the pydantic-ai
+    1.x adapter can validate history written by older revisions. Mutates and
+    returns the same structure; best-effort and never raises."""
+    if not isinstance(message_history, list):
+        return message_history
+    for msg in message_history:
+        if not isinstance(msg, dict):
+            continue
+        usage = msg.get("usage")
+        if not isinstance(usage, dict):
+            continue
+        for field in _USAGE_INT_FIELDS:
+            if field in usage and usage.get(field) is None:
+                usage[field] = 0
+        details = usage.get("details")
+        if isinstance(details, dict):
+            for key, value in list(details.items()):
+                if value is None:
+                    details[key] = 0
+        elif details is None and "details" in usage:
+            usage["details"] = {}
+    return message_history
+
+
 async def _get_message_history(session_id: str) -> List[ModelMessage]:
     """Get or initialize message history."""
     message_history = await get_cache(f"{session_id}_{HISTORY_SUFFIX}")
-    if message_history:
+    if not message_history:
+        return []
+    message_history = _sanitize_legacy_usage(message_history)
+    try:
         return ModelMessagesTypeAdapter.validate_python(message_history)
-    return []
-
-async def _get_moderation_history(session_id: str) -> List[ModelMessage]:
-    """Get or initialize moderation history."""
-    moderation_history = await get_cache(f"{session_id}_{HISTORY_SUFFIX}_MODERATION")
-    if moderation_history:
-        return ModelMessagesTypeAdapter.validate_python(moderation_history)
-    return []
+    except Exception as exc:
+        # Never 500 a live call on unreadable history (e.g. future format
+        # drift). Drop it and proceed as a fresh turn — degraded, not broken.
+        logger.warning(
+            "Discarding unreadable message history for session %s: %s",
+            session_id, exc,
+        )
+        return []
 
 async def update_message_history(session_id: str, all_messages: List[ModelMessage]):
     """Update message history."""
     await set_cache(f"{session_id}_{HISTORY_SUFFIX}", to_jsonable_python(all_messages), ttl=DEFAULT_CACHE_TTL)
-
-async def update_moderation_history(session_id: str, moderation_messages: List[ModelMessage]):
-    """Update moderation history."""
-    await set_cache(f"{session_id}_{HISTORY_SUFFIX}_MODERATION", to_jsonable_python(moderation_messages), ttl=DEFAULT_CACHE_TTL)
 
 def filter_out_tool_calls(messages: List[ModelMessage]) -> List[ModelMessage]:
     """Filter out tool calls and tool returns from the message history.
@@ -95,7 +208,6 @@ def filter_out_tool_calls(messages: List[ModelMessage]) -> List[ModelMessage]:
             msg_copy.parts = filtered_parts
             filtered_messages.append(msg_copy)            
     return filtered_messages
-
 
 
 def get_message_pairs(history: List[ModelMessage], limit: int = None) -> List[List]:
@@ -172,6 +284,79 @@ def format_message_pairs(history: List[ModelMessage], limit: int = None) -> List
         formatted_messages.append(formatted_pair)
     
     return formatted_messages
+
+
+def clean_message_history_for_openai(history: List[ModelMessage]) -> List[ModelMessage]:
+    """Clean message history to ensure it's safe for OpenAI API.
+    
+    Removes orphaned tool calls (tool calls without responses) from the message history
+    to prevent OpenAI API errors. Processes messages in order and removes any tool call 
+    parts that don't have corresponding tool response parts.
+    
+    Args:
+        history: List of messages to clean
+        
+    Returns:
+        Cleaned list of messages safe for OpenAI API
+    """
+    if not history:
+        return []
+    
+    logger.debug(f"Cleaning message history with {len(history)} messages")
+    
+    # First pass: collect all tool call IDs and their corresponding responses
+    tool_calls = set()
+    tool_responses = set()
+    
+    for message in history:
+        for part in message.parts:
+            part_kind = getattr(part, "part_kind", "")
+            tool_call_id = getattr(part, "tool_call_id", None)
+            
+            if not tool_call_id:
+                continue
+                
+            if part_kind == "tool-call":
+                tool_calls.add(tool_call_id)
+            elif part_kind in ("tool-return", "retry-prompt"):
+                tool_responses.add(tool_call_id)
+    
+    # Identify orphaned tool calls (calls without responses)
+    orphaned_calls = tool_calls - tool_responses
+    
+    # Second pass: filter out orphaned tool calls and their responses
+    cleaned_history = []
+    
+    for message in history:
+        cleaned_parts = []
+        
+        for part in message.parts:
+            part_kind = getattr(part, "part_kind", "")
+            tool_call_id = getattr(part, "tool_call_id", None)
+            
+            # Skip orphaned tool calls
+            if part_kind == "tool-call" and tool_call_id in orphaned_calls:
+                logger.debug(f"Removing orphaned tool call: {tool_call_id}")
+                continue
+            
+            # Skip responses to orphaned tool calls
+            if part_kind in ("tool-return", "retry-prompt") and tool_call_id in orphaned_calls:
+                logger.debug(f"Removing response to orphaned tool call: {tool_call_id}")
+                continue
+            
+            cleaned_parts.append(part)
+        
+        # Only keep messages with remaining parts
+        if cleaned_parts:
+            cleaned_message = deepcopy(message)
+            cleaned_message.parts = cleaned_parts
+            cleaned_history.append(cleaned_message)
+    
+    if orphaned_calls:
+        logger.warning(f"Removed {len(orphaned_calls)} orphaned tool calls: {orphaned_calls}")
+    
+    logger.info(f"Cleaned message history: {len(history)} -> {len(cleaned_history)} messages")
+    return cleaned_history
 
 
 def trim_history(

@@ -73,6 +73,11 @@ class Settings(BaseSettings):
 
     # Cache Configuration
     default_cache_ttl: int = 60 * 60 * 24  # 24 hours
+    # Conversation + moderation history retention in Redis (app/utils.py
+    # DEFAULT_CACHE_TTL). Default 2h = chat's proven production value; the voice
+    # surface ran 24h and can raise this via env without a code change. Pending a
+    # team answer on whether chat's 2h was deliberate (see merge notes).
+    history_cache_ttl_seconds: int = int(os.getenv("HISTORY_CACHE_TTL_SECONDS", str(60 * 60 * 2)))
     suggestions_cache_ttl: int = 60 * 30    # 30 minutes
     farmer_animal_api_cache_ttl: int = 60 * 60 * 24 * 17  # 17 days
     # Session-ownership locking (voice call concurrency) — consumed by app/utils.py
