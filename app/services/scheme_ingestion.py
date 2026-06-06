@@ -74,15 +74,44 @@ SARHAD_SOURCE = SchemeSource(
     content_type="html",
 )
 
-SCHEME_SOURCES: tuple[SchemeSource, ...] = (BANAS_SOURCE, SARHAD_SOURCE)
+PANCHAMRUT_SOURCE = SchemeSource(
+    source_name="panchamrut",
+    union_name=UnionName.PANCHMAHAL.value,
+    source_url="https://panchamrutdairy.org/member-welfare/",
+    cache_key="panchamrutdairy.org/member-welfare",
+    content_type="html",
+)
+
+SCHEME_SOURCES: tuple[SchemeSource, ...] = (BANAS_SOURCE, SARHAD_SOURCE, PANCHAMRUT_SOURCE)
 SUPPORTED_UNION_SOURCE_MAP = {
     UnionName.BANAS.value: (BANAS_SOURCE,),
     UnionName.KUTCH.value: (SARHAD_SOURCE,),
+    UnionName.PANCHMAHAL.value: (PANCHAMRUT_SOURCE,),
 }
 
 _WHITESPACE_RE = re.compile(r"\s+")
 _TAG_RE = re.compile(r"<[^>]+>")
 _SCHEME_NO_PREFIX_RE = re.compile(r"^\s*Scheme\s*No\.?\s*\d+\s*:\s*", flags=re.IGNORECASE)
+_PANCHAMRUT_NOISE_TITLES = {
+    #treated as invalid scheme titles not noise content
+    "benefits",
+    "follow us",
+    "member welfare",
+    "member welfare schemes",
+}
+_PANCHAMRUT_TITLE_KEYWORDS = (
+    "scheme",
+    "supply",
+    "services",
+    "programme",
+    "program",
+    "insurance",
+    "solar",
+    "camp",
+    "deworming",
+    "vaccination",
+    "health",
+)
 
 
 def _utcnow_iso() -> str:
@@ -392,6 +421,156 @@ class _SarhadSchemeParser(HTMLParser):
             )
 
 
+def _extract_text_lines_from_html(html: str) -> list[str]:
+    html_with_breaks = re.sub(
+        r"</(?:p|li|td|tr|h[1-6]|div|section|article)>",
+        "\n",
+        html,
+        flags=re.IGNORECASE,
+    )
+    stripped = unescape(_TAG_RE.sub(" ", html_with_breaks))
+    lines: list[str] = []
+    for line in stripped.splitlines():
+        normalized = _normalize_text(line)
+        if normalized:
+            lines.append(normalized)
+    return lines
+
+
+def _clean_panchamrut_title(value: str) -> str:
+    return _normalize_title(value).rstrip(":.-").strip()
+
+
+def _is_probable_panchamrut_title(value: str) -> bool:
+    title = _clean_panchamrut_title(value)
+    if not title:
+        return False
+    lowered = title.casefold()
+    if lowered in _PANCHAMRUT_NOISE_TITLES:
+        return False
+    if len(title) < 8 or len(title) > 180:
+        return False
+
+    words = title.split()
+    if len(words) > 16:
+        return False
+
+    alpha_chars = [char for char in title if char.isalpha()]
+    uppercase_ratio = 0.0
+    if alpha_chars:
+        uppercase_ratio = sum(1 for char in alpha_chars if char.isupper()) / len(alpha_chars)
+
+    has_keyword = any(keyword in lowered for keyword in _PANCHAMRUT_TITLE_KEYWORDS)
+    return has_keyword or uppercase_ratio >= 0.6
+
+
+class _PanchamrutSchemeParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.ignored_tag_stack: list[str] = []
+        self.capture = False
+        self.in_heading = False
+        self.in_strong = False
+        self.in_content_tag = False
+        self.pending_heading_parts: list[str] = []
+        self.current_title: str | None = None
+        self.current_content_parts: list[str] = []
+        self.records: list[dict[str, str]] = []
+
+    def _flush_current_record(self) -> None:
+        if not self.current_title or not self.current_content_parts:
+            return
+        self.records.append(
+            {
+                "scheme_title": self.current_title,
+                "content": _normalize_text(" ".join(self.current_content_parts)),
+            }
+        )
+        self.current_content_parts = []
+
+    def _start_new_title(self, raw_title: str) -> None:
+        cleaned_title = _clean_panchamrut_title(raw_title)
+        if "member welfare" in cleaned_title.casefold():
+            self.capture = True
+            self.current_title = None
+            self.current_content_parts = []
+            return
+        if not _is_probable_panchamrut_title(cleaned_title):
+            return
+        if not self.capture:
+            return
+        self._flush_current_record()
+        self.current_title = cleaned_title
+        self.current_content_parts = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        attrs_dict = dict(attrs)
+        class_name = (attrs_dict.get("class") or "").lower()
+        role_name = (attrs_dict.get("role") or "").lower()
+
+        if tag in {"script", "style", "nav", "footer", "header"} or "footer" in class_name or role_name == "navigation":
+            self.ignored_tag_stack.append(tag)
+            return
+
+        if self.ignored_tag_stack:
+            return
+
+        if tag in {"h1", "h2", "h3", "h4", "h5", "h6"}:
+            self.in_heading = True
+            self.pending_heading_parts = []
+        elif tag == "strong":
+            self.in_strong = True
+            self.pending_heading_parts = []
+        elif tag in {"p", "li", "td"}:
+            self.in_content_tag = True
+
+    def handle_endtag(self, tag: str) -> None:
+        if self.ignored_tag_stack:
+            if tag == self.ignored_tag_stack[-1]:
+                self.ignored_tag_stack.pop()
+            return
+
+        if tag in {"h1", "h2", "h3", "h4", "h5", "h6"} and self.in_heading:
+            heading_text = _normalize_title("".join(self.pending_heading_parts))
+            self.in_heading = False
+            self.pending_heading_parts = []
+            self._start_new_title(heading_text)
+        elif tag == "strong" and self.in_strong:
+            heading_text = _normalize_title("".join(self.pending_heading_parts))
+            self.in_strong = False
+            self.pending_heading_parts = []
+            self._start_new_title(heading_text)
+        elif tag in {"p", "li", "td"}:
+            self.in_content_tag = False
+
+    def handle_data(self, data: str) -> None:
+        if self.ignored_tag_stack:
+            return
+        normalized = _normalize_text(data)
+        if not normalized:
+            return
+
+        if self.in_heading or self.in_strong:
+            self.pending_heading_parts.append(data)
+            return
+
+        if self.in_content_tag and self.capture and _is_probable_panchamrut_title(normalized):
+            self._start_new_title(normalized)
+            return
+
+        if self.capture and self.current_title:
+            lowered = normalized.casefold()
+            if lowered in _PANCHAMRUT_NOISE_TITLES:
+                return
+            if normalized.casefold() == self.current_title.casefold():
+                return
+            self.current_content_parts.append(normalized)
+
+    def close(self) -> None:
+        super().close()
+        self._flush_current_record()
+
+
 def parse_banas_scheme_links(html: str) -> list[dict[str, str]]:
     logger.info("Parsing Banas scheme links from HTML content_length=%s", len(html))
     milk_section_match = re.search(
@@ -497,6 +676,43 @@ def parse_sarhad_scheme_sections(html: str) -> list[dict[str, str]]:
         seen.add(dedupe_key)
         records.append({"scheme_title": title, "content": content})
     logger.info("Parsed Sarhad scheme sections deduplicated_count=%s", len(records))
+    return records
+
+
+def parse_panchamrut_scheme_sections(html: str) -> list[dict[str, str]]:
+    logger.info("Parsing Panchamrut scheme sections from HTML content_length=%s", len(html))
+    parser = _PanchamrutSchemeParser()
+    parser.feed(html)
+    parser.close()
+    parsed_records = parser.records
+    logger.info("Parsed Panchamrut heading-based sections count=%s", len(parsed_records))
+
+    if not parsed_records:
+        logger.warning("Panchamrut heading parser returned no records; falling back to enumerated title extraction")
+        parsed_records = []
+        for line in _extract_text_lines_from_html(html):
+            match = re.match(r"^\s*\d{1,2}\s+(.+?)\s*$", line)
+            if not match:
+                continue
+            title = _clean_panchamrut_title(match.group(1))
+            if not _is_probable_panchamrut_title(title):
+                continue
+            parsed_records.append({"scheme_title": title, "content": title})
+        logger.info("Parsed Panchamrut fallback enumerated sections count=%s", len(parsed_records))
+
+    seen: set[tuple[str, str]] = set()
+    records: list[dict[str, str]] = []
+    for record in parsed_records:
+        title = _clean_panchamrut_title(record.get("scheme_title", ""))
+        content = _normalize_text(record.get("content", ""))
+        if not title or not content:
+            continue
+        dedupe_key = (title.casefold(), content.casefold())
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        records.append({"scheme_title": title, "content": content})
+    logger.info("Parsed Panchamrut scheme sections deduplicated_count=%s", len(records))
     return records
 
 
@@ -617,6 +833,31 @@ async def _ingest_sarhad_source(source: SchemeSource, client: httpx.AsyncClient)
     return records
 
 
+async def _ingest_panchamrut_source(source: SchemeSource, client: httpx.AsyncClient) -> list[dict[str, Any]]:
+    logger.info("Starting Panchamrut scheme ingestion source=%s url=%s", source.cache_key, source.source_url)
+    html = await fetch_html(client, source.source_url)
+    sections = parse_panchamrut_scheme_sections(html)
+    if not sections:
+        logger.warning("No Panchamrut scheme sections parsed source=%s", source.cache_key)
+        raise SchemeParseError("no Panchamrut scheme sections parsed")
+    last_refreshed_at = _utcnow_iso()
+    records = [
+        {
+            "union_name": source.union_name,
+            "source_url": source.source_url,
+            "scheme_title": section["scheme_title"],
+            "scheme_url": f"{source.source_url}#{_slugify_fragment(section['scheme_title'])}" if _slugify_fragment(section["scheme_title"]) else source.source_url,
+            "content": section["content"],
+            "content_type": "html",
+            "source_name": source.source_name,
+            "last_refreshed_at": last_refreshed_at,
+        }
+        for section in sections
+    ]
+    logger.info("Completed Panchamrut scheme ingestion source=%s record_count=%s", source.cache_key, len(records))
+    return records
+
+
 async def refresh_scheme_source(source: SchemeSource, redis_client=None, client: httpx.AsyncClient | None = None) -> bool:
     logger.info("Starting scheme source refresh source=%s union=%s content_type=%s", source.cache_key, source.union_name, source.content_type)
     try:
@@ -636,8 +877,13 @@ async def refresh_scheme_source(source: SchemeSource, redis_client=None, client:
     try:
         if source.source_name == BANAS_SOURCE.source_name:
             records = await _ingest_banas_source(source, client)
-        else:
+        elif source.source_name == SARHAD_SOURCE.source_name:
             records = await _ingest_sarhad_source(source, client)
+        elif source.source_name == PANCHAMRUT_SOURCE.source_name:
+            records = await _ingest_panchamrut_source(source, client)
+        else:
+            logger.warning("Scheme refresh skipped due to unsupported source source_name=%s source=%s", source.source_name, source.cache_key)
+            return False
 
         if not records:
             logger.warning("Scheme refresh produced no records for source=%s; keeping existing cache", source.cache_key)
