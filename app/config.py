@@ -7,6 +7,14 @@ from dotenv import load_dotenv
 # Load environment variables from .env file
 load_dotenv()
 
+
+def _get_bool_env(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
 class Settings(BaseSettings):
     # Core Application Settings
     app_name: str = "Amul AI API"
@@ -67,6 +75,22 @@ class Settings(BaseSettings):
     default_cache_ttl: int = 60 * 60 * 24  # 24 hours
     suggestions_cache_ttl: int = 60 * 30    # 30 minutes
     farmer_animal_api_cache_ttl: int = 60 * 60 * 24 * 17  # 17 days
+    # Session-ownership locking (voice call concurrency) — consumed by app/utils.py
+    # once the voice surface folds in; inert on the chat path.
+    session_owner_ttl_seconds: int = int(os.getenv("SESSION_OWNER_TTL_SECONDS", "120"))
+    session_owner_refresh_interval_seconds: int = int(os.getenv("SESSION_OWNER_REFRESH_INTERVAL_SECONDS", "15"))
+    # Farmer cache policy: beyond this age a cached record is too stale to serve —
+    # the read blocks on a bounded API call instead of serving it (falls back to
+    # the stale record only if the API also fails). Backstop above the 12h/2h
+    # soft-refresh; the 7d hard Redis TTL still deletes records entirely.
+    # (Consumed by the farmer SWR cache layer — bucket A Layer 2.)
+    farmer_max_serve_stale_seconds: int = int(os.getenv("FARMER_MAX_SERVE_STALE_SECONDS", str(60 * 60 * 24)))
+    # Farmer/animal API tracing records a PII-SAFE structure summary by default
+    # (status, record count, which keys are present/null). Raw response bodies are
+    # only captured when FARMER_API_TRACE_BODY is explicitly enabled (temporary
+    # deep-debug), capped at FARMER_API_TRACE_BODY_CHARS.
+    farmer_api_trace_body: bool = _get_bool_env("FARMER_API_TRACE_BODY", default=False)
+    farmer_api_trace_body_chars: int = int(os.getenv("FARMER_API_TRACE_BODY_CHARS", "8000"))
 
     # Logging Configuration
     log_level: str = "INFO"
@@ -91,6 +115,23 @@ class Settings(BaseSettings):
     ollama_endpoint_url: Optional[str] = None
     marqo_endpoint_url: Optional[str] = None
     inference_endpoint_url: Optional[str] = None
+
+    # Voice service settings (nudge, STT signals, voice tracing, pretranslation
+    # timeout) — inert on the chat path; consumed by the voice surface once it
+    # folds in. langfuse_environment (voice's name for chat's
+    # langfuse_tracing_environment) is intentionally left out pending the
+    # observability reconciliation (bucket C).
+    nudge_api_url: str = os.getenv("NUDGE_API_URL", "https://vistaar.getraya.app/api/nudge-user")
+    nudge_timeout_seconds: float = float(os.getenv("NUDGE_TIMEOUT_SECONDS", "3.0"))
+    enable_voice_nudges: bool = _get_bool_env("ENABLE_VOICE_NUDGES", default=True)
+    stt_signal_retry_ceiling: int = int(os.getenv("STT_SIGNAL_RETRY_CEILING", "3"))
+    openai_pretranslation_timeout_seconds: float = float(os.getenv("OPENAI_PRETRANSLATION_TIMEOUT_SECONDS", "10.0"))
+    enable_voice_tracing: bool = _get_bool_env("ENABLE_VOICE_TRACING", default=True)
+    voice_trace_text_mode: str = os.getenv("VOICE_TRACE_TEXT_MODE", "preview_hash")
+    voice_trace_preview_chars: int = int(os.getenv("VOICE_TRACE_PREVIEW_CHARS", "120"))
+    voice_trace_log_summary: bool = _get_bool_env("VOICE_TRACE_LOG_SUMMARY", default=True)
+    # RETRIEVAL_AUDIT_LOG: log intent/retrieval_called/query per turn for replay analysis
+    retrieval_audit_log: bool = _get_bool_env("RETRIEVAL_AUDIT_LOG", default=False)
 
     # External Service API Keys
     openai_api_key: Optional[str] = None
