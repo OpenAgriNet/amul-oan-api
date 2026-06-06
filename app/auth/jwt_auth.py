@@ -112,7 +112,10 @@ async def get_current_user(token: str | None = Depends(oauth2_scheme)):
     if public_key is None:
         logger.error("JWT Public Key is not loaded, cannot verify tokens.")
         raise credentials_exception
-        
+
+    if token is None:
+        raise credentials_exception
+
     try:
         # jwt.decode is CPU-bound (crypto); run in thread pool to avoid blocking the event loop
         decoded_token = await asyncio.to_thread(
