@@ -19,6 +19,7 @@ from helpers.utils import get_logger
 SUPPORTED_SCHEME_UNIONS = {
     UnionName.BANAS.value,
     UnionName.KUTCH.value,
+    UnionName.PANCHMAHAL.value,
 }
 
 logger = get_logger(__name__)
@@ -33,8 +34,15 @@ async def prepare_get_union_scheme_data(
     bail-out for farmers from unions whose scheme catalog isn't ingested
     (e.g., dudhsagar). The LLM won't see the tool in its schema this turn, so it can't call it.
     """
-    farmer_unions = [u.strip().lower() for u in (ctx.deps.farmer_unions or []) if u]
-    if any(u in SUPPORTED_SCHEME_UNIONS for u in farmer_unions):
+    if not settings.scheme_require_union_auth:
+        logger.info(
+            "Exposing get_union_scheme_data tool because scheme union auth is disabled farmer_unions=%s",
+            ctx.deps.farmer_unions,
+        )
+        return tool_def
+
+    farmer_unions = [canonical_union_name(union_name) for union_name in (ctx.deps.farmer_unions or []) if union_name]
+    if any(union_name in SUPPORTED_SCHEME_UNIONS for union_name in farmer_unions):
         return tool_def
     logger.info(
         "Hiding get_union_scheme_data tool because farmer_unions=%s has no supported union",
@@ -89,14 +97,11 @@ async def get_union_scheme_data(ctx: RunContext[FarmerContext], scheme_name: str
             return "Scheme data is unavailable because the farmer union could not be determined from the current farmer context."
         target_unions = [normalized_union_name]
     else:
-        if normalized_union_name:
-            target_unions = [normalized_union_name]
-        else:
-            target_unions = sorted(SUPPORTED_SCHEME_UNIONS)
-            logger.info(
-                "Union scheme tool bypassed union auth for testing; using supported unions=%s",
-                target_unions,
-            )
+        target_unions = sorted(SUPPORTED_SCHEME_UNIONS)
+        logger.info(
+            "Union scheme tool bypassed union auth for testing; using supported unions=%s",
+            target_unions,
+        )
 
     records: list[dict[str, Any]] = []
     for union_name in target_unions:

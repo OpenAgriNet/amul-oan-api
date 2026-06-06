@@ -27,6 +27,7 @@ from app.models.cvcc import (
     CvccTreatmentModel,
     CvccVaccinationModel,
 )
+from app.config import settings
 from app.models.farmer import FarmerModel
 from app.models.union import UnionName, canonical_union_name
 from app.services.scheme_ingestion import (
@@ -41,6 +42,7 @@ logger = get_logger(__name__)
 SUPPORTED_SCHEME_CONTEXT_UNIONS = {
     UnionName.BANAS.value,
     UnionName.KUTCH.value,
+    UnionName.PANCHMAHAL.value,
 }
 
 
@@ -91,11 +93,14 @@ async def _append_union_scheme_summary_markdown(lines: list[str], farmer_unions:
     # matching the supported set, so e.g. a "sarhad" farmer resolves to Kutch.
     scheme_unions: list[str] = []
     _seen_scheme_unions: set[str] = set()
-    for union_name in farmer_unions:
-        canonical = canonical_union_name(union_name)
-        if canonical in SUPPORTED_SCHEME_CONTEXT_UNIONS and canonical not in _seen_scheme_unions:
-            _seen_scheme_unions.add(canonical)
-            scheme_unions.append(canonical)
+    if not settings.scheme_require_union_auth:
+        scheme_unions = sorted(SUPPORTED_SCHEME_CONTEXT_UNIONS)
+    else:
+        for union_name in farmer_unions:
+            canonical = canonical_union_name(union_name)
+            if canonical in SUPPORTED_SCHEME_CONTEXT_UNIONS and canonical not in _seen_scheme_unions:
+                _seen_scheme_unions.add(canonical)
+                scheme_unions.append(canonical)
     if not scheme_unions:
         return
 
