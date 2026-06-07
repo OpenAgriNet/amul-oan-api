@@ -63,6 +63,14 @@ async def create_health_call(
     # write call below).
     session_id = ctx.deps.session_id if ctx and ctx.deps else None
 
+    # A booking is IRREVERSIBLE, so block on the moderation verdict before writing.
+    # On voice, moderation runs concurrently with the agent; this refuses the
+    # booking if the query was rejected. No-op on chat (no moderation task attached
+    # → returns True), so chat behaviour is unchanged. See create_ai_call.
+    if not await ctx.deps.ensure_in_scope():
+        logger.info("Health call blocked: query failed moderation; session=%s", session_id)
+        return "This helpline only handles dairy farming and animal husbandry questions."
+
     _lf = get_langfuse_client() if get_langfuse_client else None
     _health_tool_input = {
         "union_code": union_code,
