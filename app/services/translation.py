@@ -46,6 +46,14 @@ elif PRETRANSLATION_PROVIDER == "vllm":
 else:
     _PRETRANSLATION_MODEL_DEFAULT = "gpt-4.1-mini"
 PRETRANSLATION_MODEL = os.getenv("PRETRANSLATION_MODEL", _PRETRANSLATION_MODEL_DEFAULT)
+# Legacy alias consumed by the voice moderation service for its OpenAI-compatible
+# model selection. Mirrors PRETRANSLATION_MODEL (which takes precedence) with an
+# OPENAI_PRETRANSLATION_MODEL env fallback. Additive — chat translation paths use
+# PRETRANSLATION_MODEL directly; this exists so app/services/moderation.py imports cleanly.
+OPENAI_PRETRANSLATION_MODEL = os.getenv(
+    "PRETRANSLATION_MODEL",
+    os.getenv("OPENAI_PRETRANSLATION_MODEL", _PRETRANSLATION_MODEL_DEFAULT),
+)
 
 _openai_client: Optional[AsyncOpenAI] = None
 _anthropic_client: Optional[AsyncAnthropic] = None
