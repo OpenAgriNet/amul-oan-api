@@ -36,18 +36,25 @@ async def create_ai_call(
     species: AISpecies,
 ) -> str:
     """
-    Book an artificial insemination call for a farmer.
+    Book an artificial insemination (beech daan / બીજ દાન) call for a farmer.
+    Extract union_code, society_code, farmer_code, and the selected AI technician user_id
+    from the farmer context in the system prompt.
+    If these details are not available, tell the farmer their details are not available right now.
+    Ask the farmer whether the booking is for a cow (ગાય) or buffalo (ભેંસ) before calling this tool.
+    Never ask the farmer to speak an internal technician ID. Use the selected technician option
+    already present in farmer context.
 
     Args:
+        ctx: The run context (automatically provided).
         union_code: Union code for the farmer from farmer context.
         society_code: Society code for the farmer from farmer context.
         farmer_code: Farmer code for the farmer from farmer context.
-        user_id: Selected AI technician user identifier to be sent as userId to external CreateAICall API.
+        user_id: Selected AI technician user ID mapped from farmer context.
         species: Species to book the AI call for. Use `cow` or `buffalo`.
 
     Returns:
-        str: Formatted JSON string with assigned AIT details and ticket number,
-             or a clear message if booking fails.
+        str: Formatted result with assigned AIT details and ticket number,
+             or a message if booking fails or was already done this session.
     """
     logger.info(
         "Create AI call tool invoked for union=%s society=%s farmer=%s user_id=%s species=%s",
@@ -61,6 +68,14 @@ async def create_ai_call(
     # Per-session id for the atomic booking reservation (placed just before the
     # write call below).
     session_id = ctx.deps.session_id if ctx and ctx.deps else None
+
+    # A booking is IRREVERSIBLE, so block on the moderation verdict before writing.
+    # On the voice path moderation runs concurrently with the agent; this refuses
+    # the booking if the query was rejected. No-op on the chat path (no moderation
+    # task attached → returns True), so chat behaviour is unchanged.
+    if not await ctx.deps.ensure_in_scope():
+        logger.info("AI call blocked: query failed moderation; session=%s", session_id)
+        return "This helpline only handles dairy farming and animal husbandry questions."
 
     _lf = get_langfuse_client() if get_langfuse_client else None
     _ai_tool_input = {
