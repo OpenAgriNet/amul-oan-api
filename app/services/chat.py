@@ -22,6 +22,8 @@ from app.utils import (
     set_cache,
 )
 from app.tasks.suggestions import create_suggestions
+from app.config import settings
+from app.services.fallback import execute_with_fallback, stream_with_fallback, with_first_token_deadline
 from app.core.cache import cache
 from agents.deps import FarmerContext
 from agents.farmer_context import get_farmer_context_bundle_by_mobile
@@ -313,53 +315,86 @@ async def stream_chat_messages(
                 pretrans_provider or PRETRANSLATION_PROVIDER,
                 request_model_name if is_oss else PRETRANSLATION_MODEL,
             )
-            try:
-                processing_query = await translate_to_english_pretranslation(
-                    text=query,
-                    source_lang=source_lang,
-                    provider=pretrans_provider,
-                )
-                processing_lang = "en"
-                logger.info(
-                    "request_id=%s pretranslation_success=True source_preview=%s translated_preview=%s",
-                    request_id,
-                    query[:80],
-                    processing_query[:80],
-                )
-            except Exception as e:
-                logger.error(
-                    "request_id=%s pretranslation_success=False source_lang=%s error=%s",
-                    request_id,
-                    source_lang,
-                    e,
-                )
+            if settings.fallback_enabled:
+                # Standard OSS -> managed fallback. Drops the legacy TranslateGemma
+                # stopgap (decision #7): TranslateGemma is also self-hosted vLLM, so
+                # it shared a failure domain with the OSS pretranslation it backed up.
                 try:
-                    logger.info(
-                        "request_id=%s pretranslation_fallback=translategemma source_lang=%s",
-                        request_id,
-                        source_lang,
-                    )
-                    processing_query = await translate_text(
-                        text=query,
-                        source_lang=source_lang,
-                        target_lang="english",
+                    processing_query = await execute_with_fallback(
+                        pipeline="pretranslation",
+                        session_id=session_id_safe,
+                        variant=pipeline_variant,
+                        run=lambda a: translate_to_english_pretranslation(
+                            text=query,
+                            source_lang=source_lang,
+                            provider="vllm" if a.kind == "oss" else None,
+                        ),
                     )
                     processing_lang = "en"
-                except Exception as fallback_error:
+                    logger.info(
+                        "request_id=%s pretranslation_success=True source_preview=%s translated_preview=%s",
+                        request_id,
+                        query[:80],
+                        processing_query[:80],
+                    )
+                except Exception as e:
                     logger.error(
-                        "request_id=%s pretranslation_fallback_failed=True source_lang=%s error=%s",
+                        "request_id=%s pretranslation_success=False (all tiers) source_lang=%s error=%s",
                         request_id,
                         source_lang,
-                        fallback_error,
+                        e,
                     )
                     processing_query = query
                     processing_lang = target_lang
+            else:
+                try:
+                    processing_query = await translate_to_english_pretranslation(
+                        text=query,
+                        source_lang=source_lang,
+                        provider=pretrans_provider,
+                    )
+                    processing_lang = "en"
+                    logger.info(
+                        "request_id=%s pretranslation_success=True source_preview=%s translated_preview=%s",
+                        request_id,
+                        query[:80],
+                        processing_query[:80],
+                    )
+                except Exception as e:
+                    logger.error(
+                        "request_id=%s pretranslation_success=False source_lang=%s error=%s",
+                        request_id,
+                        source_lang,
+                        e,
+                    )
+                    try:
+                        logger.info(
+                            "request_id=%s pretranslation_fallback=translategemma source_lang=%s",
+                            request_id,
+                            source_lang,
+                        )
+                        processing_query = await translate_text(
+                            text=query,
+                            source_lang=source_lang,
+                            target_lang="english",
+                        )
+                        processing_lang = "en"
+                    except Exception as fallback_error:
+                        logger.error(
+                            "request_id=%s pretranslation_fallback_failed=True source_lang=%s error=%s",
+                            request_id,
+                            source_lang,
+                            fallback_error,
+                        )
+                        processing_query = query
+                        processing_lang = target_lang
         if use_translation_pipeline and needs_output_translation:
             # Agent responds in English; response will be translated to target_lang downstream
             processing_lang = "en"
 
         deps = FarmerContext(
             query=processing_query,
+            session_id=session_id,
             lang_code=processing_lang,
             farmer_info=farmer_data,
             farmer_unions=farmer_unions,
@@ -398,7 +433,15 @@ async def stream_chat_messages(
                 else nullcontext()
             )
             with _mod_obs_ctx as mod_obs:
-                moderation_run = await moderation_agent.run(user_message, model=request_model)
+                if settings.fallback_enabled:
+                    moderation_run = await execute_with_fallback(
+                        pipeline="moderation",
+                        session_id=session_id_safe,
+                        variant=pipeline_variant,
+                        run=lambda a: moderation_agent.run(user_message, model=a.model),
+                    )
+                else:
+                    moderation_run = await moderation_agent.run(user_message, model=request_model)
                 moderation_data = moderation_run.output
                 logger.info(
                     "request_id=%s moderation_category=%s moderation_action=%s",
@@ -492,7 +535,141 @@ async def stream_chat_messages(
         )
 
         with _agrinet_obs_ctx as agrinet_obs:
-            if request_provider == 'anthropic':
+            if settings.fallback_enabled:
+                # Core-chat streaming with OSS -> managed first-token-commit fallback.
+                # _make_agent_text_stream produces the English token stream for one
+                # attempt (anthropic via .iter, else via .run_stream); stream_with_fallback
+                # swaps OSS -> managed only BEFORE the first token, then the existing
+                # translate/raw downstream logic runs unchanged. new_messages is captured
+                # into _stream_holder by whichever attempt completes.
+                _stream_holder: dict = {}
+
+                async def _raw_agent_text_stream(attempt):
+                    if attempt.provider == 'anthropic':
+                        async with agrinet_agent.iter(
+                            user_prompt=user_message,
+                            message_history=trimmed_history,
+                            deps=deps,
+                            model=attempt.model,
+                        ) as agent_run:
+                            async for node in agent_run:
+                                if type(node).__name__ == 'ModelRequestNode':
+                                    async with node.stream(agent_run.ctx) as request_stream:
+                                        async for event in request_stream:
+                                            event_type = type(event).__name__
+                                            text = None
+                                            if event_type == 'PartStartEvent' and hasattr(event, 'part'):
+                                                if type(event.part).__name__ == 'TextPart' and hasattr(event.part, 'content'):
+                                                    text = event.part.content
+                                            elif event_type == 'PartDeltaEvent' and hasattr(event, 'delta'):
+                                                if type(event.delta).__name__ == 'TextPartDelta':
+                                                    text = event.delta.content_delta
+                                            if text:
+                                                yield text
+                            _stream_holder["new_messages"] = agent_run.result.new_messages()
+                    else:
+                        async with agrinet_agent.run_stream(
+                            user_prompt=user_message,
+                            message_history=trimmed_history,
+                            deps=deps,
+                            model=attempt.model,
+                        ) as response_stream:
+                            async for chunk in response_stream.stream_text(delta=True):
+                                yield chunk
+                            _stream_holder["new_messages"] = response_stream.new_messages()
+
+                async def _make_agent_text_stream(attempt):
+                    # Bound time-to-first-token (attempt.timeout) so a silent OSS
+                    # hang swaps to managed before any token reaches the client; the
+                    # deadline disarms after the first token, so the rest streams on
+                    # the model's normal read-timeout.
+                    async for chunk in with_first_token_deadline(attempt, _raw_agent_text_stream(attempt)):
+                        yield chunk
+
+                async def _stream_to_client(english_src):
+                    if needs_output_translation:
+                        sentence_buffer = ""
+                        translation_batch = []
+                        batch_word_count = 0
+                        async for chunk in english_src:
+                            sentence_buffer += chunk
+                            complete_sentences, remaining = extract_complete_sentences(sentence_buffer)
+                            if complete_sentences:
+                                for sentence in complete_sentences:
+                                    translation_batch.append(sentence)
+                                    batch_word_count += len(sentence.split())
+                                batch_text = "".join(translation_batch)
+                                if should_translate_batch(batch_text, batch_word_count):
+                                    if translated_output_chunks and _batch_starts_new_line_or_list(batch_text):
+                                        translated_output_chunks.append("\n")
+                                        yield "\n"
+                                    try:
+                                        async for translated_chunk in translate_text_stream_fast(
+                                            text=batch_text,
+                                            source_lang="english",
+                                            target_lang=target_lang,
+                                            max_output_chars=deps.response_max_chars,
+                                        ):
+                                            translated_output_chunks.append(translated_chunk)
+                                            yield translated_chunk
+                                    except Exception as e:
+                                        logger.error(f"Optimised batch translation failed, falling back to English batch: {e}")
+                                        translated_output_chunks.append(batch_text)
+                                        yield batch_text
+                                    translation_batch = []
+                                    batch_word_count = 0
+                                sentence_buffer = remaining
+                        if translation_batch:
+                            batch_text = "".join(translation_batch)
+                            if translated_output_chunks and _batch_starts_new_line_or_list(batch_text):
+                                translated_output_chunks.append("\n")
+                                yield "\n"
+                            try:
+                                async for translated_chunk in translate_text_stream_fast(
+                                    text=batch_text,
+                                    source_lang="english",
+                                    target_lang=target_lang,
+                                    max_output_chars=deps.response_max_chars,
+                                ):
+                                    translated_output_chunks.append(translated_chunk)
+                                    yield translated_chunk
+                            except Exception as e:
+                                logger.error(f"Final batch translation failed, falling back to English batch: {e}")
+                                translated_output_chunks.append(batch_text)
+                                yield batch_text
+                        if sentence_buffer.strip():
+                            if translated_output_chunks and _batch_starts_new_line_or_list(sentence_buffer):
+                                translated_output_chunks.append("\n")
+                                yield "\n"
+                            try:
+                                async for translated_chunk in translate_text_stream_fast(
+                                    text=sentence_buffer,
+                                    source_lang="english",
+                                    target_lang=target_lang,
+                                    max_output_chars=deps.response_max_chars,
+                                ):
+                                    translated_output_chunks.append(translated_chunk)
+                                    yield translated_chunk
+                            except Exception as e:
+                                logger.error(f"Tail fragment translation failed, falling back to English fragment: {e}")
+                                translated_output_chunks.append(sentence_buffer)
+                                yield sentence_buffer
+                    else:
+                        async for chunk in english_src:
+                            raw_output_chunks.append(chunk)
+                            yield chunk
+
+                english_src = stream_with_fallback(
+                    pipeline="chat",
+                    session_id=session_id_safe,
+                    variant=pipeline_variant,
+                    make_stream=_make_agent_text_stream,
+                )
+                async for _out in _stream_to_client(english_src):
+                    yield _out
+                logger.info(f"Streaming complete for session {session_id}")
+                new_messages = _stream_holder.get("new_messages", [])
+            elif request_provider == 'anthropic':
                 # For Anthropic: Use agent.iter() + node.stream() instead of run_stream()
                 async with agrinet_agent.iter(
                     user_prompt=user_message,

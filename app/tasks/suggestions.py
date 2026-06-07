@@ -13,6 +13,8 @@ from agents.models import (
     oss_model_available,
 )
 from agents.suggestions import suggestions_agent
+from app.config import settings
+from app.services.fallback import execute_with_fallback
 from langcodes import Language
 
 logger = get_logger(__name__)
@@ -87,7 +89,15 @@ async def create_suggestions(session_id: str, target_lang: str = 'mr', variant: 
 
         with session_ctx:
             with _suggestions_obs_ctx as sug_obs:
-                agent_run = await suggestions_agent.run(message, model=sug_model)
+                if settings.fallback_enabled:
+                    agent_run = await execute_with_fallback(
+                        pipeline="suggestions",
+                        session_id=session_id_safe,
+                        variant=variant,
+                        run=lambda a: suggestions_agent.run(message, model=a.model),
+                    )
+                else:
+                    agent_run = await suggestions_agent.run(message, model=sug_model)
                 suggestions = [x for x in agent_run.output]
                 if sug_obs is not None:
                     sug_obs.update(

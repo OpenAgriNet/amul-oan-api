@@ -174,6 +174,19 @@ class Settings(BaseSettings):
     oss_inference_endpoint_url: Optional[str] = os.getenv("OSS_INFERENCE_ENDPOINT_URL")
     oss_llm_model_name: Optional[str] = os.getenv("OSS_LLM_MODEL_NAME")
     oss_variant_ttl: int = int(os.getenv("OSS_VARIANT_TTL", str(60 * 60 * 24 * 7)))  # 7d sticky
+
+    # Standard OSS -> managed fallback (see docs/oss-fallback-design.md).
+    # Kill-switch defaults OFF: when false, pipelines keep today's behaviour.
+    fallback_enabled: bool = os.getenv("FALLBACK_ENABLED", "false").strip().lower() in {
+        "1", "true", "yes", "on"
+    }
+    # Per-pipeline OSS time-to-respond budgets before falling back to managed.
+    fallback_chat_oss_timeout_ms: int = int(os.getenv("FALLBACK_CHAT_OSS_TIMEOUT_MS", "8000"))
+    fallback_moderation_oss_timeout_ms: int = int(os.getenv("FALLBACK_MODERATION_OSS_TIMEOUT_MS", "5000"))
+    fallback_pretranslation_oss_timeout_ms: int = int(os.getenv("FALLBACK_PRETRANSLATION_OSS_TIMEOUT_MS", "10000"))
+    fallback_suggestions_oss_timeout_ms: int = int(os.getenv("FALLBACK_SUGGESTIONS_OSS_TIMEOUT_MS", "6000"))
+    # Deadline for the managed (fallback) tier.
+    fallback_managed_timeout_ms: int = int(os.getenv("FALLBACK_MANAGED_TIMEOUT_MS", "20000"))
     # Scheme tool union scoping:
     # true  -> require authenticated farmer union to match a supported scheme union
     # false -> testing mode; allow any farmer union and fall back to supported unions

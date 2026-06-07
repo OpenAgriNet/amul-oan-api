@@ -4,10 +4,11 @@ import json
 from typing import Any
 
 from pydantic_ai import RunContext
+from pydantic_ai.tools import ToolDefinition
 
 from agents.deps import FarmerContext
 from app.config import settings
-from app.models.union import UnionName
+from app.models.union import UnionName, canonical_union_name
 from app.services.scheme_ingestion import (
     SchemeCacheError,
     SchemeDependencyError,
@@ -21,6 +22,25 @@ SUPPORTED_SCHEME_UNIONS = {
 }
 
 logger = get_logger(__name__)
+
+
+async def prepare_get_union_scheme_data(
+    ctx: RunContext[FarmerContext], tool_def: ToolDefinition
+) -> ToolDefinition | None:
+    """Hide get_union_scheme_data from the LLM unless the farmer is in a supported union.
+
+    Prevents wasted tool calls and the misleading "union could not be determined"
+    bail-out for farmers from unions whose scheme catalog isn't ingested
+    (e.g., dudhsagar). The LLM won't see the tool in its schema this turn, so it can't call it.
+    """
+    farmer_unions = [u.strip().lower() for u in (ctx.deps.farmer_unions or []) if u]
+    if any(u in SUPPORTED_SCHEME_UNIONS for u in farmer_unions):
+        return tool_def
+    logger.info(
+        "Hiding get_union_scheme_data tool because farmer_unions=%s has no supported union",
+        farmer_unions,
+    )
+    return None
 
 
 def _filter_scheme_records(records: list[dict[str, Any]], scheme_name: str) -> list[dict[str, Any]]:
@@ -46,7 +66,9 @@ async def get_union_scheme_data(ctx: RunContext[FarmerContext], scheme_name: str
     Returns:
         A JSON-formatted string of cached scheme records, or a clear no-data message.
     """
-    farmer_unions = [union_name.strip().lower() for union_name in ctx.deps.farmer_unions if union_name]
+    # Normalize each raw union name (dairy brand / spelling variant, e.g. "sarhad"
+    # for Kutch) to its canonical UnionName value before matching the supported set.
+    farmer_unions = [canonical_union_name(union_name) for union_name in ctx.deps.farmer_unions if union_name]
     normalized_union_name = next((union_name for union_name in farmer_unions if union_name in SUPPORTED_SCHEME_UNIONS), None)
     normalized_scheme_name = scheme_name.strip() if scheme_name else None
     require_union_auth = settings.scheme_require_union_auth
