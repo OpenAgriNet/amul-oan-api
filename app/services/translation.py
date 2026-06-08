@@ -237,6 +237,66 @@ GU_POLICY_REPLACEMENTS = _build_gu_policy_replacements(GU_TERM_POLICY)
 GU_POST_REPLACEMENTS = GU_POST_REPLACEMENTS_BASE + GU_POLICY_REPLACEMENTS
 
 
+# ── Voice-only context-aware body-slang normalization (§14 channel-aware) ──────
+# Chat maps all body slang -> શરીર uniformly via the shared gu_term_policy.json.
+# Voice additionally distinguishes back/flank context (-> પીઠ) from general body
+# context (-> શરીર), matching voice's live telephony behavior. Gated on the voice
+# channel; runs BEFORE GU_POST_REPLACEMENTS so the policy's uniform બૈડ->શરીર
+# entries become no-ops once the slang has already been contextually resolved.
+GU_WORD_BOUNDARY_START = r"(?<![઀-૿])"
+GU_WORD_BOUNDARY_END = r"(?![઀-૿])"
+GU_BODY_SLANG_VARIANTS = r"(?:બૈડા|બૈડું|બૈડુ|બરડા|બરડું|બરડુ)"
+GU_BODY_BACK_SUFFIXES = r"(?:માં|મા|પર)"
+GU_BODY_BACK_POSTPOSITIONS = r"(?:પર|માં|મા|પાછળ)"
+GU_BODY_AGREEMENT_FIXES = [
+    (r"શરીર\s+ઠંડા\s+લાગે\s+છે", "શરીર ઠંડું લાગે છે"),
+    (r"શરીર\s+ઠંડી\s+લાગે\s+છે", "શરીર ઠંડું લાગે છે"),
+    (r"પીઠ\s+ઠંડા\s+લાગે\s+છે", "પીઠ ઠંડી લાગે છે"),
+    (r"પીઠ\s+ઠંડું\s+લાગે\s+છે", "પીઠ ઠંડી લાગે છે"),
+]
+
+
+def _normalize_gu_body_terms(text: str) -> str:
+    """Normalize slang Gujarati body terms with contextual mapping (voice only)."""
+    out = text
+
+    # Back/flank context: slang + attached locative suffix.
+    out = re.sub(
+        rf"{GU_WORD_BOUNDARY_START}(?P<lemma>{GU_BODY_SLANG_VARIANTS})(?P<suffix>{GU_BODY_BACK_SUFFIXES}){GU_WORD_BOUNDARY_END}",
+        lambda m: f"પીઠ{m.group('suffix')}",
+        out,
+    )
+
+    # Back/flank context: slang + spaced postposition/phrase.
+    out = re.sub(
+        rf"{GU_WORD_BOUNDARY_START}(?P<lemma>{GU_BODY_SLANG_VARIANTS})\s+(?P<post>{GU_BODY_BACK_POSTPOSITIONS}){GU_WORD_BOUNDARY_END}",
+        lambda m: f"પીઠ {m.group('post')}",
+        out,
+    )
+    out = re.sub(
+        rf"{GU_WORD_BOUNDARY_START}(?P<lemma>{GU_BODY_SLANG_VARIANTS})\s+ની\s+બાજુ{GU_WORD_BOUNDARY_END}",
+        "પીઠની બાજુ",
+        out,
+    )
+    out = re.sub(
+        rf"{GU_WORD_BOUNDARY_START}(?P<lemma>{GU_BODY_SLANG_VARIANTS})\s+ના\s+ભાગ(?P<post>{GU_BODY_BACK_SUFFIXES}){GU_WORD_BOUNDARY_END}",
+        lambda m: f"પીઠના ભાગ{m.group('post')}",
+        out,
+    )
+
+    # Default: generic body context.
+    out = re.sub(
+        rf"{GU_WORD_BOUNDARY_START}(?P<lemma>{GU_BODY_SLANG_VARIANTS})(?P<suffix>ના|ની|નું|નો|ને|થી)?{GU_WORD_BOUNDARY_END}",
+        lambda m: f"શરીર{m.group('suffix') or ''}",
+        out,
+    )
+
+    for pat, repl in GU_BODY_AGREEMENT_FIXES:
+        out = re.sub(pat, repl, out)
+
+    return out
+
+
 def _fix_dandas(text: str) -> str:
     """Replace Devanagari dandas (।) with periods in TranslateGemma output."""
     return text.replace("।", ".")
@@ -251,6 +311,10 @@ def _post_normalize_gu_translation(
     if target_lang.lower() not in ("gujarati", "gu"):
         return text
     out = text
+    # Voice resolves body slang contextually (બૈડા પર -> પીઠ પર) BEFORE the shared
+    # policy runs; chat keeps the uniform gu_term_policy.json mapping (-> શરીર).
+    if _is_voice_channel():
+        out = _normalize_gu_body_terms(out)
     for pat, repl in GU_POST_REPLACEMENTS:
         out = re.sub(pat, repl, out)
     # collapse extra spaces introduced by removals

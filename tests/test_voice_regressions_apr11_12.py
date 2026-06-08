@@ -27,6 +27,7 @@ from app.services.translation import (
     _build_openai_pretranslation_messages,
     _extract_translation_from_raw,
     _post_normalize_gu_translation,
+    translation_channel,
 )
 from app.services.voice import (
     TELEPHONY_TERMINATE_CALL_TOKEN,
@@ -720,7 +721,10 @@ class TestHelperCoverage:
         ("લીલા ચારમાં બરબા આપો.", "બરસીમ"),
     ])
     def test_current_gu_term_policy_still_holds(self, text, expected):
-        result = normalize_gu(text)
+        # Voice channel: body slang resolves contextually (બૈડા પર -> પીઠ પર). The
+        # shared term policy (ફેટ/ગાભણ/બુલ/બરસીમ) applies on either channel.
+        with translation_channel("voice"):
+            result = normalize_gu(text)
         assert expected in result
 
     def test_policy_cleanup_does_not_strip_meaningful_text(self):
