@@ -321,7 +321,13 @@ class TestHelperCoverage:
         base_tool_names = set(voice_agent._function_toolset.tools.keys())
         signed_in_tool_names = set(voice_agent_signed_in._function_toolset.tools.keys())
         assert {"search_terms", "search_documents", "get_farmer_milk_collection_details", "create_ai_call", "create_health_call"}.issubset(base_tool_names)
-        assert {"get_farmer_profile", "get_herd_summary", "list_animal_tags"}.issubset(signed_in_tool_names)
+        # Merge reconciliation (Inc 7.2): get_union_scheme_data is the signed-in-only
+        # farmer tool; get_farmer_profile/get_herd_summary/list_animal_tags are
+        # intentionally DISABLED (redundant with the runtime farmer-context summary the
+        # voice pipeline injects). See agents/tools/__init__.py SIGNED_IN_FARMER_TOOLS.
+        assert "get_union_scheme_data" in signed_in_tool_names
+        assert "get_union_scheme_data" not in base_tool_names
+        assert {"get_farmer_profile", "get_herd_summary", "list_animal_tags"}.isdisjoint(signed_in_tool_names)
         assert "get_farmer_profile" not in base_tool_names
 
     def test_voice_system_prompt_is_static(self):
@@ -938,7 +944,7 @@ class TestMultiTurnFlows:
         assert "Known animal tags: eight seven two one, five four zero eight" in runtime_context
 
     def test_signed_in_list_animal_tags_masks_identifiers(self, monkeypatch):
-        from agents.tools import farmer_cached as farmer_cached_module
+        from agents.services import farmer_cache as farmer_cache_module
 
         async def _fake_farmer_data(_mobile):
             return FarmerDataEnvelope(
@@ -949,7 +955,10 @@ class TestMultiTurnFlows:
                 source="cache",
             )
 
-        monkeypatch.setattr(farmer_cached_module, "get_or_fetch_farmer_data", _fake_farmer_data)
+        # list_animal_tags -> _get_envelope lazy-imports get_or_fetch_farmer_data from
+        # agents.services.farmer_cache (the port routes it there to break a circular
+        # import), so patch the function on THAT module, not agents.tools.farmer_cached.
+        monkeypatch.setattr(farmer_cache_module, "get_or_fetch_farmer_data", _fake_farmer_data)
 
         result = asyncio.run(
             list_animal_tags(
