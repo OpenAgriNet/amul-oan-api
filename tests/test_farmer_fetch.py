@@ -259,3 +259,66 @@ def test_amulpashudhan_cache_unvalidatable_list_refetches_from_http(monkeypatch)
     _patch_http(monkeypatch, _FakeResp(json_data=[dict(_AMUL_ROW)]))
     out = asyncio.run(backends.fetch_farmer_amulpashudhan("9999999999", "tok"))
     assert out is not None and out[0].union_name == "kaira"  # refetched, not the cached junk
+
+
+# ── fetch_farmer_info_raw (Inc 3.2b-ii: RAW camelCase path, Option B) ──────────
+# This is the SWR/voice ingestion path. It must NOT apply FarmerModel snake_case
+# normalization — the camelCase must survive byte-for-byte (the Option B contract).
+
+def _patch_raw(monkeypatch, value):
+    async def fake_raw(mobile, token, **kwargs):
+        return value
+    monkeypatch.setattr(farmer_mod, "_fetch_farmer_amulpashudhan_raw", fake_raw)
+
+
+def test_fetch_farmer_info_raw_preserves_camelcase_unnormalized(monkeypatch):
+    monkeypatch.setenv("PASHUGPT_TOKEN", "tok1")
+    _patch_raw(monkeypatch, [dict(_AMUL_ROW)])
+
+    out = asyncio.run(farmer_mod.fetch_farmer_info_raw("9999999999"))
+
+    assert out is not None and len(out) == 1
+    rec = out[0]
+    # RAW: farmerName keeps its original casing ("Ramesh"), NOT lowercased like FarmerModel.
+    assert rec.farmerName == "Ramesh"
+    assert rec.societyName == "ABC Society"
+    assert rec.totalAnimals == 3
+    assert rec.tagNo == "123, 456"
+    # extra camelCase fields survive untouched (extra="allow").
+    dumped = rec.model_dump()
+    assert dumped["unionName"] == "Kaira"
+    assert dumped["mobileNumber"] == "9999999999"
+
+
+def test_fetch_farmer_info_raw_drops_empty_rows(monkeypatch):
+    monkeypatch.setenv("PASHUGPT_TOKEN", "tok1")
+    empty = {"unionName": "Kaira"}  # no tags / no animals / no farmer|society name
+    _patch_raw(monkeypatch, [empty, dict(_AMUL_ROW)])
+
+    out = asyncio.run(farmer_mod.fetch_farmer_info_raw("9999999999"))
+    assert out is not None and len(out) == 1
+    assert out[0].farmerName == "Ramesh"  # the content-bearing row kept, empty dropped
+
+
+def test_fetch_farmer_info_raw_none_when_no_token(monkeypatch):
+    monkeypatch.delenv("PASHUGPT_TOKEN", raising=False)
+    _patch_raw(monkeypatch, [dict(_AMUL_ROW)])
+    out = asyncio.run(farmer_mod.fetch_farmer_info_raw("9999999999"))
+    assert out is None
+
+
+def test_fetch_farmer_info_raw_none_when_no_data(monkeypatch):
+    monkeypatch.setenv("PASHUGPT_TOKEN", "tok1")
+    _patch_raw(monkeypatch, None)
+    out = asyncio.run(farmer_mod.fetch_farmer_info_raw("9999999999"))
+    assert out is None
+
+
+def test_fetch_farmer_info_raw_none_for_empty_mobile(monkeypatch):
+    # normalize_phone("") -> "" (falsy) is the only invalid-mobile guard; a
+    # digit-less string like "abc" falls back to the original, matching
+    # get_farmer_data_by_mobile's lenient behavior.
+    monkeypatch.setenv("PASHUGPT_TOKEN", "tok1")
+    _patch_raw(monkeypatch, [dict(_AMUL_ROW)])
+    out = asyncio.run(farmer_mod.fetch_farmer_info_raw(""))
+    assert out is None
