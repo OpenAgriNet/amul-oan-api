@@ -11,12 +11,35 @@ import re
 import random
 import asyncio
 import aiohttp
+from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Literal, Optional
 from openai import AsyncOpenAI
 from helpers.utils import get_logger, normalize_voice_output
 from dotenv import load_dotenv
-from agents.tools.terms import get_mini_glossary_for_text, get_ambiguity_hints_for_query, TERM_PAIRS
+from agents.tools.terms import get_mini_glossary_for_text, get_ambiguity_hints_for_query, TERM_PAIRS, TermPair
+
+
+# ── Channel-aware translation (§14) ───────────────────────────────────────────
+# Voice needs richer, telephony-tuned translation data (gender-neutral addressing
+# rules, ASR spelling variants) that should NOT reshape chat's translation. The
+# voice pipeline runs its translate calls inside translation_channel("voice");
+# everything defaults to "chat" so the chat path is byte-for-byte unchanged.
+_translation_channel: ContextVar[str] = ContextVar("translation_channel", default="chat")
+
+
+@contextmanager
+def translation_channel(channel: str):
+    token = _translation_channel.set(channel)
+    try:
+        yield
+    finally:
+        _translation_channel.reset(token)
+
+
+def _is_voice_channel() -> bool:
+    return _translation_channel.get() == "voice"
 
 try:
     from anthropic import AsyncAnthropic
@@ -108,6 +131,64 @@ GU_PREFERRED_TRANSLATION_RULES = [
     "Use 'ગાભણ' for pregnant livestock context.",
     "Do not output editorial markers like 'red colour' or formatting instructions.",
 ]
+
+# Voice channel (§14): richer, telephony-tuned rules — gender-neutral addressing
+# for a live phone call, etc. Applied only when translation_channel("voice") is
+# active; chat keeps GU_PREFERRED_TRANSLATION_RULES above, unchanged.
+VOICE_GU_PREFERRED_TRANSLATION_RULES = [
+    "Use farmer-preferred Gujarati livestock terms.",
+    "Address the caller respectfully with gender-neutral 'આપ' forms; never infer the caller's gender.",
+    "Sarlaben must always use feminine self-reference in Gujarati.",
+    "Keep the tone professional, cordial, and detached; do not become overly familiar or chatty.",
+    "Do not translate English address markers such as sister, brother, bhai, ben, madam, or sir into caller labels like બહેન, ભાઈ, મેડમ, or સાહેબ. Use respectful gender-neutral 'આપ' wording instead.",
+    "If the English source mentions 'sister' because the caller addressed Sarlaben, do not call the caller બહેન. Omit the address marker or render it as a neutral reference to સરલાબેન only when necessary.",
+    "Never use slang body terms like 'બૈડા/બૈડું/બરડા/બરડું'. Prefer 'પીઠ' for back/flank context and 'શરીર' for general body context.",
+    "Prefer 'બાવલું' over 'પાહો' for udder context.",
+    "Prefer 'ધાર' over 'ટીપાં' for milk streams.",
+    "Use 'ગાભણ' for pregnant livestock context.",
+    "Use 'ફેટ' for fat/milk-fat (not 'ચરબી').",
+    "Use 'એસ.એન.એફ.' for SNF (not 'ઘન પદાર્થો').",
+    "Use 'બેક્ટેરિયા' for bacteria (not 'જંતુઓ').",
+    "Use 'ધણ' for herd (not 'ટોળું').",
+    "Use one mastitis term consistently: 'આંચળનો સોજો'. Do not combine 'આઉ નો સોજો' and 'બાવલાનો સોજો'.",
+    "NEVER use 'સ્તન' for animal udder/teat. Use 'આંચળ' for teat and 'બાવલું' or 'આઉ' for udder.",
+    "Use 'બુલ' for bull (not 'બળદ' which means bullock/ox).",
+    "For bloat (આફરો), use 'ફુલેલા' (distended/puffed) not 'સોજેલા' (swollen) when describing the flank.",
+    "Avoid brackets, markdown, list scaffolding, and repeated parenthetical restatements.",
+    "Use 'માખણ' for butter, 'મલાઈ' for cream, 'વલોણું/વલોણાથી' for churning, and 'ઘી બનાવવું' for making ghee.",
+    "Use 'ચીરો' for incision/cut (not 'ચૂભો' which is not a real word).",
+    "Use 'માનસિક આઘાત' for mental trauma/stress in animals (not 'તણાવ').",
+    "Use 'ફીણ' for foam (not 'ફી').",
+    "Use 'દવા' for medicine (Gujarati does not pluralise as 'દવાઓ').",
+    "For feed meant for a pregnant animal, say 'ગાભણ પશુ માટેનું દાણ' or 'ગાભણ દાણ'. Never invent 'ગર્ભચારો' and never say 'ગર્ભ માટેનો ચારો'.",
+    "Never use the phrase 'સામાન્ય જાળવણી ચારો'. Always use natural farmer wording such as 'રોજિંદો ઘાસચારો' or 'નિયમિત સૂકો અને લીલો ચારો'.",
+    "In dairy feed context, if ASR/transcription suggests 'સમુદ્રી' but livestock feed is the likely meaning, prefer asking or keeping the term conservative over drifting into marine feed or seaweed advice.",
+    "Use 'તેને' (not archaic 'તેણીને') for 'to her/it'.",
+    "Use 'ભૌતિક' for physical (examination/condition), not 'શારીરિક'.",
+    "Never use the hallucinated fodder word 'બરબા'. Use 'બરસીમ' (or 'રજકો' where contextually better).",
+    "Never output placeholder quantities like '-', '--', or '–' for feed or dose lines. If exact values are missing, keep the wording non-numeric rather than inventing a quantity.",
+    "'Amul AI', 'Amul A I', 'AMUL AI', 'AI helpline', 'amul helpline', 'AI helpline advisor', and 'AI-powered helpline' refer to the Amul Artificial Intelligence digital advisory helpline, not artificial insemination. Render as 'અમૂલ એ.આઈ.' / 'એ.આઈ. હેલ્પલાઇન'; never as 'કૃત્રિમ બીજદાન' or other insemination wording in helpline or assistant identity context.",
+    "When 'AI' appears in product or helpline naming (Amul AI, AI helpline, AI assistant, AI-powered helpline), treat it as Artificial Intelligence, not breeding artificial insemination, unless the sentence is clearly about beejdan, semen, technician booking, or insemination procedure.",
+]
+
+# Voice channel (§14): glossary entries voice has that chat lacks — ASR spelling
+# variants (e.g. ભંચ→Buffalo) + extra dairy terms. Loaded as TermPairs and
+# searched ONLY by the voice-only _get_glossary_hints_for_gu_query, so chat's
+# shared glossary (TERM_PAIRS / get_mini_glossary) is untouched.
+def _load_voice_extra_term_pairs() -> list:
+    for p in (Path.cwd() / "assets/voice_glossary_terms_extra.json",
+              Path(__file__).resolve().parents[2] / "assets/voice_glossary_terms_extra.json"):
+        if p.exists():
+            try:
+                with p.open("r", encoding="utf-8") as f:
+                    return [TermPair(**pair) for pair in json.load(f)]
+            except Exception as e:
+                logger.warning("Failed loading voice glossary extras at %s: %s", p, e)
+                return []
+    return []
+
+
+VOICE_EXTRA_TERM_PAIRS = _load_voice_extra_term_pairs()
 
 
 def _load_gu_term_policy() -> dict:
@@ -263,9 +344,13 @@ def _format_translation_prompt(
         if rules:
             instruction += "\n\n**Terminology Rules (mandatory):**\n" + "\n".join(rules) + "\n"
     if target_code == "gu":
+        _gu_rules = (
+            VOICE_GU_PREFERRED_TRANSLATION_RULES if _is_voice_channel()
+            else GU_PREFERRED_TRANSLATION_RULES
+        )
         instruction += (
             "\n\n**Gujarati Livestock Style Rules (mandatory):**\n- "
-            + "\n- ".join(GU_PREFERRED_TRANSLATION_RULES)
+            + "\n- ".join(_gu_rules)
             + "\n"
         )
     if max_output_chars:
@@ -746,7 +831,9 @@ def _get_glossary_hints_for_gu_query(text: str, max_results: int = 7) -> str:
     text_lower = text.lower().strip()
     scored: list[tuple[str, str, float]] = []
 
-    for tp in TERM_PAIRS:
+    # Voice-only consumer: search chat's glossary plus the voice ASR-variant
+    # extras (§14) so spelling variants like ભંચ→Buffalo are recognized.
+    for tp in [*TERM_PAIRS, *VOICE_EXTRA_TERM_PAIRS]:
         scores: list[float] = []
         gu_lower = (tp.gu or "").lower().strip()
         translit_lower = (tp.transliteration or "").lower().strip()

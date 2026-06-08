@@ -64,6 +64,7 @@ from app.services.translation import (
     translate_to_english_with_gpt5_mini,
     translate_to_english_with_oss_vllm,
     translate_to_english_with_structured_fallback,
+    translation_channel,
 )
 from app.services.voice_trace import VoiceTrace, create_voice_trace
 # NOTE: Removing telemetry for now.
@@ -463,6 +464,19 @@ def _canonical_history_user_text(kind: str, fallback: str = "") -> str:
     return _HISTORY_MARKERS.get(kind, fallback or kind)
 
 
+async def _voice_output_stream(text: str, target_lang: str):
+    """Stream output translation on the voice channel (§14 channel-aware). The
+    `with` lives inside this generator, so the voice channel stays active for the
+    whole iteration without re-indenting the caller's loop body."""
+    with translation_channel("voice"):
+        async for chunk in translate_text_stream_fast(
+            text=text,
+            source_lang="english",
+            target_lang=target_lang,
+        ):
+            yield chunk
+
+
 async def _render_text_for_caller(text_en: str, target_lang: str) -> str:
     """Render English loop text for the caller's language outside the agent loop."""
     normalized_target = (target_lang or "en").strip().lower()
@@ -470,11 +484,12 @@ async def _render_text_for_caller(text_en: str, target_lang: str) -> str:
         return _prepare_voice_output(text_en, "en")
 
     try:
-        translated = await translate_text(
-            text=text_en,
-            source_lang="english",
-            target_lang=normalized_target,
-        )
+        with translation_channel("voice"):
+            translated = await translate_text(
+                text=text_en,
+                source_lang="english",
+                target_lang=normalized_target,
+            )
         return _prepare_voice_output(translated, normalized_target)
     except Exception as e:
         logger.error(
@@ -1592,10 +1607,9 @@ async def stream_voice_message(
                                 input={"chars": len(text_to_translate)},
                                 metadata={"target_lang": requested_target_lang},
                             ):
-                                async for chunk in translate_text_stream_fast(
-                                    text=text_to_translate,
-                                    source_lang="english",
-                                    target_lang=requested_target_lang,
+                                async for chunk in _voice_output_stream(
+                                    text_to_translate,
+                                    requested_target_lang,
                                 ):
                                     if await _request_is_stale("during_output_translation"):
                                         return
