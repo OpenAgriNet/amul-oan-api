@@ -1,0 +1,95 @@
+{
+  "source": "shridhar_feedbacks_apr11_12.html",
+  "version": 1,
+  "scenarios": [
+    {
+      "scenario_id": "feedback_removed",
+      "kind": "integration",
+      "category": "feedback_or_closure",
+      "comment_ids": ["ahz", "aim", "aio", "ajf"],
+      "example_user_input": "No, there is no issue.",
+      "assertions": {
+        "must_not_contain": ["1 to 5", "how helpful", "feedback"],
+        "max_questions": 1
+      }
+    },
+    {
+      "scenario_id": "clarify_instead_of_answer",
+      "kind": "integration",
+      "category": "clarification_and_hallucination",
+      "comment_ids": ["ahh", "ahl", "aid", "aie", "ail", "aiy", "ajw"],
+      "example_user_input": "half-captured / unclear question",
+      "assertions": {
+        "must_not_contain": ["long list", "postmortem", "hallucinated"],
+        "max_questions": 1
+      }
+    },
+    {
+      "scenario_id": "no_phone_channel_hallucination",
+      "kind": "integration",
+      "category": "channel_hallucination",
+      "comment_ids": ["aig", "aii", "aij", "aix", "ajt", "ajv"],
+      "example_user_input": "caller asks for milk details",
+      "assertions": {
+        "must_not_contain": ["write here", "chat", "message", "CM office"],
+        "max_questions": 1
+      }
+    },
+    {
+      "scenario_id": "no_missing_numeric_content",
+      "kind": "integration",
+      "category": "voice_formatting",
+      "comment_ids": ["ahi", "ahj", "ajs", "ajl", "ajm"],
+      "example_user_input": "feed amount 2 kg, 3-4 days, 15 liters, 3.5 percent",
+      "assertions": {
+        "must_not_contain": ["--", "કિ.ગ્રા.", "kg", "kg."],
+        "must_contain_any": ["કિલોગ્રામ", "kilogram", "three point five", "ત્રણ પોઈન્ટ પાંચ"]
+      }
+    },
+    {
+      "scenario_id": "respectful_gender_neutral_gujarati",
+      "kind": "integration",
+      "category": "respect_and_gender",
+      "comment_ids": ["aih", "aiq", "ajg"],
+      "example_user_input": "બહીન, મદદ કરો",
+      "assertions": {
+        "must_not_contain": ["બહીન", "મદદ કરવા આવી છું"],
+        "must_contain_any": ["મદદ કરી શકું", "મદદ કરી શકી"]
+      }
+    },
+    {
+      "scenario_id": "domain_disambiguation",
+      "kind": "integration",
+      "category": "domain_misrouting",
+      "comment_ids": ["ahw", "ahx", "ahy", "aib", "aiz", "ajc"],
+      "example_user_input": "blood from teats / buffalo AI / afterbirth / ticks",
+      "assertions": {
+        "must_not_contain": ["goats", "sheep", "connectivity issues", "prolapse" ],
+        "max_questions": 1
+      }
+    },
+    {
+      "scenario_id": "stt_retry_ceiling",
+      "kind": "integration",
+      "category": "stt_retry_loop",
+      "comment_ids": ["ajx"],
+      "example_user_input": "No audio/User is speaking softly",
+      "assertions": {
+        "must_not_contain": ["feedback", "how helpful"],
+        "max_questions": 1,
+        "retry_ceiling": 3
+      }
+    },
+    {
+      "scenario_id": "voice_text_cleanup",
+      "kind": "integration",
+      "category": "voice_formatting",
+      "comment_ids": ["aji", "ajj", "ahr", "ahu", "ain"],
+      "example_user_input": "bracketed text, pronunciation errors, and shorthand",
+      "assertions": {
+        "must_not_contain": ["(", ")", "[", "]", "<", ">"],
+        "max_questions": 1
+      }
+    }
+  ]
+}
