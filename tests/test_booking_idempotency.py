@@ -16,8 +16,15 @@ from app.models.ai_call import AISpecies
 from app.models.health_call import HealthCaseType
 
 
+async def _in_scope():
+    # Chat-path semantics: ensure_in_scope() returns True when no moderation task
+    # is attached (deps.ensure_in_scope, agents/deps.py). Booking tools now gate on
+    # it (ai_call/health_call), so the deps stub must provide it.
+    return True
+
+
 def _ctx(session_id):
-    return SimpleNamespace(deps=SimpleNamespace(session_id=session_id))
+    return SimpleNamespace(deps=SimpleNamespace(session_id=session_id, ensure_in_scope=_in_scope))
 
 
 def _patch_cache(monkeypatch, module):
