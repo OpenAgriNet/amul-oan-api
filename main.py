@@ -5,6 +5,9 @@ from app.config import settings
 from contextlib import asynccontextmanager
 from app.tasks.scheme_scheduler import start_scheme_scheduler, stop_scheme_scheduler
 from app.tasks.telemetry_queue import start_telemetry_worker, stop_telemetry_worker
+# Imported before the routers so the cold import order matches the cycle-safety
+# regression test (worker module is side-effect-free; see farmer_refresh_worker).
+from app.tasks.farmer_refresh_worker import start_farmer_refresh_worker, stop_farmer_refresh_worker
 
 load_dotenv()
 
@@ -21,8 +24,10 @@ async def lifespan(app: FastAPI):
     print(f"🌐 CORS origins: {settings.allowed_origins}")
     await start_telemetry_worker()
     await start_scheme_scheduler()
+    await start_farmer_refresh_worker()
     yield
     # Shutdown
+    await stop_farmer_refresh_worker()
     await stop_scheme_scheduler()
     await stop_telemetry_worker()
     print(f"🛑 {settings.app_name} shutting down...")

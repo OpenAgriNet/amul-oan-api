@@ -92,6 +92,17 @@ class Settings(BaseSettings):
     # soft-refresh; the 7d hard Redis TTL still deletes records entirely.
     # (Consumed by the farmer SWR cache layer — bucket A Layer 2.)
     farmer_max_serve_stale_seconds: int = int(os.getenv("FARMER_MAX_SERVE_STALE_SECONDS", str(60 * 60 * 24)))
+    # Farmer SWR cache timers (Inc 4) — all env-tunable. Soft-refresh: a cached
+    # record older than its interval is served stale and refreshed in the
+    # background. "found" data changes slowly (12h); a cached "not_found" is
+    # re-checked sooner (2h) because a farmer may newly register.
+    # KNOWN LIMITATION: a register-then-immediately-call flow can keep seeing
+    # not_found for up to the not_found interval; the proper fix is active
+    # cache-invalidation on registration (cross-service, out of scope — follow-up).
+    farmer_refresh_interval_seconds: int = int(os.getenv("FARMER_REFRESH_INTERVAL_SECONDS", str(60 * 60 * 12)))
+    farmer_negative_refresh_interval_seconds: int = int(os.getenv("FARMER_NEGATIVE_REFRESH_INTERVAL_SECONDS", str(60 * 60 * 2)))
+    # Hard retention: Redis deletes a farmer record after this idle period.
+    farmer_cache_retention_seconds: int = int(os.getenv("FARMER_CACHE_RETENTION_SECONDS", str(60 * 60 * 24 * 7)))
     # Farmer/animal API tracing records a PII-SAFE structure summary by default
     # (status, record count, which keys are present/null). Raw response bodies are
     # only captured when FARMER_API_TRACE_BODY is explicitly enabled (temporary
