@@ -5,7 +5,7 @@ Internal backends for farmer and animal data from multiple APIs.
 
 Used by farmer.py and animal.py to provide cohesive tools with fallback and merged output.
 """
-from contextlib import nullcontext, contextmanager
+from contextlib import contextmanager
 from contextvars import ContextVar
 from beartype.typing import TypeVar
 import json
@@ -33,11 +33,6 @@ from app.models.cvcc import CvccHealthResponseModel
 from app.models.farmer import FarmerModel, FarmerHerdmanModel
 from helpers.utils import get_logger
 from app.observability import start_observation
-
-try:
-    from langfuse import get_client as get_langfuse_client
-except ImportError:
-    get_langfuse_client = None
 
 logger = get_logger(__name__)
 
@@ -553,33 +548,31 @@ async def create_ai_call_api(
 ) -> AICallResponseModel | None:
     """Creates an artificial insemination call and returns the assigned technician."""
     api_url = f"{BASE_AMULPASHUDHAN}/CreateAICall"
-    _lf = get_langfuse_client() if get_langfuse_client else None
-    _ai_obs_ctx = (
-        _lf.start_as_current_observation(
-            name="create_ai_call_api",
-            as_type="generation",
-            input={
-                "union_code": request.union_code,
-                "society_code": request.society_code,
-                "farmer_code": request.farmer_code,
-                "user_id": request.user_id,
-                "species": request.species.value,
-                "api_url": api_url,
-            },
-            metadata={"tool_backend": "amulpashudhan", "endpoint": "CreateAICall"},
-        )
-        if _lf
-        else nullcontext()
-    )
+    _ai_obs_input = {
+        "union_code": request.union_code,
+        "society_code": request.society_code,
+        "farmer_code": request.farmer_code,
+        "user_id": request.user_id,
+        "species": request.species.value,
+        "api_url": api_url,
+    }
 
     try:
-        with _ai_obs_ctx as ai_obs:
+        with start_observation(
+            "create_ai_call_api",
+            as_type="generation",
+            input=_ai_obs_input,
+            metadata={"tool_backend": "amulpashudhan", "endpoint": "CreateAICall"},
+        ) as ai_obs:
             async with httpx.AsyncClient(timeout=30.0) as client:
                 response = await client.post(
                     api_url,
                     params=request.to_query_params(),
                     headers={"Authorization": f"Bearer {token}"},
                 )
+                # Trace the response (PII-safe) BEFORE raising, so failed bookings
+                # (5xx) are captured in Langfuse, not just successes.
+                _record_api_trace(ai_obs, response, provider="amulpashudhan", url=api_url)
                 response.raise_for_status()
                 logger.info(
                     "[CreateAICall(%s,%s,%s,%s)] :: Response successfully recieved.",
@@ -642,23 +635,40 @@ async def create_health_call_api(
 ) -> HealthCallResponseModel | None:
     """Creates a health call and returns the ticket number details."""
     api_url = f"{BASE_AMULPASHUDHAN}/CreateHealthCall"
+    _health_obs_input = {
+        "union_code": request.union_code,
+        "society_code": request.society_code,
+        "farmer_code": request.farmer_code,
+        "species": request.species.value,
+        "case_type": request.case_type.value,
+        "api_url": api_url,
+    }
 
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.post(
-                api_url,
-                params=request.to_query_params(),
-                headers={"Authorization": f"Bearer {token}"},
-            )
-            response.raise_for_status()
-            logger.info(
-                "[CreateHealthCall(%s,%s,%s,%s,%s)] :: Response successfully recieved.",
-                request.union_code,
-                request.society_code,
-                request.farmer_code,
-                request.species.value,
-                request.case_type.value,
-            )
+        with start_observation(
+            "create_health_call_api",
+            as_type="generation",
+            input=_health_obs_input,
+            metadata={"tool_backend": "amulpashudhan", "endpoint": "CreateHealthCall"},
+        ) as health_obs:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.post(
+                    api_url,
+                    params=request.to_query_params(),
+                    headers={"Authorization": f"Bearer {token}"},
+                )
+                # Trace the response (PII-safe) BEFORE raising, so failed bookings
+                # (5xx) are captured in Langfuse, not just successes.
+                _record_api_trace(health_obs, response, provider="amulpashudhan", url=api_url)
+                response.raise_for_status()
+                logger.info(
+                    "[CreateHealthCall(%s,%s,%s,%s,%s)] :: Response successfully recieved.",
+                    request.union_code,
+                    request.society_code,
+                    request.farmer_code,
+                    request.species.value,
+                    request.case_type.value,
+                )
         response_json = response.json()
         if not isinstance(response_json, dict):
             raise Exception("Not a valid dict provided in the response.")

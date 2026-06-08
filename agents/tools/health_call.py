@@ -2,7 +2,6 @@
 Tool for booking a health call for a farmer.
 """
 import os
-from contextlib import nullcontext
 
 from pydantic_ai import RunContext
 
@@ -11,12 +10,8 @@ from agents.tools.farmer_animal_backends import create_health_call_api
 from app.core.cache import cache, try_reserve, release_reservation
 from app.models.ai_call import AISpecies
 from app.models.health_call import HealthCallRequestModel, HealthCaseType
+from app.observability import start_observation, set_trace_io
 from helpers.utils import get_logger
-
-try:
-    from langfuse import get_client as get_langfuse_client
-except ImportError:
-    get_langfuse_client = None
 
 logger = get_logger(__name__)
 
@@ -71,7 +66,6 @@ async def create_health_call(
         logger.info("Health call blocked: query failed moderation; session=%s", session_id)
         return "This helpline only handles dairy farming and animal husbandry questions."
 
-    _lf = get_langfuse_client() if get_langfuse_client else None
     _health_tool_input = {
         "union_code": union_code,
         "society_code": society_code,
@@ -80,37 +74,24 @@ async def create_health_call(
         "case_type": case_type.value,
         "remark": remark,
     }
-    _health_tool_obs_ctx = (
-        _lf.start_as_current_observation(
-            name="health_call_booking",
-            as_type="generation",
-            input=_health_tool_input,
-            metadata={"tool_name": "create_health_call"},
-        )
-        if _lf
-        else nullcontext()
-    )
 
-    with _health_tool_obs_ctx as health_tool_obs:
-        if _lf:
-            try:
-                _lf.set_current_trace_io(input=_health_tool_input)
-            except Exception:
-                pass
+    with start_observation(
+        "health_call_booking",
+        as_type="generation",
+        input=_health_tool_input,
+        metadata={"tool_name": "create_health_call"},
+    ) as health_tool_obs:
+        set_trace_io(input=_health_tool_input)
         token = os.getenv("PASHUGPT_TOKEN")
         if not token:
             logger.error("PASHUGPT_TOKEN is not set")
             failure_message = "Health call booking failed.\n\nPASHUGPT_TOKEN is not configured."
             if health_tool_obs is not None:
                 health_tool_obs.update(output={"agent_response": failure_message})
-            if _lf:
-                try:
-                    _lf.set_current_trace_io(
-                        input=_health_tool_input,
-                        output={"agent_response": failure_message},
-                    )
-                except Exception:
-                    pass
+            set_trace_io(
+                input=_health_tool_input,
+                output={"agent_response": failure_message},
+            )
             return failure_message
 
         request = HealthCallRequestModel(
@@ -151,14 +132,10 @@ async def create_health_call(
             failure_message = "Health call booking failed.\n\nUnable to create health call at the moment."
             if health_tool_obs is not None:
                 health_tool_obs.update(output={"agent_response": failure_message})
-            if _lf:
-                try:
-                    _lf.set_current_trace_io(
-                        input=_health_tool_input,
-                        output={"agent_response": failure_message},
-                    )
-                except Exception:
-                    pass
+            set_trace_io(
+                input=_health_tool_input,
+                output={"agent_response": failure_message},
+            )
             return failure_message
 
         # Mark this session as booked so a re-run (or retry) does not double-book.
@@ -188,24 +165,16 @@ async def create_health_call(
             success_message = f"Health call booked successfully. Ticket number: {ticket_number}"
             if health_tool_obs is not None:
                 health_tool_obs.update(output={"agent_response": success_message})
-            if _lf:
-                try:
-                    _lf.set_current_trace_io(
-                        input=_health_tool_input,
-                        output={"agent_response": success_message},
-                    )
-                except Exception:
-                    pass
+            set_trace_io(
+                input=_health_tool_input,
+                output={"agent_response": success_message},
+            )
             return success_message
         success_message = "Health call booked successfully, but ticket number was not returned."
         if health_tool_obs is not None:
             health_tool_obs.update(output={"agent_response": success_message})
-        if _lf:
-            try:
-                _lf.set_current_trace_io(
-                    input=_health_tool_input,
-                    output={"agent_response": success_message},
-                )
-            except Exception:
-                pass
+        set_trace_io(
+            input=_health_tool_input,
+            output={"agent_response": success_message},
+        )
         return success_message

@@ -135,3 +135,59 @@ def test_no_session_id_does_not_crash(monkeypatch):
     species = next(iter(AISpecies))
     r = asyncio.run(ai_mod.create_ai_call(_ctx(None), "U", "S", "F", "tech1", species))
     assert "booked successfully" in r
+
+
+# --- §13 Part B: tools route observability through the centralized helpers ---
+
+import contextlib
+
+
+def _patch_obs(monkeypatch, module):
+    """Capture start_observation (span name) + set_trace_io invocations."""
+    obs_names = []
+    trace_io = {"n": 0}
+
+    @contextlib.contextmanager
+    def fake_start_observation(name, **kwargs):
+        obs_names.append(name)
+        yield SimpleNamespace(update=lambda **k: None)
+
+    def fake_set_trace_io(**kwargs):
+        trace_io["n"] += 1
+
+    monkeypatch.setattr(module, "start_observation", fake_start_observation)
+    monkeypatch.setattr(module, "set_trace_io", fake_set_trace_io)
+    return obs_names, trace_io
+
+
+def test_ai_call_emits_observation_and_trace_io(monkeypatch):
+    _patch_cache(monkeypatch, ai_mod)
+    obs_names, trace_io = _patch_obs(monkeypatch, ai_mod)
+
+    async def fake_api(request, token):
+        return SimpleNamespace(ticket_number="T1", ait_name="AIT", model_dump=lambda: {"ticket_number": "T1"})
+
+    monkeypatch.setattr(ai_mod, "create_ai_call_api", fake_api)
+    species = next(iter(AISpecies))
+
+    r = asyncio.run(ai_mod.create_ai_call(_ctx("obs1"), "U", "S", "F", "t", species))
+    assert "booked successfully" in r
+    assert obs_names == ["ai_call_booking"]   # the booking span was opened
+    assert trace_io["n"] >= 1                  # root-trace IO was set via the helper
+
+
+def test_health_call_emits_observation_and_trace_io(monkeypatch):
+    _patch_cache(monkeypatch, hc_mod)
+    obs_names, trace_io = _patch_obs(monkeypatch, hc_mod)
+
+    async def fake_api(request, token):
+        return SimpleNamespace(ticket_number="H1")
+
+    monkeypatch.setattr(hc_mod, "create_health_call_api", fake_api)
+    species = next(iter(AISpecies))
+    case_type = next(iter(HealthCaseType))
+
+    r = asyncio.run(hc_mod.create_health_call(_ctx("obsh1"), "U", "S", "F", species, case_type, "r"))
+    assert "booked successfully" in r
+    assert obs_names == ["health_call_booking"]
+    assert trace_io["n"] >= 1

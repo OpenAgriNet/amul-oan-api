@@ -6,13 +6,17 @@ These prove we can record enough of a response (status + structure: record count
 which keys are present/null/empty) to debug inconsistent upstream returns WITHOUT
 shipping farmer PII to Langfuse. Raw bodies only when FARMER_API_TRACE_BODY is on.
 
-NOTE: voice's suite also has a `test_trace_recorded_before_raise_for_status` that
-exercises create_ai_call_api's trace-before-raise behavior — deferred here because
-chat's create_ai_call_api still uses inline langfuse and is migrated in §13 Part B.
+Also covers create_ai_call_api's trace-before-raise behavior, enabled when the
+booking backends were migrated to start_observation + _record_api_trace in §13
+Part B (a failed 5xx booking is now traced, not just successes).
 """
 import os
 
 os.environ.setdefault("OPENAI_API_KEY", "test-key")
+
+import asyncio
+import contextlib
+from unittest.mock import patch
 
 
 def _capture_trace(backends, resp, reason="cold_fetch"):
@@ -114,3 +118,51 @@ def test_fetch_reason_contextvar_default_and_scope():
     with backends.fetch_reason("background_refresh"):
         assert backends.current_fetch_reason() == "background_refresh"
     assert backends.current_fetch_reason() == "request"
+
+
+def test_trace_recorded_before_raise_for_status_on_failure():
+    """A failing (5xx) booking response must still be traced — _record_api_trace
+    runs BEFORE response.raise_for_status() in create_ai_call_api (§13 Part B)."""
+    from agents.tools import farmer_animal_backends as backends
+    from app.models.ai_call import AICallRequestModel, AISpecies
+
+    captured = {}
+
+    class _Obs:
+        def update(self, output=None, metadata=None):
+            captured["output"] = output
+
+    @contextlib.contextmanager
+    def _fake_obs(*a, **k):
+        yield _Obs()
+
+    class _Resp:
+        status_code = 500
+        text = '{"error": "boom"}'
+
+        def raise_for_status(self):
+            raise Exception("HTTP 500")
+
+        def json(self):
+            return {}
+
+    class _Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def post(self, *a, **k):
+            return _Resp()
+
+    req = AICallRequestModel(
+        unionCode="2021", societyCode="NA4310", farmerCode="NA0002",
+        userId="u1", species=AISpecies.COW,
+    )
+    with patch.object(backends, "start_observation", _fake_obs), \
+         patch.object(backends.httpx, "AsyncClient", lambda *a, **k: _Client()):
+        result = asyncio.run(backends.create_ai_call_api(req, "tok"))
+    assert result is None                                    # raised -> None
+    assert captured["output"]["status_code"] == 500          # but the 500 WAS traced
+    assert captured["output"]["ok"] is False

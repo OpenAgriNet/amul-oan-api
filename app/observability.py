@@ -80,6 +80,29 @@ def get_langfuse_client():
     return langfuse_client
 
 
+def set_trace_io(
+    *, input: Any | None = None, output: Any | None = None
+) -> None:
+    """Set the current Langfuse trace's input and/or output.
+
+    Centralized wrapper around set_current_trace_io so tools/backends don't reach
+    for the langfuse client directly. No-op when tracing is disabled, and never
+    raises — tracing must not break the caller.
+    """
+    if langfuse_client is None:
+        return
+    try:
+        kwargs: dict[str, Any] = {}
+        if input is not None:
+            kwargs["input"] = input
+        if output is not None:
+            kwargs["output"] = output
+        if kwargs:
+            langfuse_client.set_current_trace_io(**kwargs)
+    except Exception:
+        pass
+
+
 @contextmanager
 def start_observation(
     name: str,

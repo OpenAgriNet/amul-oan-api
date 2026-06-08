@@ -3,7 +3,6 @@ Tool for booking an artificial insemination call for a farmer.
 """
 import json
 import os
-from contextlib import nullcontext
 
 from pydantic_ai import RunContext
 
@@ -11,12 +10,8 @@ from agents.deps import FarmerContext
 from agents.tools.farmer_animal_backends import create_ai_call_api
 from app.core.cache import cache, try_reserve, release_reservation
 from app.models.ai_call import AICallRequestModel, AISpecies
+from app.observability import start_observation, set_trace_io
 from helpers.utils import get_logger
-
-try:
-    from langfuse import get_client as get_langfuse_client
-except ImportError:
-    get_langfuse_client = None
 
 logger = get_logger(__name__)
 
@@ -77,7 +72,6 @@ async def create_ai_call(
         logger.info("AI call blocked: query failed moderation; session=%s", session_id)
         return "This helpline only handles dairy farming and animal husbandry questions."
 
-    _lf = get_langfuse_client() if get_langfuse_client else None
     _ai_tool_input = {
         "union_code": union_code,
         "society_code": society_code,
@@ -85,23 +79,14 @@ async def create_ai_call(
         "user_id": user_id,
         "species": species.value,
     }
-    _ai_tool_obs_ctx = (
-        _lf.start_as_current_observation(
-            name="ai_call_booking",
-            as_type="generation",
-            input=_ai_tool_input,
-            metadata={"tool_name": "create_ai_call"},
-        )
-        if _lf
-        else nullcontext()
-    )
 
-    with _ai_tool_obs_ctx as ai_tool_obs:
-        if _lf:
-            try:
-                _lf.set_current_trace_io(input=_ai_tool_input)
-            except Exception:
-                pass
+    with start_observation(
+        "ai_call_booking",
+        as_type="generation",
+        input=_ai_tool_input,
+        metadata={"tool_name": "create_ai_call"},
+    ) as ai_tool_obs:
+        set_trace_io(input=_ai_tool_input)
         token = os.getenv("PASHUGPT_TOKEN")
         if not token:
             logger.error("PASHUGPT_TOKEN is not set")
@@ -111,14 +96,10 @@ async def create_ai_call(
             )
             if ai_tool_obs is not None:
                 ai_tool_obs.update(output={"success": False, "message": failure_message})
-            if _lf:
-                try:
-                    _lf.set_current_trace_io(
-                        input=_ai_tool_input,
-                        output={"success": False, "message": failure_message},
-                    )
-                except Exception:
-                    pass
+            set_trace_io(
+                input=_ai_tool_input,
+                output={"success": False, "message": failure_message},
+            )
             return failure_message
 
         request = AICallRequestModel(
@@ -159,14 +140,10 @@ async def create_ai_call(
             )
             if ai_tool_obs is not None:
                 ai_tool_obs.update(output={"success": False, "message": failure_message})
-            if _lf:
-                try:
-                    _lf.set_current_trace_io(
-                        input=_ai_tool_input,
-                        output={"success": False, "message": failure_message},
-                    )
-                except Exception:
-                    pass
+            set_trace_io(
+                input=_ai_tool_input,
+                output={"success": False, "message": failure_message},
+            )
             return failure_message
 
         # Mark this session as booked so a re-run (or retry) does not double-book.
@@ -200,16 +177,12 @@ async def create_ai_call(
                     "message": success_message,
                 }
             )
-        if _lf:
-            try:
-                _lf.set_current_trace_io(
-                    input=_ai_tool_input,
-                    output={
-                        "success": True,
-                        "ticket_number": response.ticket_number,
-                        "ait_name": response.ait_name,
-                    },
-                )
-            except Exception:
-                pass
+        set_trace_io(
+            input=_ai_tool_input,
+            output={
+                "success": True,
+                "ticket_number": response.ticket_number,
+                "ait_name": response.ait_name,
+            },
+        )
         return success_message
