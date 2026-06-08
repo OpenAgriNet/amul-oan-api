@@ -5,14 +5,15 @@ Internal backends for farmer and animal data from multiple APIs.
 
 Used by farmer.py and animal.py to provide cohesive tools with fallback and merged output.
 """
-from contextlib import nullcontext
+from contextlib import nullcontext, contextmanager
+from contextvars import ContextVar
 from beartype.typing import TypeVar
 import json
 import re
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import httpx
-from pydantic import ValidationError
+from pydantic import ValidationError, BaseModel, ConfigDict, Field
 
 from app.core.cache import (
     build_api_cache_key,
@@ -31,6 +32,7 @@ from app.models.banas_visit import BanasOperatedVisitModel
 from app.models.cvcc import CvccHealthResponseModel
 from app.models.farmer import FarmerModel, FarmerHerdmanModel
 from helpers.utils import get_logger
+from app.observability import start_observation
 
 try:
     from langfuse import get_client as get_langfuse_client
@@ -722,3 +724,150 @@ def merge_farmer_data(data: list[FarmerModel]) -> list[FarmerModel]:
         else:
             seen[key] = farmer
     return list(seen.values())
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Voice-port (Inc 3.1) — AI-technician lookup + fetch tracing, canonical home.
+# Reconciles chat's old agents/tools/get_ai_technicians_by_society.py into the
+# backends so the farmer SWR cache (Inc 4) and farmer_context share ONE
+# implementation: token-arg signature, graceful None-on-error (not raise),
+# start_observation tracing, and a LENIENT camelCase record (Option B: cache
+# stays camelCase). fetch_reason tags API calls so Langfuse can tell a cold/
+# background refresh apart.
+# ─────────────────────────────────────────────────────────────────────────────
+
+_fetch_reason: ContextVar[str] = ContextVar("farmer_fetch_reason", default="request")
+
+
+@contextmanager
+def fetch_reason(reason: str):
+    """Tag all Amul API calls made within this block with `reason`."""
+    token = _fetch_reason.set(reason)
+    try:
+        yield
+    finally:
+        _fetch_reason.reset(token)
+
+
+def current_fetch_reason() -> str:
+    return _fetch_reason.get()
+
+
+def _safe_response_summary(body: str) -> dict:
+    """PII-safe shape of a response: record count + which keys are present/null,
+    WITHOUT any values — enough to prove inconsistent returns without shipping PII."""
+    out: dict[str, Any] = {"bytes": len(body)}
+    if not body.strip():
+        out["json"] = False
+        return out
+    try:
+        data = json.loads(body)
+    except Exception:
+        out["json"] = False
+        return out
+    out["json"] = True
+    if isinstance(data, dict) and isinstance(data.get("data"), list):
+        data = data["data"]
+    if isinstance(data, list):
+        out["records"] = len(data)
+        first = data[0] if data and isinstance(data[0], dict) else None
+    elif isinstance(data, dict):
+        out["records"] = 1
+        first = data
+    else:
+        out["records"] = 0
+        first = None
+    if isinstance(first, dict):
+        out["keys"] = sorted(first.keys())
+        out["null_keys"] = sorted(k for k, v in first.items() if v is None)
+        array_lens = {k: len(v) for k, v in first.items() if isinstance(v, list)}
+        if array_lens:
+            out["array_lens"] = array_lens
+        empty_str_keys = sorted(k for k, v in first.items() if v == "")
+        if empty_str_keys:
+            out["empty_str_keys"] = empty_str_keys
+    return out
+
+
+def _record_api_trace(observation, response, *, provider: str, url: str) -> None:
+    """Attach status + a PII-safe response structure + source to a Langfuse
+    observation. Raw bodies only when FARMER_API_TRACE_BODY is enabled. Tracing
+    must never break a read."""
+    if observation is None:
+        return
+    try:
+        body = response.text or ""
+    except Exception:
+        body = ""
+    try:
+        output = {
+            "status_code": response.status_code,
+            "ok": 200 <= response.status_code < 300,
+            "fetch_reason": _fetch_reason.get(),
+            **_safe_response_summary(body),
+        }
+        if settings.farmer_api_trace_body and settings.farmer_api_trace_body_chars > 0:
+            output["body"] = body[: settings.farmer_api_trace_body_chars]
+        observation.update(output=output, metadata={"provider": provider, "url": url})
+    except Exception:
+        pass
+
+
+class GetAITechniciansBySocietyQueryParams(BaseModel):
+    union_code: str = Field(..., alias="unionCode")
+    society_code: str = Field(..., alias="societyCode")
+
+    def to_query_params(self) -> dict[str, str]:
+        return {"unionCode": self.union_code, "societyCode": self.society_code}
+
+
+class AITechnicianBySocietyRecord(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    userId: Optional[str] = None
+    fullName: Optional[str] = None
+    mobileNumber: Optional[str] = None
+
+
+async def get_ai_technicians_by_society_api(
+    query: GetAITechniciansBySocietyQueryParams,
+    token: str,
+) -> list[AITechnicianBySocietyRecord] | None:
+    """Fetch AI technicians mapped to a union and society.
+
+    Returns None on any error (graceful — callers treat None as 'could not fetch'
+    and an empty list as 'none found'), so a flaky lookup never breaks a read.
+    """
+    api_url = f"{BASE_AMULPASHUDHAN}/GetAITUserDetailsBySocietyCode"
+    try:
+        with start_observation(
+            "get_ai_technicians_by_society_api",
+            input=query.to_query_params(),
+            metadata={"provider": "amulpashudhan", "url": api_url},
+        ) as observation:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.get(
+                    api_url,
+                    params=query.to_query_params(),
+                    headers={"Authorization": f"Bearer {token}"},
+                )
+                _record_api_trace(observation, response, provider="amulpashudhan", url=api_url)
+                response.raise_for_status()
+
+        response_json = response.json()
+        if isinstance(response_json, dict) and isinstance(response_json.get("data"), list):
+            response_json = response_json["data"]
+        if not isinstance(response_json, list):
+            raise ValueError("Expected list response from GetAITechniciansBySociety")
+        return [AITechnicianBySocietyRecord.model_validate(item) for item in response_json if isinstance(item, dict)]
+    except httpx.HTTPStatusError as e:
+        logger.error(
+            "[GetAITechniciansBySociety(%s,%s)] :: HTTP %s: %s",
+            query.union_code, query.society_code, e.response.status_code, e.response.text,
+        )
+    except Exception as e:
+        logger.error(
+            "[GetAITechniciansBySociety(%s,%s)] :: Error: %s",
+            query.union_code, query.society_code, e,
+        )
+    return None

@@ -1,17 +1,16 @@
 import asyncio
 import json
+import os
 from types import CoroutineType
 from typing import Any
 
-from agents.tools.get_ai_technicians_by_society import (
-    GetAITechniciansBySocietyQueryParams,
-    get_ai_technicians_by_society,
-)
 from agents.tools.animal import get_animal_data_by_tag
 from agents.tools.cvcc import get_cvcc_health_data_by_tag
 from agents.tools.farmer import get_farmer_data_by_mobile
 from agents.tools.farmer_animal_backends import (
+    GetAITechniciansBySocietyQueryParams,
     fetch_banas_operated_visit,
+    get_ai_technicians_by_society_api,
     normalize_phone,
 )
 from app.models.animal import AnimalModel
@@ -181,21 +180,17 @@ async def _get_ai_technicians_for_farmer(
     if not farmer.union_code or not farmer.society_code:
         return None, "AI technician lookup skipped because union code or society code is missing."
 
-    try:
-        technicians = await get_ai_technicians_by_society(
-            GetAITechniciansBySocietyQueryParams(
-                unionCode=farmer.union_code,
-                societyCode=farmer.society_code,
-            )
-        )
-    except Exception as exc:
-        logger.warning(
-            "AI technician lookup failed for farmer_code=%s union=%s society=%s error=%s",
-            farmer.farmer_code,
-            farmer.union_code,
-            farmer.society_code,
-            exc,
-        )
+    # get_ai_technicians_by_society_api logs internally and returns None on error
+    # (graceful — no raise), or a (possibly empty) list on success. None = lookup
+    # failed; [] = no technicians found.
+    technicians = await get_ai_technicians_by_society_api(
+        GetAITechniciansBySocietyQueryParams(
+            unionCode=farmer.union_code,
+            societyCode=farmer.society_code,
+        ),
+        os.getenv("PASHUGPT_TOKEN"),
+    )
+    if technicians is None:
         return None, "AI technician details could not be fetched right now."
 
     if not technicians:
@@ -203,13 +198,13 @@ async def _get_ai_technicians_for_farmer(
 
     unique_technicians: dict[str, str] = {}
     for technician in technicians:
-        key = technician.user_id or f"{technician.full_name}|{technician.mobile_number}"
+        key = technician.userId or f"{technician.fullName}|{technician.mobileNumber}"
         if key in unique_technicians:
             continue
         unique_technicians[key] = (
-            f"- **Name:** {technician.full_name} | "
-            f"**Mobile number:** {technician.mobile_number} | "
-            f"**user_id:** {technician.user_id}"
+            f"- **Name:** {technician.fullName} | "
+            f"**Mobile number:** {technician.mobileNumber} | "
+            f"**user_id:** {technician.userId}"
         )
 
     return list(unique_technicians.values()), None
