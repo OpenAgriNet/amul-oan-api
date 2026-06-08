@@ -3,8 +3,8 @@ intervals, the Redis refresh queue, the bounded cold fetch, and the don't-
 downgrade / lock semantics.
 
 Self-contained: uses asyncio.run + mocks, so it needs neither a live Redis nor
-pytest-asyncio. The voice read-policy tests (app.services.voice) are deferred to
-Inc 7 when the voice runtime lands.
+pytest-asyncio. The voice read-policy tests (app.services.voice) were added in
+Inc 7.6a once the voice runtime landed.
 """
 import os
 
@@ -17,6 +17,7 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, patch
 
 import agents.services.farmer_cache as fc
+import app.services.voice as voice
 
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -247,3 +248,44 @@ def test_restamp_kept_record_preserves_ttl():
     assert existing.fetchedAt != orig_fetched           # restamped
     fake_cache.set.assert_awaited()
     assert fake_cache.set.call_args.kwargs.get("ttl") == 100000  # hard TTL preserved, not reset
+
+
+# ── voice read policy (Inc 7.6a — voice.get_or_fetch_farmer_data) ──────────────
+# Deferred from Inc 4 until the voice runtime existed; now app.services.voice is
+# present. Serve cached when fresh; block on a bounded fetch only when too stale;
+# fall back to the stale record if that fetch fails; bounded fetch on cold miss.
+
+def test_voice_read_returns_cached_without_blocking():
+    cached = _Env("found", 1)  # fresh, within max-serve-stale
+    with patch.object(voice, "get_farmer_data_cached_only", new=AsyncMock(return_value=cached)), \
+         patch.object(voice, "refresh_farmer_data_bounded", new=AsyncMock()) as bounded:
+        result = asyncio.run(voice.get_or_fetch_farmer_data("111"))
+    assert result is cached
+    bounded.assert_not_called()
+
+
+def test_voice_read_blocks_when_too_stale():
+    stale = _Env("found", 1000)   # well beyond the 24h max-serve-stale
+    fresh = _Env("found", 0)
+    with patch.object(voice, "get_farmer_data_cached_only", new=AsyncMock(return_value=stale)), \
+         patch.object(voice, "refresh_farmer_data_bounded", new=AsyncMock(return_value=fresh)) as bounded:
+        result = asyncio.run(voice.get_or_fetch_farmer_data("111"))
+    assert result is fresh
+    bounded.assert_awaited_once_with("111")
+
+
+def test_voice_read_too_stale_falls_back_to_stale_on_api_failure():
+    stale = _Env("found", 1000)
+    with patch.object(voice, "get_farmer_data_cached_only", new=AsyncMock(return_value=stale)), \
+         patch.object(voice, "refresh_farmer_data_bounded", new=AsyncMock(return_value=None)):
+        result = asyncio.run(voice.get_or_fetch_farmer_data("111"))
+    assert result is stale  # API also failed -> serve stale rather than nothing
+
+
+def test_voice_read_cold_miss_does_bounded_fetch():
+    fetched = object()
+    with patch.object(voice, "get_farmer_data_cached_only", new=AsyncMock(return_value=None)), \
+         patch.object(voice, "refresh_farmer_data_bounded", new=AsyncMock(return_value=fetched)) as bounded:
+        result = asyncio.run(voice.get_or_fetch_farmer_data("111"))
+    assert result is fetched
+    bounded.assert_awaited_once_with("111")
