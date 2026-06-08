@@ -45,9 +45,11 @@ class TestMilkCollectionTool:
             )
         )
 
-        assert "Milk collection details fetched successfully" in result
-        payload = json.loads(result.split("\n\n", 1)[1])
-        assert payload["deduction"][0]["accountname"] == "Feed"
+        # Merged tool renders chat's markdown (not voice's JSON); assert the
+        # success header + that the data (deduction account, milk row) is present.
+        assert "fetched successfully" in result
+        assert "Feed" in result          # deduction accountname appears in the table
+        assert "2026-04-01" in result    # milk row date appears
 
     def test_missing_token_returns_clear_failure_and_does_not_call_backend(self, monkeypatch):
         monkeypatch.delenv("PASHUGPT_TOKEN", raising=False)
@@ -70,7 +72,7 @@ class TestMilkCollectionTool:
             )
         )
 
-        assert result == "Milk collection lookup failed. Service is not configured."
+        assert result == "Milk collection lookup failed.\n\nPASHUGPT_TOKEN is not configured."
 
     def test_invalid_date_returns_validation_failure_and_does_not_call_backend(self, monkeypatch):
         monkeypatch.setenv("PASHUGPT_TOKEN", "test-token")
@@ -117,4 +119,4 @@ class TestMilkCollectionTool:
             )
         )
 
-        assert result == "Milk collection lookup failed. Unable to fetch details at the moment."
+        assert result == "Milk collection lookup failed.\n\nUnable to fetch milk collection details at the moment."

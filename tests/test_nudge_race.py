@@ -85,7 +85,9 @@ async def collect(agen: AsyncGenerator[str, None]) -> list[str]:
     return [c async for c in agen]
 
 
-async def test_timeout_wins_nudge_first():
+# Scenarios are async helpers; the sync test_* wrappers run them via asyncio.run()
+# so the suite needs no pytest-asyncio (matches the repo's existing convention).
+async def _scenario_timeout_wins_nudge_first():
     """When agent is slow (first chunk after timeout), nudge appears first."""
     stream = slow_stream(delay=0.2)  # slower than 0.1s timeout
     agen = _stream_with_nudge_race(stream, NUDGE_MESSAGE, TIMEOUT_SECONDS)
@@ -94,7 +96,7 @@ async def test_timeout_wins_nudge_first():
     assert "".join(chunks[1:]) == "Hello world.", f"Expected agent chunks after nudge, got {chunks}"
 
 
-async def test_first_chunk_wins_no_nudge():
+async def _scenario_first_chunk_wins_no_nudge():
     """When agent is fast (first chunk before timeout), no nudge."""
     stream = fast_stream()
     agen = _stream_with_nudge_race(stream, NUDGE_MESSAGE, TIMEOUT_SECONDS)
@@ -103,7 +105,7 @@ async def test_first_chunk_wins_no_nudge():
     assert "".join(chunks) == "Hi there", f"Expected agent chunks only, got {chunks}"
 
 
-async def test_empty_stream_timeout_wins():
+async def _scenario_empty_stream_timeout_wins():
     """Empty stream (delayed): timeout wins, nudge yielded."""
     stream = empty_stream_slow()
     agen = _stream_with_nudge_race(stream, NUDGE_MESSAGE, TIMEOUT_SECONDS)
@@ -111,14 +113,23 @@ async def test_empty_stream_timeout_wins():
     assert chunks == [NUDGE_MESSAGE], f"Expected just nudge for empty stream, got {chunks}"
 
 
+def test_timeout_wins_nudge_first():
+    asyncio.run(_scenario_timeout_wins_nudge_first())
+
+
+def test_first_chunk_wins_no_nudge():
+    asyncio.run(_scenario_first_chunk_wins_no_nudge())
+
+
+def test_empty_stream_timeout_wins():
+    asyncio.run(_scenario_empty_stream_timeout_wins())
+
+
 async def run_all():
-    """Run all tests."""
-    await test_timeout_wins_nudge_first()
-    print("test_timeout_wins_nudge_first: OK")
-    await test_first_chunk_wins_no_nudge()
-    print("test_first_chunk_wins_no_nudge: OK")
-    await test_empty_stream_timeout_wins()
-    print("test_empty_stream_timeout_wins: OK")
+    """Script-mode runner (python tests/test_nudge_race.py)."""
+    await _scenario_timeout_wins_nudge_first()
+    await _scenario_first_chunk_wins_no_nudge()
+    await _scenario_empty_stream_timeout_wins()
     print("All nudge race tests passed.")
 
 
