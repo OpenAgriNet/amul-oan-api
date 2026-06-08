@@ -233,6 +233,99 @@ async def fetch_farmer_herdman(mobile: str, token: str) -> list[FarmerModel] | N
         )
 
 
+def _extract_herdman_rows(payload: dict) -> list[dict] | None:
+    """Pull the raw camelCase farmer dicts out of the herdman wrapper
+    ({"Farmer": [...]}). Returns None if the wrapper has no usable list — the raw
+    analogue of FarmerHerdmanModel(...).farmers being None."""
+    rows = payload.get("Farmer")
+    if isinstance(rows, list):
+        rows = [r for r in rows if isinstance(r, dict)]
+        return rows or None
+    return None
+
+
+async def _fetch_farmer_herdman_raw(
+    mobile: str, token: str, *, skip_cache: bool = False
+) -> list[dict] | None:
+    """Raw herdman farmer fetch — returns the inner raw camelCase dicts WITHOUT
+    model validation (Option B, for fetch_farmer_info_raw / the SWR cache).
+
+    Pure addition: fetch_farmer_herdman (the FarmerModel chat path) is left
+    untouched. Both share the SAME cache key and cache the SAME wrapper dict
+    ({"Farmer": [...]}), so a cache entry written by either is readable by the
+    other. Returns None on 204/empty/error or when there is no usable Farmer list
+    (the raw analogue of herdman's ValidationError "no info found" branch)."""
+    cache_key = build_api_cache_key("herdman_farmer", mobile)
+    if not skip_cache:
+        cache_hit, cached_payload = await get_cached_api_response(cache_key)
+        if cache_hit:
+            if cached_payload is None:
+                return None
+            if isinstance(cached_payload, dict):
+                return _extract_herdman_rows(cached_payload)
+            logger.warning(
+                "[Cache(%s)] :: Cached herdman payload is not a dict, refetching.",
+                cache_key,
+            )
+
+    url = f"{BASE_HERDMAN}/get-amul-farmer"
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.get(
+                url,
+                params={"mobileno": mobile},
+                headers={"accept": "application/json", "api-token": f"Bearer {token}"},
+            )
+            response.raise_for_status()
+            logger.info(f"[Herdman({mobile})] :: Response successfully recieved")
+            if not (response.text or "").strip():
+                await set_cached_api_response(cache_key, None)
+                return None
+            response_json = response.json()
+            await set_cached_api_response(cache_key, response_json)
+            if isinstance(response_json, dict):
+                return _extract_herdman_rows(response_json)
+            logger.info(f"[Herdman({mobile})] :: No information from herdman found.")
+            return None
+    except httpx.HTTPStatusError as e:
+        logger.error(
+            f"[Herdman({mobile})] :: Request failed with status code {e.response.status_code}, and message = {e.response.text}",
+            exc_info=True,
+        )
+    except json.JSONDecodeError as e:
+        logger.error(
+            f"[Herdman({mobile})] :: Response didn't gave a valid json, failed due to decoding error {str(e)}",
+            exc_info=True,
+        )
+    except Exception as e:
+        logger.error(
+            f"[Herdman({mobile})] :: Request failed, due to error {str(e)}",
+            exc_info=True,
+        )
+    return None
+
+
+def _farmer_record_key(rec: dict) -> tuple:
+    """Dedup key for raw farmer dicts: societyName + farmerCode."""
+    return (str(rec.get("societyName") or ""), str(rec.get("farmerCode") or ""))
+
+
+def merge_farmer_records(records: list[dict]) -> list[dict]:
+    """Deduplicate raw farmer dicts by societyName+farmerCode; drop empties.
+    Raw-dict analogue of merge_farmer_data (Option B). First occurrence wins."""
+    seen: set = set()
+    out: list[dict] = []
+    for rec in records:
+        if not rec:
+            continue
+        key = _farmer_record_key(rec)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(rec)
+    return out
+
+
 # --- Animal ---
 
 

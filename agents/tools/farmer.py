@@ -9,7 +9,8 @@ from agents.tools.farmer_animal_backends import (
     fetch_farmer_amulpashudhan,
     fetch_farmer_herdman,
     _fetch_farmer_amulpashudhan_raw,
-    normalize_phone, merge_farmer_data,
+    _fetch_farmer_herdman_raw,
+    normalize_phone, merge_farmer_data, merge_farmer_records,
 )
 from agents.models.farmer import FarmerRecord
 from app.models.farmer import FarmerModel
@@ -79,6 +80,16 @@ def _record_has_content(rec: dict) -> bool:
     return bool(rec.get("farmerName") or rec.get("societyName"))
 
 
+def _rows_include_mehsana(rows: list[dict]) -> bool:
+    """Raw-dict analogue of is_from_union(records, MEHSANA): does any amulpashudhan
+    row carry unionName == 'mehsana'? Raw dicts keep original casing, so lowercase
+    before comparing (FarmerModel lowercases via validator)."""
+    return any(
+        str(r.get("unionName") or "").strip().lower() == UnionName.MEHSANA.value
+        for r in rows
+    )
+
+
 async def fetch_farmer_info_raw(mobile_number: str) -> list[FarmerRecord] | None:
     """Raw farmer fetch for the SWR farmer cache (Option B).
 
@@ -87,30 +98,47 @@ async def fetch_farmer_info_raw(mobile_number: str) -> list[FarmerRecord] | None
     camelCase-bridge gotcha is avoided. This is the voice/SWR ingestion path; the
     chat path keeps using ``get_farmer_data_by_mobile`` (FarmerModel) unchanged.
 
-    Amulpashudhan only for now — it is the sole backend for non-MEHSANA farmers
-    (the vast majority). MEHSANA herdman-in-raw is the follow-up (Inc 3.2b-iii).
-    Returns None on invalid mobile, missing token, or no usable data.
+    Backends mirror get_farmer_data_by_mobile exactly: amulpashudhan for every
+    farmer, plus herdman ONLY for MEHSANA (team decision 2026-06-08 — chat's
+    MEHSANA-gating is canonical; voice's herdman-for-everyone was unintended).
+    Records from both are merged + de-duplicated (society+farmerCode) and empty
+    placeholder rows dropped. Returns None on invalid mobile, missing tokens, or
+    no usable data.
     """
     mobile = normalize_phone(mobile_number)
     if not mobile:
         return None
 
     token1 = os.getenv("PASHUGPT_TOKEN")
-    if not token1:
-        logger.error("PASHUGPT_TOKEN is not set; cannot fetch raw farmer info")
+    token3 = os.getenv("PASHUGPT_TOKEN_3")
+    if not token1 and not token3:
+        logger.error("Neither PASHUGPT_TOKEN nor PASHUGPT_TOKEN_3 is set")
         return None
 
-    raw = await _fetch_farmer_amulpashudhan_raw(mobile, token1)
-    if not raw:
+    rows: list[dict] = []
+
+    if token1:
+        raw = await _fetch_farmer_amulpashudhan_raw(mobile, token1)
+        if raw:
+            rows.extend(r for r in raw if isinstance(r, dict))
+
+    # herdman only for MEHSANA — gated on the amulpashudhan rows, exactly as
+    # get_farmer_data_by_mobile gates is_from_union(records, MEHSANA).
+    if token3 and _rows_include_mehsana(rows):
+        raw_h = await _fetch_farmer_herdman_raw(mobile, token3)
+        if raw_h:
+            rows.extend(r for r in raw_h if isinstance(r, dict))
+
+    if not rows:
         return None
 
-    rows = [r for r in raw if isinstance(r, dict)]
     kept = [r for r in rows if _record_has_content(r)] or rows
-    if not kept:
+    deduped = merge_farmer_records(kept)
+    if not deduped:
         return None
 
-    records = [FarmerRecord.model_validate(r) for r in kept]
-    logger.info(f"Raw farmer info for {mobile}: {len(records)} record(s) from amulpashudhan")
+    records = [FarmerRecord.model_validate(r) for r in deduped]
+    logger.info(f"Raw farmer info for {mobile}: {len(records)} record(s) merged")
     return records or None
 
 
