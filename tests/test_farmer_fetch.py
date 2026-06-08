@@ -1,0 +1,212 @@
+"""Characterization tests for the farmer-fetch path (pin CURRENT behavior).
+
+Written BEFORE the Inc 3.2 refactor (extract a shared raw-dict helper; keep
+`fetch_farmer_amulpashudhan → FarmerModel` byte-identical; add
+`fetch_farmer_info_raw → FarmerRecord`). These tests capture today's behavior of:
+  - fetch_farmer_amulpashudhan: camelCase API → FarmerModel + normalization, caching, 204/error → None
+  - fetch_farmer_herdman: "Farmer"-wrapped response → list[FarmerModel]
+  - merge_farmer_data: dedup by society_name+farmer_name, union preserved
+  - get_farmer_data_by_mobile: orchestration (amulpashudhan; herdman only for MEHSANA)
+They MUST stay green across the refactor (the FarmerModel domain path is unchanged).
+"""
+import os
+
+os.environ.setdefault("OPENAI_API_KEY", "test-key")
+
+import asyncio
+import json
+
+import httpx
+import pytest
+
+import agents.tools.farmer_animal_backends as backends
+import agents.tools.farmer as farmer_mod
+from app.models.farmer import FarmerModel
+
+
+# ── HTTP + cache mocking ──────────────────────────────────────────────────────
+
+class _FakeResp:
+    def __init__(self, *, json_data=None, status_code=200, text=None, raise_exc=None):
+        self._json = json_data
+        self.status_code = status_code
+        self.text = text if text is not None else (json.dumps(json_data) if json_data is not None else "")
+        self._raise_exc = raise_exc
+
+    def raise_for_status(self):
+        if self._raise_exc is not None:
+            raise self._raise_exc
+
+    def json(self):
+        return self._json
+
+
+class _FakeClient:
+    def __init__(self, resp_or_exc):
+        self._resp_or_exc = resp_or_exc
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        return False
+
+    async def get(self, *a, **k):
+        if isinstance(self._resp_or_exc, Exception):
+            raise self._resp_or_exc
+        return self._resp_or_exc
+
+
+def _patch_http(monkeypatch, resp_or_exc):
+    monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **k: _FakeClient(resp_or_exc))
+
+
+def _patch_cache_miss(monkeypatch):
+    saved = {}
+
+    async def fake_get(cache_key):
+        return (False, None)
+
+    async def fake_set(cache_key, value):
+        saved["key"] = cache_key
+        saved["value"] = value
+
+    monkeypatch.setattr(backends, "get_cached_api_response", fake_get)
+    monkeypatch.setattr(backends, "set_cached_api_response", fake_set)
+    return saved
+
+
+def _patch_cache_hit(monkeypatch, payload):
+    async def fake_get(cache_key):
+        return (True, payload)
+
+    async def fake_set(cache_key, value):
+        pass
+
+    monkeypatch.setattr(backends, "get_cached_api_response", fake_get)
+    monkeypatch.setattr(backends, "set_cached_api_response", fake_set)
+
+
+_AMUL_ROW = {
+    "unionName": "Kaira",
+    "unionCode": "U1",
+    "societyName": "ABC Society",
+    "societyCode": "S1",
+    "farmerName": "Ramesh",
+    "farmerCode": "F1",
+    "mobileNumber": "9999999999",
+    "tagNo": "123, 456",
+    "totalAnimals": 3,
+}
+
+
+# ── fetch_farmer_amulpashudhan ────────────────────────────────────────────────
+
+def test_amulpashudhan_maps_camelcase_to_farmermodel_with_normalization(monkeypatch):
+    _patch_cache_miss(monkeypatch)
+    _patch_http(monkeypatch, _FakeResp(json_data=[dict(_AMUL_ROW)]))
+
+    out = asyncio.run(backends.fetch_farmer_amulpashudhan("9999999999", "tok"))
+
+    assert out is not None and len(out) == 1
+    f = out[0]
+    assert isinstance(f, FarmerModel)
+    # validators: union_name / society_name / farmer_name lowercased + stripped
+    assert f.union_name == "kaira"
+    assert f.society_name == "abc society"
+    assert f.farmer_name == "ramesh"
+    # codes are NOT lowercased (no validator)
+    assert f.farmer_code == "F1"
+    assert f.union_code == "U1"
+    assert f.society_code == "S1"
+    assert f.mobile_number == "9999999999"
+    # tagNo -> animal_tags split + stripped
+    assert f.animal_tags == ["123", "456"]
+    assert f.total_animals == 3
+
+
+def test_amulpashudhan_cache_hit_skips_http(monkeypatch):
+    _patch_cache_hit(monkeypatch, [dict(_AMUL_ROW)])
+    # If HTTP is touched, the test fails (cache hit must short-circuit).
+    _patch_http(monkeypatch, AssertionError("HTTP must not be called on cache hit"))
+
+    out = asyncio.run(backends.fetch_farmer_amulpashudhan("9999999999", "tok"))
+    assert out is not None and out[0].union_name == "kaira"
+
+
+def test_amulpashudhan_204_returns_none(monkeypatch):
+    _patch_cache_miss(monkeypatch)
+    _patch_http(monkeypatch, _FakeResp(status_code=204, text=""))
+    out = asyncio.run(backends.fetch_farmer_amulpashudhan("9999999999", "tok"))
+    assert out is None
+
+
+def test_amulpashudhan_error_returns_none(monkeypatch):
+    _patch_cache_miss(monkeypatch)
+    _patch_http(monkeypatch, RuntimeError("network down"))
+    out = asyncio.run(backends.fetch_farmer_amulpashudhan("9999999999", "tok"))
+    assert out is None
+
+
+# ── fetch_farmer_herdman ──────────────────────────────────────────────────────
+
+def test_herdman_maps_farmer_wrapper_to_farmermodel(monkeypatch):
+    _patch_cache_miss(monkeypatch)
+    _patch_http(monkeypatch, _FakeResp(json_data={"Farmer": [dict(_AMUL_ROW)]}))
+    out = asyncio.run(backends.fetch_farmer_herdman("9999999999", "tok3"))
+    assert out is not None and len(out) == 1
+    assert out[0].farmer_name == "ramesh"
+    assert out[0].union_name == "kaira"
+
+
+# ── merge_farmer_data ─────────────────────────────────────────────────────────
+
+def test_merge_keeps_distinct_farmers(monkeypatch):
+    a = FarmerModel.model_validate({"societyName": "S-A", "farmerName": "Ravi", "unionName": "Kaira"})
+    b = FarmerModel.model_validate({"societyName": "S-B", "farmerName": "Sita", "unionName": "Banas"})
+    out = backends.merge_farmer_data([a, b])
+    assert len(out) == 2
+
+
+def test_merge_dedupes_same_society_and_name_preserving_union():
+    a = FarmerModel.model_validate({"societyName": "S-A", "farmerName": "Ravi", "unionName": "Kaira"})
+    b = FarmerModel.model_validate({"societyName": "S-A", "farmerName": "Ravi", "unionName": "Banas"})
+    out = backends.merge_farmer_data([a, b])
+    assert len(out) == 1
+    # merge preserves the first record's union_name explicitly
+    assert out[0].union_name == "kaira"
+
+
+# ── get_farmer_data_by_mobile orchestration ───────────────────────────────────
+
+def test_get_farmer_data_amulpashudhan_only_for_non_mehsana(monkeypatch):
+    monkeypatch.setenv("PASHUGPT_TOKEN", "tok1")
+    monkeypatch.setenv("PASHUGPT_TOKEN_3", "tok3")
+    rec = FarmerModel.model_validate({"societyName": "S-A", "farmerName": "Ravi", "unionName": "Kaira"})
+    herdman_called = {"v": False}
+
+    async def fake_amul(mobile, token):
+        return [rec]
+
+    async def fake_herdman(mobile, token):
+        herdman_called["v"] = True
+        return None
+
+    monkeypatch.setattr(farmer_mod, "fetch_farmer_amulpashudhan", fake_amul)
+    monkeypatch.setattr(farmer_mod, "fetch_farmer_herdman", fake_herdman)
+
+    out = asyncio.run(farmer_mod.get_farmer_data_by_mobile("9999999999"))
+    assert out is not None and len(out) == 1 and out[0].union_name == "kaira"
+    assert herdman_called["v"] is False  # herdman only consulted for MEHSANA
+
+
+def test_get_farmer_data_none_when_no_records(monkeypatch):
+    monkeypatch.setenv("PASHUGPT_TOKEN", "tok1")
+    monkeypatch.delenv("PASHUGPT_TOKEN_3", raising=False)
+
+    async def fake_amul(mobile, token):
+        return None
+
+    monkeypatch.setattr(farmer_mod, "fetch_farmer_amulpashudhan", fake_amul)
+    out = asyncio.run(farmer_mod.get_farmer_data_by_mobile("9999999999"))
+    assert out is None
