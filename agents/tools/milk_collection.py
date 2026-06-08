@@ -53,13 +53,25 @@ def _is_missing_code(value: str) -> bool:
         return False
 
 
-def _escape_markdown_cell(value: str) -> str:
-    """Escape markdown table delimiter characters in cell content."""
-    return value.replace("|", "\\|")
+def _escape_markdown_cell(value) -> str:
+    """Escape markdown table delimiter characters in cell content.
+
+    None-safe: the lenient FarmerMilkCollection model (#12) allows missing
+    fields (a partial PashuGPT row), so a cell may be None — render it as '-'.
+    """
+    if value is None:
+        return "-"
+    return str(value).replace("|", "\\|")
 
 
-def _format_number(value: float, decimals: int = 2) -> str:
-    """Format numeric values for compact table display."""
+def _format_number(value, decimals: int = 2) -> str:
+    """Format numeric values for compact table display.
+
+    None-safe: the lenient model allows missing numeric fields (None) — render
+    them as '-' instead of crashing on f-string formatting.
+    """
+    if value is None:
+        return "-"
     return f"{value:.{decimals}f}"
 
 

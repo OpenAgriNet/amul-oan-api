@@ -592,8 +592,8 @@ async def get_farmer_milk_collection_details_api(
                 request.union_code,
                 request.society_code,
                 request.farmer_code,
-                request.from_date,
-                request.to_date,
+                request.fromdate,
+                request.todate,
             )
         response_json = response.json()
         if not isinstance(response_json, dict):
@@ -607,8 +607,8 @@ async def get_farmer_milk_collection_details_api(
             request.union_code,
             request.society_code,
             request.farmer_code,
-            request.from_date,
-            request.to_date,
+            request.fromdate,
+            request.todate,
             e.response.status_code,
             e.response.text,
             exc_info=True,
@@ -619,8 +619,8 @@ async def get_farmer_milk_collection_details_api(
             request.union_code,
             request.society_code,
             request.farmer_code,
-            request.from_date,
-            request.to_date,
+            request.fromdate,
+            request.todate,
             str(e),
             exc_info=True,
         )
@@ -630,8 +630,8 @@ async def get_farmer_milk_collection_details_api(
             request.union_code,
             request.society_code,
             request.farmer_code,
-            request.from_date,
-            request.to_date,
+            request.fromdate,
+            request.todate,
             str(e),
             exc_info=True,
         )

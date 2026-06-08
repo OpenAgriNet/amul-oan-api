@@ -102,3 +102,35 @@ def test_tool_calls_backend_with_valid_codes(monkeypatch):
     assert captured["request"].union_code == "2021"
     assert captured["request"].society_code == "1066"
     assert captured["request"].farmer_code == "123"
+
+
+# ── lenient model (#12) + None-safe markdown formatter coupling ────────────────
+
+def test_tool_formats_partial_rows_without_crashing(monkeypatch):
+    """The lenient FarmerMilkCollection model (#12) allows None fields (partial
+    PashuGPT rows). Chat's markdown formatter must render them as '-' rather than
+    crash on f-string/`.replace` of None."""
+    from app.models.milk_collection import (
+        FarmerMilkCollectionResponseModel,
+        MilkCollectionRecordModel,
+        DeductionRecordModel,
+    )
+
+    async def fake_api(request, token):
+        return FarmerMilkCollectionResponseModel(
+            milk=[MilkCollectionRecordModel(
+                date="2026-01-01", shift="M", qty=12.0, fat=None, snf=None, amount=None,
+            )],
+            deduction=[DeductionRecordModel(date=None, account_name=None, amount=None)],
+        )
+
+    monkeypatch.setattr(mc, "get_farmer_milk_collection_details_api", fake_api)
+    monkeypatch.setenv("PASHUGPT_TOKEN", "test-token")
+
+    out = asyncio.run(
+        mc.get_farmer_milk_collection_details(
+            "2021", "1066", "123", "2026-01-01", "2026-01-10"
+        )
+    )
+    assert "successfully" in out.lower()
+    assert "-" in out  # None fields rendered as '-', no crash
