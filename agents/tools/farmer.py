@@ -4,6 +4,8 @@ Uses amulpashudhan.com first, then herdman.live if needed (cohesive output, fall
 """
 import json
 import os
+import re
+import uuid
 
 from agents.tools.farmer_animal_backends import (
     fetch_farmer_amulpashudhan,
@@ -18,6 +20,31 @@ from app.models.union import UnionName
 from helpers.utils import get_logger, is_from_union
 
 logger = get_logger(__name__)
+
+
+def normalize_phone_to_mobile(user_id: str) -> str | None:
+    """
+    Clean user_id as a phone number: strip non-digits, take the last 10 digits.
+    Returns None when user_id isn't a usable phone (anon, UUID, name, <10 digits) —
+    used by the voice path to derive the caller's mobile from the request user_id.
+    """
+    if not user_id or not str(user_id).strip():
+        return None
+    s = str(user_id).strip()
+    # Skip anon / anonymous (case-insensitive)
+    if s.lower() in ("anon", "anonymous"):
+        return None
+    # Skip if it's a valid UUID
+    try:
+        uuid.UUID(s)
+        return None
+    except (ValueError, AttributeError, TypeError):
+        pass
+    # Skip if fewer than 10 digits
+    digits = re.sub(r"\D", "", s)
+    if len(digits) < 10:
+        return None
+    return digits[-10:]
 
 
 async def get_farmer_data_by_mobile(mobile_number: str) -> list[FarmerModel] | None:
