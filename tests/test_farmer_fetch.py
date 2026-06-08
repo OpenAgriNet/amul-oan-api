@@ -27,17 +27,20 @@ from app.models.farmer import FarmerModel
 # ── HTTP + cache mocking ──────────────────────────────────────────────────────
 
 class _FakeResp:
-    def __init__(self, *, json_data=None, status_code=200, text=None, raise_exc=None):
+    def __init__(self, *, json_data=None, status_code=200, text=None, raise_exc=None, json_exc=None):
         self._json = json_data
         self.status_code = status_code
         self.text = text if text is not None else (json.dumps(json_data) if json_data is not None else "")
         self._raise_exc = raise_exc
+        self._json_exc = json_exc
 
     def raise_for_status(self):
         if self._raise_exc is not None:
             raise self._raise_exc
 
     def json(self):
+        if self._json_exc is not None:
+            raise self._json_exc
         return self._json
 
 
@@ -210,3 +213,49 @@ def test_get_farmer_data_none_when_no_records(monkeypatch):
     monkeypatch.setattr(farmer_mod, "fetch_farmer_amulpashudhan", fake_amul)
     out = asyncio.run(farmer_mod.get_farmer_data_by_mobile("9999999999"))
     assert out is None
+
+
+# ── fetch_farmer_amulpashudhan edge paths (pin before the 3.2b extraction) ─────
+# These are the branches the raw-helper extraction must preserve: HTTP decode/shape
+# failures → None, and the cache-hit fall-throughs (non-list / bad-data → refetch,
+# negative cache → None without HTTP).
+
+def test_amulpashudhan_json_decode_error_returns_none(monkeypatch):
+    _patch_cache_miss(monkeypatch)
+    _patch_http(monkeypatch, _FakeResp(
+        status_code=200, text="not-json", json_exc=json.JSONDecodeError("boom", "doc", 0),
+    ))
+    out = asyncio.run(backends.fetch_farmer_amulpashudhan("9999999999", "tok"))
+    assert out is None
+
+
+def test_amulpashudhan_non_list_response_returns_none(monkeypatch):
+    _patch_cache_miss(monkeypatch)
+    _patch_http(monkeypatch, _FakeResp(json_data={"not": "a list"}, text='{"not":"a list"}'))
+    out = asyncio.run(backends.fetch_farmer_amulpashudhan("9999999999", "tok"))
+    assert out is None
+
+
+def test_amulpashudhan_negative_cache_returns_none_without_http(monkeypatch):
+    # Cached None (a prior 204/empty) is served as None, never hitting HTTP.
+    _patch_cache_hit(monkeypatch, None)
+    _patch_http(monkeypatch, AssertionError("HTTP must not be called for negative cache"))
+    out = asyncio.run(backends.fetch_farmer_amulpashudhan("9999999999", "tok"))
+    assert out is None
+
+
+def test_amulpashudhan_cache_non_list_refetches_from_http(monkeypatch):
+    # Cache holds a non-list (corrupt) → fall through to a fresh HTTP fetch.
+    _patch_cache_hit(monkeypatch, {"corrupt": "not a list"})
+    _patch_http(monkeypatch, _FakeResp(json_data=[dict(_AMUL_ROW)]))
+    out = asyncio.run(backends.fetch_farmer_amulpashudhan("9999999999", "tok"))
+    assert out is not None and out[0].union_name == "kaira"  # came from HTTP, not cache
+
+
+def test_amulpashudhan_cache_unvalidatable_list_refetches_from_http(monkeypatch):
+    # Cache holds a list that fails FarmerModel validation (non-dict items) →
+    # fall through to a fresh HTTP fetch. (THE branch the extraction must keep.)
+    _patch_cache_hit(monkeypatch, [123, "nope"])
+    _patch_http(monkeypatch, _FakeResp(json_data=[dict(_AMUL_ROW)]))
+    out = asyncio.run(backends.fetch_farmer_amulpashudhan("9999999999", "tok"))
+    assert out is not None and out[0].union_name == "kaira"  # refetched, not the cached junk
