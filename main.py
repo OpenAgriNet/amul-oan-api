@@ -12,7 +12,7 @@ from app.tasks.farmer_refresh_worker import start_farmer_refresh_worker, stop_fa
 load_dotenv()
 
 # Import all routers
-from app.routers import chat, transcribe, suggestions, tts, health, auth, user, telemetry
+from app.routers import chat, transcribe, suggestions, tts, health, auth, user, telemetry, voice
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -73,6 +73,7 @@ app.include_router(transcribe.router, prefix=settings.api_prefix)
 app.include_router(suggestions.router, prefix=settings.api_prefix)
 app.include_router(tts.router, prefix=settings.api_prefix)
 app.include_router(user.router, prefix=settings.api_prefix)
+app.include_router(voice.router, prefix=settings.api_prefix)
 app.include_router(health.router, prefix=settings.api_prefix)
 # Keep telemetry path compatible with existing frontend calls:
 # /observability-service/action/data/v3/telemetry
