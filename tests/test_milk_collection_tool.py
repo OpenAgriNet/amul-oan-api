@@ -45,11 +45,15 @@ class TestMilkCollectionTool:
             )
         )
 
-        # Merged tool renders chat's markdown (not voice's JSON); assert the
-        # success header + that the data (deduction account, milk row) is present.
-        assert "fetched successfully" in result
-        assert "Feed" in result          # deduction accountname appears in the table
-        assert "2026-04-01" in result    # milk row date appears
+        # Merged tool renders chat's markdown (not voice's JSON). Assert the EXACT
+        # rendered rows so every field is verified — qty/fat/snf/amount on the milk
+        # row and the full deduction row (stronger than the old single-field JSON
+        # check), plus the success header and both section headings.
+        assert result.startswith("Farmer milk collection details fetched successfully:\n\n")
+        assert "### Milk Collection" in result
+        assert "| 2026-04-01 | - | 10.00 | 6.00 | 9.00 | 500.00 |" in result
+        assert "### Deductions" in result
+        assert "| 2026-04-01 | Feed | 100.00 |" in result
 
     def test_missing_token_returns_clear_failure_and_does_not_call_backend(self, monkeypatch):
         monkeypatch.delenv("PASHUGPT_TOKEN", raising=False)
