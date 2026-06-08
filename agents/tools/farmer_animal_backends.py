@@ -67,32 +67,26 @@ def _load_json_lenient(payload: str) -> Any:
 # --- Farmer ---
 
 
-async def fetch_farmer_amulpashudhan(
-    mobile: str, token: str
-) -> list[FarmerModel] | None:
-    """Returns list of farmer records or None on 204/error/empty."""
+async def _fetch_farmer_amulpashudhan_raw(
+    mobile: str, token: str, *, skip_cache: bool = False
+) -> list[dict] | None:
+    """Raw amulpashudhan farmer fetch — returns the raw API dicts (camelCase) from
+    cache or HTTP, WITHOUT model validation. Shared by fetch_farmer_amulpashudhan
+    (→ FarmerModel domain path) and fetch_farmer_info_raw (→ FarmerRecord cache path,
+    Option B: cache stays camelCase). Returns None on 204/empty/error. skip_cache
+    forces a fresh HTTP fetch (used when cached data fails downstream validation)."""
     cache_key = build_api_cache_key("amulpashudhan_farmer", mobile)
-    cache_hit, cached_payload = await get_cached_api_response(cache_key)
-    if cache_hit:
-        if cached_payload is None:
-            return None
-        if not isinstance(cached_payload, list):
+    if not skip_cache:
+        cache_hit, cached_payload = await get_cached_api_response(cache_key)
+        if cache_hit:
+            if cached_payload is None:
+                return None
+            if isinstance(cached_payload, list):
+                return cached_payload
             logger.warning(
                 "[Cache(%s)] :: Cached payload is not a valid list, refetching.",
                 cache_key,
             )
-        else:
-            try:
-                return [
-                    FarmerModel.model_validate(data, extra="ignore", by_alias=True)
-                    for data in cached_payload
-                ]
-            except Exception as e:
-                logger.warning(
-                    "[Cache(%s)] :: Failed to validate cached farmer payload, refetching. error=%s",
-                    cache_key,
-                    str(e),
-                )
 
     url = f"{BASE_AMULPASHUDHAN}/GetFarmerDetailsByMobile?mobileNumber={mobile}"
     try:
@@ -113,10 +107,7 @@ async def fetch_farmer_amulpashudhan(
             if not isinstance(r_json, list):
                 raise Exception("Not a valid list provided in the response.")
             await set_cached_api_response(cache_key, r_json)
-            return [
-                FarmerModel.model_validate(data, extra="ignore", by_alias=True)
-                for data in r_json
-            ]
+            return r_json
     except httpx.HTTPStatusError as e:
         logger.error(
             f"[AmulPashudhan({mobile})] :: Request failed with status code {e.response.status_code}, and message = {e.response.text}",
@@ -132,6 +123,47 @@ async def fetch_farmer_amulpashudhan(
             f"[AmulPashudhan({mobile})] :: Request failed, due to error {str(e)}",
             exc_info=True,
         )
+    return None
+
+
+async def fetch_farmer_amulpashudhan(
+    mobile: str, token: str
+) -> list[FarmerModel] | None:
+    """Returns list of FarmerModel or None on 204/error/empty (domain path).
+
+    Thin wrapper over _fetch_farmer_amulpashudhan_raw: validate raw dicts to
+    FarmerModel; if a CACHED payload fails validation (e.g. an old schema), refetch
+    fresh once (skip_cache) — preserving the previous cache-self-healing behavior.
+    """
+    raw = await _fetch_farmer_amulpashudhan_raw(mobile, token)
+    if raw is None:
+        return None
+    try:
+        return [
+            FarmerModel.model_validate(data, extra="ignore", by_alias=True)
+            for data in raw
+        ]
+    except Exception as e:
+        logger.warning(
+            "[AmulPashudhan(%s)] :: payload failed FarmerModel validation, refetching. error=%s",
+            mobile,
+            str(e),
+        )
+        raw = await _fetch_farmer_amulpashudhan_raw(mobile, token, skip_cache=True)
+        if raw is None:
+            return None
+        try:
+            return [
+                FarmerModel.model_validate(data, extra="ignore", by_alias=True)
+                for data in raw
+            ]
+        except Exception as e2:
+            logger.warning(
+                "[AmulPashudhan(%s)] :: refetch still failed FarmerModel validation: %s",
+                mobile,
+                str(e2),
+            )
+            return None
 
 
 async def fetch_farmer_herdman(mobile: str, token: str) -> list[FarmerModel] | None:
