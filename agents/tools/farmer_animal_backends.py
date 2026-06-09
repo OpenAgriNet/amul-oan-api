@@ -85,24 +85,30 @@ async def _fetch_farmer_amulpashudhan_raw(
 
     url = f"{BASE_AMULPASHUDHAN}/GetFarmerDetailsByMobile?mobileNumber={mobile}"
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.get(
-                url,
-                headers={
-                    "accept": "application/json",
-                    "Authorization": f"Bearer {token}",
-                },
-            )
-            response.raise_for_status()
-            logger.info(f"[AmulPashudhan({mobile})] :: Response successfully recieved.")
-            if response.status_code == 204 or not (response.text or "").strip():
-                await set_cached_api_response(cache_key, None)
-                return None
-            r_json = response.json()
-            if not isinstance(r_json, list):
-                raise Exception("Not a valid list provided in the response.")
-            await set_cached_api_response(cache_key, r_json)
-            return r_json
+        with start_observation(
+            "fetch_farmer_amulpashudhan",
+            input={"mobile": mobile},
+            metadata={"provider": "amulpashudhan", "url": url},
+        ) as observation:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.get(
+                    url,
+                    headers={
+                        "accept": "application/json",
+                        "Authorization": f"Bearer {token}",
+                    },
+                )
+                _record_api_trace(observation, response, provider="amulpashudhan", url=url)
+                response.raise_for_status()
+                logger.info(f"[AmulPashudhan({mobile})] :: Response successfully recieved.")
+                if response.status_code == 204 or not (response.text or "").strip():
+                    await set_cached_api_response(cache_key, None)
+                    return None
+                r_json = response.json()
+                if not isinstance(r_json, list):
+                    raise Exception("Not a valid list provided in the response.")
+                await set_cached_api_response(cache_key, r_json)
+                return r_json
     except httpx.HTTPStatusError as e:
         logger.error(
             f"[AmulPashudhan({mobile})] :: Request failed with status code {e.response.status_code}, and message = {e.response.text}",
@@ -188,23 +194,29 @@ async def fetch_farmer_herdman(mobile: str, token: str) -> list[FarmerModel] | N
 
     url = f"{BASE_HERDMAN}/get-amul-farmer"
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.get(
-                url,
-                params={"mobileno": mobile},
-                headers={"accept": "application/json", "api-token": f"Bearer {token}"},
-            )
-            response.raise_for_status()
-            logger.info(f"[Herdman({mobile})] :: Response successfully recieved")
-            if not (response.text or "").strip():
-                await set_cached_api_response(cache_key, None)
-                return None
-            response_json = response.json()
-            await set_cached_api_response(cache_key, response_json)
-            data = FarmerHerdmanModel.model_validate(
-                response_json, extra="ignore", by_alias=True
-            )
-            return data.farmers
+        with start_observation(
+            "fetch_farmer_herdman",
+            input={"mobile": mobile},
+            metadata={"provider": "herdman", "url": url},
+        ) as observation:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.get(
+                    url,
+                    params={"mobileno": mobile},
+                    headers={"accept": "application/json", "api-token": f"Bearer {token}"},
+                )
+                _record_api_trace(observation, response, provider="herdman", url=url)
+                response.raise_for_status()
+                logger.info(f"[Herdman({mobile})] :: Response successfully recieved")
+                if not (response.text or "").strip():
+                    await set_cached_api_response(cache_key, None)
+                    return None
+                response_json = response.json()
+                await set_cached_api_response(cache_key, response_json)
+                data = FarmerHerdmanModel.model_validate(
+                    response_json, extra="ignore", by_alias=True
+                )
+                return data.farmers
     except httpx.HTTPStatusError as e:
         logger.error(
             f"[Herdman({mobile})] :: Request failed with status code {e.response.status_code}, and message = {e.response.text}",
@@ -265,23 +277,29 @@ async def _fetch_farmer_herdman_raw(
 
     url = f"{BASE_HERDMAN}/get-amul-farmer"
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.get(
-                url,
-                params={"mobileno": mobile},
-                headers={"accept": "application/json", "api-token": f"Bearer {token}"},
-            )
-            response.raise_for_status()
-            logger.info(f"[Herdman({mobile})] :: Response successfully recieved")
-            if not (response.text or "").strip():
-                await set_cached_api_response(cache_key, None)
+        with start_observation(
+            "fetch_farmer_herdman",
+            input={"mobile": mobile},
+            metadata={"provider": "herdman", "url": url},
+        ) as observation:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.get(
+                    url,
+                    params={"mobileno": mobile},
+                    headers={"accept": "application/json", "api-token": f"Bearer {token}"},
+                )
+                _record_api_trace(observation, response, provider="herdman", url=url)
+                response.raise_for_status()
+                logger.info(f"[Herdman({mobile})] :: Response successfully recieved")
+                if not (response.text or "").strip():
+                    await set_cached_api_response(cache_key, None)
+                    return None
+                response_json = response.json()
+                await set_cached_api_response(cache_key, response_json)
+                if isinstance(response_json, dict):
+                    return _extract_herdman_rows(response_json)
+                logger.info(f"[Herdman({mobile})] :: No information from herdman found.")
                 return None
-            response_json = response.json()
-            await set_cached_api_response(cache_key, response_json)
-            if isinstance(response_json, dict):
-                return _extract_herdman_rows(response_json)
-            logger.info(f"[Herdman({mobile})] :: No information from herdman found.")
-            return None
     except httpx.HTTPStatusError as e:
         logger.error(
             f"[Herdman({mobile})] :: Request failed with status code {e.response.status_code}, and message = {e.response.text}",
@@ -358,18 +376,24 @@ async def fetch_animal_amulpashudhan(tag_no: str, token: str) -> AnimalModel | N
 
     url = f"{BASE_AMULPASHUDHAN}/GetAnimalDetailsByTagNo?tagNo={tag_no}"
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.get(
-                url,
-                headers={
-                    "accept": "application/json",
-                    "Authorization": f"Bearer {token}",
-                },
-            )
-            response.raise_for_status()
-            logger.info(
-                f"[AmulPashudhan({tag_no})] :: Response successfully recieved."
-            )
+        with start_observation(
+            "fetch_animal_amulpashudhan",
+            input={"tag_no": tag_no},
+            metadata={"provider": "amulpashudhan", "url": url},
+        ) as observation:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.get(
+                    url,
+                    headers={
+                        "accept": "application/json",
+                        "Authorization": f"Bearer {token}",
+                    },
+                )
+                _record_api_trace(observation, response, provider="amulpashudhan", url=url)
+                response.raise_for_status()
+                logger.info(
+                    f"[AmulPashudhan({tag_no})] :: Response successfully recieved."
+                )
         if response.status_code == 204 or not (response.text or "").strip():
             await set_cached_api_response(cache_key, None)
             return None
@@ -717,21 +741,27 @@ async def get_farmer_milk_collection_details_api(
     api_url = f"{BASE_AMULPASHUDHAN}/FarmerMilkCollectionDetails"
 
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.get(
-                api_url,
-                params=request.to_query_params(),
-                headers={"Authorization": f"Bearer {token}"},
-            )
-            response.raise_for_status()
-            logger.info(
-                "[FarmerMilkCollectionDetails(%s,%s,%s,%s,%s)] :: Response successfully recieved.",
-                request.union_code,
-                request.society_code,
-                request.farmer_code,
-                request.fromdate,
-                request.todate,
-            )
+        with start_observation(
+            "get_farmer_milk_collection_details_api",
+            input=request.to_query_params(),
+            metadata={"provider": "amulpashudhan", "url": api_url},
+        ) as observation:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.get(
+                    api_url,
+                    params=request.to_query_params(),
+                    headers={"Authorization": f"Bearer {token}"},
+                )
+                _record_api_trace(observation, response, provider="amulpashudhan", url=api_url)
+                response.raise_for_status()
+                logger.info(
+                    "[FarmerMilkCollectionDetails(%s,%s,%s,%s,%s)] :: Response successfully recieved.",
+                    request.union_code,
+                    request.society_code,
+                    request.farmer_code,
+                    request.fromdate,
+                    request.todate,
+                )
         response_json = response.json()
         if not isinstance(response_json, dict):
             raise Exception("Not a valid dict provided in the response.")
@@ -798,12 +828,18 @@ async def fetch_animal_herdman(tag_no: str, token: str) -> Optional[Dict[str, An
     """Returns single animal dict (canonical keys) or None on error/empty."""
     url = f"{BASE_HERDMAN}/get-amul-animal"
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            r = await client.get(
-                url,
-                params={"TagID": tag_no},
-                headers={"accept": "application/json", "api-token": f"Bearer {token}"},
-            )
+        with start_observation(
+            "fetch_animal_herdman",
+            input={"tag_no": tag_no},
+            metadata={"provider": "herdman", "url": url},
+        ) as observation:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                r = await client.get(
+                    url,
+                    params={"TagID": tag_no},
+                    headers={"accept": "application/json", "api-token": f"Bearer {token}"},
+                )
+            _record_api_trace(observation, r, provider="herdman", url=url)
         if r.status_code != 200 or not (r.text or "").strip():
             return None
         data = json.loads(r.text)
