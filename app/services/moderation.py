@@ -22,6 +22,7 @@ from app.config import settings
 from app.services.translation import (
     OPENAI_PRETRANSLATION_MODEL,
     OSS_PRETRANSLATION_MODEL,
+    _create_with_timeout,
     _get_langfuse,
     _get_openai_client,
     _get_oss_pretranslation_client,
@@ -162,14 +163,14 @@ async def _create_moderation_response(
     source_lang: str,
     recent_history_text: str = "",
 ):
-    return await asyncio.wait_for(
-        client.chat.completions.create(
+    return await _create_with_timeout(
+        lambda: client.chat.completions.create(
             model=model,
             messages=_build_messages(text, source_lang, recent_history_text),
             max_completion_tokens=200,
             response_format={"type": "json_object"},
         ),
-        timeout=settings.openai_pretranslation_timeout_seconds,
+        settings.openai_pretranslation_timeout_seconds,
     )
 
 

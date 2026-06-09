@@ -11,7 +11,7 @@ import re
 import random
 import asyncio
 import aiohttp
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from contextvars import ContextVar
 from pathlib import Path
 from typing import Literal, Optional
@@ -106,11 +106,34 @@ def _get_oss_pretranslation_client() -> AsyncOpenAI:
     return _oss_pretrans_client
 
 
+async def _create_with_timeout(make_coro, timeout):
+    """Run an async client call under a timeout while guaranteeing the request
+    coroutine is owned by a task the instant it is created.
+
+    Passing a bare coroutine straight to ``asyncio.wait_for`` can leave it
+    unawaited on Python 3.10 if this frame is cancelled/closed during wait_for's
+    setup — surfacing as ``RuntimeWarning: coroutine ... was never awaited``.
+    Taking a thunk and wrapping its result in a task here closes that window: the
+    coroutine is created and handed to ``ensure_future`` synchronously (no await
+    in between), and is cancel-drained on timeout/cancel so no task is left
+    pending. Behaviour is otherwise identical — same result, same timeout, same
+    exceptions propagated.
+    """
+    task = asyncio.ensure_future(make_coro())
+    try:
+        return await asyncio.wait_for(task, timeout)
+    except (asyncio.TimeoutError, asyncio.CancelledError):
+        task.cancel()
+        with suppress(asyncio.CancelledError, Exception):
+            await task
+        raise
+
+
 async def _pretranslate_oss(text: str, source_name: str, source_code: str, max_tokens: int) -> str:
     """Pretranslate via the OSS vLLM endpoint (per-request; legacy untouched)."""
     client = _get_oss_pretranslation_client()
-    response = await asyncio.wait_for(
-        client.chat.completions.create(
+    response = await _create_with_timeout(
+        lambda: client.chat.completions.create(
             model=OSS_PRETRANSLATION_MODEL,
             max_completion_tokens=max_tokens,
             temperature=0.0,
@@ -119,7 +142,7 @@ async def _pretranslate_oss(text: str, source_name: str, source_code: str, max_t
                 {"role": "user", "content": f"Translate this {source_name} ({source_code}) text to English.\n\n{text.strip()}"},
             ],
         ),
-        timeout=10.0,
+        10.0,
     )
     return (response.choices[0].message.content or "").strip()
 
@@ -631,8 +654,8 @@ def _pretranslation_system_with_glossary(text: str) -> str:
 async def _pretranslate_openai(text: str, source_name: str, source_code: str, max_tokens: int) -> str:
     """Pretranslate using OpenAI API."""
     client = _get_openai_client()
-    response = await asyncio.wait_for(
-        client.chat.completions.create(
+    response = await _create_with_timeout(
+        lambda: client.chat.completions.create(
             model=PRETRANSLATION_MODEL,
             max_completion_tokens=max_tokens,
             temperature=0.0,
@@ -641,7 +664,7 @@ async def _pretranslate_openai(text: str, source_name: str, source_code: str, ma
                 {"role": "user", "content": f"Translate this {source_name} ({source_code}) text to English.\n\n{text.strip()}"},
             ],
         ),
-        timeout=10.0,
+        10.0,
     )
     return (response.choices[0].message.content or "").strip()
 
@@ -1039,14 +1062,14 @@ async def _create_openai_pretranslation_response(
     text: str,
     max_tokens: int,
 ):
-    return await asyncio.wait_for(
-        client.chat.completions.create(
+    return await _create_with_timeout(
+        lambda: client.chat.completions.create(
             model=OPENAI_PRETRANSLATION_MODEL,
             messages=_build_openai_pretranslation_messages(source_name, source_code, text),
             max_completion_tokens=max_tokens,
             response_format={"type": "json_object"},
         ),
-        timeout=settings.openai_pretranslation_timeout_seconds,
+        settings.openai_pretranslation_timeout_seconds,
     )
 
 
@@ -1250,14 +1273,14 @@ async def _create_oss_pretranslation_response(
     max_tokens: int,
 ):
     """Mirror of _create_openai_pretranslation_response, pinned to the OSS vLLM endpoint."""
-    return await asyncio.wait_for(
-        client.chat.completions.create(
+    return await _create_with_timeout(
+        lambda: client.chat.completions.create(
             model=OSS_PRETRANSLATION_MODEL,
             messages=_build_openai_pretranslation_messages(source_name, source_code, text),
             max_completion_tokens=max_tokens,
             response_format={"type": "json_object"},
         ),
-        timeout=settings.openai_pretranslation_timeout_seconds,
+        settings.openai_pretranslation_timeout_seconds,
     )
 
 
