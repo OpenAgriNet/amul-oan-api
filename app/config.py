@@ -7,6 +7,14 @@ from dotenv import load_dotenv
 # Load environment variables from .env file
 load_dotenv()
 
+
+def _get_bool_env(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
 class Settings(BaseSettings):
     # Core Application Settings
     app_name: str = "Amul AI API"
@@ -65,8 +73,42 @@ class Settings(BaseSettings):
 
     # Cache Configuration
     default_cache_ttl: int = 60 * 60 * 24  # 24 hours
+    # Conversation-history retention in Redis (app/utils.py DEFAULT_CACHE_TTL).
+    # Rolling inactivity window: update_message_history rewrites the key with this
+    # TTL every turn, so history expires this long after the LAST turn. session_id
+    # is client-supplied and the backend enforces no session/call length, so the
+    # only requirement is TTL > the gap between turns — exact value is
+    # non-load-bearing (2h is generous slack; voice's old 24h was incidental).
+    history_cache_ttl_seconds: int = int(os.getenv("HISTORY_CACHE_TTL_SECONDS", str(60 * 60 * 2)))
     suggestions_cache_ttl: int = 60 * 30    # 30 minutes
     farmer_animal_api_cache_ttl: int = 60 * 60 * 24 * 17  # 17 days
+    # Session-ownership locking (voice call concurrency) — consumed by app/utils.py
+    # once the voice surface folds in; inert on the chat path.
+    session_owner_ttl_seconds: int = int(os.getenv("SESSION_OWNER_TTL_SECONDS", "120"))
+    session_owner_refresh_interval_seconds: int = int(os.getenv("SESSION_OWNER_REFRESH_INTERVAL_SECONDS", "15"))
+    # Farmer cache policy: beyond this age a cached record is too stale to serve —
+    # the read blocks on a bounded API call instead of serving it (falls back to
+    # the stale record only if the API also fails). Backstop above the 12h/2h
+    # soft-refresh; the 7d hard Redis TTL still deletes records entirely.
+    # (Consumed by the farmer SWR cache layer — bucket A Layer 2.)
+    farmer_max_serve_stale_seconds: int = int(os.getenv("FARMER_MAX_SERVE_STALE_SECONDS", str(60 * 60 * 24)))
+    # Farmer SWR cache timers (Inc 4) — all env-tunable. Soft-refresh: a cached
+    # record older than its interval is served stale and refreshed in the
+    # background. "found" data changes slowly (12h); a cached "not_found" is
+    # re-checked sooner (2h) because a farmer may newly register.
+    # KNOWN LIMITATION: a register-then-immediately-call flow can keep seeing
+    # not_found for up to the not_found interval; the proper fix is active
+    # cache-invalidation on registration (cross-service, out of scope — follow-up).
+    farmer_refresh_interval_seconds: int = int(os.getenv("FARMER_REFRESH_INTERVAL_SECONDS", str(60 * 60 * 12)))
+    farmer_negative_refresh_interval_seconds: int = int(os.getenv("FARMER_NEGATIVE_REFRESH_INTERVAL_SECONDS", str(60 * 60 * 2)))
+    # Hard retention: Redis deletes a farmer record after this idle period.
+    farmer_cache_retention_seconds: int = int(os.getenv("FARMER_CACHE_RETENTION_SECONDS", str(60 * 60 * 24 * 7)))
+    # Farmer/animal API tracing records a PII-SAFE structure summary by default
+    # (status, record count, which keys are present/null). Raw response bodies are
+    # only captured when FARMER_API_TRACE_BODY is explicitly enabled (temporary
+    # deep-debug), capped at FARMER_API_TRACE_BODY_CHARS.
+    farmer_api_trace_body: bool = _get_bool_env("FARMER_API_TRACE_BODY", default=False)
+    farmer_api_trace_body_chars: int = int(os.getenv("FARMER_API_TRACE_BODY_CHARS", "8000"))
 
     # Logging Configuration
     log_level: str = "INFO"
@@ -91,6 +133,23 @@ class Settings(BaseSettings):
     ollama_endpoint_url: Optional[str] = None
     marqo_endpoint_url: Optional[str] = None
     inference_endpoint_url: Optional[str] = None
+
+    # Voice service settings (nudge, STT signals, voice tracing, pretranslation
+    # timeout) — inert on the chat path; consumed by the voice surface once it
+    # folds in. langfuse_environment (voice's name for chat's
+    # langfuse_tracing_environment) is intentionally left out pending the
+    # observability reconciliation (bucket C).
+    nudge_api_url: str = os.getenv("NUDGE_API_URL", "https://vistaar.getraya.app/api/nudge-user")
+    nudge_timeout_seconds: float = float(os.getenv("NUDGE_TIMEOUT_SECONDS", "3.0"))
+    enable_voice_nudges: bool = _get_bool_env("ENABLE_VOICE_NUDGES", default=True)
+    stt_signal_retry_ceiling: int = int(os.getenv("STT_SIGNAL_RETRY_CEILING", "3"))
+    openai_pretranslation_timeout_seconds: float = float(os.getenv("OPENAI_PRETRANSLATION_TIMEOUT_SECONDS", "10.0"))
+    enable_voice_tracing: bool = _get_bool_env("ENABLE_VOICE_TRACING", default=True)
+    voice_trace_text_mode: str = os.getenv("VOICE_TRACE_TEXT_MODE", "preview_hash")
+    voice_trace_preview_chars: int = int(os.getenv("VOICE_TRACE_PREVIEW_CHARS", "120"))
+    voice_trace_log_summary: bool = _get_bool_env("VOICE_TRACE_LOG_SUMMARY", default=True)
+    # RETRIEVAL_AUDIT_LOG: log intent/retrieval_called/query per turn for replay analysis
+    retrieval_audit_log: bool = _get_bool_env("RETRIEVAL_AUDIT_LOG", default=False)
 
     # External Service API Keys
     openai_api_key: Optional[str] = None
@@ -145,6 +204,10 @@ class Settings(BaseSettings):
     scheme_require_union_auth: bool = os.getenv("SCHEME_REQUIRE_UNION_AUTH", "true").strip().lower() in {
         "1", "true", "yes", "on"
     }
+
+    # Ambiguity-term fuzzy-match cutoff (0-1) for get_ambiguity_hints_for_query.
+    # Overridable via env; defaults to 0.80 (prior hard-coded behaviour).
+    ambiguity_match_threshold: float = float(os.getenv("AMBIGUITY_MATCH_THRESHOLD", "0.80"))
 
     class Config:
         env_file = ".env"

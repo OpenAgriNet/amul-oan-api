@@ -3,6 +3,10 @@ Tool for fetching farmer milk collection and deduction details.
 """
 import os
 
+from pydantic_ai import RunContext
+from pydantic_ai.tools import ToolDefinition
+
+from agents.deps import FarmerContext
 from agents.tools.farmer_animal_backends import get_farmer_milk_collection_details_api
 from app.models.milk_collection import FarmerMilkCollectionRequestModel
 from helpers.utils import get_logger
@@ -10,13 +14,64 @@ from helpers.utils import get_logger
 logger = get_logger(__name__)
 
 
-def _escape_markdown_cell(value: str) -> str:
-    """Escape markdown table delimiter characters in cell content."""
-    return value.replace("|", "\\|")
+async def prepare_get_farmer_milk_collection_details(
+    ctx: RunContext[FarmerContext], tool_def: ToolDefinition
+) -> ToolDefinition | None:
+    """Hide get_farmer_milk_collection_details unless a farmer is resolved.
+
+    The tool needs union/society/farmer codes that only exist in the farmer
+    context (populated when a farmer record is resolved). With no farmer context
+    the LLM has no codes and would otherwise hallucinate placeholders (e.g.
+    0/0/0) that reach the live backend. farmer_unions is non-empty exactly when a
+    farmer was resolved, so we gate on it (mirrors prepare_get_union_scheme_data).
+    The LLM won't see the tool in its schema this turn, so it can't call it.
+    """
+    farmer_unions = [
+        cleaned
+        for cleaned in ((u or "").strip().lower() for u in (ctx.deps.farmer_unions or []))
+        if cleaned
+    ]
+    if farmer_unions:
+        return tool_def
+    logger.info(
+        "Hiding get_farmer_milk_collection_details tool because farmer_unions is "
+        "empty (no resolved farmer context)"
+    )
+    return None
 
 
-def _format_number(value: float, decimals: int = 2) -> str:
-    """Format numeric values for compact table display."""
+def _is_missing_code(value: str) -> bool:
+    """True when a backend code is absent or a placeholder (empty, or non-positive
+    like '0'). Defense-in-depth: refuse instead of sending junk to the live
+    backend even if the tool is somehow reached without valid codes."""
+    text = (value or "").strip()
+    if not text:
+        return True
+    try:
+        return int(text) <= 0
+    except ValueError:
+        return False
+
+
+def _escape_markdown_cell(value) -> str:
+    """Escape markdown table delimiter characters in cell content.
+
+    None-safe: the lenient FarmerMilkCollection model (#12) allows missing
+    fields (a partial PashuGPT row), so a cell may be None — render it as '-'.
+    """
+    if value is None:
+        return "-"
+    return str(value).replace("|", "\\|")
+
+
+def _format_number(value, decimals: int = 2) -> str:
+    """Format numeric values for compact table display.
+
+    None-safe: the lenient model allows missing numeric fields (None) — render
+    them as '-' instead of crashing on f-string formatting.
+    """
+    if value is None:
+        return "-"
     return f"{value:.{decimals}f}"
 
 
@@ -115,6 +170,30 @@ async def get_farmer_milk_collection_details(
     if not token:
         logger.error("PASHUGPT_TOKEN is not set")
         return "Milk collection lookup failed.\n\nPASHUGPT_TOKEN is not configured."
+
+    missing = [
+        name
+        for name, value in (
+            ("union_code", union_code),
+            ("society_code", society_code),
+            ("farmer_code", farmer_code),
+        )
+        if _is_missing_code(value)
+    ]
+    if missing:
+        logger.info(
+            "Farmer milk collection tool refused: missing/placeholder codes %s "
+            "(union=%s society=%s farmer=%s)",
+            missing,
+            union_code,
+            society_code,
+            farmer_code,
+        )
+        return (
+            "Milk collection lookup failed.\n\n"
+            "Could not determine your union, society, and farmer codes from the "
+            "current farmer context, so milk collection details can't be fetched."
+        )
 
     try:
         request = FarmerMilkCollectionRequestModel(
