@@ -320,6 +320,18 @@ def _normalize_gu_body_terms(text: str) -> str:
     return out
 
 
+# Gender-neutral caller-address guard (voice only, §14). A deterministic safety
+# net BEYOND the prompt rule: strip gendered address terms (ભાઈ/બહેન/સાહેબ/મેડમ)
+# directed at the caller before the text reaches TTS. Boundary-aware so e.g.
+# "ભૂખ ભાઈ" (animal-behaviour phrase) is left alone but a leading "ભાઈ," is not.
+GU_GENDER_NEUTRAL_POST: list[tuple[re.Pattern, str]] = [
+    (re.compile(r"(?<![^\s,।.!?])ભ(?:ાઈ|ૈ)(?=\s*[,।!?]|\s|$)"), ""),
+    (re.compile(r"(?<![^\s,।.!?])બ(?:હેન|ેન)(?=\s*[,।!?]|\s|$)"), ""),
+    (re.compile(r"(?<![^\s,।.!?])સ(?:ા)?હ(?:ે)?બ(?=\s*[,।!?]|\s|$)"), ""),
+    (re.compile(r"(?<![^\s,।.!?])મ(?:ે|ૅ|ૅ)ડ(?:મ|)(?=\s*[,।!?]|\s|$)"), ""),
+]
+
+
 def _fix_dandas(text: str) -> str:
     """Replace Devanagari dandas (।) with periods in TranslateGemma output."""
     return text.replace("।", ".")
@@ -340,6 +352,10 @@ def _post_normalize_gu_translation(
         out = _normalize_gu_body_terms(out)
     for pat, repl in GU_POST_REPLACEMENTS:
         out = re.sub(pat, repl, out)
+    if _is_voice_channel():
+        # G2: deterministic gendered caller-address stripping before TTS (voice only).
+        for pat, repl in GU_GENDER_NEUTRAL_POST:
+            out = pat.sub(repl, out)
     # collapse extra spaces introduced by removals
     out = re.sub(r"[ \t]{2,}", " ", out)
     out = re.sub(r"\n{3,}", "\n\n", out)

@@ -191,6 +191,13 @@ def normalize_numbers_for_tts(text: str) -> str:
     if not text:
         return text
 
+    # G3: repair TranslateGemma's ૫↔પ glyph confusion BEFORE number-to-words.
+    # The model sometimes emits the letter પ where the digit ૫ was meant; when it
+    # sits adjacent to other Gujarati digits, restore it to ૫ so the passes below
+    # verbalize the number correctly instead of leaving a stray consonant.
+    text = re.sub(r"(?<=[૦-૯])પ", "૫", text)
+    text = re.sub(r"પ(?=[૦-૯])", "૫", text)
+
     def _replace_range(m: re.Match) -> str:
         left = m.group(1)
         right = m.group(2)
