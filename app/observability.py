@@ -29,7 +29,7 @@ if langfuse_public_key and langfuse_secret_key:
         )
         environment = (
             os.getenv("LANGFUSE_TRACING_ENVIRONMENT")
-            or settings.langfuse_environment
+            or settings.langfuse_tracing_environment
             or settings.environment
             or "voice-development"
         )

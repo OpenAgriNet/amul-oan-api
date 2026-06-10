@@ -18,6 +18,7 @@ from typing import Literal, Optional
 from openai import AsyncOpenAI
 from helpers.utils import get_logger, normalize_voice_output
 from dotenv import load_dotenv
+from app.config import settings
 from agents.tools.terms import get_mini_glossary_for_text, get_ambiguity_hints_for_query, TERM_PAIRS, TermPair
 
 
@@ -332,6 +333,38 @@ GU_GENDER_NEUTRAL_POST: list[tuple[re.Pattern, str]] = [
 ]
 
 
+# Feminine self-reference guard (voice only, §14). The assistant persona is female,
+# so first-person verb forms must use the feminine conjugation. Deterministic safety
+# net BEYOND the prompt rule, ported verbatim from voice-prod (restored after the #90
+# merge dropped it). Boundary-aware; only rewrites the verb ending after "હું".
+GU_FEMININE_SELF_REFERENCE_REPLACEMENTS: list[tuple[re.Pattern, str]] = [
+    (
+        re.compile(
+            r"(^|[,।.!?]\s+)\s*હું(?P<body>[^.!?\n]{0,80}?)શકું\s+ન(?:થી|હીં|હિ)(?=\s|[,।.!?]|$)"
+        ),
+        r"\1હું\g<body>શકતી નથી",
+    ),
+    (
+        re.compile(
+            r"(^|[,।.!?]\s+)\s*હું(?P<body>[^.!?\n]{0,80}?)શકું\s+છું(?=\s|[,।.!?]|$)"
+        ),
+        r"\1હું\g<body>શકતી છું",
+    ),
+    (
+        re.compile(
+            r"(^|[,।.!?]\s+)\s*હું(?P<body>[^.!?\n]{0,80}?)કરું(?=\s|[,।.!?]|$)"
+        ),
+        r"\1હું\g<body>કરૂં",
+    ),
+    (
+        re.compile(
+            r"(^|[,।.!?]\s+)\s*હું(?P<body>[^.!?\n]{0,80}?)આવું\s+છું(?=\s|[,।.!?]|$)"
+        ),
+        r"\1હું\g<body>આવી છું",
+    ),
+]
+
+
 def _fix_dandas(text: str) -> str:
     """Replace Devanagari dandas (।) with periods in TranslateGemma output."""
     return text.replace("।", ".")
@@ -355,6 +388,11 @@ def _post_normalize_gu_translation(
     if _is_voice_channel():
         # G2: deterministic gendered caller-address stripping before TTS (voice only).
         for pat, repl in GU_GENDER_NEUTRAL_POST:
+            out = pat.sub(repl, out)
+        # Feminine self-reference guard (voice only): keep the female persona's
+        # first-person verb forms feminine. Runs after the address strip, matching
+        # voice-prod ordering.
+        for pat, repl in GU_FEMININE_SELF_REFERENCE_REPLACEMENTS:
             out = pat.sub(repl, out)
     # collapse extra spaces introduced by removals
     out = re.sub(r"[ \t]{2,}", " ", out)
