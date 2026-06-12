@@ -5,7 +5,7 @@ import os
 import regex
 import re
 from fastapi import BackgroundTasks
-from agents.agrinet import agrinet_agent
+from agents.agrinet import agrinet_agent, AGENT_USAGE_LIMITS
 from agents.moderation import moderation_agent
 from agents.models import (
     LLM_MODEL_NAME,
@@ -551,6 +551,7 @@ async def stream_chat_messages(
                             message_history=trimmed_history,
                             deps=deps,
                             model=attempt.model,
+                            usage_limits=AGENT_USAGE_LIMITS,
                         ) as agent_run:
                             async for node in agent_run:
                                 if type(node).__name__ == 'ModelRequestNode':
@@ -573,6 +574,7 @@ async def stream_chat_messages(
                             message_history=trimmed_history,
                             deps=deps,
                             model=attempt.model,
+                            usage_limits=AGENT_USAGE_LIMITS,
                         ) as response_stream:
                             async for chunk in response_stream.stream_text(delta=True):
                                 yield chunk
@@ -676,6 +678,7 @@ async def stream_chat_messages(
                     message_history=trimmed_history,
                     deps=deps,
                     model=request_model,
+                    usage_limits=AGENT_USAGE_LIMITS,
                 ) as agent_run:
                     if needs_output_translation:
                         # Optimised batched streaming for Anthropic as well
@@ -821,6 +824,7 @@ async def stream_chat_messages(
                     message_history=trimmed_history,
                     deps=deps,
                     model=request_model,
+                    usage_limits=AGENT_USAGE_LIMITS,
                 ) as response_stream:
                     if needs_output_translation:
                         # Optimised batched streaming: segment English into sentences and translate in good-sized batches
