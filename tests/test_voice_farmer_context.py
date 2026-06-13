@@ -7,6 +7,7 @@ get_farmer_profile tools.
 """
 # Import the app entry first so the pre-existing tools<->farmer_cache cycle
 # resolves in the same order the running app establishes it.
+import asyncio
 import app.services.voice as voice
 
 from agents.models.farmer import FarmerDataEnvelope
@@ -71,3 +72,28 @@ def test_signed_in_farmer_tools_drops_brittle_three():
     assert len(SIGNED_IN_FARMER_TOOLS) == 1, (
         f"expected only get_union_scheme_data; got {len(SIGNED_IN_FARMER_TOOLS)} tools"
     )
+
+
+def test_union_scheme_summary_uses_alias_canonicalization(monkeypatch):
+    async def fake_records(union_name: str):
+        assert union_name == "kutch"
+        return [{"scheme_title": "GPAIS", "scheme_url": "https://example.com/gpais"}]
+
+    monkeypatch.setattr(voice, "get_cached_scheme_records_for_union", fake_records)
+    out = asyncio.run(voice._build_union_scheme_summary(["sarhad"]))
+    assert "Kutch union schemes" in out
+    assert "GPAIS: https://example.com/gpais" in out
+
+
+def test_union_scheme_summary_ignores_unsupported_alias(monkeypatch):
+    called = False
+
+    async def fake_records(union_name: str):
+        nonlocal called
+        called = True
+        return []
+
+    monkeypatch.setattr(voice, "get_cached_scheme_records_for_union", fake_records)
+    out = asyncio.run(voice._build_union_scheme_summary(["dudhsagar"]))
+    assert out == ""
+    assert called is False

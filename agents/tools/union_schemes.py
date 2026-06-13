@@ -33,12 +33,14 @@ async def prepare_get_union_scheme_data(
     bail-out for farmers from unions whose scheme catalog isn't ingested
     (e.g., dudhsagar). The LLM won't see the tool in its schema this turn, so it can't call it.
     """
-    farmer_unions = [u.strip().lower() for u in (ctx.deps.farmer_unions or []) if u]
-    if any(u in SUPPORTED_SCHEME_UNIONS for u in farmer_unions):
+    raw_farmer_unions = [u.strip().lower() for u in (ctx.deps.farmer_unions or []) if u]
+    canonical_farmer_unions = [canonical_union_name(union_name) for union_name in raw_farmer_unions if union_name]
+    if any(u in SUPPORTED_SCHEME_UNIONS for u in canonical_farmer_unions):
         return tool_def
     logger.info(
-        "Hiding get_union_scheme_data tool because farmer_unions=%s has no supported union",
-        farmer_unions,
+        "Hiding get_union_scheme_data tool because farmer_unions=%s canonical_farmer_unions=%s has no supported union",
+        raw_farmer_unions,
+        canonical_farmer_unions,
     )
     return None
 

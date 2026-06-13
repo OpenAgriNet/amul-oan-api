@@ -13,6 +13,7 @@ import asyncio
 from types import SimpleNamespace
 
 import pytest
+from pydantic_ai.tools import ToolDefinition
 
 from app.models.union import UnionName, canonical_union_name
 import agents.tools.union_schemes as us
@@ -70,3 +71,23 @@ def test_tool_unsupported_union_still_fails(monkeypatch):
     out = asyncio.run(us.get_union_scheme_data(_ctx(["dudhsagar"]), None))
     # dudhsagar canonicalizes to mehsana, which has no scheme source -> unsupported
     assert "could not be determined" in out
+
+
+def test_prepare_shows_tool_for_supported_alias_union():
+    tool_def = ToolDefinition(
+        name="get_union_scheme_data",
+        description="Test tool",
+        parameters_json_schema={"type": "object"},
+    )
+    out = asyncio.run(us.prepare_get_union_scheme_data(_ctx(["sarhad"]), tool_def))
+    assert out is tool_def
+
+
+def test_prepare_hides_tool_for_unsupported_alias_union():
+    tool_def = ToolDefinition(
+        name="get_union_scheme_data",
+        description="Test tool",
+        parameters_json_schema={"type": "object"},
+    )
+    out = asyncio.run(us.prepare_get_union_scheme_data(_ctx(["dudhsagar"]), tool_def))
+    assert out is None
