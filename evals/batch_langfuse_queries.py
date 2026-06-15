@@ -49,6 +49,8 @@ load_dotenv(_REPO_ROOT / ".env")
 
 from evals.langfuse_eval_utils import (  # noqa: E402
     DEFAULT_OUTPUT_DIR,
+    GOLDEN_FULL_CSV_COLUMNS,
+    GOLDEN_SET_EVAL_CSV_COLUMNS,
     LangfuseEvalError,
     RAW_JSON_DIR,
     collect_retry_indices,
@@ -100,12 +102,12 @@ def _read_questions_indexed(
     limit: Optional[int],
     indices_filter: Optional[set[int]] = None,
     start_from: Optional[int] = None,
-) -> list[tuple[int, str]]:
+) -> list[tuple[int, str, dict[str, str]]]:
     with csv_path.open("r", encoding="utf-8-sig", newline="") as handle:
         reader = csv.DictReader(handle)
         if not reader.fieldnames or "question_gu" not in reader.fieldnames:
             raise ValueError(f"CSV must contain a 'question_gu' column: {csv_path}")
-        items: list[tuple[int, str]] = []
+        items: list[tuple[int, str, dict[str, str]]] = []
         for index, row in enumerate(reader, start=1):
             if start_from is not None and index < start_from:
                 continue
@@ -113,7 +115,12 @@ def _read_questions_indexed(
                 continue
             question = (row.get("question_gu") or "").strip()
             if question:
-                items.append((index, question))
+                metadata = {
+                    key: (row.get(key) or "").strip()
+                    for key in ("row_id", "category")
+                    if (row.get(key) or "").strip()
+                }
+                items.append((index, question, metadata))
             if limit is not None and len(items) >= limit:
                 break
     return items
@@ -198,9 +205,9 @@ def _append_csv_row(csv_path: Path, row: dict[str, Any], write_header: bool) -> 
         writer.writerow(row)
 
 
-def _save_raw_json(index: int, payload: dict[str, Any]) -> Path:
-    RAW_JSON_DIR.mkdir(parents=True, exist_ok=True)
-    path = RAW_JSON_DIR / f"query_{index:04d}.json"
+def _save_raw_json(raw_json_dir: Path, index: int, payload: dict[str, Any]) -> Path:
+    raw_json_dir.mkdir(parents=True, exist_ok=True)
+    path = raw_json_dir / f"query_{index:04d}.json"
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     return path
 
@@ -284,6 +291,19 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=200,
         help="Highest query index when rebuilding CSVs from raw JSON (default: 200)",
     )
+    parser.add_argument(
+        "--raw-json-dir",
+        default=str(RAW_JSON_DIR),
+        help="Directory for query_XXXX.json artifacts (default: eval_outputs/langfuse_raw_json)",
+    )
+    parser.add_argument(
+        "--csv-columns",
+        default=None,
+        help=(
+            "Comma-separated output CSV columns for --shareable-csv "
+            "(default: full team columns; use 'golden' for query-only, 'full' for golden+team cols)"
+        ),
+    )
     return parser
 
 
@@ -300,12 +320,25 @@ async def _run_batch(args: argparse.Namespace) -> int:
     if not shareable_path.is_absolute():
         shareable_path = _REPO_ROOT / shareable_path
 
+    raw_json_dir = Path(args.raw_json_dir)
+    if not raw_json_dir.is_absolute():
+        raw_json_dir = _REPO_ROOT / raw_json_dir
+
+    csv_columns: Optional[list[str]] = None
+    if args.csv_columns:
+        if args.csv_columns.strip().lower() == "golden":
+            csv_columns = GOLDEN_SET_EVAL_CSV_COLUMNS
+        elif args.csv_columns.strip().lower() == "full":
+            csv_columns = GOLDEN_FULL_CSV_COLUMNS
+        else:
+            csv_columns = [part.strip() for part in args.csv_columns.split(",") if part.strip()]
+
     indices_filter: Optional[set[int]] = None
     if args.indices:
         indices_filter = _parse_indices_arg(args.indices)
     if args.retry_failed:
         retry_from_raw = collect_retry_indices(
-            RAW_JSON_DIR,
+            raw_json_dir,
             team_csv_path=shareable_path if shareable_path.exists() else None,
             max_index=args.max_index,
         )
@@ -339,7 +372,7 @@ async def _run_batch(args: argparse.Namespace) -> int:
                 flat = flatten_session_for_csv(reconstructed)
                 flat["chat_response_preview"] = ""
                 flat["error"] = ""
-                _save_raw_json(index, reconstructed)
+                _save_raw_json(raw_json_dir, index, reconstructed)
                 _append_csv_row(output_path, flat, write_header=index == 1)
                 succeeded += 1
             except Exception as exc:
@@ -369,7 +402,7 @@ async def _run_batch(args: argparse.Namespace) -> int:
             print("No questions found.")
             return 1
 
-        for run_no, (query_index, question_gu) in enumerate(items, start=1):
+        for run_no, (query_index, question_gu, metadata) in enumerate(items, start=1):
             session_id = str(uuid.uuid4())
             row: dict[str, Any] = {"question_gu": question_gu, "session_id": session_id}
             try:
@@ -399,10 +432,11 @@ async def _run_batch(args: argparse.Namespace) -> int:
                     )
                     reconstructed = reconstruct_session(api, session_id)
                     reconstructed["question_gu"] = question_gu
+                    reconstructed.update(metadata)
                     flat = flatten_session_for_csv(reconstructed)
                     flat["chat_response_preview"] = row["chat_response_preview"]
                     flat["error"] = ""
-                    _save_raw_json(query_index, reconstructed)
+                    _save_raw_json(raw_json_dir, query_index, reconstructed)
                     if not merge_outputs:
                         _append_csv_row(output_path, flat, write_header=run_no == 1)
                     succeeded += 1
@@ -421,12 +455,14 @@ async def _run_batch(args: argparse.Namespace) -> int:
                         ),
                     }
                     _save_raw_json(
+                        raw_json_dir,
                         query_index,
                         {
                             "question_gu": question_gu,
                             "session_id": session_id,
                             "chat_response": chat_response,
                             "langfuse_error": langfuse_error,
+                            **metadata,
                         },
                     )
                     if not merge_outputs:
@@ -436,8 +472,14 @@ async def _run_batch(args: argparse.Namespace) -> int:
                 failed += 1
                 row["error"] = f"{exc}\n{traceback.format_exc()}".strip()
                 _save_raw_json(
+                    raw_json_dir,
                     query_index,
-                    {"question_gu": question_gu, "session_id": session_id, "error": row["error"]},
+                    {
+                        "question_gu": question_gu,
+                        "session_id": session_id,
+                        "error": row["error"],
+                        **metadata,
+                    },
                 )
                 if not merge_outputs:
                     _append_csv_row(
@@ -450,22 +492,23 @@ async def _run_batch(args: argparse.Namespace) -> int:
     print("")
     if merge_outputs:
         detail_count = rebuild_detail_csv_from_raw(
-            RAW_JSON_DIR,
+            raw_json_dir,
             output_path,
             max_index=args.max_index,
         )
         print(f"Rebuilt detail CSV: {output_path.resolve()} ({detail_count} rows)")
     shareable_count = write_team_shareable_csv(
-        RAW_JSON_DIR,
+        raw_json_dir,
         shareable_path,
         max_queries=args.max_index,
+        fieldnames=csv_columns,
     )
 
     print(f"Succeeded: {succeeded}")
     print(f"Failed: {failed}")
     print(f"Output CSV: {output_path.resolve()}")
     print(f"Team shareable CSV: {shareable_path.resolve()} ({shareable_count} rows)")
-    print(f"Raw JSON dir: {RAW_JSON_DIR.resolve()}")
+    print(f"Raw JSON dir: {raw_json_dir.resolve()}")
     return 0 if failed == 0 else 1
 
 

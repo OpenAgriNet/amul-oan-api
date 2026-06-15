@@ -145,6 +145,40 @@ def list_session_traces(api, session_id: str, *, limit: int = 100) -> list[Any]:
     return list(response.data or [])
 
 
+def _trace_names(traces: list[Any]) -> set[str]:
+    return {_normalize_name(getattr(trace, "name", None)) for trace in traces}
+
+
+def _moderation_outputs_from_trace_detail(detail: Any) -> list[dict[str, Any]]:
+    outputs: list[dict[str, Any]] = []
+    for obs in getattr(detail, "observations", None) or []:
+        if _matches_stage(getattr(obs, "name", None), STAGE_NAME_PATTERNS["moderation"]):
+            out = getattr(obs, "output", None) or {}
+            if isinstance(out, dict):
+                outputs.append(out)
+    trace_out = getattr(detail, "output", None) or {}
+    if isinstance(trace_out, dict) and trace_out:
+        outputs.append(trace_out)
+    return outputs
+
+
+def _moderation_result_from_traces(api, traces: list[Any]) -> Optional[bool]:
+    """
+    Return True when moderation allows the agent, False when it blocks, None if unknown.
+    """
+    for trace in traces:
+        if "moderation" not in _normalize_name(getattr(trace, "name", None)):
+            continue
+        detail = fetch_trace(api, trace.id)
+        for output in _moderation_outputs_from_trace_detail(detail):
+            category = str(output.get("category") or "").strip().lower()
+            if category == "valid_agricultural":
+                return True
+            if category:
+                return False
+    return None
+
+
 def wait_for_session_traces(
     api,
     session_id: str,
@@ -159,10 +193,16 @@ def wait_for_session_traces(
     while time.time() < deadline:
         traces = list_session_traces(api, session_id, limit=50)
         last_count = len(traces)
-        names = {(getattr(trace, "name", None) or "") for trace in traces}
-        has_agent = any("amul ai agent" in name.lower() for name in names)
+        names = _trace_names(traces)
+        has_agent = any("amul ai agent" in name for name in names)
         if len(traces) >= min_traces and has_agent:
             return traces
+
+        moderation_result = _moderation_result_from_traces(api, traces)
+        if moderation_result is False:
+            # Moderation declined the query — agent trace will never appear.
+            return traces
+
         time.sleep(poll_s)
     raise LangfuseEvalError(
         f"Timed out waiting for Langfuse traces for session_id={session_id!r} "
@@ -494,6 +534,8 @@ def flatten_json_artifact_for_team_csv(data: dict[str, Any], query_index: int) -
 
     return {
         "query_index": query_index,
+        "row_id": data.get("row_id") or "",
+        "category": data.get("category") or "",
         "status": status,
         "question_gu": data.get("question_gu") or "",
         "question_en": data.get("question_en") or "",
@@ -548,12 +590,30 @@ TEAM_SHARE_CSV_COLUMNS = [
     "raw_json_file",
 ]
 
+# Golden-set eval export: golden metadata + query/answer fields only (no trace/latency cols).
+GOLDEN_SET_EVAL_CSV_COLUMNS = [
+    "query_index",
+    "row_id",
+    "category",
+    "status",
+    "question_gu",
+    "question_en",
+    "response_en",
+    "moderation_category",
+    "moderation_action",
+    "final_answer_gu",
+    "error",
+]
+
+GOLDEN_FULL_CSV_COLUMNS = ["row_id", "category", *TEAM_SHARE_CSV_COLUMNS]
+
 
 def write_team_shareable_csv(
     raw_json_dir: Path,
     output_path: Path,
     *,
     max_queries: Optional[int] = None,
+    fieldnames: Optional[list[str]] = None,
 ) -> int:
     """Build a UTF-8 CSV (Excel-friendly) from all query_XXXX.json files in raw_json_dir."""
     import csv
@@ -571,8 +631,9 @@ def write_team_shareable_csv(
         data = json.loads(json_path.read_text(encoding="utf-8"))
         rows.append(flatten_json_artifact_for_team_csv(data, index))
 
+    columns = fieldnames or TEAM_SHARE_CSV_COLUMNS
     with output_path.open("w", encoding="utf-8-sig", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=TEAM_SHARE_CSV_COLUMNS, extrasaction="ignore")
+        writer = csv.DictWriter(handle, fieldnames=columns, extrasaction="ignore")
         writer.writeheader()
         writer.writerows(rows)
     return len(rows)
