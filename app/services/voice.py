@@ -21,7 +21,7 @@ from agents.services.farmer_cache import (
     should_refresh_farmer_data,
     exceeds_max_serve_stale,
 )
-from app.models.union import UnionName
+from app.models.union import UnionName, resolve_supported_unions
 from app.services.scheme_ingestion import (
     SchemeCacheError,
     SchemeDependencyError,
@@ -712,7 +712,7 @@ def _collect_farmer_unions(envelope: Optional[FarmerDataEnvelope]) -> list[str]:
 
 
 async def _build_union_scheme_summary(farmer_unions: list[str]) -> str:
-    scheme_unions = [union_name for union_name in farmer_unions if union_name in SUPPORTED_SCHEME_CONTEXT_UNIONS]
+    scheme_unions = resolve_supported_unions(farmer_unions, SUPPORTED_SCHEME_CONTEXT_UNIONS)
     if not scheme_unions:
         return ""
 
