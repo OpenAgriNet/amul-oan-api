@@ -28,7 +28,7 @@ from app.models.cvcc import (
     CvccVaccinationModel,
 )
 from app.models.farmer import FarmerModel
-from app.models.union import UnionName, canonical_union_name
+from app.models.union import UnionName, resolve_supported_unions
 from app.services.scheme_ingestion import (
     SchemeCacheError,
     SchemeDependencyError,
@@ -87,15 +87,7 @@ def _collect_farmer_unions(farmers: list[FarmerModel]) -> list[str]:
 
 
 async def _append_union_scheme_summary_markdown(lines: list[str], farmer_unions: list[str]) -> None:
-    # Canonicalize each raw union name (dairy brand / spelling variant) before
-    # matching the supported set, so e.g. a "sarhad" farmer resolves to Kutch.
-    scheme_unions: list[str] = []
-    _seen_scheme_unions: set[str] = set()
-    for union_name in farmer_unions:
-        canonical = canonical_union_name(union_name)
-        if canonical in SUPPORTED_SCHEME_CONTEXT_UNIONS and canonical not in _seen_scheme_unions:
-            _seen_scheme_unions.add(canonical)
-            scheme_unions.append(canonical)
+    scheme_unions = resolve_supported_unions(farmer_unions, SUPPORTED_SCHEME_CONTEXT_UNIONS)
     if not scheme_unions:
         return
 
