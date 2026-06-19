@@ -788,6 +788,22 @@ class TestHelperCoverage:
 
 
 class TestMultiTurnFlows:
+
+    def test_hold_message_short_circuit_emits_exact_goodbye_token(self, monkeypatch):
+        output, _ = asyncio.run(
+            _collect_stream(
+                query="તમારો કોલ હોલ્ડ પર રાખ્યો છે કૃપા કરીને લાઇન પર રહો",
+                session_id="hold-message-goodbye-token",
+                history=[],
+                monkeypatch=monkeypatch,
+                response_stream=_FakeResponseStream(chunks=["ignored"]),
+                source_lang="gu",
+                target_lang="gu",
+            )
+        )
+        assert output == "Goodbye."
+
+
     def test_greeting_then_domain_query_reaches_agent(self, monkeypatch):
         from app.services import voice as voice_module
 

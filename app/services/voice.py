@@ -1069,7 +1069,10 @@ async def stream_voice_message(
                     TELEPHONY_TERMINATE_CALL_TOKEN["en"],
                 )
                 trace.set_outcome("hold_message")
-                yield _emit(_prepare_voice_output(goodbye, requested_target_lang))
+                # Telephony hangup token must remain exact ASCII "Goodbye.".
+                # Do not pass through language cleanup (Gujarati filter would
+                # strip Latin letters and leave only ".").
+                yield _emit(goodbye)
                 return
 
             # ── Greeting short-circuit ────────────────────────────────────

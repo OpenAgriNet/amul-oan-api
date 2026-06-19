@@ -22,6 +22,9 @@ async def lifespan(app: FastAPI):
     print(f"📍 Environment: {settings.environment}")
     print(f"🔧 Debug mode: {settings.debug}")
     print(f"🌐 CORS origins: {settings.allowed_origins}")
+    # Load prompt templates into memory (no disk I/O at request time)
+    from helpers.utils import load_prompt_templates
+    load_prompt_templates(settings.base_dir / "assets" / "prompts")
     await start_telemetry_worker()
     await start_scheme_scheduler()
     await start_farmer_refresh_worker()
