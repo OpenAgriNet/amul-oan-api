@@ -54,6 +54,7 @@ from app.services.stt_signals import (
     generate_stt_signal_response,
     count_consecutive_stt_signals,
 )
+from app.services.non_meaningful import NonMeaningfulVerdict, check_non_meaningful_streak
 from app.services.moderation import ModerationVerdict, check_moderation
 from app.services.translation import (
     INDIAN_LANGUAGES,
@@ -275,6 +276,24 @@ _HISTORY_MARKERS = {
     "moderation_reject": "[moderation-rejected]",
 }
 
+# Markers that are dropped from the non-meaningful window entirely (neither
+# counted nor streak-breaking). Excluded turns are skipped, so "5 consecutive
+# non-meaningful turns" means consecutive among *eligible* turns — a
+# pretranslation/moderation system turn in the middle does not reset the streak.
+# fragment / unclear / no-audio / stt markers are intentionally NOT excluded:
+# they represent genuinely unclear caller turns and should count toward a
+# hangup (the prompt documents them as non-meaningful system markers).
+_NON_MEANINGFUL_EXCLUDED_TURNS = frozenset(
+    {
+        #_HISTORY_MARKERS["fragment"],
+        #_HISTORY_MARKERS["low_confidence"],
+        _HISTORY_MARKERS["pretranslation_failed"],
+        #_HISTORY_MARKERS["stt_no_audio"],
+        #_HISTORY_MARKERS["stt_unclear"],
+        _HISTORY_MARKERS["moderation_reject"],
+    }
+)
+
 
 def _is_fragment_query(query: str) -> bool:
     """Return True if query is too short/garbled to be a real question."""
@@ -462,6 +481,63 @@ def _prepare_voice_output(text: str, lang_code: str) -> str:
 
 def _canonical_history_user_text(kind: str, fallback: str = "") -> str:
     return _HISTORY_MARKERS.get(kind, fallback or kind)
+
+
+def _is_eligible_non_meaningful_turn(text: str) -> bool:
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return False
+    if cleaned in _NON_MEANINGFUL_EXCLUDED_TURNS:
+        return False
+    return True
+
+
+def _normalize_user_turn_for_non_meaningful(text: str) -> str:
+    """Normalize stored user turn text before heuristic/classifier checks.
+
+    History can contain wrapped forms like:
+      **User:** "Correct"
+    Strip wrappers/quotes so comparisons operate on caller content only.
+    """
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return ""
+    match = re.match(r'^\*\*User:\*\*\s*"?(.*?)"?$', cleaned, flags=re.IGNORECASE)
+    if match:
+        cleaned = (match.group(1) or "").strip()
+    # Remove balanced outer quotes if still present.
+    if len(cleaned) >= 2 and cleaned[0] == cleaned[-1] and cleaned[0] in {'"', "'"}:
+        cleaned = cleaned[1:-1].strip()
+    return cleaned
+
+
+def _collect_recent_user_turns_for_non_meaningful(history: list, current_query: str, limit: int = 5) -> list[str]:
+    turns: list[str] = []
+    for msg in reversed(history or []):
+        for part in getattr(msg, "parts", []) or []:
+            if getattr(part, "part_kind", "") != "user-prompt":
+                continue
+            content = getattr(part, "content", None)
+            if not isinstance(content, str):
+                continue
+            normalized = _normalize_user_turn_for_non_meaningful(content)
+            if not _is_eligible_non_meaningful_turn(normalized):
+                continue
+            turns.append(normalized)
+            if len(turns) >= limit - 1:
+                break
+        if len(turns) >= limit - 1:
+            break
+    turns.reverse()
+    normalized_current = _normalize_user_turn_for_non_meaningful(current_query)
+    if _is_eligible_non_meaningful_turn(normalized_current):
+        turns.append(normalized_current)
+    return turns[-limit:]
+
+
+def _should_gate_non_meaningful_llm(turns: list[str]) -> bool:
+    """Gate on LLM only when we have a full 5-turn window."""
+    return len(turns) >= 5
 
 
 async def _voice_output_stream(text: str, target_lang: str):
@@ -1225,6 +1301,7 @@ async def stream_voice_message(
             processing_lang = "en"
             history_user_text = query
             moderation_recent_history = "\n\n".join(format_message_pairs(history, 2))
+            non_meaningful_recent_turns = _collect_recent_user_turns_for_non_meaningful(history, query, limit=5)
             mobile = normalize_phone_to_mobile(user_id)
             signed_in = _is_signed_in_session(user_info, user_id)
             farmer_info = ""
@@ -1255,6 +1332,17 @@ async def stream_voice_message(
             moderation_task.add_done_callback(
                 lambda _t: moderation_done_at.__setitem__("t", time.monotonic())
             )
+            non_meaningful_started_at = time.monotonic()
+            non_meaningful_done_at: dict = {"t": None}
+            non_meaningful_task = asyncio.create_task(
+                check_non_meaningful_streak(
+                    user_turns=non_meaningful_recent_turns,
+                    source_lang=requested_source_lang,
+                )
+            )
+            non_meaningful_task.add_done_callback(
+                lambda _t: non_meaningful_done_at.__setitem__("t", time.monotonic())
+            )
 
             if requested_source_lang not in {"en", "english"}:
                 _pretrans_provider_label = "vllm" if is_oss else "openai"
@@ -1267,6 +1355,7 @@ async def stream_voice_message(
                 )
                 if await _request_is_stale("before_query_pretranslation"):
                     moderation_task.cancel()
+                    non_meaningful_task.cancel()
                     return
                 try:
                     with trace.stage(
@@ -1363,6 +1452,9 @@ async def stream_voice_message(
             # real farmer call.
             _moderation_resolved = False
             _moderation_verdict: Optional[ModerationVerdict] = None
+            _non_meaningful_resolved = False
+            _non_meaningful_verdict: Optional[NonMeaningfulVerdict] = None
+            _should_gate_non_meaningful = _should_gate_non_meaningful_llm(non_meaningful_recent_turns)
 
             async def _resolve_moderation() -> Optional[ModerationVerdict]:
                 nonlocal _moderation_resolved, _moderation_verdict
@@ -1406,6 +1498,122 @@ async def stream_voice_message(
                     )
                 return _moderation_verdict
 
+            async def _resolve_non_meaningful() -> Optional[NonMeaningfulVerdict]:
+                nonlocal _non_meaningful_resolved, _non_meaningful_verdict
+                if _non_meaningful_resolved:
+                    return _non_meaningful_verdict
+                _non_meaningful_resolved = True
+                try:
+                    if not _should_gate_non_meaningful and not non_meaningful_task.done():
+                        non_meaningful_task.cancel()
+                        try:
+                            await non_meaningful_task
+                        except asyncio.CancelledError:
+                            pass
+                        _non_meaningful_verdict = NonMeaningfulVerdict(
+                            five_consecutive_non_meaningful=False,
+                            reason="gate skipped by heuristic",
+                            failed_open=False,
+                        )
+                        done_t = time.monotonic()
+                        trace.attach_stage_timing(
+                            "non_meaningful",
+                            (done_t - non_meaningful_started_at) * 1000.0,
+                            source_lang=requested_source_lang,
+                            turn_count=len(non_meaningful_recent_turns),
+                            gate_skipped=True,
+                        )
+                    elif non_meaningful_task.done():
+                        _non_meaningful_verdict = await non_meaningful_task
+                    else:
+                        done, pending = await asyncio.wait(
+                            {non_meaningful_task},
+                            timeout=max(0.0, settings.voice_non_meaningful_gate_timeout_seconds),
+                            return_when=asyncio.FIRST_COMPLETED,
+                        )
+                        if not done:
+                            for pending_task in pending:
+                                pending_task.cancel()
+                            # Reap the cancellation. asyncio.wait() does not await
+                            # the pending task for us, so without this the classifier
+                            # task lingers cancelled-but-unawaited on the normal agent
+                            # success path (which never calls the reaper), risking a
+                            # "Task was destroyed but it is pending" warning.
+                            for pending_task in pending:
+                                try:
+                                    await pending_task
+                                except asyncio.CancelledError:
+                                    pass
+                            _non_meaningful_verdict = NonMeaningfulVerdict(
+                                five_consecutive_non_meaningful=False,
+                                reason="gate timeout",
+                                failed_open=True,
+                            )
+                            logger.info(
+                                "Non-meaningful gate timed out; fail-open session_id=%s process_id=%s timeout=%.2fs",
+                                session_id,
+                                process_id,
+                                settings.voice_non_meaningful_gate_timeout_seconds,
+                            )
+                        else:
+                            _non_meaningful_verdict = await non_meaningful_task
+                    done_t = non_meaningful_done_at["t"] or time.monotonic()
+                    trace.attach_stage_timing(
+                        "non_meaningful",
+                        (done_t - non_meaningful_started_at) * 1000.0,
+                        source_lang=requested_source_lang,
+                        turn_count=len(non_meaningful_recent_turns),
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception as non_meaningful_error:
+                    done_t = non_meaningful_done_at["t"] or time.monotonic()
+                    trace.attach_stage_timing(
+                        "non_meaningful",
+                        (done_t - non_meaningful_started_at) * 1000.0,
+                        status="error",
+                        source_lang=requested_source_lang,
+                    )
+                    logger.error(
+                        "Non-meaningful task raised unexpectedly for session_id=%s error=%s",
+                        session_id,
+                        non_meaningful_error,
+                    )
+                    _non_meaningful_verdict = NonMeaningfulVerdict(
+                        five_consecutive_non_meaningful=False,
+                        reason=f"task error: {type(non_meaningful_error).__name__}",
+                        failed_open=True,
+                    )
+                trace.metadata["non_meaningful"] = {
+                    "available": _non_meaningful_verdict is not None,
+                    "five_consecutive_non_meaningful": bool(
+                        getattr(_non_meaningful_verdict, "five_consecutive_non_meaningful", False)
+                    ),
+                    "failed_open": bool(getattr(_non_meaningful_verdict, "failed_open", False)),
+                    "reason": getattr(_non_meaningful_verdict, "reason", ""),
+                    "turn_count": len(non_meaningful_recent_turns),
+                    "gate_skipped": not _should_gate_non_meaningful,
+                }
+                if _non_meaningful_verdict is not None:
+                    logger.info(
+                        "Non-meaningful verdict: five_consecutive_non_meaningful=%s failed_open=%s reason=%r session_id=%s process_id=%s",
+                        _non_meaningful_verdict.five_consecutive_non_meaningful,
+                        _non_meaningful_verdict.failed_open,
+                        _non_meaningful_verdict.reason,
+                        session_id,
+                        process_id,
+                    )
+                return _non_meaningful_verdict
+
+            async def _cancel_non_meaningful_task_if_pending() -> None:
+                if non_meaningful_task.done():
+                    return
+                non_meaningful_task.cancel()
+                try:
+                    await non_meaningful_task
+                except asyncio.CancelledError:
+                    pass
+
             async def _moderation_decline_stream(verdict: ModerationVerdict):
                 """Emit the canned decline and write history for a rejected query."""
                 trace.set_route("moderation_rejected")
@@ -1433,6 +1641,38 @@ async def stream_voice_message(
                 trace.set_outcome("moderation_rejected")
                 yield _emit(_prepare_voice_output(decline_for_caller, requested_target_lang))
 
+            async def _non_meaningful_hangup_stream(verdict: NonMeaningfulVerdict):
+                """Emit goodbye and persist history when five non-meaningful turns are detected."""
+                trace.set_route("non_meaningful_hangup")
+                if nudge_task and not nudge_task.done():
+                    nudge_task.cancel()
+                    trace.set_nudge(cancel_reason="non_meaningful_hangup")
+                    logger.info(
+                        "Nudge canceled (non-meaningful hangup); session_id=%s process_id=%s",
+                        session_id,
+                        process_id,
+                    )
+                    try:
+                        await nudge_task
+                    except asyncio.CancelledError:
+                        pass
+                goodbye = TELEPHONY_TERMINATE_CALL_TOKEN.get(
+                    requested_target_lang,
+                    TELEPHONY_TERMINATE_CALL_TOKEN["en"],
+                )
+                nm_req, nm_resp = _history_pair(history_user_text or query, TELEPHONY_TERMINATE_CALL_TOKEN["en"])
+                with trace.stage("history_write"):
+                    await update_message_history(session_id, [*history, nm_req, nm_resp])
+                trace.set_outcome("non_meaningful_hangup")
+                logger.info(
+                    "Non-meaningful hangup emitted; session_id=%s process_id=%s reason=%r",
+                    session_id,
+                    process_id,
+                    verdict.reason,
+                )
+                # Keep the exact telephony termination token.
+                yield _emit(goodbye)
+
             # ── Empty-pretranslation guard ───────────────────────────────
             # Only short-circuit when pretranslation produced no usable text
             # at all (i.e. both primary and fallback failed). True noise still
@@ -1447,9 +1687,11 @@ async def stream_voice_message(
                 _verdict = await _resolve_moderation()
                 if _verdict is not None and _verdict.rejected:
                     if await _request_is_stale("after_moderation_reject"):
+                        await _cancel_non_meaningful_task_if_pending()
                         return
                     async for _c in _moderation_decline_stream(_verdict):
                         yield _c
+                    await _cancel_non_meaningful_task_if_pending()
                     return
                 trace.set_route("pretranslation_empty")
                 logger.info(
@@ -1466,6 +1708,7 @@ async def stream_voice_message(
                     await update_message_history(session_id, [*history, low_conf_req, low_conf_rsp])
                 trace.set_outcome("pretranslation_empty")
                 yield _emit(_prepare_voice_output(low_conf_resp_for_caller, requested_target_lang))
+                await _cancel_non_meaningful_task_if_pending()
                 return
 
             if farmer_cache_task is not None:
@@ -1647,6 +1890,20 @@ async def stream_voice_message(
                     if _verdict is not None and _verdict.rejected:
                         if not await _request_is_stale("after_moderation_reject"):
                             async for _c in _moderation_decline_stream(_verdict):
+                                yield _c
+                        await _cancel_non_meaningful_task_if_pending()
+                        return
+
+                    # Non-meaningful gate — hang up after five consecutive
+                    # unclear/gibberish turns. Resolving here also reaps the
+                    # background classifier task on the normal agent path.
+                    _non_meaningful = await _resolve_non_meaningful()
+                    if (
+                        _non_meaningful is not None
+                        and _non_meaningful.five_consecutive_non_meaningful
+                    ):
+                        if not await _request_is_stale("after_non_meaningful_hangup"):
+                            async for _c in _non_meaningful_hangup_stream(_non_meaningful):
                                 yield _c
                         return
 
