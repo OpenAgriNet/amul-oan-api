@@ -56,6 +56,7 @@ from app.services.stt_signals import (
 )
 from app.services.non_meaningful import NonMeaningfulVerdict, check_non_meaningful_streak
 from app.services.moderation import ModerationVerdict, check_moderation
+from app.services.fallback import execute_with_fallback, stream_with_fallback, with_first_token_deadline
 from app.services.translation import (
     INDIAN_LANGUAGES,
     OPENAI_PRETRANSLATION_MODEL,
@@ -1357,65 +1358,50 @@ async def stream_voice_message(
                     moderation_task.cancel()
                     non_meaningful_task.cancel()
                     return
-                try:
-                    with trace.stage(
-                        "pretranslation",
-                        as_type="generation",
-                        input=trace.metadata.get("query"),
-                        metadata={
-                            "provider": _pretrans_provider_label,
-                            "source_lang": requested_source_lang,
-                            "pipeline_variant": pipeline_variant,
-                        },
-                        model=_pretrans_model,
-                    ):
-                        if is_oss:
-                            processing_query = await translate_to_english_with_oss_vllm(
-                                text=query,
-                                source_lang=requested_source_lang,
-                            )
-                        else:
-                            processing_query = await translate_to_english_with_gpt5_mini(
-                                text=query,
-                                source_lang=requested_source_lang,
-                            )
-                    trace.set_pretranslation(
-                        text=processing_query,
-                        provider=_pretrans_provider_label,
-                        fallback_used=False,
-                    )
-                    history_user_text = processing_query or _canonical_history_user_text("low_confidence")
-                except Exception as e:
-                    logger.error(
-                        "OpenAI pretranslation failed for session_id=%s source_lang=%s model=%s error=%s",
-                        session_id,
-                        requested_source_lang,
-                        OPENAI_PRETRANSLATION_MODEL,
-                        e,
-                    )
+                if settings.fallback_enabled:
+                    # Standard OSS -> managed fallback. Drops the legacy TranslateGemma
+                    # stopgap (decision #7): TranslateGemma is also self-hosted vLLM, so
+                    # it shared a failure domain with the OSS pretranslation it backed up.
+                    # The managed tier is the OpenAI pretranslation (translate_to_english_with_gpt5_mini),
+                    # which was the pre-OSS primary.
                     try:
-                        logger.info("Falling back to TranslateGemma pretranslation for session_id=%s", session_id)
                         with trace.stage(
-                            "pretranslation_fallback",
+                            "pretranslation",
                             as_type="generation",
                             input=trace.metadata.get("query"),
-                            metadata={"provider": "translategemma", "source_lang": requested_source_lang},
+                            metadata={
+                                "provider": _pretrans_provider_label,
+                                "source_lang": requested_source_lang,
+                                "pipeline_variant": pipeline_variant,
+                            },
+                            model=_pretrans_model,
                         ):
-                            processing_query = await translate_to_english_with_structured_fallback(
-                                text=query,
-                                source_lang=requested_source_lang,
+                            processing_query = await execute_with_fallback(
+                                pipeline="pretranslation",
+                                session_id=session_id,
+                                variant=pipeline_variant,
+                                run=lambda a: (
+                                    translate_to_english_with_oss_vllm(
+                                        text=query, source_lang=requested_source_lang
+                                    )
+                                    if a.kind == "oss"
+                                    else translate_to_english_with_gpt5_mini(
+                                        text=query, source_lang=requested_source_lang
+                                    )
+                                ),
                             )
                         trace.set_pretranslation(
                             text=processing_query,
-                            provider="translategemma",
-                            fallback_used=True,
+                            provider=_pretrans_provider_label,
+                            fallback_used=False,
                         )
                         history_user_text = processing_query or _canonical_history_user_text("low_confidence")
-                    except Exception as fallback_error:
+                    except Exception as e:
                         logger.error(
-                            "TranslateGemma pretranslation fallback failed for session_id=%s error=%s",
+                            "pretranslation failed (all tiers) for session_id=%s source_lang=%s error=%s",
                             session_id,
-                            fallback_error,
+                            requested_source_lang,
+                            e,
                         )
                         processing_query = ""
                         trace.set_pretranslation(
@@ -1424,6 +1410,74 @@ async def stream_voice_message(
                             fallback_used=True,
                         )
                         history_user_text = _canonical_history_user_text("pretranslation_failed")
+                else:
+                    try:
+                        with trace.stage(
+                            "pretranslation",
+                            as_type="generation",
+                            input=trace.metadata.get("query"),
+                            metadata={
+                                "provider": _pretrans_provider_label,
+                                "source_lang": requested_source_lang,
+                                "pipeline_variant": pipeline_variant,
+                            },
+                            model=_pretrans_model,
+                        ):
+                            if is_oss:
+                                processing_query = await translate_to_english_with_oss_vllm(
+                                    text=query,
+                                    source_lang=requested_source_lang,
+                                )
+                            else:
+                                processing_query = await translate_to_english_with_gpt5_mini(
+                                    text=query,
+                                    source_lang=requested_source_lang,
+                                )
+                        trace.set_pretranslation(
+                            text=processing_query,
+                            provider=_pretrans_provider_label,
+                            fallback_used=False,
+                        )
+                        history_user_text = processing_query or _canonical_history_user_text("low_confidence")
+                    except Exception as e:
+                        logger.error(
+                            "OpenAI pretranslation failed for session_id=%s source_lang=%s model=%s error=%s",
+                            session_id,
+                            requested_source_lang,
+                            OPENAI_PRETRANSLATION_MODEL,
+                            e,
+                        )
+                        try:
+                            logger.info("Falling back to TranslateGemma pretranslation for session_id=%s", session_id)
+                            with trace.stage(
+                                "pretranslation_fallback",
+                                as_type="generation",
+                                input=trace.metadata.get("query"),
+                                metadata={"provider": "translategemma", "source_lang": requested_source_lang},
+                            ):
+                                processing_query = await translate_to_english_with_structured_fallback(
+                                    text=query,
+                                    source_lang=requested_source_lang,
+                                )
+                            trace.set_pretranslation(
+                                text=processing_query,
+                                provider="translategemma",
+                                fallback_used=True,
+                            )
+                            history_user_text = processing_query or _canonical_history_user_text("low_confidence")
+                        except Exception as fallback_error:
+                            logger.error(
+                                "TranslateGemma pretranslation fallback failed for session_id=%s error=%s",
+                                session_id,
+                                fallback_error,
+                            )
+                            processing_query = ""
+                            trace.set_pretranslation(
+                                text=processing_query,
+                                provider="failed",
+                                fallback_used=True,
+                            )
+                            history_user_text = _canonical_history_user_text("pretranslation_failed")
 
             else:
                 history_user_text = query
@@ -1826,87 +1880,53 @@ async def stream_voice_message(
                 # translation overlap instead of running strictly back-to-back.
                 agent_started_at = time.monotonic()
                 _agent_output = ""
-                async with active_agent.run_stream(
-                    user_prompt=user_message,
-                    message_history=model_input_history,
-                    deps=deps,
-                    usage_limits=usage_limits,
-                    model=request_model,
-                ) as response_stream:
-                    # debounce_by=0 disables pydantic-ai's default 100ms token
-                    # debounce so the first agent delta reaches the translation
-                    # stage immediately (every ms counts for phone TTFT). Our own
-                    # sentence batching downstream re-aggregates the smaller chunks.
-                    stream_iter = response_stream.stream_text(delta=True, debounce_by=0)
-                    first_text_chunk_received = False
-                    sentence_buffer = ""
-                    translation_batch: list[str] = []
-                    batch_word_count = 0
-                    async def _yield_translated_text(text_to_translate: str) -> AsyncGenerator[str, None]:
-                        if not text_to_translate:
-                            return
-                        text_to_translate = _guard_identity_drift(text_to_translate)
-                        try:
-                            with trace.stage(
-                                "output_translation",
-                                as_type="generation",
-                                input={"chars": len(text_to_translate)},
-                                metadata={"target_lang": requested_target_lang},
-                            ):
-                                async for chunk in _voice_output_stream(
-                                    text_to_translate,
-                                    requested_target_lang,
-                                ):
-                                    if await _request_is_stale("during_output_translation"):
-                                        return
-                                    cleaned = (
-                                        _prepare_voice_output(chunk, requested_target_lang)
-                                        if isinstance(chunk, str) and chunk
-                                        else chunk
-                                    )
-                                    if isinstance(cleaned, str) and cleaned.strip():
-                                        trace.mark("first_translation_chunk_ms")
-                                    yield cleaned
-                        except Exception as e:
-                            trace.increment("output_translation_errors")
-                            logger.error(
-                                "Translation pipeline output translation failed for session_id=%s error=%s",
-                                session_id,
-                                e,
-                            )
-                            trouble = TRANSLATION_TROUBLE_MESSAGE.get(
+                first_text_chunk_received = False
+                sentence_buffer = ""
+                translation_batch: list[str] = []
+                batch_word_count = 0
+                async def _yield_translated_text(text_to_translate: str) -> AsyncGenerator[str, None]:
+                    if not text_to_translate:
+                        return
+                    text_to_translate = _guard_identity_drift(text_to_translate)
+                    try:
+                        with trace.stage(
+                            "output_translation",
+                            as_type="generation",
+                            input={"chars": len(text_to_translate)},
+                            metadata={"target_lang": requested_target_lang},
+                        ):
+                            async for chunk in _voice_output_stream(
+                                text_to_translate,
                                 requested_target_lang,
-                                TRANSLATION_TROUBLE_MESSAGE["en"],
-                            )
-                            yield trouble
+                            ):
+                                if await _request_is_stale("during_output_translation"):
+                                    return
+                                cleaned = (
+                                    _prepare_voice_output(chunk, requested_target_lang)
+                                    if isinstance(chunk, str) and chunk
+                                    else chunk
+                                )
+                                if isinstance(cleaned, str) and cleaned.strip():
+                                    trace.mark("first_translation_chunk_ms")
+                                yield cleaned
+                    except Exception as e:
+                        trace.increment("output_translation_errors")
+                        logger.error(
+                            "Translation pipeline output translation failed for session_id=%s error=%s",
+                            session_id,
+                            e,
+                        )
+                        trouble = TRANSLATION_TROUBLE_MESSAGE.get(
+                            requested_target_lang,
+                            TRANSLATION_TROUBLE_MESSAGE["en"],
+                        )
+                        yield trouble
 
-                    # Deferred moderation gate: resolve the concurrently-running
-                    # verdict now, before emitting ANY caller-facing chunk. The
-                    # agent has already done its prefill/tool calls (booking tools
-                    # self-gated on this verdict); if the query was rejected we
-                    # decline here and the agent's streamed output is discarded,
-                    # never reaching the caller.
-                    _verdict = await _resolve_moderation()
-                    if _verdict is not None and _verdict.rejected:
-                        if not await _request_is_stale("after_moderation_reject"):
-                            async for _c in _moderation_decline_stream(_verdict):
-                                yield _c
-                        await _cancel_non_meaningful_task_if_pending()
-                        return
 
-                    # Non-meaningful gate — hang up after five consecutive
-                    # unclear/gibberish turns. Resolving here also reaps the
-                    # background classifier task on the normal agent path.
-                    _non_meaningful = await _resolve_non_meaningful()
-                    if (
-                        _non_meaningful is not None
-                        and _non_meaningful.five_consecutive_non_meaningful
-                    ):
-                        if not await _request_is_stale("after_non_meaningful_hangup"):
-                            async for _c in _non_meaningful_hangup_stream(_non_meaningful):
-                                yield _c
-                        return
-
+                # Token consumer (nudge / staleness / batch-translation) — shared by both
+                # the fallback and legacy source paths so the proven loop isn't duplicated.
+                async def _consume_agent_text(stream_iter):
+                    nonlocal _agent_output, first_text_chunk_received, sentence_buffer, translation_batch, batch_word_count
                     try:
                         async for chunk in stream_iter:
                             if await _request_is_stale("during_agent_stream"):
@@ -2079,23 +2099,166 @@ async def stream_voice_message(
                             except asyncio.CancelledError:
                                 pass
 
-                    logger.info(f"Streaming complete for session {session_id}")
-                    _agent_output = _agent_output.strip()
-                    new_messages = response_stream.new_messages()
-                    trace.attach_stage_timing(
-                        "agent",
-                        (time.monotonic() - agent_started_at) * 1000.0,
-                        signed_in=bool(signed_in and mobile),
-                        request_limit=usage_limits.request_limit,
-                        pipeline_variant=pipeline_variant,
-                        model=request_model_name,
-                        provider=request_provider,
-                    )
-                    trace.set_agent(
-                        signed_in=bool(signed_in and mobile),
-                        output=_agent_output,
-                        new_messages=new_messages,
-                    )
+
+                if settings.fallback_enabled:
+                    # OSS -> managed first-token commit. A pre-first-token OSS failure
+                    # silently swaps to managed; a post-first-token failure can't swap
+                    # (caller already heard audio) -> canned line. The agent stream is
+                    # driven from a single task (see below) for anyio task-affinity.
+                    _fb_holder: dict = {}
+
+                    async def _raw_stream(attempt):
+                        async with active_agent.run_stream(
+                            user_prompt=user_message,
+                            message_history=model_input_history,
+                            deps=deps,
+                            usage_limits=usage_limits,
+                            model=attempt.model,
+                        ) as rs:
+                            async for _c in rs.stream_text(delta=True, debounce_by=0):
+                                yield _c
+                            _fb_holder["new_messages"] = rs.new_messages()
+
+                    async def _make_stream(attempt):
+                        # Bound time-to-first-token (attempt.timeout) so a silent OSS
+                        # hang swaps to managed before the caller hears anything; the
+                        # deadline disarms after the first token, so a long mid-stream
+                        # gap (tool round-trip) keeps the model's 600s read-timeout.
+                        async for _c in with_first_token_deadline(attempt, _raw_stream(attempt)):
+                            yield _c
+
+                    _src = stream_with_fallback(
+                        pipeline="chat",
+                        session_id=session_id,
+                        variant=pipeline_variant,
+                        make_stream=_make_stream,
+                    ).__aiter__()
+
+                    # Pull the first token in THIS task — pydantic-ai's anyio stream
+                    # must be advanced from a single task (a separate create_task would
+                    # cross task boundaries and break its cancel scope). Parallelism is
+                    # preserved because the moderation check is already running on its
+                    # own background task (moderation_task), overlapping the agent.
+                    _NO_FIRST = object()
+                    _first_chunk = _NO_FIRST
+                    _stream_error = None
+                    try:
+                        _first_chunk = await _src.__anext__()
+                    except StopAsyncIteration:
+                        _first_chunk = _NO_FIRST  # empty stream (no tokens), not an error
+                    except Exception as _e:  # pre-first-token: OSS + managed both failed
+                        _stream_error = _e
+
+                    # Moderation gate — resolve before emitting anything to the caller.
+                    _verdict = await _resolve_moderation()
+                    if _verdict is not None and _verdict.rejected:
+                        try:
+                            await _src.aclose()
+                        except Exception:
+                            pass
+                        if not await _request_is_stale("after_moderation_reject"):
+                            async for _c in _moderation_decline_stream(_verdict):
+                                yield _c
+                        await _cancel_non_meaningful_task_if_pending()
+                        return
+
+                    # Non-meaningful gate — hang up after five consecutive
+                    # unclear/gibberish turns. Resolving here also reaps the
+                    # background classifier task on the normal agent path.
+                    _non_meaningful = await _resolve_non_meaningful()
+                    if (
+                        _non_meaningful is not None
+                        and _non_meaningful.five_consecutive_non_meaningful
+                    ):
+                        try:
+                            await _src.aclose()
+                        except Exception:
+                            pass
+                        if not await _request_is_stale("after_non_meaningful_hangup"):
+                            async for _c in _non_meaningful_hangup_stream(_non_meaningful):
+                                yield _c
+                        return
+
+                    if _stream_error is not None:
+                        logger.error(
+                            "Voice agent stream failed before first token; session_id=%s process_id=%s error=%s",
+                            session_id, process_id, _stream_error,
+                        )
+                        if not await _request_is_stale("after_stream_error"):
+                            _trouble = TRANSLATION_TROUBLE_MESSAGE.get(
+                                requested_target_lang, TRANSLATION_TROUBLE_MESSAGE["en"],
+                            )
+                            yield _emit(_trouble)
+                        new_messages = _fb_holder.get("new_messages", [])
+                    else:
+                        async def _committed_stream():
+                            if _first_chunk is not _NO_FIRST:
+                                yield _first_chunk
+                            async for _c in _src:
+                                yield _c
+
+                        try:
+                            async for _out in _consume_agent_text(_committed_stream()):
+                                yield _out
+                        except Exception as _post_err:
+                            logger.error(
+                                "Voice agent stream failed after first token; session_id=%s process_id=%s error=%s",
+                                session_id, process_id, _post_err,
+                            )
+                            if not await _request_is_stale("after_stream_error"):
+                                _trouble = TRANSLATION_TROUBLE_MESSAGE.get(
+                                    requested_target_lang, TRANSLATION_TROUBLE_MESSAGE["en"],
+                                )
+                                yield _emit(_trouble)
+                        _agent_output = _agent_output.strip()
+                        new_messages = _fb_holder.get("new_messages", [])
+                else:
+                    async with active_agent.run_stream(
+                        user_prompt=user_message,
+                        message_history=model_input_history,
+                        deps=deps,
+                        usage_limits=usage_limits,
+                        model=request_model,
+                    ) as response_stream:
+                        stream_iter = response_stream.stream_text(delta=True, debounce_by=0)
+                        _verdict = await _resolve_moderation()
+                        if _verdict is not None and _verdict.rejected:
+                            if not await _request_is_stale("after_moderation_reject"):
+                                async for _c in _moderation_decline_stream(_verdict):
+                                    yield _c
+                            await _cancel_non_meaningful_task_if_pending()
+                            return
+                        # Non-meaningful gate — hang up after five consecutive
+                        # unclear/gibberish turns. Resolving here also reaps the
+                        # background classifier task on the normal agent path.
+                        _non_meaningful = await _resolve_non_meaningful()
+                        if (
+                            _non_meaningful is not None
+                            and _non_meaningful.five_consecutive_non_meaningful
+                        ):
+                            if not await _request_is_stale("after_non_meaningful_hangup"):
+                                async for _c in _non_meaningful_hangup_stream(_non_meaningful):
+                                    yield _c
+                            return
+                        async for _out in _consume_agent_text(stream_iter):
+                            yield _out
+                        _agent_output = _agent_output.strip()
+                        new_messages = response_stream.new_messages()
+
+                trace.attach_stage_timing(
+                    "agent",
+                    (time.monotonic() - agent_started_at) * 1000.0,
+                    signed_in=bool(signed_in and mobile),
+                    request_limit=usage_limits.request_limit,
+                    pipeline_variant=pipeline_variant,
+                    model=request_model_name,
+                    provider=request_provider,
+                )
+                trace.set_agent(
+                    signed_in=bool(signed_in and mobile),
+                    output=_agent_output,
+                    new_messages=new_messages,
+                )
 
             # If the LLM called signal_conversation_state("conversation_closing"),
             # append the termination token so RAYA disconnects the call.
