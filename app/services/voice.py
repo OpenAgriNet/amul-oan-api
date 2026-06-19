@@ -71,7 +71,7 @@ from app.services.translation import (
 from app.services.voice_trace import VoiceTrace, create_voice_trace
 # NOTE: Removing telemetry for now.
 # from app.tasks.telemetry import send_telemetry
-from agents.deps import FarmerContext
+from agents.deps import FarmerAccount, FarmerContext
 from agents.models import (
     LLM_MODEL_NAME,
     OSS_LLM_MODEL_NAME,
@@ -788,6 +788,42 @@ def _collect_farmer_unions(envelope: Optional[FarmerDataEnvelope]) -> list[str]:
     return unions
 
 
+def _collect_farmer_accounts(envelope: Optional[FarmerDataEnvelope]) -> list[FarmerAccount]:
+    """Extract every (union, society, farmer) account on the caller's mobile.
+
+    A mobile can map to multiple PashuGPT accounts (e.g. a cow account and a
+    buffalo account). The milk-collection tool fans out over all of these so
+    a farmer's data is never missed because the agent picked one account.
+    Deduplicated on (union_code, society_code, farmer_code).
+    """
+    if envelope is None:
+        return []
+
+    seen: set[tuple] = set()
+    accounts: list[FarmerAccount] = []
+    for farmer in envelope.farmers:
+        record = farmer.model_dump()
+        union_code = record.get("unionCode") or record.get("union_code")
+        society_code = record.get("societyCode") or record.get("society_code")
+        farmer_code = record.get("farmerCode") or record.get("farmer_code")
+        if not (union_code and society_code and farmer_code):
+            continue
+        key = (str(union_code), str(society_code), str(farmer_code))
+        if key in seen:
+            continue
+        seen.add(key)
+        accounts.append(
+            FarmerAccount(
+                union_code=str(union_code),
+                society_code=str(society_code),
+                farmer_code=str(farmer_code),
+                farmer_name=record.get("farmerName") or record.get("farmer_name"),
+                society_name=record.get("societyName") or record.get("society_name"),
+            )
+        )
+    return accounts
+
+
 async def _build_union_scheme_summary(farmer_unions: list[str]) -> str:
     scheme_unions = [union_name for union_name in farmer_unions if union_name in SUPPORTED_SCHEME_CONTEXT_UNIONS]
     if not scheme_unions:
@@ -1307,6 +1343,7 @@ async def stream_voice_message(
             signed_in = _is_signed_in_session(user_info, user_id)
             farmer_info = ""
             farmer_unions: list[str] = []
+            farmer_accounts: list[FarmerAccount] = []
             ai_technician_info = ""
             farmer_cache_task = (
                 asyncio.create_task(get_or_fetch_farmer_data(mobile))
@@ -1773,6 +1810,7 @@ async def stream_voice_message(
                         envelope = await farmer_cache_task
                     farmer_info = _build_compact_farmer_summary(envelope)
                     farmer_unions = _collect_farmer_unions(envelope)
+                    farmer_accounts = _collect_farmer_accounts(envelope)
                     with trace.stage("scheme_summary"):
                         scheme_summary = await _build_union_scheme_summary(farmer_unions)
                     if scheme_summary:
@@ -1818,6 +1856,7 @@ async def stream_voice_message(
                 ai_technician_info=ai_technician_info,
                 signed_in=signed_in,
                 mobile=mobile,
+                farmer_accounts=farmer_accounts,
             )
             # Let side-effecting tools (bookings) self-gate on the concurrent
             # moderation verdict before performing any write.

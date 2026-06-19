@@ -7,6 +7,7 @@ from agents.tools.ai_call import create_ai_call
 from agents.tools.health_call import create_health_call
 from agents.tools.milk_collection import (
     get_farmer_milk_collection_details,
+    get_farmer_milk_collection_details_voice,
     prepare_get_farmer_milk_collection_details,
 )
 from agents.tools.search import search_documents, search_videos
@@ -243,11 +244,10 @@ BASE_TOOLS = [
         require_parameter_descriptions=True,
     ),
     Tool(
-        _with_nudge_signal(get_farmer_milk_collection_details),
-        takes_ctx=False,
+        _with_nudge_signal(get_farmer_milk_collection_details_voice),
+        takes_ctx=True,
         docstring_format='auto',
         require_parameter_descriptions=True,
-        prepare=prepare_get_farmer_milk_collection_details,  # added for voice (tool 4)
     ),
     Tool(
         _with_nudge_signal(create_health_call),
