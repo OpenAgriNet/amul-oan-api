@@ -1328,6 +1328,8 @@ async def stream_voice_message(
                     text=query,
                     source_lang=requested_source_lang,
                     recent_history_text=moderation_recent_history,
+                    variant=pipeline_variant,
+                    session_id=session_id,
                 )
             )
             moderation_task.add_done_callback(
