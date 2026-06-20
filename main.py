@@ -11,6 +11,10 @@ from app.tasks.farmer_refresh_worker import start_farmer_refresh_worker, stop_fa
 
 load_dotenv()
 
+# Configure observability (Langfuse + pydantic-ai instrumentation) before router
+# imports that pull in agents, tools, and voice/chat pipelines.
+import app.observability  # noqa: F401, E402
+
 # Import all routers
 from app.routers import chat, transcribe, suggestions, tts, health, auth, user, telemetry, voice
 
