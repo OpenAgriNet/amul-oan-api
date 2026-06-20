@@ -279,6 +279,8 @@ GU_BODY_AGREEMENT_FIXES = [
     (r"પીઠ\s+ઠંડું\s+લાગે\s+છે", "પીઠ ઠંડી લાગે છે"),
 ]
 
+_GU_PLACEHOLDER_RE = r"(?:[-–—]{1,3}|[‐‑‒―])"
+
 
 def _normalize_gu_body_terms(text: str) -> str:
     """Normalize slang Gujarati body terms with contextual mapping (voice only)."""
@@ -386,6 +388,9 @@ def _post_normalize_gu_translation(
     for pat, repl in GU_POST_REPLACEMENTS:
         out = re.sub(pat, repl, out)
     if _is_voice_channel():
+        # Remove placeholder dashes without inventing a quantity (voice parity).
+        out = re.sub(rf"([:：]\s*){_GU_PLACEHOLDER_RE}(?=\s|$)", r"\1", out)
+
         # G2: deterministic gendered caller-address stripping before TTS (voice only).
         for pat, repl in GU_GENDER_NEUTRAL_POST:
             out = pat.sub(repl, out)
@@ -394,6 +399,20 @@ def _post_normalize_gu_translation(
         # voice-prod ordering.
         for pat, repl in GU_FEMININE_SELF_REFERENCE_REPLACEMENTS:
             out = pat.sub(repl, out)
+
+        # Voice-only scaffold collapse: "Label: value" line prefixes become spoken flow.
+        out = re.sub(r"(?m)^\s*[^\s:।.!?\n]{1,20}\s*:\s*", ", ", out)
+        out = re.sub(r"^\s*,\s*", "", out)
+
+        # Voice-only Unicode noise cleanup.
+        out = out.replace("\u00A0", " ")  # NBSP -> regular space
+        out = out.replace("\u200D", "")   # ZWJ -> removed
+        out = out.replace("\u200C", "")   # ZWNJ -> removed
+        out = re.sub(r"\s+([,।.!?])", r"\1", out)  # no space before punctuation
+
+        # Voice parity: apply final output normalization here with slash retention.
+        out = normalize_voice_output(out, target_lang, replace_slash=False)
+
     # collapse extra spaces introduced by removals
     out = re.sub(r"[ \t]{2,}", " ", out)
     out = re.sub(r"\n{3,}", "\n\n", out)
