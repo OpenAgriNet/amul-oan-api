@@ -6,6 +6,7 @@ from agents.models import LLM_MODEL, LLM_MODEL_NAME, LLM_PROVIDER
 from agents.tools import TOOLS
 from agents.tools.terms import get_ambiguity_hints_for_query
 from pydantic_ai.settings import ModelSettings
+from pydantic_ai.usage import UsageLimits
 from agents.deps import FarmerContext
 
 
@@ -20,6 +21,37 @@ def _agrinet_max_output_tokens() -> int:
     return 4000
 
 
+def _env_int(name: str) -> int | None:
+    """Parse an optional non-negative int env var; None when unset/blank/invalid."""
+    raw = os.getenv(name)
+    return int(raw) if raw and raw.isdigit() else None
+
+
+def agrinet_usage_limits() -> UsageLimits:
+    """Per-run cap on the agent's tool-calling loop.
+
+    pydantic-ai enforces these via the ``usage_limits=`` argument to
+    ``run``/``run_stream``/``iter`` — NOT via ``ModelSettings`` (a ``request_limit``
+    placed there is silently dropped, leaving only the framework default of 50
+    model requests / unlimited tool calls). Callers must pass this object.
+
+    Tunable via env (a turn that hits the cap raises ``UsageLimitExceeded``):
+    * ``AGENT_REQUEST_LIMIT``     — max model requests per run   (default 10; ``0`` = unlimited)
+    * ``AGENT_TOOL_CALLS_LIMIT``  — max tool calls per run       (default unset = unlimited; ``0`` = unlimited)
+    """
+    rl = _env_int("AGENT_REQUEST_LIMIT")
+    tcl = _env_int("AGENT_TOOL_CALLS_LIMIT")
+    return UsageLimits(
+        # Unset -> default 10; explicit 0 -> None (no cap).
+        request_limit=(10 if rl is None else (rl or None)),
+        tool_calls_limit=(tcl or None),
+    )
+
+
+# Built once at import (env is fixed for the process lifetime, mirroring max_tokens above).
+AGENT_USAGE_LIMITS = agrinet_usage_limits()
+
+
 agrinet_agent = Agent(
     model=LLM_MODEL,
     name="Amul AI Agent",
@@ -32,7 +64,6 @@ agrinet_agent = Agent(
     model_settings=ModelSettings(
         max_tokens=_agrinet_max_output_tokens(),
         parallel_tool_calls=True,
-        request_limit=10,
     )
 )
 
