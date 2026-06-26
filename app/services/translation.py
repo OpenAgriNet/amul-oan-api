@@ -548,6 +548,16 @@ def _get_langfuse():
         return None
 
 
+def _is_untranslatable_fragment(text: str) -> bool:
+    """True when there is nothing to translate — the fragment has no letters or
+    digits in any script (pure punctuation / markdown / symbols, e.g. ``**``).
+
+    TranslateGemma free-generates an unrelated canned paragraph when handed such a
+    degenerate fragment (a streaming chunk boundary can isolate ``**`` on its own),
+    so we must short-circuit and return it verbatim instead of calling the model."""
+    return not re.search(r"[^\W_]", text, flags=re.UNICODE)
+
+
 async def translate_text(
     text: str,
     source_lang: str,
@@ -559,6 +569,9 @@ async def translate_text(
 ) -> str:
     """Translate text using TranslateGemma."""
     if not text or not text.strip():
+        return text
+
+    if _is_untranslatable_fragment(text):
         return text
 
     if source_lang.lower() == target_lang.lower():
@@ -832,6 +845,10 @@ async def translate_text_stream_fast(
 ):
     """Stream translated text token by token (no artificial delay)."""
     if not text or not text.strip():
+        return
+
+    if _is_untranslatable_fragment(text):
+        yield text
         return
 
     if source_lang.lower() == target_lang.lower():
