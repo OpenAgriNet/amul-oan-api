@@ -11,6 +11,10 @@ from app.tasks.farmer_refresh_worker import start_farmer_refresh_worker, stop_fa
 
 load_dotenv()
 
+# Configure observability (Langfuse + pydantic-ai instrumentation) before router
+# imports that pull in agents, tools, and voice/chat pipelines.
+import app.observability  # noqa: F401, E402
+
 # Import all routers
 from app.routers import chat, transcribe, suggestions, tts, health, auth, user, telemetry, voice
 
@@ -22,6 +26,9 @@ async def lifespan(app: FastAPI):
     print(f"📍 Environment: {settings.environment}")
     print(f"🔧 Debug mode: {settings.debug}")
     print(f"🌐 CORS origins: {settings.allowed_origins}")
+    # Load prompt templates into memory (no disk I/O at request time)
+    from helpers.utils import load_prompt_templates
+    load_prompt_templates(settings.base_dir / "assets" / "prompts")
     await start_telemetry_worker()
     await start_scheme_scheduler()
     await start_farmer_refresh_worker()

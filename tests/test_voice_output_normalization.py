@@ -57,3 +57,43 @@ def test_digit_glyph_repair_leading_pa_before_digit():
 def test_standalone_pa_not_adjacent_to_digit_is_untouched():
     # A normal word starting with પ (not next to any digit) must not be altered.
     assert normalize_numbers_for_tts("પાણી") == "પાણી"
+
+
+def test_voice_strips_placeholder_dash_after_label():
+    out = _norm("લીલો ચારો: – કિ.ગ્રા.", "voice")
+    assert "–" not in out
+    assert ": " in out
+
+
+def test_chat_keeps_placeholder_dash_after_label():
+    out = _norm("લીલો ચારો: – કિ.ગ્રા.", "chat")
+    assert "–" in out
+
+
+def test_voice_collapses_label_scaffold_to_spoken_flow():
+    out = _norm("ચારો: 10 કિ.ગ્રા.\nદાણ: 2 કિ.ગ્રા.", "voice")
+    # Scaffold collapse removes label prefixes; normalize_voice_output then
+    # verbalizes digits/units for TTS (10 -> દસ, 2 -> બે, કિ.ગ્રા. -> કિલોગ્રામ).
+    assert "\nદાણ:" not in out
+    assert "ચારો:" not in out
+    assert "દાણ:" not in out
+    assert out == "દસ કિલોગ્રામ, બે કિલોગ્રામ"
+
+
+def test_chat_keeps_label_scaffold_structure():
+    out = _norm("ચારો: 10 કિ.ગ્રા.\nદાણ: 2 કિ.ગ્રા.", "chat")
+    assert "\nદાણ:" in out
+
+
+def test_voice_removes_nbsp_and_zwj_noise():
+    noisy = "તમારી\u00A0ગાય\u200D સારું છે"
+    out = _norm(noisy, "voice")
+    assert "\u00A0" not in out
+    assert "\u200D" not in out
+
+
+def test_chat_leaves_nbsp_and_zwj_noise_unchanged():
+    noisy = "તમારી\u00A0ગાય\u200D સારું છે"
+    out = _norm(noisy, "chat")
+    assert "\u00A0" in out
+    assert "\u200D" in out
