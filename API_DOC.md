@@ -27,24 +27,30 @@ Handles chat sessions between a user and the AI assistant.
 - **Description**:
   - Initiates a chat session with the AI assistant. Uses the `agrinet_agent` to process the query and streams the response. When `use_translation_pipeline=true`, the query is translated to English, the agent responds in English, and the response is translated to `target_lang` before streaming.
 
-### 2. suggestions (GET)
-Handles suggestions for questions for the farmer to ask.
+### 2. Suggestions (GET)
+Returns follow-up questions the farmer can ask, generated in the background after a valid chat turn.
 
-- **URL**: `/api/suggestions/`
+- **URL**: `/api/suggest/`
 - **Method**: `GET`
+- **Authentication**: Required (JWT Bearer token)
 - **Query Parameters**:
-  - `session_id`: The unique identifier for the chat session.
-  - `target_lang`: The target language of the query. Defaults to `mr`. (Can use other languages as well for testing)
+  - `session_id`: The unique identifier for the chat session. (required)
+  - `target_lang`: Language for suggested questions. Defaults to `gu`. Supported for generation: English and Gujarati.
 
-- **Response**: 
-  - A `Response` object that contains the suggestions for questions for the farmer to ask.
-  - Each suggestion is a dictionary with the following keys:
-    - `question`: The question for the farmer to ask.
-    - `context`: The context of the question.
+- **Response**:
+  - JSON array of strings (3–5 suggested follow-up questions), e.g. `["Question 1?", "Question 2?"]`
+  - Returns `[]` if suggestions are not yet available (endpoint waits up to 8s while generation is pending)
 
-    NOTE: 
-      - Look at open-webui's Suggestions UI for reference.
-      - When clicked, the question and context should be combined using '{question} {context}' format.
+- **Generation pipeline** (background; does not affect chat stream):
+  1. Triggered after moderation passes on `GET /api/chat/`
+  2. Runs after chat streaming completes (FastAPI background task)
+  3. Builds input from conversation history; optionally includes distilled `search_documents` evidence when `SUGGESTIONS_HYBRID_ENABLED=true` and retrieval quality gate passes
+  4. Suggestions agent (tool-free LLM) generates follow-ups; result cached for 30 minutes
+
+- **Configuration**:
+  - `SUGGESTIONS_HYBRID_ENABLED` (default `false`): enable hybrid input (conversation + retrieval evidence). When disabled, suggestions use conversation-only input.
+
+- **See also**: [Chat Endpoint FE Integration – Suggestions Pipeline](docs/CHAT_ENDPOINT_FE_INTEGRATION.md#suggestions-pipeline)
 
 
 ### 3. transcribe (POST)
