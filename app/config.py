@@ -66,6 +66,10 @@ class Settings(BaseSettings):
     # Cache Configuration
     default_cache_ttl: int = 60 * 60 * 24  # 24 hours
     suggestions_cache_ttl: int = 60 * 30    # 30 minutes
+    # Suggestions rollout flag: when false, suggestions stay conversation-only.
+    suggestions_hybrid_enabled: bool = os.getenv("SUGGESTIONS_HYBRID_ENABLED", "false").strip().lower() in {
+        "1", "true", "yes", "on"
+    }
     farmer_animal_api_cache_ttl: int = 60 * 60 * 24 * 17  # 17 days
 
     # Logging Configuration
