@@ -274,4 +274,106 @@ await streamChat({
 
 - Use the same `session_id` for a conversation to keep context.
 - If omitted, the backend generates a UUID; capture it from the first response if you need it for suggestions or history.
-- Suggestions: `GET /api/suggestions/?session_id={session_id}&target_lang={target_lang}`
+
+---
+
+## Suggestions Pipeline
+
+Follow-up question suggestions are generated **in the background** after each valid chat turn. They do not block chat streaming.
+
+### Endpoint
+
+| Property | Value |
+|----------|-------|
+| **URL** | `GET /api/suggest/` |
+| **Auth** | Required (JWT Bearer token) |
+| **Response** | JSON array of question strings |
+
+### Query Parameters
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `session_id` | string | Yes | — | Same session ID used in chat |
+| `target_lang` | string | No | `gu` | Language for suggested questions (English or Gujarati) |
+
+### Response Format
+
+Returns a JSON array of 3–5 farmer follow-up questions, e.g.:
+
+```json
+[
+  "What signs show a cow is ready for breeding after calving?",
+  "How long should I wait before the first insemination?",
+  "What nutrition changes are needed during the waiting period?"
+]
+```
+
+On cache miss (suggestions not ready yet), the endpoint polls for up to **8 seconds** while generation is pending, then returns `[]` if still unavailable.
+
+### When Suggestions Are Generated
+
+Suggestions run only when moderation passes (`valid_agricultural`):
+
+1. User sends chat request → moderation runs synchronously.
+2. If valid, backend marks suggestions as `:pending`, clears stale cache, and queues `create_suggestions` as a FastAPI background task.
+3. Chat agent streams the response (unchanged behavior).
+4. After the stream completes, message history is persisted and current-turn `search_documents` evidence is distilled into a shadow cache payload.
+5. FastAPI runs the queued background task → suggestions agent generates follow-ups → result is written to cache.
+
+**Important:** Background tasks run after the streaming response finishes, so suggestions always have access to the completed turn (including tool returns).
+
+### Input Modes (Hybrid vs Conversation-Only)
+
+Controlled by `SUGGESTIONS_HYBRID_ENABLED` (default: `false`).
+
+| Flag | Mode | Input to suggestions agent |
+|------|------|----------------------------|
+| `false` | `conversation_only` | Last 5 user/assistant pairs |
+| `true` + retrieval gate passes | `hybrid` | Last 3 pairs + distilled retrieval evidence |
+| `true` + retrieval gate fails | `conversation_only` | Last 5 pairs (fallback) |
+
+When hybrid is enabled, retrieval evidence must pass a quality gate:
+
+- at least one `search_documents` return in the current turn
+- not an explicit no-result payload
+- at least 2 deduped snippets after distillation
+- minimum total evidence length
+- minimum lexical overlap between search query and snippets
+
+If the gate fails, suggestions fall back to conversation-only automatically.
+
+### Frontend Integration Notes
+
+- Poll `GET /api/suggest/` after chat stream completes (or retry briefly if you receive `[]`).
+- Use the same `session_id` and `target_lang` as the chat request.
+- When the user taps a suggestion, send it as the next chat `query`.
+- Suggestions are cached for 30 minutes per `(session_id, target_lang)`.
+
+### Example
+
+```javascript
+async function fetchSuggestions(sessionId, targetLang = 'en') {
+  const params = new URLSearchParams({
+    session_id: sessionId,
+    target_lang: targetLang,
+  });
+
+  const res = await fetch(`/api/suggest/?${params}`, {
+    headers: { Authorization: `Bearer ${getJwtToken()}` },
+  });
+
+  if (!res.ok) throw new Error(`Suggestions failed: ${res.status}`);
+  return res.json(); // string[]
+}
+```
+
+### Operational Logs (for debugging)
+
+| Log event | Meaning |
+|-----------|---------|
+| `suggestions_task_queued` | Background generation scheduled after moderation |
+| `chat_stream_complete` | Chat stream finished; history persisted |
+| `suggestions_shadow_evidence` | Retrieval evidence extracted for current turn |
+| `suggestions_task_started` | Background task began (includes `queue_delay_ms`) |
+| `suggestions_input_mode` | `mode=hybrid` or `conversation_only`, plus `retrieval_reason` |
+| `suggestions_cache_written` | Suggestions saved and ready to serve |
