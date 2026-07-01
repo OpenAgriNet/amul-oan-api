@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import re
 import uuid
@@ -10,7 +11,6 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from html import unescape
 from html.parser import HTMLParser
-from io import BytesIO
 from typing import Any
 from urllib.parse import urljoin
 
@@ -26,6 +26,9 @@ SCHEME_CACHE_NAMESPACE = "milk_producer_schemes"
 SCHEME_LOCK_NAMESPACE = "milk_producer_schemes_locks"
 SCHEME_LOCK_TTL_SECONDS = 60 * 15
 HTTP_TIMEOUT_SECONDS = 30.0
+SCHEME_PDF_MAX_RENDER_PAGES = 30
+SCHEME_OCR_PROMPT_TYPE = "ocr_layout"
+SCHEME_OCR_MAX_OUTPUT_TOKENS = 12384
 _redis_client = None
 
 
@@ -122,13 +125,13 @@ def build_scheme_lock_key(source_key: str) -> str:
     return _build_prefixed_key(SCHEME_LOCK_NAMESPACE, source_key)
 
 
-def _get_pdf_reader_cls():
+def _get_pymupdf_module():
     try:
-        from pypdf import PdfReader
+        import fitz
     except ModuleNotFoundError as exc:
-        raise SchemeDependencyError("pypdf is not installed") from exc
+        raise SchemeDependencyError("pymupdf is not installed") from exc
 
-    return PdfReader
+    return fitz
 
 
 def get_scheme_sources() -> tuple[SchemeSource, ...]:
@@ -500,31 +503,122 @@ def parse_sarhad_scheme_sections(html: str) -> list[dict[str, str]]:
     return records
 
 
-def extract_text_from_pdf_bytes(pdf_bytes: bytes) -> str:
-    logger.info("Extracting text from scheme PDF byte_count=%s", len(pdf_bytes))
+def render_pdf_to_base64_images(pdf_bytes: bytes, dpi: int, max_pages: int = SCHEME_PDF_MAX_RENDER_PAGES) -> list[str]:
+    logger.info(
+        "Rendering scheme PDF pages to images byte_count=%s dpi=%s max_pages=%s",
+        len(pdf_bytes),
+        dpi,
+        max_pages,
+    )
+    if dpi <= 0:
+        raise SchemeParseError("scheme_pdf_render_dpi must be positive")
+    if max_pages <= 0:
+        raise SchemeParseError("max_pages must be positive")
+
     try:
-        reader_cls = _get_pdf_reader_cls()
-        reader = reader_cls(BytesIO(pdf_bytes))
+        fitz = _get_pymupdf_module()
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     except SchemeDependencyError:
         raise
     except Exception as exc:
-        logger.exception("Failed to initialize PDF reader for scheme PDF")
-        raise SchemeParseError("failed to initialize PDF reader") from exc
+        logger.exception("Failed to initialize PDF renderer for scheme PDF")
+        raise SchemeParseError("failed to initialize PDF renderer") from exc
+
+    rendered_images: list[str] = []
+    zoom = dpi / 72.0
+    matrix = fitz.Matrix(zoom, zoom)
+    try:
+        page_limit = min(doc.page_count, max_pages)
+        for index in range(page_limit):
+            page = doc.load_page(index)
+            pixmap = page.get_pixmap(matrix=matrix, alpha=False)
+            encoded_image = base64.b64encode(pixmap.tobytes("png")).decode("ascii")
+            rendered_images.append(encoded_image)
+            logger.info("Rendered scheme PDF page image page_index=%s image_bytes=%s", index, len(encoded_image))
+        if doc.page_count > max_pages:
+            logger.warning(
+                "Truncated scheme PDF pages for OCR total_pages=%s max_pages=%s",
+                doc.page_count,
+                max_pages,
+            )
+    except Exception as exc:
+        logger.exception("Failed while rendering scheme PDF pages")
+        raise SchemeParseError("failed while rendering PDF pages") from exc
+    finally:
+        doc.close()
+
+    if not rendered_images:
+        raise SchemeParseError("no pages rendered from PDF")
+    return rendered_images
+
+
+async def extract_text_from_pdf_bytes(client: httpx.AsyncClient, pdf_bytes: bytes) -> str:
+    logger.info("Extracting text from scheme PDF via OCR byte_count=%s", len(pdf_bytes))
+    ocr_endpoint = (settings.scheme_ocr_endpoint_url or "").strip().rstrip("/")
+    if not ocr_endpoint:
+        raise SchemeDependencyError("SCHEME_OCR_ENDPOINT_URL is not configured")
+
+    images = render_pdf_to_base64_images(
+        pdf_bytes,
+        dpi=settings.scheme_pdf_render_dpi,
+        max_pages=SCHEME_PDF_MAX_RENDER_PAGES,
+    )
+    payload = {
+        "images": images,
+        "prompt_type": SCHEME_OCR_PROMPT_TYPE,
+        "max_output_tokens": SCHEME_OCR_MAX_OUTPUT_TOKENS,
+    }
+
+    try:
+        response = await client.post(
+            f"{ocr_endpoint}/v1/ocr/pages",
+            json=payload,
+            timeout=settings.scheme_ocr_timeout_seconds,
+        )
+        response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        logger.warning(
+            "Scheme OCR request returned non-success status endpoint=%s status_code=%s",
+            ocr_endpoint,
+            exc.response.status_code,
+        )
+        raise SchemeParseError("scheme OCR returned non-success status") from exc
+    except httpx.RequestError as exc:
+        logger.warning("Scheme OCR request failed endpoint=%s error=%s", ocr_endpoint, exc)
+        raise SchemeParseError("scheme OCR request failed") from exc
+    except Exception as exc:
+        logger.exception("Unexpected error while calling scheme OCR endpoint=%s", ocr_endpoint)
+        raise SchemeParseError("unexpected scheme OCR failure") from exc
+
+    try:
+        parsed = response.json()
+    except ValueError as exc:
+        logger.warning("Scheme OCR response was not valid JSON endpoint=%s", ocr_endpoint)
+        raise SchemeParseError("scheme OCR response was not valid JSON") from exc
+
+    pages = parsed.get("pages")
+    if not isinstance(pages, list):
+        raise SchemeParseError("scheme OCR response missing pages list")
 
     page_texts: list[str] = []
-    try:
-        for index, page in enumerate(reader.pages):
-            page_text = page.extract_text() or ""
-            normalized = _normalize_text(page_text)
-            logger.info("Extracted scheme PDF page_text page_index=%s text_length=%s", index, len(normalized))
-            if normalized:
-                page_texts.append(normalized)
-    except Exception as exc:
-        logger.exception("Failed during scheme PDF text extraction")
-        raise SchemeParseError("failed during PDF text extraction") from exc
+    for index, page_result in enumerate(pages):
+        if not isinstance(page_result, dict):
+            logger.warning("Skipping malformed OCR page result page_index=%s type=%s", index, type(page_result).__name__)
+            continue
+        page_markdown = _normalize_text(str(page_result.get("markdown") or ""))
+        page_error = bool(page_result.get("error"))
+        logger.info(
+            "Received scheme OCR page result page_index=%s page_error=%s text_length=%s",
+            index,
+            page_error,
+            len(page_markdown),
+        )
+        if page_error or not page_markdown:
+            continue
+        page_texts.append(page_markdown)
 
     combined_text = "\n\n".join(page_texts)
-    logger.info("Completed scheme PDF text extraction page_count=%s content_length=%s", len(page_texts), len(combined_text))
+    logger.info("Completed scheme OCR extraction page_count=%s content_length=%s", len(page_texts), len(combined_text))
     return combined_text
 
 
@@ -538,7 +632,7 @@ async def _build_banas_record(
     logger.info("Building Banas scheme record title=%s url=%s", scheme_title, scheme_url)
     try:
         pdf_bytes = await fetch_bytes(client, scheme_url)
-        content = extract_text_from_pdf_bytes(pdf_bytes)
+        content = await extract_text_from_pdf_bytes(client, pdf_bytes)
     except SchemeDependencyError:
         raise
     except SchemeFetchError as exc:
