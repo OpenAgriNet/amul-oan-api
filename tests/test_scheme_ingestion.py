@@ -171,6 +171,27 @@ def test_extract_text_from_pdf_bytes_raises_when_all_pages_fail(monkeypatch):
         asyncio.run(si.extract_text_from_pdf_bytes(_FakeClient(), b"pdf-bytes"))
 
 
+def test_extract_text_from_pdf_bytes_raises_when_ocr_returns_empty_pages(monkeypatch):
+    monkeypatch.setattr(si.settings, "scheme_ocr_endpoint_url", "http://ocr-host:8010")
+    monkeypatch.setattr(si.settings, "scheme_ocr_timeout_seconds", 45.0)
+    monkeypatch.setattr(si.settings, "scheme_pdf_render_dpi", 150)
+    monkeypatch.setattr(si, "render_pdf_to_base64_images", lambda *_args, **_kwargs: ["img-a", "img-b"])
+
+    class _FakeResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self):
+            return {"pages": []}
+
+    class _FakeClient:
+        async def post(self, url, json, timeout):
+            return _FakeResponse()
+
+    with pytest.raises(si.SchemeParseError, match="failed for all pages"):
+        asyncio.run(si.extract_text_from_pdf_bytes(_FakeClient(), b"pdf-bytes"))
+
+
 def test_build_banas_record_returns_none_on_parse_error(monkeypatch):
     async def fake_fetch_bytes(_client, _url):
         return b"pdf"

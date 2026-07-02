@@ -625,11 +625,13 @@ async def extract_text_from_pdf_bytes(client: httpx.AsyncClient, pdf_bytes: byte
             logger.warning("Scheme OCR response missing pages list endpoint=%s page_index=%s", ocr_endpoint, index)
             continue
         if not pages:
+            failed_pages += 1
             logger.warning("Scheme OCR response had empty pages list endpoint=%s page_index=%s", ocr_endpoint, index)
             continue
 
         page_result = pages[0]
         if not isinstance(page_result, dict):
+            failed_pages += 1
             logger.warning(
                 "Skipping malformed OCR page result page_index=%s type=%s",
                 index,
