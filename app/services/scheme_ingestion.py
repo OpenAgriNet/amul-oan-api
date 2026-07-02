@@ -24,7 +24,7 @@ logger = get_logger(__name__)
 
 SCHEME_CACHE_NAMESPACE = "milk_producer_schemes"
 SCHEME_LOCK_NAMESPACE = "milk_producer_schemes_locks"
-SCHEME_LOCK_TTL_SECONDS = 60 * 15
+SCHEME_LOCK_TTL_SECONDS = 60 * 60
 HTTP_TIMEOUT_SECONDS = 30.0
 SCHEME_PDF_MAX_RENDER_PAGES = 30
 SCHEME_OCR_PROMPT_TYPE = "ocr_layout"
