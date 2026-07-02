@@ -563,61 +563,91 @@ async def extract_text_from_pdf_bytes(client: httpx.AsyncClient, pdf_bytes: byte
         dpi=settings.scheme_pdf_render_dpi,
         max_pages=SCHEME_PDF_MAX_RENDER_PAGES,
     )
-    payload = {
-        "images": images,
-        "prompt_type": SCHEME_OCR_PROMPT_TYPE,
-        "max_output_tokens": SCHEME_OCR_MAX_OUTPUT_TOKENS,
-    }
-
-    try:
-        response = await client.post(
-            f"{ocr_endpoint}/v1/ocr/pages",
-            json=payload,
-            timeout=settings.scheme_ocr_timeout_seconds,
-        )
-        response.raise_for_status()
-    except httpx.HTTPStatusError as exc:
-        logger.warning(
-            "Scheme OCR request returned non-success status endpoint=%s status_code=%s",
-            ocr_endpoint,
-            exc.response.status_code,
-        )
-        raise SchemeParseError("scheme OCR returned non-success status") from exc
-    except httpx.RequestError as exc:
-        logger.warning("Scheme OCR request failed endpoint=%s error=%s", ocr_endpoint, exc)
-        raise SchemeParseError("scheme OCR request failed") from exc
-    except Exception as exc:
-        logger.exception("Unexpected error while calling scheme OCR endpoint=%s", ocr_endpoint)
-        raise SchemeParseError("unexpected scheme OCR failure") from exc
-
-    try:
-        parsed = response.json()
-    except ValueError as exc:
-        logger.warning("Scheme OCR response was not valid JSON endpoint=%s", ocr_endpoint)
-        raise SchemeParseError("scheme OCR response was not valid JSON") from exc
-
-    pages = parsed.get("pages")
-    if not isinstance(pages, list):
-        raise SchemeParseError("scheme OCR response missing pages list")
-
     page_texts: list[str] = []
-    for index, page_result in enumerate(pages):
-        if not isinstance(page_result, dict):
-            logger.warning("Skipping malformed OCR page result page_index=%s type=%s", index, type(page_result).__name__)
+    failed_pages = 0
+    for index, image in enumerate(images):
+        payload = {
+            "images": [image],
+            "prompt_type": SCHEME_OCR_PROMPT_TYPE,
+            "max_output_tokens": SCHEME_OCR_MAX_OUTPUT_TOKENS,
+        }
+
+        try:
+            response = await client.post(
+                f"{ocr_endpoint}/v1/ocr/pages",
+                json=payload,
+                timeout=settings.scheme_ocr_timeout_seconds,
+            )
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            failed_pages += 1
+            logger.warning(
+                "Scheme OCR request returned non-success status endpoint=%s page_index=%s status_code=%s",
+                ocr_endpoint,
+                index,
+                exc.response.status_code,
+            )
             continue
+        except httpx.RequestError as exc:
+            failed_pages += 1
+            logger.warning(
+                "Scheme OCR request failed endpoint=%s page_index=%s error_type=%s error_repr=%r",
+                ocr_endpoint,
+                index,
+                type(exc).__name__,
+                exc,
+            )
+            continue
+        except Exception as exc:
+            failed_pages += 1
+            logger.exception(
+                "Unexpected error while calling scheme OCR endpoint=%s page_index=%s",
+                ocr_endpoint,
+                index,
+            )
+            continue
+
+        try:
+            parsed = response.json()
+        except ValueError as exc:
+            failed_pages += 1
+            logger.warning(
+                "Scheme OCR response was not valid JSON endpoint=%s page_index=%s error_repr=%r",
+                ocr_endpoint,
+                index,
+                exc,
+            )
+            continue
+
+        pages = parsed.get("pages")
+        if not isinstance(pages, list):
+            failed_pages += 1
+            logger.warning("Scheme OCR response missing pages list endpoint=%s page_index=%s", ocr_endpoint, index)
+            continue
+        if not pages:
+            logger.warning("Scheme OCR response had empty pages list endpoint=%s page_index=%s", ocr_endpoint, index)
+            continue
+
+        page_result = pages[0]
+        if not isinstance(page_result, dict):
+            logger.warning(
+                "Skipping malformed OCR page result page_index=%s type=%s",
+                index,
+                type(page_result).__name__,
+            )
+            continue
+
         page_markdown = _normalize_text(str(page_result.get("markdown") or ""))
         page_error = bool(page_result.get("error"))
-        logger.info(
-            "Received scheme OCR page result page_index=%s page_error=%s text_length=%s",
-            index,
-            page_error,
-            len(page_markdown),
-        )
+        logger.info("Received scheme OCR page result page_index=%s page_error=%s text_length=%s", index, page_error, len(page_markdown))
         if page_error or not page_markdown:
+            failed_pages += 1
             continue
         page_texts.append(page_markdown)
 
     combined_text = "\n\n".join(page_texts)
+    if failed_pages == len(images):
+        raise SchemeParseError("scheme OCR failed for all pages")
     logger.info("Completed scheme OCR extraction page_count=%s content_length=%s", len(page_texts), len(combined_text))
     return combined_text
 
@@ -669,19 +699,22 @@ async def _ingest_banas_source(source: SchemeSource, client: httpx.AsyncClient) 
         logger.warning("No Banas scheme links parsed source=%s", source.cache_key)
         raise SchemeParseError("no Banas scheme links parsed")
     last_refreshed_at = _utcnow_iso()
-    tasks = [
-        _build_banas_record(
+    logger.info(
+        "Processing Banas PDFs sequentially source=%s record_count=%s",
+        source.cache_key,
+        len(link_records),
+    )
+    final_records: list[dict[str, Any]] = []
+    for record in link_records:
+        built_record = await _build_banas_record(
             client=client,
             source=source,
             scheme_title=record["scheme_title"],
             scheme_url=record["scheme_url"],
             last_refreshed_at=last_refreshed_at,
         )
-        for record in link_records
-    ]
-    logger.info("Dispatching Banas PDF fetch tasks source=%s task_count=%s", source.cache_key, len(tasks))
-    results = await asyncio.gather(*tasks)
-    final_records = [result for result in results if result]
+        if built_record:
+            final_records.append(built_record)
     logger.info("Completed Banas scheme ingestion source=%s record_count=%s", source.cache_key, len(final_records))
     return final_records
 
