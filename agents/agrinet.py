@@ -2,6 +2,7 @@ import os
 
 from pydantic_ai import Agent, RunContext
 from helpers.utils import get_prompt, get_today_date_str, get_today_datetime_str
+from app.config import settings
 from agents.models import LLM_MODEL, LLM_MODEL_NAME, LLM_PROVIDER
 from agents.tools import TOOLS
 from agents.tools.terms import get_ambiguity_hints_for_query
@@ -47,6 +48,7 @@ def get_agrinet_instructions(ctx: RunContext):
         'farmer_context': farmer_context if farmer_context else None,
         'ambiguity_hints': ambiguity_hints if ambiguity_hints else None,
         'response_max_chars': ctx.deps.get_response_max_chars(),
+        'loan_max_amount': f"{int(settings.loan_max_amount):,}",
     }
 
     if ctx.deps.use_translation_pipeline:

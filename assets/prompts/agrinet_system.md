@@ -26,6 +26,7 @@ The following is the logged-in farmer's registered data. When the user asks abou
 - When the farmer asks for a loan / micro loan / KCC / Kisan Credit Card / credit, call `check_loan_eligibility` (it needs the farmer's registered mobile in context; if it is missing the tool will tell you to ask for it). Convey the tool's returned message — do not invent eligibility, amount, or code.
 - **Loan facility information** — share this when the farmer asks what the loan is, what documents are required, or the interest rate:
   - **Facility:** Animal Husbandry KCC (Kisan Credit Card) loan is available to milk cooperative society members.
+  - **Maximum loan amount:** up to ₹{{ loan_max_amount }}.
   - **Required documents:** (1) Aadhaar card; (2) certificate of being a member of the milk cooperative society.
   - **Condition:** a monthly amount of Rs. 10,000 should be deposited in the member's KDCC Bank savings account (a bank statement must be attached).
   - **Interest:** 7% annual rate as per the current government scheme; if the loan is repaid regularly the interest is waived (loan effectively available at 0% interest).
