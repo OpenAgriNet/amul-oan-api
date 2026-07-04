@@ -1,0 +1,134 @@
+"""Micro-loan eligibility tool for the agent (chat + voice).
+
+Thin wrapper over the deterministic ``loan_eligibility.evaluate_and_issue``
+service. The tool passes NO loan decisioning to the LLM: the caller's phone and
+farmer accounts are read from ``ctx.deps`` (never from model-supplied args), and
+the service decides eligibility, generates + stores the code, and sends the SMS.
+The tool only turns the structured outcome into a script-aligned message.
+"""
+from __future__ import annotations
+
+from typing import Optional
+
+from pydantic_ai import RunContext
+from pydantic_ai.tools import ToolDefinition
+
+from agents.deps import FarmerContext
+from agents.services import loan_eligibility as le
+from app.config import settings
+from helpers.utils import get_logger
+
+logger = get_logger(__name__)
+
+# Deployed-surface channel for this service. voice-oan-api = "voice";
+# amul-oan-api (chat) overrides this to "chat".
+LOAN_CHANNEL = "chat"
+
+
+async def prepare_check_loan_eligibility(
+    ctx: RunContext[FarmerContext], tool_def: ToolDefinition
+) -> ToolDefinition | None:
+    """Hide the loan tool unless the feature is on and a caller phone is resolved.
+
+    Without a phone there is no eligibility (hard requirement), so exposing the
+    tool would only invite the model to ask for/hallucinate one. Gating here keeps
+    it out of the schema entirely for anonymous sessions."""
+    if not settings.loan_feature_enabled:
+        return None
+    if not ctx.deps.mobile:
+        logger.info("Hiding check_loan_eligibility: no resolved caller mobile")
+        return None
+    return tool_def
+
+
+def _message_for(result: "le.LoanResult") -> str:
+    """Map an outcome to a script-aligned instruction for the agent to convey.
+
+    Returns English content; the normal translation path renders it in the
+    caller's language. The authoritative Gujarati approval text is the SMS."""
+    amt = int(result.loan_amount) if result.loan_amount else int(settings.loan_max_amount)
+    thr = int(result.milk_threshold) if result.milk_threshold else int(settings.loan_milk_threshold)
+
+    if result.outcome == le.ELIGIBLE:
+        return (
+            f"ELIGIBLE. Congratulate the farmer: they are eligible for a micro loan of up to "
+            f"₹{amt:,}. Their loan reference code is {result.code}. Tell them this code has also "
+            f"been sent to their registered mobile number by SMS. They should visit their KDCC "
+            f"cooperative bank branch and present this code, and must carry their Aadhaar card and "
+            f"their milk cooperative society membership certificate. The bank will share the "
+            f"remaining loan details (interest, repayment)."
+        )
+    if result.outcome == le.ALREADY_AVAILED:
+        return (
+            "ALREADY AVAILED. Our records show the farmer has already availed this micro-loan "
+            "facility. Ask them to contact their cooperative bank for more information. Do not issue "
+            "a new code."
+        )
+    if result.outcome == le.NOT_IN_BANK_LIST:
+        return (
+            "NOT ELIGIBLE. The farmer is currently not in the cooperative bank's micro-loan "
+            "eligibility list. Ask them to contact their local cooperative bank for more information."
+        )
+    if result.outcome == le.MILK_BELOW_THRESHOLD:
+        got = f" (last month's pouring was about ₹{int(result.milk_amount_month):,})" if result.milk_amount_month is not None else ""
+        return (
+            f"NOT ELIGIBLE. The farmer's last month's milk pouring amount is below ₹{thr:,}{got}, so "
+            f"they are not currently eligible for this micro loan. Ask them to contact their local "
+            f"cooperative bank for more information."
+        )
+    if result.outcome == le.NO_PHONE:
+        return (
+            "CANNOT CHECK. A registered mobile number is required to check micro-loan eligibility. "
+            "Politely ask the farmer for their Amul-registered mobile number and try again."
+        )
+    # DISABLED / ERROR
+    return (
+        "The micro-loan eligibility service is temporarily unavailable. Apologize briefly and ask "
+        "the farmer to try again later or contact their cooperative bank."
+    )
+
+
+async def _resolve_accounts(ctx: RunContext[FarmerContext]):
+    """Accounts from context; for the chat surface (which doesn't pre-collect
+    them) fetch cache-first when a milk check will need union/society codes."""
+    accounts = list(ctx.deps.farmer_accounts or [])
+    if accounts or not ctx.deps.mobile or not settings.loan_check_milk_enabled:
+        return accounts
+    try:
+        from agents.services.farmer_cache import get_or_fetch_farmer_data
+        from app.services.voice import _collect_farmer_accounts
+        envelope = await get_or_fetch_farmer_data(ctx.deps.mobile)
+        return _collect_farmer_accounts(envelope)
+    except Exception as e:  # non-fatal: milk check will simply report couldn't-check
+        logger.warning("Could not resolve farmer accounts for loan milk check: %s", e)
+        return accounts
+
+
+async def check_loan_eligibility(ctx: RunContext[FarmerContext]) -> str:
+    """
+    Check whether the farmer is eligible for an Amul micro loan and, if eligible,
+    issue an approval code and send it by SMS.
+
+    Use this when the farmer asks for a loan / micro loan / credit. It requires
+    the farmer's registered mobile number to already be known from the session; if
+    it is not, this tool will tell you to ask for it. Do not pass any codes or
+    amounts yourself — this tool determines eligibility and the loan amount and
+    generates the code on its own. Convey its returned message to the farmer.
+    """
+    accounts = await _resolve_accounts(ctx)
+    name: Optional[str] = None
+    for acct in accounts:
+        if acct.farmer_name:
+            name = acct.farmer_name
+            break
+
+    result = await le.evaluate_and_issue(
+        phone=ctx.deps.mobile,
+        accounts=accounts,
+        farmer_name=name,
+        channel=LOAN_CHANNEL,
+        session_id=ctx.deps.session_id,
+    )
+    logger.info("check_loan_eligibility outcome=%s phone=%s code=%s sms=%s",
+                result.outcome, result.phone, result.code, result.sms_status)
+    return _message_for(result)

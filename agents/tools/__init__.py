@@ -16,6 +16,7 @@ from agents.tools.union_schemes import get_union_scheme_data, prepare_get_union_
 from agents.tools.conversation_state import signal_conversation_state
 from agents.tools.common import fire_tool_call_nudge
 from agents.tools.farmer_cached import get_farmer_profile, get_herd_summary, list_animal_tags
+from agents.tools.loan import check_loan_eligibility, prepare_check_loan_eligibility
 # from agents.tools.animal import get_animal_by_tag
 # from agents.tools.cvcc import get_cvcc_health_details
 # from agents.tools.farmer import get_farmer_by_mobile
@@ -67,6 +68,13 @@ TOOLS = [
         docstring_format='auto',
         require_parameter_descriptions=False,
         prepare=prepare_get_union_scheme_data,
+    ),
+
+    Tool(
+        check_loan_eligibility,
+        takes_ctx=True,
+        docstring_format='auto',
+        prepare=prepare_check_loan_eligibility,  # hidden unless feature on + caller phone resolved
     ),
 
     # # Get Animal by Tag (temporarily disabled)

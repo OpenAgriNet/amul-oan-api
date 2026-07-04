@@ -27,6 +27,7 @@ from app.services.fallback import execute_with_fallback, stream_with_fallback, w
 from app.core.cache import cache
 from agents.deps import FarmerContext
 from agents.farmer_context import get_farmer_context_bundle_by_mobile
+from agents.tools.farmer import normalize_phone_to_mobile
 from app.services.translation import (
     translate_text,
     translate_to_english_pretranslation,
@@ -392,6 +393,10 @@ async def stream_chat_messages(
             # Agent responds in English; response will be translated to target_lang downstream
             processing_lang = "en"
 
+        # Normalized caller phone — the micro-loan tool reads this from deps so it
+        # never has to trust an LLM-supplied number. None for anonymous sessions.
+        loan_mobile = normalize_phone_to_mobile(user_info['phone']) if user_info and user_info.get('phone') else None
+
         deps = FarmerContext(
             query=processing_query,
             session_id=session_id,
@@ -400,6 +405,7 @@ async def stream_chat_messages(
             farmer_unions=farmer_unions,
             use_translation_pipeline=use_translation_pipeline,
             response_max_chars=_response_max_chars_for_channel(channel),
+            mobile=loan_mobile,
         )
 
         message_pairs = "\n\n".join(format_message_pairs(history, 3))

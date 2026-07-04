@@ -211,8 +211,46 @@ class Settings(BaseSettings):
     # Overridable via env; defaults to 0.80 (prior hard-coded behaviour).
     ambiguity_match_threshold: float = float(os.getenv("AMBIGUITY_MATCH_THRESHOLD", "0.80"))
 
+    # ── Micro-loan eligibility feature ───────────────────────────────────────
+    # Master switch. When false the loan tool is hidden and evaluate_and_issue
+    # short-circuits, so the flow is fully inert unless explicitly enabled.
+    loan_feature_enabled: bool = os.getenv("LOAN_FEATURE_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
+    # Per-check toggles. A disabled check is BYPASSED (treated as pass) so product
+    # can test the end-to-end flow without real Amul submissions / bank-list rows.
+    loan_check_bank_list_enabled: bool = os.getenv("LOAN_CHECK_BANK_LIST_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
+    loan_check_milk_enabled: bool = os.getenv("LOAN_CHECK_MILK_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
+    loan_check_already_availed_enabled: bool = os.getenv("LOAN_CHECK_ALREADY_AVAILED_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
+    # Loan parameters (script: "up to ₹5,000 if last-month milk ≥ ₹3,000").
+    loan_max_amount: float = float(os.getenv("LOAN_MAX_AMOUNT", "5000"))
+    loan_milk_threshold: float = float(os.getenv("LOAN_MILK_THRESHOLD", "3000"))
+    loan_milk_lookback_days: int = int(os.getenv("LOAN_MILK_LOOKBACK_DAYS", "30"))
+    loan_code_length: int = int(os.getenv("LOAN_CODE_LENGTH", "6"))
+    loan_code_expiry_days: int = int(os.getenv("LOAN_CODE_EXPIRY_DAYS", "0"))  # 0 = no expiry
+    # Postgres connection for the loan tables (SQLAlchemy async URL, asyncpg driver),
+    # e.g. postgresql+asyncpg://user:pass@host:5432/db. Secret — env only.
+    loan_db_url: Optional[str] = os.getenv("LOAN_DB_URL")
+    loan_db_pool_size: int = int(os.getenv("LOAN_DB_POOL_SIZE", "5"))
+
+    # ── Onex-Aura / OneXtel SMS gateway (DLT-approved KDCC micro-loan template) ─
+    # When false, SMS is a dry-run: nothing is sent, the code is still issued and
+    # stored, and sms_status is recorded as 'dry_run'. Keep OFF while testing.
+    loan_sms_enabled: bool = os.getenv("LOAN_SMS_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
+    onex_sms_base_url: str = os.getenv("ONEX_SMS_BASE_URL", "https://sapi.onex-aura.com/api/sms")
+    onex_sms_key: Optional[str] = os.getenv("ONEX_SMS_KEY")           # secret
+    onex_sms_from: str = os.getenv("ONEX_SMS_FROM", "AMULHO")         # DLT sender header
+    onex_sms_entity_id: Optional[str] = os.getenv("ONEX_SMS_ENTITY_ID")     # secret (DLT)
+    onex_sms_template_id: Optional[str] = os.getenv("ONEX_SMS_TEMPLATE_ID")  # secret (DLT)
+    onex_sms_timeout_secs: float = float(os.getenv("ONEX_SMS_TIMEOUT_SECS", "15"))
+    # DLT-approved Gujarati body. Placeholders: {name}, {amount}, {code}. The amount
+    # is rendered as an integer with a thousands separator (e.g. 5,000).
+    onex_sms_body_template: str = os.getenv(
+        "ONEX_SMS_BODY_TEMPLATE",
+        "{name}, અભિનંદન! આપની વિનંતી મુજબ ₹{amount} ની માઈક્રો લોન મંજૂર કરવામાં આવી છે. "
+        "પેમેન્ટ મેળવવા માટે આપની KDCC બેંક શાખામાં આ કોડ રજૂ કરો:{code} .",
+    )
+
     class Config:
         env_file = ".env"
         extra = 'ignore'  # Ignore extra fields from .env
 
-settings = Settings() 
+settings = Settings()
