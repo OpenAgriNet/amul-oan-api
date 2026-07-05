@@ -54,9 +54,9 @@ def _message_for(result: "le.LoanResult") -> str:
             f"ELIGIBLE. Tell the farmer that their micro loan of up to ₹{amt:,} is ALREADY SANCTIONED. "
             f"Their loan reference code is {result.code}. Tell them this code has also been sent to "
             f"their registered mobile number by SMS. They should visit their KDCC cooperative bank "
-            f"branch and present this code, and must carry their Aadhaar card and their milk "
-            f"cooperative society membership certificate. The bank will share the remaining loan "
-            f"details (interest, repayment)."
+            f"branch and present this code, and must carry their Aadhaar card, their milk "
+            f"cooperative society membership certificate, and a one-month milk deposit transaction "
+            f"statement. The bank will share the remaining loan details (interest, repayment)."
         )
     if result.outcome == le.ALREADY_ISSUED:
         return (
