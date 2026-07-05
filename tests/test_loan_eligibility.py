@@ -51,13 +51,14 @@ class _FakeCM:
         return False
 
 
-def _wire(monkeypatch, session, *, feature=True, bank=True, milk=True, already=True, sms=False):
+def _wire(monkeypatch, session, *, feature=True, bank=True, milk=True, allow_multiple=False, resend=False, sms=False):
     monkeypatch.setattr(le, "loan_db_configured", lambda: True)
     monkeypatch.setattr(le, "get_loan_session", lambda: _FakeCM(session))
     monkeypatch.setattr(le.settings, "loan_feature_enabled", feature)
     monkeypatch.setattr(le.settings, "loan_check_bank_list_enabled", bank)
     monkeypatch.setattr(le.settings, "loan_check_milk_enabled", milk)
-    monkeypatch.setattr(le.settings, "loan_check_already_availed_enabled", already)
+    monkeypatch.setattr(le.settings, "loan_allow_multiple_codes", allow_multiple)
+    monkeypatch.setattr(le.settings, "loan_resend_sms_on_request", resend)
     monkeypatch.setattr(le.settings, "loan_sms_enabled", sms)
     monkeypatch.setattr(le.settings, "loan_max_amount", 5000.0)
     monkeypatch.setattr(le.settings, "loan_milk_threshold", 3000.0)
@@ -80,16 +81,29 @@ class TestEvaluateAndIssue:
         assert _run(phone=None).outcome == le.NO_PHONE
         assert _run(phone="anonymous").outcome == le.NO_PHONE
 
-    def test_already_availed_short_circuits(self, monkeypatch):
-        _wire(monkeypatch, _FakeSession())
+    def test_existing_code_is_reshared(self, monkeypatch):
+        # An existing active code is re-shared (ELIGIBLE), not rejected, when
+        # multiple codes are not allowed.
+        _wire(monkeypatch, _FakeSession(), allow_multiple=False)
 
         async def _existing(session, phone):
-            return SimpleNamespace(code="999999", loan_amount=5000, issued_at="x", expires_at=None)
+            return SimpleNamespace(code="999999", loan_amount=5000, farmer_name="Ramesh",
+                                   sms_status="sent", issued_at="x", expires_at=None)
 
         monkeypatch.setattr(le, "_active_code_for_phone", _existing)
         res = _run()
-        assert res.outcome == le.ALREADY_AVAILED
+        assert res.outcome == le.ELIGIBLE
+        assert res.reshared is True
         assert res.code == "999999"
+
+    def test_allow_multiple_mints_new_code(self, monkeypatch):
+        # With multiple codes allowed, an existing code is ignored and a new one issued.
+        _wire(monkeypatch, _FakeSession(), allow_multiple=True)
+        monkeypatch.setattr(le, "_eligibility_row_for_phone", _row)
+        monkeypatch.setattr(le, "_compute_last_month_milk", _milk(5200.0))
+        monkeypatch.setattr(le, "_generate_unique_code", _code("222333"))
+        res = _run()
+        assert res.outcome == le.ELIGIBLE and res.reshared is False and res.code == "222333"
 
     def test_not_in_bank_list(self, monkeypatch):
         _wire(monkeypatch, _FakeSession())
@@ -140,7 +154,8 @@ class TestEvaluateAndIssue:
     def test_all_checks_bypassed_for_testing(self, monkeypatch):
         """Product test mode: every check off -> eligible without bank row or milk call."""
         session = _FakeSession()
-        _wire(monkeypatch, session, bank=False, milk=False, already=False, sms=False)
+        _wire(monkeypatch, session, bank=False, milk=False, sms=False)
+        monkeypatch.setattr(le, "_active_code_for_phone", _none)  # no existing code to re-share
         monkeypatch.setattr(le, "_eligibility_row_for_phone", _none)  # no row exists
         monkeypatch.setattr(le, "_generate_unique_code", _code("111222"))
 
@@ -183,7 +198,7 @@ class TestMessageMapping:
         assert "777888" in msg and "5,000" in msg and "ELIGIBLE" in msg
 
     def test_failure_messages_direct_to_bank(self):
-        for oc in (le.NOT_IN_BANK_LIST, le.MILK_BELOW_THRESHOLD, le.ALREADY_AVAILED):
+        for oc in (le.NOT_IN_BANK_LIST, le.MILK_BELOW_THRESHOLD):
             msg = loan_tool._message_for(le.LoanResult(outcome=oc, milk_threshold=3000))
             assert "bank" in msg.lower()
 

@@ -9,10 +9,14 @@ Flow (each step gated by an env toggle; a disabled check is BYPASSED so product
 can test end-to-end without real Amul submissions / bank-list rows):
 
   0. phone required                       -> NO_PHONE
-  1. already-availed (active code exists)  -> ALREADY_AVAILED   [LOAN_CHECK_ALREADY_AVAILED_ENABLED]
+  1. existing active code (and not LOAN_ALLOW_MULTIPLE_CODES) -> ELIGIBLE, re-share
+     that same code (optionally re-send SMS if LOAN_RESEND_SMS_ON_REQUEST)
   2. bank eligibility list (by phone)      -> NOT_IN_BANK_LIST   [LOAN_CHECK_BANK_LIST_ENABLED]
   3. last-N-days milk >= threshold         -> MILK_BELOW_THRESHOLD [LOAN_CHECK_MILK_ENABLED]
-  4. otherwise                             -> ELIGIBLE (issue code, store, SMS)
+  4. otherwise                             -> ELIGIBLE (issue a new code, store, SMS)
+
+The loan is framed as ALREADY SANCTIONED for eligible members; asking for the loan
+(or the code) again returns the same code rather than a rejection.
 """
 from __future__ import annotations
 
@@ -58,6 +62,7 @@ class LoanResult:
     milk_threshold: Optional[float] = None
     farmer_name: Optional[str] = None
     sms_status: Optional[str] = None
+    reshared: bool = False  # True when an existing code was returned (not newly minted)
     error: Optional[str] = None
     checks_applied: dict = field(default_factory=dict)
 
@@ -66,8 +71,34 @@ def _checks_applied() -> dict:
     return {
         "bank_list": settings.loan_check_bank_list_enabled,
         "milk": settings.loan_check_milk_enabled,
-        "already_availed": settings.loan_check_already_availed_enabled,
+        "allow_multiple": settings.loan_allow_multiple_codes,
+        "resend_sms": settings.loan_resend_sms_on_request,
     }
+
+
+async def _maybe_resend_sms(session, record, mobile: str) -> Optional[str]:
+    """Re-send the approval SMS for an existing code when the resend flag is on.
+
+    Returns the resulting sms_status. When the resend flag is off, the record is
+    left untouched and its current status is returned. This is what powers "every
+    time the farmer asks for their OTP, send the SMS again" — behind a config flag.
+    """
+    if not settings.loan_resend_sms_on_request:
+        return record.sms_status
+    if not settings.loan_sms_enabled:
+        record.sms_status = "dry_run"
+        await session.commit()
+        logger.info("Loan SMS resend dry-run (LOAN_SMS_ENABLED=false) code=%s to=%s", record.code, mobile)
+        return "dry_run"
+    sms = await send_loan_approval_sms(
+        mobile, record.farmer_name or "", float(record.loan_amount or settings.loan_max_amount), record.code
+    )
+    record.sms_status = sms.status
+    record.sms_message_id = sms.message_id
+    record.sms_error = sms.error
+    await session.commit()
+    logger.info("Loan SMS re-sent code=%s to=%s status=%s", record.code, mobile, sms.status)
+    return sms.status
 
 
 async def _active_code_for_phone(session, phone: str) -> Optional[LoanCode]:
@@ -192,15 +223,20 @@ async def evaluate_and_issue(
 
     try:
         async with get_loan_session() as session:
-            # 1. Already availed --------------------------------------------------
-            if settings.loan_check_already_availed_enabled:
+            # 1. Existing active code — RE-SHARE it (don't mint a new one) unless
+            #    multiple codes are allowed. This is how "ask for the loan / the code
+            #    again" returns the same code, optionally re-sending the SMS.
+            if not settings.loan_allow_multiple_codes:
                 existing = await _active_code_for_phone(session, mobile)
                 if existing is not None:
-                    logger.info("Loan already availed for %s (code issued %s)", mobile, existing.issued_at)
+                    resent = await _maybe_resend_sms(session, existing, mobile)
+                    logger.info("Loan code re-shared for %s (code %s, issued %s, sms=%s)",
+                                mobile, existing.code, existing.issued_at, resent)
                     return LoanResult(
-                        outcome=ALREADY_AVAILED, phone=mobile, code=existing.code,
-                        loan_amount=float(existing.loan_amount) if existing.loan_amount else None,
-                        checks_applied=checks,
+                        outcome=ELIGIBLE, phone=mobile, code=existing.code,
+                        loan_amount=float(existing.loan_amount) if existing.loan_amount else amount,
+                        farmer_name=existing.farmer_name, sms_status=resent,
+                        reshared=True, checks_applied=checks,
                     )
 
             # 2. Bank eligibility list -------------------------------------------

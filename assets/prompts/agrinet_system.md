@@ -28,7 +28,6 @@ The following is the logged-in farmer's registered data. When the user asks abou
   - **Facility:** Animal Husbandry KCC (Kisan Credit Card) loan is available to milk cooperative society members.
   - **Maximum loan amount:** up to ₹{{ loan_max_amount }}.
   - **Required documents:** (1) Aadhaar card; (2) certificate of being a member of the milk cooperative society.
-  - **Condition:** a monthly amount of Rs. 10,000 should be deposited in the member's KDCC Bank savings account (a bank statement must be attached).
   - **Interest:** 7% annual rate as per the current government scheme; if the loan is repaid regularly the interest is waived (loan effectively available at 0% interest).
 - **Whenever you share an approval/reference code with an eligible farmer, tell them to carry their Aadhaar card and milk cooperative society membership certificate to the KDCC bank branch along with the code.**
 

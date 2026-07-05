@@ -219,7 +219,14 @@ class Settings(BaseSettings):
     # can test the end-to-end flow without real Amul submissions / bank-list rows.
     loan_check_bank_list_enabled: bool = os.getenv("LOAN_CHECK_BANK_LIST_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
     loan_check_milk_enabled: bool = os.getenv("LOAN_CHECK_MILK_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
-    loan_check_already_availed_enabled: bool = os.getenv("LOAN_CHECK_ALREADY_AVAILED_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
+    # When true, an eligible number can be issued MULTIPLE codes (a fresh code each
+    # request). When false, an existing active code is RE-SHARED instead of minting a
+    # new one (asking for the loan / the code again returns the same code). Flippable.
+    loan_allow_multiple_codes: bool = os.getenv("LOAN_ALLOW_MULTIPLE_CODES", "false").strip().lower() in {"1", "true", "yes", "on"}
+    # When true, (re)send the approval SMS on EVERY code request — including when an
+    # existing code is re-shared (i.e. every time the farmer asks for their OTP). When
+    # false, the SMS is only sent when a new code is first issued. Flippable.
+    loan_resend_sms_on_request: bool = os.getenv("LOAN_RESEND_SMS_ON_REQUEST", "false").strip().lower() in {"1", "true", "yes", "on"}
     # Loan parameters (script: "up to ₹5,000 if last-month milk ≥ ₹3,000").
     loan_max_amount: float = float(os.getenv("LOAN_MAX_AMOUNT", "5000"))
     loan_milk_threshold: float = float(os.getenv("LOAN_MILK_THRESHOLD", "3000"))

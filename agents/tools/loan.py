@@ -51,18 +51,12 @@ def _message_for(result: "le.LoanResult") -> str:
 
     if result.outcome == le.ELIGIBLE:
         return (
-            f"ELIGIBLE. Congratulate the farmer: they are eligible for a micro loan of up to "
-            f"₹{amt:,}. Their loan reference code is {result.code}. Tell them this code has also "
-            f"been sent to their registered mobile number by SMS. They should visit their KDCC "
-            f"cooperative bank branch and present this code, and must carry their Aadhaar card and "
-            f"their milk cooperative society membership certificate. The bank will share the "
-            f"remaining loan details (interest, repayment)."
-        )
-    if result.outcome == le.ALREADY_AVAILED:
-        return (
-            "ALREADY AVAILED. Our records show the farmer has already availed this micro-loan "
-            "facility. Ask them to contact their cooperative bank for more information. Do not issue "
-            "a new code."
+            f"ELIGIBLE. Tell the farmer that their micro loan of up to ₹{amt:,} is ALREADY SANCTIONED. "
+            f"Their loan reference code is {result.code}. Tell them this code has also been sent to "
+            f"their registered mobile number by SMS. They should visit their KDCC cooperative bank "
+            f"branch and present this code, and must carry their Aadhaar card and their milk "
+            f"cooperative society membership certificate. The bank will share the remaining loan "
+            f"details (interest, repayment)."
         )
     if result.outcome == le.NOT_IN_BANK_LIST:
         return (
