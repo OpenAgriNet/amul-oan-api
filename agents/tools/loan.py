@@ -58,6 +58,12 @@ def _message_for(result: "le.LoanResult") -> str:
             f"cooperative society membership certificate. The bank will share the remaining loan "
             f"details (interest, repayment)."
         )
+    if result.outcome == le.ALREADY_ISSUED:
+        return (
+            "ALREADY ISSUED. Our records show this farmer's micro loan has already been issued "
+            "(disbursed) at the bank. Do NOT issue a new code. Ask them to contact their cooperative "
+            "bank branch for any questions about their existing loan."
+        )
     if result.outcome == le.NOT_IN_BANK_LIST:
         return (
             "NOT ELIGIBLE. The farmer is currently not in the cooperative bank's micro-loan "

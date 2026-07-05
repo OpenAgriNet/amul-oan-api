@@ -44,7 +44,8 @@ _DATE_FORMAT = "%Y-%m-%d"
 
 # Outcome codes — the tool maps these to the script-aligned user message.
 NO_PHONE = "no_phone"
-ALREADY_AVAILED = "already_availed"
+ALREADY_AVAILED = "already_availed"  # legacy, no longer returned
+ALREADY_ISSUED = "already_issued"    # loan already disbursed (a redeemed code exists)
 NOT_IN_BANK_LIST = "not_in_bank_list"
 MILK_BELOW_THRESHOLD = "milk_below_threshold"
 ELIGIBLE = "eligible"
@@ -113,6 +114,18 @@ async def _active_code_for_phone(session, phone: str) -> Optional[LoanCode]:
         if row.expires_at is None or row.expires_at > now:
             return row
     return None
+
+
+async def _redeemed_code_for_phone(session, phone: str) -> Optional[LoanCode]:
+    """Return the most recently redeemed (issued/disbursed) code for this phone, if
+    any. Used to block a second loan once one has been issued at the bank."""
+    stmt = (
+        select(LoanCode)
+        .where(LoanCode.phone == phone, LoanCode.status == "redeemed")
+        .order_by(LoanCode.redeemed_at.desc().nullslast())
+        .limit(1)
+    )
+    return (await session.execute(stmt)).scalars().first()
 
 
 async def _eligibility_row_for_phone(session, phone: str) -> Optional[LoanEligibilityRow]:
@@ -237,6 +250,18 @@ async def evaluate_and_issue(
                         loan_amount=float(existing.loan_amount) if existing.loan_amount else amount,
                         farmer_name=existing.farmer_name, sms_status=resent,
                         reshared=True, checks_applied=checks,
+                    )
+                # No active code — but if the loan was already ISSUED/disbursed at the
+                # bank (a redeemed code), do NOT mint another. `allow_multiple` is the
+                # single switch for handing out more than one loan per farmer.
+                issued = await _redeemed_code_for_phone(session, mobile)
+                if issued is not None:
+                    logger.info("Loan already issued for %s (redeemed code %s at %s)",
+                                mobile, issued.code, issued.redeemed_at)
+                    return LoanResult(
+                        outcome=ALREADY_ISSUED, phone=mobile, code=issued.code,
+                        loan_amount=float(issued.loan_amount) if issued.loan_amount else amount,
+                        farmer_name=issued.farmer_name, checks_applied=checks,
                     )
 
             # 2. Bank eligibility list -------------------------------------------

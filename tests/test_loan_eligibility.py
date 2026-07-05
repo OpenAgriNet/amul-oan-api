@@ -54,6 +54,7 @@ class _FakeCM:
 def _wire(monkeypatch, session, *, feature=True, bank=True, milk=True, allow_multiple=False, resend=False, sms=False):
     monkeypatch.setattr(le, "loan_db_configured", lambda: True)
     monkeypatch.setattr(le, "get_loan_session", lambda: _FakeCM(session))
+    monkeypatch.setattr(le, "_redeemed_code_for_phone", _none)  # default: no prior issued loan
     monkeypatch.setattr(le.settings, "loan_feature_enabled", feature)
     monkeypatch.setattr(le.settings, "loan_check_bank_list_enabled", bank)
     monkeypatch.setattr(le.settings, "loan_check_milk_enabled", milk)
@@ -104,6 +105,28 @@ class TestEvaluateAndIssue:
         monkeypatch.setattr(le, "_generate_unique_code", _code("222333"))
         res = _run()
         assert res.outcome == le.ELIGIBLE and res.reshared is False and res.code == "222333"
+
+    def test_already_issued_blocks_new_loan(self, monkeypatch):
+        # No active code, but a redeemed (issued) one exists -> ALREADY_ISSUED, no new code.
+        _wire(monkeypatch, _FakeSession(), allow_multiple=False)
+        monkeypatch.setattr(le, "_active_code_for_phone", _none)
+
+        async def _issued(session, phone):
+            return SimpleNamespace(code="888777", loan_amount=5000, farmer_name="Ramesh", redeemed_at="x")
+
+        monkeypatch.setattr(le, "_redeemed_code_for_phone", _issued)
+        res = _run()
+        assert res.outcome == le.ALREADY_ISSUED
+        assert res.code == "888777"
+
+    def test_allow_multiple_ignores_issued_loan(self, monkeypatch):
+        # With multiple codes allowed, a prior issued loan does not block a new code.
+        _wire(monkeypatch, _FakeSession(), allow_multiple=True)
+        monkeypatch.setattr(le, "_eligibility_row_for_phone", _row)
+        monkeypatch.setattr(le, "_compute_last_month_milk", _milk(5200.0))
+        monkeypatch.setattr(le, "_generate_unique_code", _code("444555"))
+        res = _run()
+        assert res.outcome == le.ELIGIBLE and res.code == "444555"
 
     def test_not_in_bank_list(self, monkeypatch):
         _wire(monkeypatch, _FakeSession())
