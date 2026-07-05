@@ -56,7 +56,8 @@ def _message_for(result: "le.LoanResult") -> str:
             f"their registered mobile number by SMS. They should visit their KDCC cooperative bank "
             f"branch and present this code, and must carry their Aadhaar card, their milk "
             f"cooperative society membership certificate, and a one-month milk deposit transaction "
-            f"statement. The bank will share the remaining loan details (interest, repayment)."
+            f"statement. The bank will share the remaining loan details (interest, repayment). Also "
+            f"briefly tell them this micro-loan facility is currently in a pilot phase."
         )
     if result.outcome == le.ALREADY_ISSUED:
         return (
@@ -64,17 +65,12 @@ def _message_for(result: "le.LoanResult") -> str:
             "(disbursed) at the bank. Do NOT issue a new code. Ask them to contact their cooperative "
             "bank branch for any questions about their existing loan."
         )
-    if result.outcome == le.NOT_IN_BANK_LIST:
+    if result.outcome in (le.NOT_IN_BANK_LIST, le.MILK_BELOW_THRESHOLD):
         return (
-            "NOT ELIGIBLE. The farmer is currently not in the cooperative bank's micro-loan "
-            "eligibility list. Ask them to contact their local cooperative bank for more information."
-        )
-    if result.outcome == le.MILK_BELOW_THRESHOLD:
-        got = f" (last month's pouring was about ₹{int(result.milk_amount_month):,})" if result.milk_amount_month is not None else ""
-        return (
-            f"NOT ELIGIBLE. The farmer's last month's milk pouring amount is below ₹{thr:,}{got}, so "
-            f"they are not currently eligible for this micro loan. Ask them to contact their local "
-            f"cooperative bank for more information."
+            "NOT ELIGIBLE. Tell the farmer they are not eligible for the micro loan on this platform, "
+            "but they can visit their local cooperative bank for assistance. Do NOT disclose the "
+            "specific reason for ineligibility. Also briefly tell them this micro-loan facility is "
+            "currently in a pilot phase."
         )
     if result.outcome == le.NO_PHONE:
         return (
