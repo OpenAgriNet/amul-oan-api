@@ -48,7 +48,8 @@ ALREADY_AVAILED = "already_availed"  # legacy, no longer returned
 ALREADY_ISSUED = "already_issued"    # loan already disbursed (a redeemed code exists)
 NOT_IN_BANK_LIST = "not_in_bank_list"
 MILK_BELOW_THRESHOLD = "milk_below_threshold"
-ELIGIBLE = "eligible"
+ELIGIBLE_OFFER = "eligible_offer"   # eligible, loan offered, NOT yet issued (awaiting confirmation)
+ELIGIBLE = "eligible"               # confirmed/issued (or existing code re-shared)
 DISABLED = "disabled"
 ERROR = "error"
 
@@ -216,6 +217,7 @@ async def evaluate_and_issue(
     farmer_name: Optional[str] = None,
     channel: str,
     session_id: Optional[str] = None,
+    confirm: bool = False,
 ) -> LoanResult:
     checks = _checks_applied()
 
@@ -288,8 +290,18 @@ async def evaluate_and_issue(
                         milk_amount_month=milk_total, milk_threshold=threshold, checks_applied=checks,
                     )
 
-            # 4. Eligible — issue, store, send ------------------------------------
+            # 4. Eligible. Two-step: OFFER first (confirm=False) — do NOT issue a code
+            #    or send SMS yet; only issue after the caller confirms (confirm=True).
             name = _resolve_name(farmer_name, accounts, elig_row)
+            if not confirm:
+                logger.info("Loan OFFER for %s (amount=%s, awaiting confirmation)", mobile, amount)
+                return LoanResult(
+                    outcome=ELIGIBLE_OFFER, phone=mobile, loan_amount=amount,
+                    milk_amount_month=milk_total, milk_threshold=threshold,
+                    farmer_name=name, checks_applied=checks,
+                )
+
+            # Confirmed — issue, store, send.
             code = await _generate_unique_code(session)
             expires_at = None
             if settings.loan_code_expiry_days and settings.loan_code_expiry_days > 0:

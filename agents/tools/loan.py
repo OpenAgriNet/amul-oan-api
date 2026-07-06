@@ -50,15 +50,22 @@ def _message_for(result: "le.LoanResult") -> str:
     amt = int(result.loan_amount) if result.loan_amount else int(settings.loan_max_amount)
     thr = int(result.milk_threshold) if result.milk_threshold else int(settings.loan_milk_threshold)
 
+    if result.outcome == le.ELIGIBLE_OFFER:
+        return (
+            f"ELIGIBLE — OFFER ONLY (do NOT issue or mention a code yet, do NOT say it is approved). "
+            f"Tell the farmer they are eligible for a KDCC Bank micro loan of ₹{amt:,}, which is "
+            f"interest-free provided the EMI is repaid regularly. Ask whether they would like to avail "
+            f"this loan. If the farmer agrees, call check_loan_eligibility again with confirmed=true. "
+            f"If the farmer declines, do not call again — close the conversation politely."
+        )
     if result.outcome == le.ELIGIBLE:
         return (
-            f"ELIGIBLE. Tell the farmer that their micro loan of up to ₹{amt:,} is ALREADY SANCTIONED. "
-            f"Their loan reference code is {result.code}. Tell them this code has also been sent to "
-            f"their registered mobile number by SMS. They should visit their KDCC cooperative bank "
-            f"branch and present this code, and must carry their Aadhaar card, their milk "
-            f"cooperative society membership certificate, and a one-month milk deposit transaction "
-            f"statement. The bank will share the remaining loan details (interest, repayment). Also "
-            f"briefly tell them this micro-loan facility is currently in a pilot phase."
+            f"APPROVED. Confirm to the farmer that their KDCC Bank micro loan of up to ₹{amt:,} has been "
+            f"approved/processed. Their loan reference code is {result.code}, and it has been sent to "
+            f"their registered mobile number by SMS. They should visit their KDCC cooperative bank branch "
+            f"and present this code, and must carry their Aadhaar card, their milk cooperative society "
+            f"membership certificate, and a one-month milk deposit transaction statement. Also briefly "
+            f"tell them this micro-loan facility is currently in a pilot phase."
         )
     if result.outcome == le.ALREADY_ISSUED:
         return (
@@ -103,16 +110,25 @@ async def _resolve_accounts(ctx: RunContext[FarmerContext]):
         return accounts
 
 
-async def check_loan_eligibility(ctx: RunContext[FarmerContext]) -> str:
+async def check_loan_eligibility(ctx: RunContext[FarmerContext], confirmed: bool = False) -> str:
     """
-    Check whether the farmer is eligible for an Amul micro loan and, if eligible,
-    issue an approval code and send it by SMS.
+    Check a farmer's micro-loan eligibility and — only after the farmer CONFIRMS —
+    issue the approval code and send it by SMS. Two-step flow:
 
-    Use this when the farmer asks for a loan / micro loan / credit. It requires
-    the farmer's registered mobile number to already be known from the session; if
-    it is not, this tool returns a 'no profile - visit your local cooperative bank' message (it does NOT ask the farmer for a mobile number). Do not pass any codes or
-    amounts yourself — this tool determines eligibility and the loan amount and
-    generates the code on its own. Convey its returned message to the farmer.
+    1. Call with confirmed=false (the default) FIRST. If eligible, this returns an
+       OFFER for you to convey; it does NOT issue a code or send an SMS yet.
+    2. After the farmer explicitly agrees to take the loan, call AGAIN with
+       confirmed=true — only then is the code issued and the SMS sent.
+    3. If the farmer declines, do not call again; close politely.
+
+    Use when the farmer asks for a loan / micro loan / credit. The farmer's registered
+    mobile is read from the session (you never pass it); if it is not available the
+    tool returns a 'no profile - visit your local cooperative bank' message (it does
+    NOT ask the farmer for a mobile number). Do not pass any codes or amounts.
+
+    Args:
+        confirmed: Set true ONLY after the farmer has explicitly agreed to avail the
+            loan (their yes to the offer). Leave false for the initial eligibility/offer.
     """
     accounts = await _resolve_accounts(ctx)
     name: Optional[str] = None
@@ -127,6 +143,7 @@ async def check_loan_eligibility(ctx: RunContext[FarmerContext]) -> str:
         farmer_name=name,
         channel=LOAN_CHANNEL,
         session_id=ctx.deps.session_id,
+        confirm=confirmed,
     )
     logger.info("check_loan_eligibility outcome=%s phone=%s code=%s sms=%s",
                 result.outcome, result.phone, result.code, result.sms_status)

@@ -82,6 +82,24 @@ class TestEvaluateAndIssue:
         assert _run(phone=None).outcome == le.NO_PHONE
         assert _run(phone="anonymous").outcome == le.NO_PHONE
 
+    def test_offer_does_not_issue(self, monkeypatch):
+        # confirm=False -> ELIGIBLE_OFFER: no code minted, no SMS, nothing persisted.
+        session = _FakeSession()
+        _wire(monkeypatch, session, sms=True)
+        monkeypatch.setattr(le, "_active_code_for_phone", _none)
+        monkeypatch.setattr(le, "_redeemed_code_for_phone", _none)
+        monkeypatch.setattr(le, "_eligibility_row_for_phone", _row)
+        monkeypatch.setattr(le, "_compute_last_month_milk", _milk(5200.0))
+        called = {"gen": 0}
+        async def _gen(sess):
+            called["gen"] += 1
+            return "999999"
+        monkeypatch.setattr(le, "_generate_unique_code", _gen)
+        res = _run(confirm=False)
+        assert res.outcome == le.ELIGIBLE_OFFER
+        assert res.code is None and called["gen"] == 0
+        assert not session.committed and len(session.added) == 0
+
     def test_existing_code_is_reshared(self, monkeypatch):
         # An existing active code is re-shared (ELIGIBLE), not rejected, when
         # multiple codes are not allowed.
@@ -103,7 +121,7 @@ class TestEvaluateAndIssue:
         monkeypatch.setattr(le, "_eligibility_row_for_phone", _row)
         monkeypatch.setattr(le, "_compute_last_month_milk", _milk(5200.0))
         monkeypatch.setattr(le, "_generate_unique_code", _code("222333"))
-        res = _run()
+        res = _run(confirm=True)
         assert res.outcome == le.ELIGIBLE and res.reshared is False and res.code == "222333"
 
     def test_already_issued_blocks_new_loan(self, monkeypatch):
@@ -125,7 +143,7 @@ class TestEvaluateAndIssue:
         monkeypatch.setattr(le, "_eligibility_row_for_phone", _row)
         monkeypatch.setattr(le, "_compute_last_month_milk", _milk(5200.0))
         monkeypatch.setattr(le, "_generate_unique_code", _code("444555"))
-        res = _run()
+        res = _run(confirm=True)
         assert res.outcome == le.ELIGIBLE and res.code == "444555"
 
     def test_not_in_bank_list(self, monkeypatch):
@@ -150,7 +168,7 @@ class TestEvaluateAndIssue:
         monkeypatch.setattr(le, "_eligibility_row_for_phone", _row)
         monkeypatch.setattr(le, "_compute_last_month_milk", _milk(5200.0))
         monkeypatch.setattr(le, "_generate_unique_code", _code("123456"))
-        res = _run()
+        res = _run(confirm=True)
         assert res.outcome == le.ELIGIBLE
         assert res.code == "123456"
         assert res.loan_amount == 5000.0
@@ -171,7 +189,7 @@ class TestEvaluateAndIssue:
             return SimpleNamespace(ok=True, status="sent", message_id="m1", error=None)
 
         monkeypatch.setattr(le, "send_loan_approval_sms", _send)
-        res = _run()
+        res = _run(confirm=True)
         assert res.outcome == le.ELIGIBLE and res.sms_status == "sent"
 
     def test_all_checks_bypassed_for_testing(self, monkeypatch):
@@ -189,7 +207,7 @@ class TestEvaluateAndIssue:
             return 0.0
 
         monkeypatch.setattr(le, "_compute_last_month_milk", _milk_should_not_run)
-        res = _run()
+        res = _run(confirm=True)
         assert res.outcome == le.ELIGIBLE and res.code == "111222"
         assert called["milk"] is False  # milk check skipped when disabled
 
