@@ -110,7 +110,7 @@ class TestEvaluateAndIssue:
                                    sms_status="sent", issued_at="x", expires_at=None)
 
         monkeypatch.setattr(le, "_active_code_for_phone", _existing)
-        res = _run()
+        res = _run(confirm=True)
         assert res.outcome == le.ELIGIBLE
         assert res.reshared is True
         assert res.code == "999999"

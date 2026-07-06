@@ -238,70 +238,69 @@ async def evaluate_and_issue(
 
     try:
         async with get_loan_session() as session:
-            # 1. Existing active code — RE-SHARE it (don't mint a new one) unless
-            #    multiple codes are allowed. This is how "ask for the loan / the code
-            #    again" returns the same code, optionally re-sending the SMS.
+            # Existing codes (only consulted when a single loan per farmer is enforced).
+            existing = None
+            issued = None
             if not settings.loan_allow_multiple_codes:
                 existing = await _active_code_for_phone(session, mobile)
-                if existing is not None:
-                    resent = await _maybe_resend_sms(session, existing, mobile)
-                    logger.info("Loan code re-shared for %s (code %s, issued %s, sms=%s)",
-                                mobile, existing.code, existing.issued_at, resent)
-                    return LoanResult(
-                        outcome=ELIGIBLE, phone=mobile, code=existing.code,
-                        loan_amount=float(existing.loan_amount) if existing.loan_amount else amount,
-                        farmer_name=existing.farmer_name, sms_status=resent,
-                        reshared=True, checks_applied=checks,
-                    )
-                # No active code — but if the loan was already ISSUED/disbursed at the
-                # bank (a redeemed code), do NOT mint another. `allow_multiple` is the
-                # single switch for handing out more than one loan per farmer.
-                issued = await _redeemed_code_for_phone(session, mobile)
-                if issued is not None:
-                    logger.info("Loan already issued for %s (redeemed code %s at %s)",
-                                mobile, issued.code, issued.redeemed_at)
-                    return LoanResult(
-                        outcome=ALREADY_ISSUED, phone=mobile, code=issued.code,
-                        loan_amount=float(issued.loan_amount) if issued.loan_amount else amount,
-                        farmer_name=issued.farmer_name, checks_applied=checks,
-                    )
+                if existing is None:
+                    issued = await _redeemed_code_for_phone(session, mobile)
 
-            # 2. Bank eligibility list -------------------------------------------
-            elig_row: Optional[LoanEligibilityRow] = None
-            if settings.loan_check_bank_list_enabled:
-                elig_row = await _eligibility_row_for_phone(session, mobile)
-                if elig_row is None:
-                    logger.info("Phone %s not in bank eligibility list", mobile)
-                    return LoanResult(outcome=NOT_IN_BANK_LIST, phone=mobile, checks_applied=checks)
-            else:
-                # Bypassed for testing — still enrich from the list if a row happens to exist.
-                elig_row = await _eligibility_row_for_phone(session, mobile)
-
-            # 3. Milk >= threshold -----------------------------------------------
-            milk_total: Optional[float] = None
-            if settings.loan_check_milk_enabled:
-                milk_total = await _compute_last_month_milk(accounts)
-                if milk_total is None:
-                    return LoanResult(outcome=ERROR, phone=mobile, error="milk_lookup_failed", checks_applied=checks)
-                if milk_total < threshold:
-                    logger.info("Milk %.2f below threshold %.2f for %s", milk_total, threshold, mobile)
-                    return LoanResult(
-                        outcome=MILK_BELOW_THRESHOLD, phone=mobile,
-                        milk_amount_month=milk_total, milk_threshold=threshold, checks_applied=checks,
-                    )
-
-            # 4. Eligible. Two-step: OFFER first (confirm=False) — do NOT issue a code
-            #    or send SMS yet; only issue after the caller confirms (confirm=True).
-            name = _resolve_name(farmer_name, accounts, elig_row)
-            if not confirm:
-                logger.info("Loan OFFER for %s (amount=%s, awaiting confirmation)", mobile, amount)
+            # A loan already ISSUED/disbursed at the bank blocks a new one outright.
+            if issued is not None:
+                logger.info("Loan already issued for %s (redeemed code %s)", mobile, issued.code)
                 return LoanResult(
-                    outcome=ELIGIBLE_OFFER, phone=mobile, loan_amount=amount,
+                    outcome=ALREADY_ISSUED, phone=mobile, code=issued.code,
+                    loan_amount=float(issued.loan_amount) if issued.loan_amount else amount,
+                    farmer_name=issued.farmer_name, checks_applied=checks,
+                )
+
+            # Eligibility. An existing active code means the farmer was already found
+            # eligible, so we do NOT re-run the bank-list / milk checks for it.
+            elig_row: Optional[LoanEligibilityRow] = None
+            milk_total: Optional[float] = None
+            if existing is None:
+                if settings.loan_check_bank_list_enabled:
+                    elig_row = await _eligibility_row_for_phone(session, mobile)
+                    if elig_row is None:
+                        logger.info("Phone %s not in bank eligibility list", mobile)
+                        return LoanResult(outcome=NOT_IN_BANK_LIST, phone=mobile, checks_applied=checks)
+                else:
+                    elig_row = await _eligibility_row_for_phone(session, mobile)
+                if settings.loan_check_milk_enabled:
+                    milk_total = await _compute_last_month_milk(accounts)
+                    if milk_total is None:
+                        return LoanResult(outcome=ERROR, phone=mobile, error="milk_lookup_failed", checks_applied=checks)
+                    if milk_total < threshold:
+                        logger.info("Milk %.2f below threshold %.2f for %s", milk_total, threshold, mobile)
+                        return LoanResult(
+                            outcome=MILK_BELOW_THRESHOLD, phone=mobile,
+                            milk_amount_month=milk_total, milk_threshold=threshold, checks_applied=checks,
+                        )
+
+            name = existing.farmer_name if existing is not None else _resolve_name(farmer_name, accounts, elig_row)
+
+            # OFFER step — eligible but NOT yet confirmed: reveal no code, send no SMS.
+            if not confirm:
+                logger.info("Loan OFFER for %s (awaiting confirmation, has_existing=%s)", mobile, existing is not None)
+                return LoanResult(
+                    outcome=ELIGIBLE_OFFER, phone=mobile,
+                    loan_amount=float(existing.loan_amount) if existing and existing.loan_amount else amount,
                     milk_amount_month=milk_total, milk_threshold=threshold,
                     farmer_name=name, checks_applied=checks,
                 )
 
-            # Confirmed — issue, store, send.
+            # CONFIRMED. Re-share an existing code (+ optional resend), or mint a new one.
+            if existing is not None:
+                resent = await _maybe_resend_sms(session, existing, mobile)
+                logger.info("Loan code re-shared (confirmed) for %s (code %s, sms=%s)", mobile, existing.code, resent)
+                return LoanResult(
+                    outcome=ELIGIBLE, phone=mobile, code=existing.code,
+                    loan_amount=float(existing.loan_amount) if existing.loan_amount else amount,
+                    farmer_name=existing.farmer_name, sms_status=resent, reshared=True, checks_applied=checks,
+                )
+
+            # Confirmed, no existing code — issue, store, send.
             code = await _generate_unique_code(session)
             expires_at = None
             if settings.loan_code_expiry_days and settings.loan_code_expiry_days > 0:
