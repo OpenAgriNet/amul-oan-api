@@ -28,16 +28,17 @@ LOAN_CHANNEL = "chat"
 async def prepare_check_loan_eligibility(
     ctx: RunContext[FarmerContext], tool_def: ToolDefinition
 ) -> ToolDefinition | None:
-    """Hide the loan tool unless the feature is on and a caller phone is resolved.
+    """Expose the loan tool whenever the feature is enabled.
 
-    Without a phone there is no eligibility (hard requirement), so exposing the
-    tool would only invite the model to ask for/hallucinate one. Gating here keeps
-    it out of the schema entirely for anonymous sessions."""
+    Even without a resolved caller mobile, the tool runs and returns a clear
+    "no profile - visit your local cooperative bank" message, so the model does not
+    improvise a request for a mobile number it cannot act on."""
     if not settings.loan_feature_enabled:
         return None
-    if not ctx.deps.mobile:
-        logger.info("Hiding check_loan_eligibility: no resolved caller mobile")
-        return None
+    # Expose whenever the feature is on. If the caller's profile/mobile is not
+    # resolved, the tool still runs and returns a clear "no profile - visit your
+    # local cooperative bank" message, rather than the model improvising a request
+    # for a mobile number (which we cannot act on).
     return tool_def
 
 
@@ -74,8 +75,10 @@ def _message_for(result: "le.LoanResult") -> str:
         )
     if result.outcome == le.NO_PHONE:
         return (
-            "CANNOT CHECK. A registered mobile number is required to check micro-loan eligibility. "
-            "Politely ask the farmer for their Amul-registered mobile number and try again."
+            "NO PROFILE. Tell the farmer, warmly: \"I don't have your profile information, so I can't "
+            "process a micro loan for you on this platform. Please visit your local cooperative bank "
+            "branch for assistance.\" Do NOT ask them to provide or type a mobile number — eligibility "
+            "uses only their registered session profile."
         )
     # DISABLED / ERROR
     return (
@@ -107,7 +110,7 @@ async def check_loan_eligibility(ctx: RunContext[FarmerContext]) -> str:
 
     Use this when the farmer asks for a loan / micro loan / credit. It requires
     the farmer's registered mobile number to already be known from the session; if
-    it is not, this tool will tell you to ask for it. Do not pass any codes or
+    it is not, this tool returns a 'no profile - visit your local cooperative bank' message (it does NOT ask the farmer for a mobile number). Do not pass any codes or
     amounts yourself — this tool determines eligibility and the loan amount and
     generates the code on its own. Convey its returned message to the farmer.
     """
