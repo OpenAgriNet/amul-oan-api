@@ -164,8 +164,6 @@
   },
   {
     "gu_terms": [
-      "કથીરી",
-      "kathiri",
       "મેલી",
       "મેલી પડવી",
       "જર",
@@ -174,7 +172,7 @@
       "afterbirth retention"
     ],
     "type": "hardcode",
-    "rule": "કથીરી / kathiri / મેલી / જર refers to retained placenta (afterbirth retention) — the placenta failing to expel within 8-12 hours after calving, risking uterine infection (metritis). When translating to English, always render as 'retained placenta' or 'afterbirth retention'. NEVER translate as Coccidiosis, parasitic infection, or any unrelated condition. Treat as a postpartum reproductive issue requiring veterinary intervention."
+    "rule": "મેલી / જર refers to retained placenta (afterbirth retention) — the placenta failing to expel within 8-12 hours after calving, risking uterine infection (metritis). When translating to English, always render as 'retained placenta' or 'afterbirth retention'. NEVER translate as Coccidiosis, parasitic infection, or any unrelated condition. Treat as a postpartum reproductive issue requiring veterinary intervention."
   },
   {
     "gu_terms": [
@@ -238,7 +236,7 @@
       "rectal prolapse"
     ],
     "type": "hardcode",
-    "rule": "માટી ખસવી / માટી ખસી જવી is the local Gujarati term for **uterine or rectal prolapse** (the uterus or rectum slipping out). It is NOT a placenta issue (that is મેલી / કથીરી / જર) and NOT just 'slipping' in a generic sense. When translating to English, render as 'uterine prolapse' or 'rectal prolapse' depending on context; if unclear, just 'prolapse'. Treat as a surgical / urgent veterinary emergency. Dietary questions about prolapse-prone animals are about prolapse, NOT about placenta retention."
+    "rule": "માટી ખસવી / માટી ખસી જવી is the local Gujarati term for **uterine or rectal prolapse** (the uterus or rectum slipping out). It is NOT a placenta issue (that is મેલી / જર) and NOT just 'slipping' in a generic sense. When translating to English, render as 'uterine prolapse' or 'rectal prolapse' depending on context; if unclear, just 'prolapse'. Treat as a surgical / urgent veterinary emergency. Dietary questions about prolapse-prone animals are about prolapse, NOT about placenta retention."
   },
   {
     "gu_terms": [
