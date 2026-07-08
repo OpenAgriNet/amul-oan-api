@@ -99,8 +99,8 @@ def test_extract_text_from_pdf_bytes_calls_ocr_and_merges_pages(monkeypatch):
             if image == "img-a":
                 return _FakeResponse("First page text")
             if image == "img-b":
-                return _FakeResponse("Skipped because error", error=True)
-            return _FakeResponse("Second page text")
+                return _FakeResponse("Second page text")
+            return _FakeResponse("Third page text")
 
     combined = asyncio.run(si.extract_text_from_pdf_bytes(_FakeClient(), b"pdf-bytes"))
 
@@ -111,7 +111,7 @@ def test_extract_text_from_pdf_bytes_calls_ocr_and_merges_pages(monkeypatch):
         assert len(call["json"]["images"]) == 1
         assert call["json"]["prompt_type"] == si.SCHEME_OCR_PROMPT_TYPE
         assert call["json"]["max_output_tokens"] == si.SCHEME_OCR_MAX_OUTPUT_TOKENS
-    assert combined == "First page text\n\nSecond page text"
+    assert combined == "First page text\n\nSecond page text\n\nThird page text"
 
 
 def test_build_banas_record_returns_expected_schema(monkeypatch):
@@ -189,6 +189,34 @@ def test_extract_text_from_pdf_bytes_raises_when_ocr_returns_empty_pages(monkeyp
             return _FakeResponse()
 
     with pytest.raises(si.SchemeParseError, match="failed for all pages"):
+        asyncio.run(si.extract_text_from_pdf_bytes(_FakeClient(), b"pdf-bytes"))
+
+
+def test_extract_text_from_pdf_bytes_raises_when_failed_page_ratio_too_high(monkeypatch):
+    monkeypatch.setattr(si.settings, "scheme_ocr_endpoint_url", "http://ocr-host:8010")
+    monkeypatch.setattr(si.settings, "scheme_ocr_timeout_seconds", 45.0)
+    monkeypatch.setattr(si.settings, "scheme_pdf_render_dpi", 150)
+    monkeypatch.setattr(si, "render_pdf_to_base64_images", lambda *_args, **_kwargs: ["img-a", "img-b", "img-c", "img-d"])
+
+    class _FakeResponse:
+        def __init__(self, markdown: str, error: bool = False) -> None:
+            self.markdown = markdown
+            self.error = error
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self):
+            return {"pages": [{"markdown": self.markdown, "error": self.error}]}
+
+    class _FakeClient:
+        async def post(self, url, json, timeout):
+            image = json["images"][0]
+            if image == "img-a":
+                return _FakeResponse("only one page survives")
+            return _FakeResponse("", error=True)
+
+    with pytest.raises(si.SchemeParseError, match="too many pages"):
         asyncio.run(si.extract_text_from_pdf_bytes(_FakeClient(), b"pdf-bytes"))
 
 
@@ -282,3 +310,29 @@ def test_ingest_banas_source_skips_heartbeat_without_token(monkeypatch):
     asyncio.run(si._ingest_banas_source(si.BANAS_SOURCE, SimpleNamespace()))
 
     assert called == []
+
+
+def test_ingest_banas_source_raises_when_batch_coverage_too_low(monkeypatch):
+    links = [
+        {"scheme_title": "Scheme A", "scheme_url": "https://example.com/a.pdf"},
+        {"scheme_title": "Scheme B", "scheme_url": "https://example.com/b.pdf"},
+        {"scheme_title": "Scheme C", "scheme_url": "https://example.com/c.pdf"},
+        {"scheme_title": "Scheme D", "scheme_url": "https://example.com/d.pdf"},
+        {"scheme_title": "Scheme E", "scheme_url": "https://example.com/e.pdf"},
+    ]
+
+    async def fake_fetch_html(_client, _url):
+        return "<html></html>"
+
+    monkeypatch.setattr(si, "fetch_html", fake_fetch_html)
+    monkeypatch.setattr(si, "parse_banas_scheme_links", lambda _html: links)
+
+    async def fake_build(**kwargs):
+        if kwargs["scheme_title"] == "Scheme A":
+            return {"scheme_title": kwargs["scheme_title"]}
+        return None
+
+    monkeypatch.setattr(si, "_build_banas_record", fake_build)
+
+    with pytest.raises(si.SchemeParseError, match="insufficient Banas ingestion coverage"):
+        asyncio.run(si._ingest_banas_source(si.BANAS_SOURCE, SimpleNamespace()))
