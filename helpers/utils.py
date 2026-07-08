@@ -1,10 +1,9 @@
 # sva/helpers/utils.py
 
-from app.models.farmer import FarmerModel
-from app.models.union import UnionName
 import os
 import re
-from typing import List, Dict
+from pathlib import Path
+from typing import List, Dict, Optional
 import logging
 import boto3
 from dotenv import load_dotenv
@@ -13,10 +12,16 @@ import tiktoken
 import unicodedata as ud
 from datetime import datetime
 import simplejson as json
-from jinja2 import Environment, FileSystemLoader
+from jinja2 import Environment, FileSystemLoader, Template
 import pytz
+from helpers.gujarati_numbers import normalize_numbers_for_tts
+from app.models.farmer import FarmerModel
+from app.models.union import UnionName
 
 load_dotenv()
+
+# In-memory prompt template cache (populated at app startup; no disk I/O at request time)
+PROMPT_TEMPLATES_CACHE: Dict[str, str] = {}
 
 
 def get_s3_client():
@@ -175,6 +180,143 @@ def remove_redundant_angle_brackets(text: str) -> str:
 
     return pattern.sub(lambda m: m.group('term'), text)
 
+def remove_redundant_square_brackets(text: str) -> str:
+    """Collapse "X [X]" → "X" for any Unicode text."""
+    text = ud.normalize("NFC", text)
+
+    pattern = re.compile(
+        r'''
+        (?P<term>
+            [^\s\[\]]+
+            (?:\s+[^\s\[\]]+)*
+        )
+        \s*\[\s*
+        (?P=term)
+        \s*\]
+        ''',
+        flags=re.UNICODE | re.VERBOSE,
+    )
+
+    return pattern.sub(lambda m: m.group('term'), text)
+
+def _replace_voice_abbreviations(text: str, lang_code: str) -> str:
+    """Expand abbreviations that are awkward for voice output."""
+    lang = (lang_code or "").strip().lower()
+
+    if lang == "gu":
+        replacements = [
+            (r"(?i)\bkg\b", "કિલોગ્રામ"),
+            (r"(?i)\bkgs\b", "કિલોગ્રામ"),
+            (r"(?i)\bml\b", "મિલીલીટર"),
+            (r"(?i)\bl\b", "લિટર"),
+            (r"(?i)\bkm\b", "કિલોમીટર"),
+            (r"(?i)\bcm\b", "સેન્ટીમીટર"),
+            (r"(?i)કિ\.?\s*ગ્રા\.?", "કિલોગ્રામ"),
+            (r"(?i)(?<!\w)ગ્રા\.?(?!\w)", "ગ્રામ"),
+            (r"(?i)મિ\.?\s*લી\.?", "મિલીલીટર"),
+            (r"(?i)%", " ટકા"),
+            (r"(?i)°\s*c", " ડિગ્રી સેલ્સિયસ"),
+        ]
+    else:
+        replacements = [
+            (r"(?i)\bkg\b", "kilograms"),
+            (r"(?i)\bkgs\b", "kilograms"),
+            (r"(?i)\bml\b", "milliliters"),
+            (r"(?i)\bl\b", "liters"),
+            (r"(?i)\bkm\b", "kilometers"),
+            (r"(?i)\bcm\b", "centimeters"),
+            (r"(?i)%", " percent"),
+            (r"(?i)°\s*c", " degrees Celsius"),
+        ]
+
+    out = text
+    for pattern, repl in replacements:
+        out = re.sub(pattern, repl, out)
+    return out
+
+
+def _remove_quantity_placeholders(text: str) -> str:
+    """Remove placeholder dashes used as fake quantities before units."""
+    out = text
+    unit_words = (
+        r"કિલોગ્રામ|ગ્રામ|મિલીલીટર|લિટર|"
+        r"kilograms?|grams?|milliliters?|liters?"
+    )
+    out = re.sub(
+        rf"([:：]\s*)(?:[-–—]{{1,3}})(?=\s*(?:{unit_words})\b)",
+        r"\1",
+        out,
+        flags=re.IGNORECASE,
+    )
+    out = re.sub(r"\s(?:--|––|——)\s", " ", out)
+    return out
+
+def normalize_voice_output(
+    text: str,
+    lang_code: str | None,
+    *,
+    replace_slash: bool = True,
+    streaming: bool = False,
+) -> str:
+    """Normalize model output for voice playback before language filtering."""
+    if not text:
+        return text
+
+    lang = (lang_code or "").strip().lower()
+    out = ud.normalize("NFC", text)
+
+    if lang == "gu":
+        out = normalize_numbers_for_tts(out)
+
+    if streaming:
+        out = _replace_voice_abbreviations(out, lang)
+        out = _remove_quantity_placeholders(out)
+        out = re.sub(r"\.{3,}", ".", out)
+        out = re.sub(r"([!?])\1+", r"\1", out)
+        out = re.sub(r"([,;:])\1+", r"\1", out)
+        if replace_slash:
+            if lang == "gu":
+                out = out.replace("/", " અથવા ")
+            else:
+                out = out.replace("/", " or ")
+        return out
+
+    # Strip markdown and structural noise that should never be spoken.
+    out = out.replace("**", "").replace("__", "").replace("`", "").replace("~", "")
+    out = re.sub(r"(?m)^\s*#+\s*", "", out)
+    # Extended list-scrub: Latin bullets/dashes, em/en-dashes, Gujarati-style
+    # bullets (•·), and Gujarati-numeral list markers (e.g. "૧. ", "૧) ").
+    out = re.sub(r"(?m)^\s*(?:[-–—*•·]+|\d+[.)]|[૦-૯]+[.)]\s)\s*", "", out)
+
+    out = _replace_voice_abbreviations(out, lang)
+    out = _remove_quantity_placeholders(out)
+
+    # Normalize common punctuation clutter.
+    out = re.sub(r"\.{3,}", ".", out)
+    out = re.sub(r"([!?])\1+", r"\1", out)
+    out = re.sub(r"([,;:])\1+", r"\1", out)
+    out = re.sub(r"\s*([,;:!?])\s*", r"\1 ", out)
+
+    # Replace slash-separated alternatives with spoken language.
+    if replace_slash:
+        if lang == "gu":
+            out = out.replace("/", " અથવા ")
+        else:
+            out = out.replace("/", " or ")
+
+    # Collapse repeated bracketed copies before removing remaining brackets.
+    out = remove_redundant_parenthetical(out)
+    out = remove_redundant_square_brackets(out)
+    out = remove_redundant_angle_brackets(out)
+
+    # Brackets are visual syntax, not voice content.
+    out = re.sub(r"[\[\]{}()<>]", " ", out)
+
+    # Flatten line breaks into spoken text.
+    out = re.sub(r"\s*\n+\s*", " ", out)
+    out = re.sub(r"[ \t]{2,}", " ", out)
+    return out
+
 def post_process_translation(translation: str) -> str:
     """Post process translation.
     
@@ -199,34 +341,80 @@ def post_process_translation(translation: str) -> str:
 
 
 
+def load_prompt_templates(prompt_dir: Path) -> None:
+    """Load all .md prompt templates from the given directory into PROMPT_TEMPLATES_CACHE.
+    Call once at app startup (e.g. in FastAPI lifespan) to avoid disk I/O at request time.
+    """
+    prompt_dir = Path(prompt_dir)
+    if not prompt_dir.is_dir():
+        return
+    for path in prompt_dir.glob("*.md"):
+        key = path.stem  # e.g. voice_system_gu
+        try:
+            PROMPT_TEMPLATES_CACHE[key] = path.read_text(encoding="utf-8")
+        except Exception as e:
+            _log = logging.getLogger(__name__)
+            _log.warning("Failed to load prompt template %s: %s", path, e)
+
+
 def get_prompt(prompt_file: str, context: Dict = {}, prompt_dir: str = "assets/prompts") -> str:
-    """Load a prompt from a file and format it with a context using Jinja2 templating.
+    """Load a prompt from in-memory cache (if populated at startup) or disk, and render with context.
 
     Args:
-        prompt_file (str): Name of the prompt file.
+        prompt_file (str): Name of the prompt file (with or without .md).
         context (dict, optional): Context to format the prompt with. Defaults to {}.
-        prompt_dir (str, optional): Path to the prompt directory. Defaults to 'assets/prompts'.
+        prompt_dir (str, optional): Path to the prompt directory (used only if not in cache).
 
     Returns:
-        str: prompt
+        str: Rendered prompt.
     """
-    # if extension is not .md, add it
     if not prompt_file.endswith(".md"):
         prompt_file += ".md"
+    cache_key = Path(prompt_file).stem  # e.g. voice_system_gu
 
-    # Create Jinja2 environment
+    if cache_key in PROMPT_TEMPLATES_CACHE:
+        template = Template(PROMPT_TEMPLATES_CACHE[cache_key], autoescape=False)
+        return template.render(**context) if context else template.render()
+
+    # Fallback: load from disk (e.g. tests or if startup load was skipped)
     env = Environment(
         loader=FileSystemLoader(prompt_dir),
-        autoescape=False  # We don't want HTML escaping for our prompts
+        autoescape=False,
     )
-
-    # Get the template
     template = env.get_template(prompt_file)
+    return template.render(**context) if context else template.render()
 
-    # Render the template with the context
-    prompt = template.render(**context) if context else template.render()
-    
-    return prompt
+
+def clean_output_by_language(text: str, lang_code: str | None) -> str:
+    """Filter model output based on language.
+
+    - Always allow whitespace.
+    - Always allow basic sentence/word punctuation (.,!? and similar) for all languages.
+    - For Gujarati (lang_code 'gu'), additionally restrict letters to the Gujarati Unicode block
+      U+0A80..U+0AFF; everything else (Latin letters, other scripts) is stripped.
+    """
+    if not text:
+        return text
+
+    text = normalize_voice_output(text, lang_code)
+
+    lang = (lang_code or "").strip().lower()
+    # Basic punctuation to always allow
+    allowed_punct = set(".!?,;:()[]{}\"'“”‘’-–—…")
+
+    def _allowed(ch: str) -> bool:
+        if ch.isspace():
+            return True
+        if ch in allowed_punct:
+            return True
+        code = ord(ch)
+        if lang == "gu":
+            # Gujarati block U+0A80..U+0AFF (includes letters, digits, signs)
+            return 0x0A80 <= code <= 0x0AFF
+        # For non-Gujarati, don't restrict characters beyond punctuation/whitespace
+        return True
+
+    return "".join(ch for ch in text if _allowed(ch))
 
 def upload_audio_to_s3(audio_base64: str, session_id: str, bucket_name: str | None = None) -> Dict:
     """Upload base64 encoded audio to S3.
@@ -273,9 +461,6 @@ def upload_audio_to_s3(audio_base64: str, session_id: str, bucket_name: str | No
         logger = get_logger(__name__)
         logger.error(f"Error uploading audio to S3: {str(e)}")
         raise
-
-def is_from_society(records: list[FarmerModel], society_name: str) -> bool:
-    return any([record.society_name == society_name for record in records])
 
 
 def is_from_union(records: list[FarmerModel], union_name: UnionName) -> bool:

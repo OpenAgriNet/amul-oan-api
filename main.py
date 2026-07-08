@@ -5,11 +5,18 @@ from app.config import settings
 from contextlib import asynccontextmanager
 from app.tasks.scheme_scheduler import start_scheme_scheduler, stop_scheme_scheduler
 from app.tasks.telemetry_queue import start_telemetry_worker, stop_telemetry_worker
+# Imported before the routers so the cold import order matches the cycle-safety
+# regression test (worker module is side-effect-free; see farmer_refresh_worker).
+from app.tasks.farmer_refresh_worker import start_farmer_refresh_worker, stop_farmer_refresh_worker
 
 load_dotenv()
 
+# Configure observability (Langfuse + pydantic-ai instrumentation) before router
+# imports that pull in agents, tools, and voice/chat pipelines.
+import app.observability  # noqa: F401, E402
+
 # Import all routers
-from app.routers import chat, transcribe, suggestions, tts, health, auth, user, telemetry
+from app.routers import chat, transcribe, suggestions, tts, health, auth, user, telemetry, voice
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -19,10 +26,15 @@ async def lifespan(app: FastAPI):
     print(f"📍 Environment: {settings.environment}")
     print(f"🔧 Debug mode: {settings.debug}")
     print(f"🌐 CORS origins: {settings.allowed_origins}")
+    # Load prompt templates into memory (no disk I/O at request time)
+    from helpers.utils import load_prompt_templates
+    load_prompt_templates(settings.base_dir / "assets" / "prompts")
     await start_telemetry_worker()
     await start_scheme_scheduler()
+    await start_farmer_refresh_worker()
     yield
     # Shutdown
+    await stop_farmer_refresh_worker()
     await stop_scheme_scheduler()
     await stop_telemetry_worker()
     print(f"🛑 {settings.app_name} shutting down...")
@@ -68,6 +80,7 @@ app.include_router(transcribe.router, prefix=settings.api_prefix)
 app.include_router(suggestions.router, prefix=settings.api_prefix)
 app.include_router(tts.router, prefix=settings.api_prefix)
 app.include_router(user.router, prefix=settings.api_prefix)
+app.include_router(voice.router, prefix=settings.api_prefix)
 app.include_router(health.router, prefix=settings.api_prefix)
 # Keep telemetry path compatible with existing frontend calls:
 # /observability-service/action/data/v3/telemetry

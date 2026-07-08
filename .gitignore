@@ -189,6 +189,5 @@ cython_debug/
 
 # Local
 /scripts/*
-/tests/*
 /exploration/*
 /evals/*

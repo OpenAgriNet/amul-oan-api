@@ -51,3 +51,23 @@ def canonical_union_name(name: str | None) -> str:
         return ""
     key = name.strip().lower()
     return UNION_NAME_ALIASES.get(key, key)
+
+
+def resolve_supported_unions(union_names: list[str] | None, supported_unions: set[str]) -> list[str]:
+    """Canonicalize raw union names and keep only supported values.
+
+    Preserves first-seen order and removes duplicates, so callers can safely pick
+    index 0 as the preferred supported union.
+    """
+    if not union_names:
+        return []
+
+    resolved: list[str] = []
+    seen: set[str] = set()
+    for union_name in union_names:
+        canonical = canonical_union_name(union_name)
+        if not canonical or canonical not in supported_unions or canonical in seen:
+            continue
+        seen.add(canonical)
+        resolved.append(canonical)
+    return resolved
