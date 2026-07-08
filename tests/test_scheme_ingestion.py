@@ -213,3 +213,72 @@ def test_build_banas_record_returns_none_on_parse_error(monkeypatch):
         )
     )
     assert record is None
+
+
+def test_ingest_banas_source_heartbeats_lock_per_pdf(monkeypatch):
+    links = [
+        {"scheme_title": "Scheme A", "scheme_url": "https://example.com/a.pdf"},
+        {"scheme_title": "Scheme B", "scheme_url": "https://example.com/b.pdf"},
+    ]
+
+    async def fake_fetch_html(_client, _url):
+        return "<html></html>"
+
+    monkeypatch.setattr(si, "fetch_html", fake_fetch_html)
+    monkeypatch.setattr(si, "parse_banas_scheme_links", lambda _html: links)
+
+    async def fake_build(**kwargs):
+        return {"scheme_title": kwargs["scheme_title"]}
+
+    monkeypatch.setattr(si, "_build_banas_record", fake_build)
+
+    extend_calls = []
+
+    async def fake_extend(source_key, lock_token, redis_client=None):
+        extend_calls.append((source_key, lock_token, redis_client))
+        return True
+
+    monkeypatch.setattr(si, "extend_refresh_lock", fake_extend)
+
+    records = asyncio.run(
+        si._ingest_banas_source(
+            si.BANAS_SOURCE,
+            SimpleNamespace(),
+            lock_token="tok-123",
+            redis_client="redis-stub",
+        )
+    )
+
+    assert len(records) == 2
+    # One heartbeat per processed PDF, always with our own token.
+    assert len(extend_calls) == 2
+    assert all(call[1] == "tok-123" and call[2] == "redis-stub" for call in extend_calls)
+
+
+def test_ingest_banas_source_skips_heartbeat_without_token(monkeypatch):
+    async def fake_fetch_html(_client, _url):
+        return "<html></html>"
+
+    monkeypatch.setattr(si, "fetch_html", fake_fetch_html)
+    monkeypatch.setattr(
+        si,
+        "parse_banas_scheme_links",
+        lambda _html: [{"scheme_title": "Scheme A", "scheme_url": "https://example.com/a.pdf"}],
+    )
+
+    async def fake_build(**kwargs):
+        return {"scheme_title": kwargs["scheme_title"]}
+
+    monkeypatch.setattr(si, "_build_banas_record", fake_build)
+
+    called = []
+
+    async def fake_extend(*args, **kwargs):
+        called.append(args)
+        return True
+
+    monkeypatch.setattr(si, "extend_refresh_lock", fake_extend)
+
+    asyncio.run(si._ingest_banas_source(si.BANAS_SOURCE, SimpleNamespace()))
+
+    assert called == []
