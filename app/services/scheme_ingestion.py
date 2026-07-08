@@ -281,6 +281,31 @@ async def release_refresh_lock(source_key: str, lock_token: str, redis_client=No
     logger.warning("Skipped releasing scheme refresh lock due to token mismatch source_key=%s", source_key)
 
 
+async def extend_refresh_lock(source_key: str, lock_token: str, redis_client=None) -> bool:
+    """Re-arm the lock TTL if we still own it.
+
+    A full Banas OCR batch (many PDFs, each up to SCHEME_PDF_MAX_RENDER_PAGES pages
+    at SCHEME_OCR_TIMEOUT_SECONDS each) can outlast a single fixed TTL. Heartbeating
+    after each PDF keeps the lock alive as long as we are making progress, without
+    inflating the TTL for the common fast case. Returns False if the lock was lost
+    (expired or taken over) so the caller can decide whether to keep going.
+    """
+    client = redis_client or await get_redis_client()
+    lock_key = build_scheme_lock_key(source_key)
+    try:
+        current_token = await client.get(lock_key)
+        if current_token != lock_token:
+            logger.warning("Scheme refresh lock lost before heartbeat source_key=%s", source_key)
+            return False
+        await client.set(lock_key, lock_token, ex=SCHEME_LOCK_TTL_SECONDS)
+    except Exception:
+        # Best-effort heartbeat: a failed extend must not abort an in-flight refresh.
+        logger.exception("Failed to extend scheme refresh lock source_key=%s lock_key=%s", source_key, lock_key)
+        return True
+    logger.info("Extended scheme refresh lock source_key=%s ttl=%s", source_key, SCHEME_LOCK_TTL_SECONDS)
+    return True
+
+
 async def fetch_html(client: httpx.AsyncClient, url: str) -> str:
     logger.info("Fetching scheme HTML url=%s", url)
     try:
@@ -558,7 +583,10 @@ async def extract_text_from_pdf_bytes(client: httpx.AsyncClient, pdf_bytes: byte
     if not ocr_endpoint:
         raise SchemeDependencyError("SCHEME_OCR_ENDPOINT_URL is not configured")
 
-    images = render_pdf_to_base64_images(
+    # Rasterizing up to SCHEME_PDF_MAX_RENDER_PAGES pages is CPU-bound; run it off
+    # the event loop so it does not stall concurrent request handling during a refresh.
+    images = await asyncio.to_thread(
+        render_pdf_to_base64_images,
         pdf_bytes,
         dpi=settings.scheme_pdf_render_dpi,
         max_pages=SCHEME_PDF_MAX_RENDER_PAGES,
@@ -693,7 +721,12 @@ async def _build_banas_record(
     }
 
 
-async def _ingest_banas_source(source: SchemeSource, client: httpx.AsyncClient) -> list[dict[str, Any]]:
+async def _ingest_banas_source(
+    source: SchemeSource,
+    client: httpx.AsyncClient,
+    lock_token: str | None = None,
+    redis_client=None,
+) -> list[dict[str, Any]]:
     logger.info("Starting Banas scheme ingestion source=%s url=%s", source.cache_key, source.source_url)
     html = await fetch_html(client, source.source_url)
     link_records = parse_banas_scheme_links(html)
@@ -717,6 +750,10 @@ async def _ingest_banas_source(source: SchemeSource, client: httpx.AsyncClient) 
         )
         if built_record:
             final_records.append(built_record)
+        # Heartbeat the lock after each PDF so a long multi-PDF batch does not
+        # outlive a single fixed TTL and let a concurrent refresh start.
+        if lock_token is not None:
+            await extend_refresh_lock(source.cache_key, lock_token, redis_client=redis_client)
     logger.info("Completed Banas scheme ingestion source=%s record_count=%s", source.cache_key, len(final_records))
     return final_records
 
@@ -764,7 +801,7 @@ async def refresh_scheme_source(source: SchemeSource, redis_client=None, client:
 
     try:
         if source.source_name == BANAS_SOURCE.source_name:
-            records = await _ingest_banas_source(source, client)
+            records = await _ingest_banas_source(source, client, lock_token=lock_token, redis_client=redis_client)
         else:
             records = await _ingest_sarhad_source(source, client)
 
