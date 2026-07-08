@@ -28,7 +28,9 @@ SCHEME_LOCK_TTL_SECONDS = 60 * 60
 HTTP_TIMEOUT_SECONDS = 30.0
 SCHEME_PDF_MAX_RENDER_PAGES = 30
 SCHEME_OCR_PROMPT_TYPE = "ocr_layout"
-SCHEME_OCR_MAX_OUTPUT_TOKENS = 12384
+SCHEME_OCR_MAX_OUTPUT_TOKENS = 12284
+SCHEME_OCR_MAX_FAILED_PAGE_RATIO = 0.15
+SCHEME_BANAS_MIN_RECORD_COVERAGE_RATIO = 0.85
 _redis_client = None
 
 
@@ -676,8 +678,22 @@ async def extract_text_from_pdf_bytes(client: httpx.AsyncClient, pdf_bytes: byte
         page_texts.append(page_markdown)
 
     combined_text = "\n\n".join(page_texts)
+    total_pages = len(images)
+    failed_ratio = (failed_pages / total_pages) if total_pages else 1.0
     if failed_pages == len(images):
         raise SchemeParseError("scheme OCR failed for all pages")
+    if failed_ratio > SCHEME_OCR_MAX_FAILED_PAGE_RATIO:
+        raise SchemeParseError(
+            f"scheme OCR failed for too many pages failed={failed_pages}/{total_pages} ratio={failed_ratio:.2f}"
+        )
+    if failed_pages:
+        logger.warning(
+            "Scheme OCR completed with partial page failures total_pages=%s success_pages=%s failed_pages=%s failed_ratio=%.2f",
+            total_pages,
+            len(page_texts),
+            failed_pages,
+            failed_ratio,
+        )
     logger.info("Completed scheme OCR extraction page_count=%s content_length=%s", len(page_texts), len(combined_text))
     return combined_text
 
@@ -754,6 +770,12 @@ async def _ingest_banas_source(
         # outlive a single fixed TTL and let a concurrent refresh start.
         if lock_token is not None:
             await extend_refresh_lock(source.cache_key, lock_token, redis_client=redis_client)
+    record_coverage_ratio = len(final_records) / len(link_records)
+    if record_coverage_ratio < SCHEME_BANAS_MIN_RECORD_COVERAGE_RATIO:
+        raise SchemeParseError(
+            "insufficient Banas ingestion coverage "
+            f"built={len(final_records)}/{len(link_records)} ratio={record_coverage_ratio:.2f}"
+        )
     logger.info("Completed Banas scheme ingestion source=%s record_count=%s", source.cache_key, len(final_records))
     return final_records
 
