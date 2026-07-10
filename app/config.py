@@ -206,6 +206,11 @@ class Settings(BaseSettings):
     scheme_require_union_auth: bool = os.getenv("SCHEME_REQUIRE_UNION_AUTH", "true").strip().lower() in {
         "1", "true", "yes", "on"
     }
+    # Banas scheme PDF ingestion via Chandra OCR (see scheme_ingestion.py).
+    # Page cap and HTTP fetch timeout stay as module constants, not env vars.
+    scheme_ocr_endpoint_url: Optional[str] = os.getenv("SCHEME_OCR_ENDPOINT_URL")
+    scheme_ocr_timeout_seconds: float = float(os.getenv("SCHEME_OCR_TIMEOUT_SECONDS", "120"))
+    scheme_pdf_render_dpi: int = int(os.getenv("SCHEME_PDF_RENDER_DPI", "200"))
 
     # Ambiguity-term fuzzy-match cutoff (0-1) for get_ambiguity_hints_for_query.
     # Overridable via env; defaults to 0.80 (prior hard-coded behaviour).
