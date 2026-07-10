@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import re
 import uuid
@@ -10,7 +11,6 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from html import unescape
 from html.parser import HTMLParser
-from io import BytesIO
 from typing import Any
 from urllib.parse import urljoin
 
@@ -24,8 +24,13 @@ logger = get_logger(__name__)
 
 SCHEME_CACHE_NAMESPACE = "milk_producer_schemes"
 SCHEME_LOCK_NAMESPACE = "milk_producer_schemes_locks"
-SCHEME_LOCK_TTL_SECONDS = 60 * 15
+SCHEME_LOCK_TTL_SECONDS = 60 * 60
 HTTP_TIMEOUT_SECONDS = 30.0
+SCHEME_PDF_MAX_RENDER_PAGES = 30
+SCHEME_OCR_PROMPT_TYPE = "ocr_layout"
+SCHEME_OCR_MAX_OUTPUT_TOKENS = 12284
+SCHEME_OCR_MAX_FAILED_PAGE_RATIO = 0.15
+SCHEME_BANAS_MIN_RECORD_COVERAGE_RATIO = 0.85
 _redis_client = None
 
 
@@ -122,13 +127,13 @@ def build_scheme_lock_key(source_key: str) -> str:
     return _build_prefixed_key(SCHEME_LOCK_NAMESPACE, source_key)
 
 
-def _get_pdf_reader_cls():
+def _get_pymupdf_module():
     try:
-        from pypdf import PdfReader
+        import fitz
     except ModuleNotFoundError as exc:
-        raise SchemeDependencyError("pypdf is not installed") from exc
+        raise SchemeDependencyError("pymupdf is not installed") from exc
 
-    return PdfReader
+    return fitz
 
 
 def get_scheme_sources() -> tuple[SchemeSource, ...]:
@@ -276,6 +281,31 @@ async def release_refresh_lock(source_key: str, lock_token: str, redis_client=No
         logger.info("Released scheme refresh lock source_key=%s", source_key)
         return
     logger.warning("Skipped releasing scheme refresh lock due to token mismatch source_key=%s", source_key)
+
+
+async def extend_refresh_lock(source_key: str, lock_token: str, redis_client=None) -> bool:
+    """Re-arm the lock TTL if we still own it.
+
+    A full Banas OCR batch (many PDFs, each up to SCHEME_PDF_MAX_RENDER_PAGES pages
+    at SCHEME_OCR_TIMEOUT_SECONDS each) can outlast a single fixed TTL. Heartbeating
+    after each PDF keeps the lock alive as long as we are making progress, without
+    inflating the TTL for the common fast case. Returns False if the lock was lost
+    (expired or taken over) so the caller can decide whether to keep going.
+    """
+    client = redis_client or await get_redis_client()
+    lock_key = build_scheme_lock_key(source_key)
+    try:
+        current_token = await client.get(lock_key)
+        if current_token != lock_token:
+            logger.warning("Scheme refresh lock lost before heartbeat source_key=%s", source_key)
+            return False
+        await client.set(lock_key, lock_token, ex=SCHEME_LOCK_TTL_SECONDS)
+    except Exception:
+        # Best-effort heartbeat: a failed extend must not abort an in-flight refresh.
+        logger.exception("Failed to extend scheme refresh lock source_key=%s lock_key=%s", source_key, lock_key)
+        return True
+    logger.info("Extended scheme refresh lock source_key=%s ttl=%s", source_key, SCHEME_LOCK_TTL_SECONDS)
+    return True
 
 
 async def fetch_html(client: httpx.AsyncClient, url: str) -> str:
@@ -500,31 +530,171 @@ def parse_sarhad_scheme_sections(html: str) -> list[dict[str, str]]:
     return records
 
 
-def extract_text_from_pdf_bytes(pdf_bytes: bytes) -> str:
-    logger.info("Extracting text from scheme PDF byte_count=%s", len(pdf_bytes))
+def render_pdf_to_base64_images(pdf_bytes: bytes, dpi: int, max_pages: int = SCHEME_PDF_MAX_RENDER_PAGES) -> list[str]:
+    logger.info(
+        "Rendering scheme PDF pages to images byte_count=%s dpi=%s max_pages=%s",
+        len(pdf_bytes),
+        dpi,
+        max_pages,
+    )
+    if dpi <= 0:
+        raise SchemeParseError("scheme_pdf_render_dpi must be positive")
+    if max_pages <= 0:
+        raise SchemeParseError("max_pages must be positive")
+
     try:
-        reader_cls = _get_pdf_reader_cls()
-        reader = reader_cls(BytesIO(pdf_bytes))
+        fitz = _get_pymupdf_module()
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     except SchemeDependencyError:
         raise
     except Exception as exc:
-        logger.exception("Failed to initialize PDF reader for scheme PDF")
-        raise SchemeParseError("failed to initialize PDF reader") from exc
+        logger.exception("Failed to initialize PDF renderer for scheme PDF")
+        raise SchemeParseError("failed to initialize PDF renderer") from exc
 
-    page_texts: list[str] = []
+    rendered_images: list[str] = []
+    zoom = dpi / 72.0
+    matrix = fitz.Matrix(zoom, zoom)
     try:
-        for index, page in enumerate(reader.pages):
-            page_text = page.extract_text() or ""
-            normalized = _normalize_text(page_text)
-            logger.info("Extracted scheme PDF page_text page_index=%s text_length=%s", index, len(normalized))
-            if normalized:
-                page_texts.append(normalized)
+        page_limit = min(doc.page_count, max_pages)
+        for index in range(page_limit):
+            page = doc.load_page(index)
+            pixmap = page.get_pixmap(matrix=matrix, alpha=False)
+            encoded_image = base64.b64encode(pixmap.tobytes("png")).decode("ascii")
+            rendered_images.append(encoded_image)
+            logger.info("Rendered scheme PDF page image page_index=%s image_bytes=%s", index, len(encoded_image))
+        if doc.page_count > max_pages:
+            logger.warning(
+                "Truncated scheme PDF pages for OCR total_pages=%s max_pages=%s",
+                doc.page_count,
+                max_pages,
+            )
     except Exception as exc:
-        logger.exception("Failed during scheme PDF text extraction")
-        raise SchemeParseError("failed during PDF text extraction") from exc
+        logger.exception("Failed while rendering scheme PDF pages")
+        raise SchemeParseError("failed while rendering PDF pages") from exc
+    finally:
+        doc.close()
+
+    if not rendered_images:
+        raise SchemeParseError("no pages rendered from PDF")
+    return rendered_images
+
+
+async def extract_text_from_pdf_bytes(client: httpx.AsyncClient, pdf_bytes: bytes) -> str:
+    logger.info("Extracting text from scheme PDF via OCR byte_count=%s", len(pdf_bytes))
+    ocr_endpoint = (settings.scheme_ocr_endpoint_url or "").strip().rstrip("/")
+    if not ocr_endpoint:
+        raise SchemeDependencyError("SCHEME_OCR_ENDPOINT_URL is not configured")
+
+    # Rasterizing up to SCHEME_PDF_MAX_RENDER_PAGES pages is CPU-bound; run it off
+    # the event loop so it does not stall concurrent request handling during a refresh.
+    images = await asyncio.to_thread(
+        render_pdf_to_base64_images,
+        pdf_bytes,
+        dpi=settings.scheme_pdf_render_dpi,
+        max_pages=SCHEME_PDF_MAX_RENDER_PAGES,
+    )
+    page_texts: list[str] = []
+    failed_pages = 0
+    for index, image in enumerate(images):
+        payload = {
+            "images": [image],
+            "prompt_type": SCHEME_OCR_PROMPT_TYPE,
+            "max_output_tokens": SCHEME_OCR_MAX_OUTPUT_TOKENS,
+        }
+
+        try:
+            response = await client.post(
+                f"{ocr_endpoint}/v1/ocr/pages",
+                json=payload,
+                timeout=settings.scheme_ocr_timeout_seconds,
+            )
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            failed_pages += 1
+            logger.warning(
+                "Scheme OCR request returned non-success status endpoint=%s page_index=%s status_code=%s",
+                ocr_endpoint,
+                index,
+                exc.response.status_code,
+            )
+            continue
+        except httpx.RequestError as exc:
+            failed_pages += 1
+            logger.warning(
+                "Scheme OCR request failed endpoint=%s page_index=%s error_type=%s error_repr=%r",
+                ocr_endpoint,
+                index,
+                type(exc).__name__,
+                exc,
+            )
+            continue
+        except Exception as exc:
+            failed_pages += 1
+            logger.exception(
+                "Unexpected error while calling scheme OCR endpoint=%s page_index=%s",
+                ocr_endpoint,
+                index,
+            )
+            continue
+
+        try:
+            parsed = response.json()
+        except ValueError as exc:
+            failed_pages += 1
+            logger.warning(
+                "Scheme OCR response was not valid JSON endpoint=%s page_index=%s error_repr=%r",
+                ocr_endpoint,
+                index,
+                exc,
+            )
+            continue
+
+        pages = parsed.get("pages")
+        if not isinstance(pages, list):
+            failed_pages += 1
+            logger.warning("Scheme OCR response missing pages list endpoint=%s page_index=%s", ocr_endpoint, index)
+            continue
+        if not pages:
+            failed_pages += 1
+            logger.warning("Scheme OCR response had empty pages list endpoint=%s page_index=%s", ocr_endpoint, index)
+            continue
+
+        page_result = pages[0]
+        if not isinstance(page_result, dict):
+            failed_pages += 1
+            logger.warning(
+                "Skipping malformed OCR page result page_index=%s type=%s",
+                index,
+                type(page_result).__name__,
+            )
+            continue
+
+        page_markdown = _normalize_text(str(page_result.get("markdown") or ""))
+        page_error = bool(page_result.get("error"))
+        logger.info("Received scheme OCR page result page_index=%s page_error=%s text_length=%s", index, page_error, len(page_markdown))
+        if page_error or not page_markdown:
+            failed_pages += 1
+            continue
+        page_texts.append(page_markdown)
 
     combined_text = "\n\n".join(page_texts)
-    logger.info("Completed scheme PDF text extraction page_count=%s content_length=%s", len(page_texts), len(combined_text))
+    total_pages = len(images)
+    failed_ratio = (failed_pages / total_pages) if total_pages else 1.0
+    if failed_pages == len(images):
+        raise SchemeParseError("scheme OCR failed for all pages")
+    if failed_ratio > SCHEME_OCR_MAX_FAILED_PAGE_RATIO:
+        raise SchemeParseError(
+            f"scheme OCR failed for too many pages failed={failed_pages}/{total_pages} ratio={failed_ratio:.2f}"
+        )
+    if failed_pages:
+        logger.warning(
+            "Scheme OCR completed with partial page failures total_pages=%s success_pages=%s failed_pages=%s failed_ratio=%.2f",
+            total_pages,
+            len(page_texts),
+            failed_pages,
+            failed_ratio,
+        )
+    logger.info("Completed scheme OCR extraction page_count=%s content_length=%s", len(page_texts), len(combined_text))
     return combined_text
 
 
@@ -538,7 +708,7 @@ async def _build_banas_record(
     logger.info("Building Banas scheme record title=%s url=%s", scheme_title, scheme_url)
     try:
         pdf_bytes = await fetch_bytes(client, scheme_url)
-        content = extract_text_from_pdf_bytes(pdf_bytes)
+        content = await extract_text_from_pdf_bytes(client, pdf_bytes)
     except SchemeDependencyError:
         raise
     except SchemeFetchError as exc:
@@ -567,7 +737,12 @@ async def _build_banas_record(
     }
 
 
-async def _ingest_banas_source(source: SchemeSource, client: httpx.AsyncClient) -> list[dict[str, Any]]:
+async def _ingest_banas_source(
+    source: SchemeSource,
+    client: httpx.AsyncClient,
+    lock_token: str | None = None,
+    redis_client=None,
+) -> list[dict[str, Any]]:
     logger.info("Starting Banas scheme ingestion source=%s url=%s", source.cache_key, source.source_url)
     html = await fetch_html(client, source.source_url)
     link_records = parse_banas_scheme_links(html)
@@ -575,19 +750,32 @@ async def _ingest_banas_source(source: SchemeSource, client: httpx.AsyncClient) 
         logger.warning("No Banas scheme links parsed source=%s", source.cache_key)
         raise SchemeParseError("no Banas scheme links parsed")
     last_refreshed_at = _utcnow_iso()
-    tasks = [
-        _build_banas_record(
+    logger.info(
+        "Processing Banas PDFs sequentially source=%s record_count=%s",
+        source.cache_key,
+        len(link_records),
+    )
+    final_records: list[dict[str, Any]] = []
+    for record in link_records:
+        built_record = await _build_banas_record(
             client=client,
             source=source,
             scheme_title=record["scheme_title"],
             scheme_url=record["scheme_url"],
             last_refreshed_at=last_refreshed_at,
         )
-        for record in link_records
-    ]
-    logger.info("Dispatching Banas PDF fetch tasks source=%s task_count=%s", source.cache_key, len(tasks))
-    results = await asyncio.gather(*tasks)
-    final_records = [result for result in results if result]
+        if built_record:
+            final_records.append(built_record)
+        # Heartbeat the lock after each PDF so a long multi-PDF batch does not
+        # outlive a single fixed TTL and let a concurrent refresh start.
+        if lock_token is not None:
+            await extend_refresh_lock(source.cache_key, lock_token, redis_client=redis_client)
+    record_coverage_ratio = len(final_records) / len(link_records)
+    if record_coverage_ratio < SCHEME_BANAS_MIN_RECORD_COVERAGE_RATIO:
+        raise SchemeParseError(
+            "insufficient Banas ingestion coverage "
+            f"built={len(final_records)}/{len(link_records)} ratio={record_coverage_ratio:.2f}"
+        )
     logger.info("Completed Banas scheme ingestion source=%s record_count=%s", source.cache_key, len(final_records))
     return final_records
 
@@ -635,7 +823,7 @@ async def refresh_scheme_source(source: SchemeSource, redis_client=None, client:
 
     try:
         if source.source_name == BANAS_SOURCE.source_name:
-            records = await _ingest_banas_source(source, client)
+            records = await _ingest_banas_source(source, client, lock_token=lock_token, redis_client=redis_client)
         else:
             records = await _ingest_sarhad_source(source, client)
 
