@@ -382,6 +382,13 @@ async def search_documents(
     """
     try:
         query = _validate_search_query(query)
+        # Feature flag: route through the Amul Beckn network (advisory:amul-vet)
+        # instead of direct Marqo when enabled. Same formatted-string contract.
+        from app.config import settings
+        if settings.enable_network:
+            from agents.tools.beckn_network import network_search_documents
+            logger.info("enable_network=on → vet-KB search via Beckn network query=%s", query)
+            return await network_search_documents(query, top_k)
         endpoint_url = os.getenv('MARQO_ENDPOINT_URL')
         if not endpoint_url:
             raise ValueError("Marqo endpoint URL is required")

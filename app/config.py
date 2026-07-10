@@ -317,6 +317,19 @@ class Settings(BaseSettings):
         "પેમેન્ટ મેળવવા માટે આપની KDCC બેંક શાખામાં આ કોડ રજૂ કરો:{code} .",
     )
 
+    # Beckn Network Feature Flag
+    # When enable_network is true, agent tools that have a Beckn equivalent
+    # (vet-KB search, union schemes, AI-call booking) route through the Amul
+    # Beckn network instead of the direct integrations (Marqo / Redis /
+    # PashuGPT). Default false → existing behaviour is unchanged.
+    enable_network: bool = os.getenv("ENABLE_NETWORK", "false").strip().lower() in {"1", "true", "yes", "y", "on"}
+    # Seeker BAP base URL for network discovery (vet KB, union schemes).
+    amul_network_url: str = os.getenv("AMUL_NETWORK_URL", "http://amul-bap-seeker:3000")
+    # Booking BPP base URL for network AI-call booking.
+    amul_booking_bpp_url: str = os.getenv("AMUL_BOOKING_BPP_URL", "http://amul-net-bpp-booking:6002")
+    # Timeout (seconds) for network calls from the agent tools.
+    amul_network_timeout_s: float = float(os.getenv("AMUL_NETWORK_TIMEOUT_S", "35"))
+
     class Config:
         env_file = ".env"
         extra = 'ignore'  # Ignore extra fields from .env

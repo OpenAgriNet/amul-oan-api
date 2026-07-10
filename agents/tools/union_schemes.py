@@ -100,6 +100,20 @@ async def get_union_scheme_data(ctx: RunContext[FarmerContext], scheme_name: str
                 target_unions,
             )
 
+    # Feature flag: route through the Amul Beckn network (schemes:amul-union)
+    # instead of the direct Redis cache when enabled. `settings` is imported at
+    # module level — do NOT re-import it inside the function, or it becomes a
+    # function-local name and earlier settings.* uses raise UnboundLocalError.
+    if settings.enable_network:
+        from agents.tools.beckn_network import network_union_schemes
+        primary_union = target_unions[0] if len(target_unions) == 1 else None
+        logger.info(
+            "enable_network=on → union schemes via Beckn network union=%s scheme=%s",
+            primary_union,
+            normalized_scheme_name,
+        )
+        return await network_union_schemes(normalized_scheme_name or "", union=primary_union)
+
     records: list[dict[str, Any]] = []
     for union_name in target_unions:
         try:
