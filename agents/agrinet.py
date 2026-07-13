@@ -49,6 +49,7 @@ def get_agrinet_instructions(ctx: RunContext):
         'ambiguity_hints': ambiguity_hints if ambiguity_hints else None,
         'response_max_chars': ctx.deps.get_response_max_chars(),
         'loan_max_amount': f"{int(settings.loan_max_amount):,}",
+        'loan_interest_rate_pct': f"{int(settings.loan_interest_rate_pct)}",
     }
 
     if ctx.deps.use_translation_pipeline:

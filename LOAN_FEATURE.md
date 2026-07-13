@@ -55,6 +55,8 @@ issued + stored (never actually sent).
 
 ## Notes / follow-ups
 
+- `LOAN_INTEREST_RATE_PCT=7` — annual interest rate quoted in the offer (waived on regular
+  repayment). Change the rate here; the tool message and system prompts both read it.
 - `LOAN_MAX_AMOUNT=5000`, `LOAN_MILK_THRESHOLD=3000`, `LOAN_MILK_LOOKBACK_DAYS=30`
   are configurable. Amount is fixed at the max (script: "up to ₹5,000"); switch to a
   milk-derived amount later if needed.

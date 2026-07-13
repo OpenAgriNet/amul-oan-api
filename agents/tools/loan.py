@@ -53,8 +53,9 @@ def _message_for(result: "le.LoanResult") -> str:
     if result.outcome == le.ELIGIBLE_OFFER:
         return (
             f"ELIGIBLE — OFFER ONLY (do NOT issue or mention a code yet, do NOT say it is approved). "
-            f"Tell the farmer they are eligible for a KDCC Bank micro loan of ₹{amt:,}, which is "
-            f"interest-free provided the EMI is repaid regularly. Ask whether they would like to avail "
+            f"Tell the farmer they are eligible for a KDCC Bank micro loan of ₹{amt:,}, which "
+            f"carries {int(settings.loan_interest_rate_pct)}% annual interest that is waived if the loan is repaid "
+            f"regularly. Ask whether they would like to avail "
             f"this loan. If the farmer agrees, call check_loan_eligibility again with confirmed=true. "
             f"If the farmer declines, do not call again — close the conversation politely."
         )
@@ -75,10 +76,11 @@ def _message_for(result: "le.LoanResult") -> str:
         )
     if result.outcome in (le.NOT_IN_BANK_LIST, le.MILK_BELOW_THRESHOLD):
         return (
-            "NOT ELIGIBLE. Tell the farmer they are not eligible for the micro loan on this platform, "
-            "but they can visit their local cooperative bank for assistance. Do NOT disclose the "
-            "specific reason for ineligibility. Also briefly tell them this micro-loan facility is "
-            "currently in a pilot phase."
+            "NOT ELIGIBLE. Tell the farmer they are not eligible for the micro loan on this platform. "
+            "If they ask where to go for a loan, direct them to their NEAREST cooperative bank branch — "
+            "do NOT name KDCC Bank or any specific bank, and do NOT refer them to the KDCC micro-loan "
+            "facility. Do NOT disclose the specific reason for ineligibility. Also briefly tell them "
+            "this micro-loan facility is currently in a pilot phase."
         )
     if result.outcome == le.NO_PHONE:
         return (
