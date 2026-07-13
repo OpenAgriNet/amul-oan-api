@@ -234,6 +234,7 @@ class Settings(BaseSettings):
     loan_resend_sms_on_request: bool = os.getenv("LOAN_RESEND_SMS_ON_REQUEST", "false").strip().lower() in {"1", "true", "yes", "on"}
     # Loan parameters (script: "up to ₹5,000 if last-month milk ≥ ₹3,000").
     loan_max_amount: float = float(os.getenv("LOAN_MAX_AMOUNT", "5000"))
+    loan_interest_rate_pct: float = float(os.getenv("LOAN_INTEREST_RATE_PCT", "7"))
     loan_milk_threshold: float = float(os.getenv("LOAN_MILK_THRESHOLD", "3000"))
     loan_milk_lookback_days: int = int(os.getenv("LOAN_MILK_LOOKBACK_DAYS", "30"))
     loan_code_length: int = int(os.getenv("LOAN_CODE_LENGTH", "6"))
