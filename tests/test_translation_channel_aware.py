@@ -37,7 +37,8 @@ def test_channel_resets_after_context_block():
 
 
 def test_chat_rules_constant_unchanged():
-    assert len(GU_PREFERRED_TRANSLATION_RULES) == 5
+    assert len(GU_PREFERRED_TRANSLATION_RULES) == 6
+    assert "feminine self-reference" in "\n".join(GU_PREFERRED_TRANSLATION_RULES)
     assert _VOICE_ONLY not in "\n".join(GU_PREFERRED_TRANSLATION_RULES)
     assert _VOICE_ONLY in "\n".join(VOICE_GU_PREFERRED_TRANSLATION_RULES)
 

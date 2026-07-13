@@ -97,3 +97,15 @@ def test_chat_leaves_nbsp_and_zwj_noise_unchanged():
     out = _norm(noisy, "chat")
     assert "\u00A0" in out
     assert "\u200D" in out
+
+
+def test_chat_enforces_feminine_self_reference_for_shakto():
+    out = _norm("હું કોઈ ચોક્કસ દવાના નામ અથવા ડોઝ જણાવી શકતો નથી.", "chat")
+    assert "શકતી નથી" in out
+    assert "શકતો નથી" not in out
+
+
+def test_voice_enforces_feminine_self_reference_for_shakto():
+    out = _norm("હું કોઈ ચોક્કસ દવાના નામ અથવા ડોઝ જણાવી શકતો નથી.", "voice")
+    assert "શકતી નથી" in out
+    assert "શકતો નથી" not in out

@@ -150,6 +150,7 @@ async def _pretranslate_oss(text: str, source_name: str, source_code: str, max_t
 
 GU_PREFERRED_TRANSLATION_RULES = [
     "Use farmer-preferred Gujarati livestock terms.",
+    "Sarlaben must always use feminine self-reference in Gujarati.",
     "Prefer 'બાવલું' over 'પાહો' for udder context.",
     "Prefer 'ધાર' over 'ટીપાં' for milk streams.",
     "Use 'ગાભણ' for pregnant livestock context.",
@@ -335,10 +336,10 @@ GU_GENDER_NEUTRAL_POST: list[tuple[re.Pattern, str]] = [
 ]
 
 
-# Feminine self-reference guard (voice only, §14). The assistant persona is female,
+# Feminine self-reference guard (§14). The assistant persona is female,
 # so first-person verb forms must use the feminine conjugation. Deterministic safety
-# net BEYOND the prompt rule, ported verbatim from voice-prod (restored after the #90
-# merge dropped it). Boundary-aware; only rewrites the verb ending after "હું".
+# net BEYOND the prompt rule. Boundary-aware; only rewrites the verb ending
+# after "હું" so it applies to assistant self-reference.
 GU_FEMININE_SELF_REFERENCE_REPLACEMENTS: list[tuple[re.Pattern, str]] = [
     (
         re.compile(
@@ -349,6 +350,18 @@ GU_FEMININE_SELF_REFERENCE_REPLACEMENTS: list[tuple[re.Pattern, str]] = [
     (
         re.compile(
             r"(^|[,।.!?]\s+)\s*હું(?P<body>[^.!?\n]{0,80}?)શકું\s+છું(?=\s|[,।.!?]|$)"
+        ),
+        r"\1હું\g<body>શકતી છું",
+    ),
+    (
+        re.compile(
+            r"(^|[,।.!?]\s+)\s*હું(?P<body>[^.!?\n]{0,80}?)શકતો\s+ન(?:થી|હીં|હિ)(?=\s|[,।.!?]|$)"
+        ),
+        r"\1હું\g<body>શકતી નથી",
+    ),
+    (
+        re.compile(
+            r"(^|[,।.!?]\s+)\s*હું(?P<body>[^.!?\n]{0,80}?)શકતો\s+છું(?=\s|[,।.!?]|$)"
         ),
         r"\1હું\g<body>શકતી છું",
     ),
@@ -387,6 +400,9 @@ def _post_normalize_gu_translation(
         out = _normalize_gu_body_terms(out)
     for pat, repl in GU_POST_REPLACEMENTS:
         out = re.sub(pat, repl, out)
+    # Keep assistant first-person Gujarati conjugation feminine on all channels.
+    for pat, repl in GU_FEMININE_SELF_REFERENCE_REPLACEMENTS:
+        out = pat.sub(repl, out)
     if _is_voice_channel():
         # Remove placeholder dashes without inventing a quantity (voice parity).
         out = re.sub(rf"([:：]\s*){_GU_PLACEHOLDER_RE}(?=\s|$)", r"\1", out)
@@ -394,12 +410,6 @@ def _post_normalize_gu_translation(
         # G2: deterministic gendered caller-address stripping before TTS (voice only).
         for pat, repl in GU_GENDER_NEUTRAL_POST:
             out = pat.sub(repl, out)
-        # Feminine self-reference guard (voice only): keep the female persona's
-        # first-person verb forms feminine. Runs after the address strip, matching
-        # voice-prod ordering.
-        for pat, repl in GU_FEMININE_SELF_REFERENCE_REPLACEMENTS:
-            out = pat.sub(repl, out)
-
         # Voice-only scaffold collapse: "Label: value" line prefixes become spoken flow.
         out = re.sub(r"(?m)^\s*[^\s:।.!?\n]{1,20}\s*:\s*", ", ", out)
         out = re.sub(r"^\s*,\s*", "", out)
