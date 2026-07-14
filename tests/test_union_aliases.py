@@ -14,7 +14,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.models.union import UnionName, canonical_union_name
+from app.models.union import UnionName, canonical_union_name, resolve_supported_unions
 import agents.tools.union_schemes as us
 
 
@@ -45,6 +45,15 @@ def test_alias_targets_are_valid_unions():
         assert canonical in valid
 
 
+def test_resolve_supported_unions_canonicalizes_and_deduplicates():
+    supported = {UnionName.BANAS.value, UnionName.KUTCH.value}
+    resolved = resolve_supported_unions(
+        ["banaskantha", "kutch", "sarhad", "banas", "dudhsagar"],
+        supported,
+    )
+    assert resolved == [UnionName.BANAS.value, UnionName.KUTCH.value]
+
+
 # ── tool resolves aliased unions to data ──────────────────────────────────────
 
 def _ctx(unions):
@@ -70,3 +79,20 @@ def test_tool_unsupported_union_still_fails(monkeypatch):
     out = asyncio.run(us.get_union_scheme_data(_ctx(["dudhsagar"]), None))
     # dudhsagar canonicalizes to mehsana, which has no scheme source -> unsupported
     assert "could not be determined" in out
+
+
+def test_prepare_and_runtime_agree_for_banaskantha(monkeypatch):
+    monkeypatch.setattr(us.settings, "scheme_require_union_auth", True)
+    sentinel = object()
+
+    async def fake_records(union_name):
+        assert union_name == UnionName.BANAS.value
+        return [{"scheme_title": "Banas Test Scheme"}]
+
+    monkeypatch.setattr(us, "get_cached_scheme_records_for_union", fake_records)
+
+    prepared = asyncio.run(us.prepare_get_union_scheme_data(_ctx(["banaskantha"]), sentinel))
+    assert prepared is sentinel
+
+    out = asyncio.run(us.get_union_scheme_data(_ctx(["banaskantha"]), None))
+    assert "Banas Test Scheme" in out
