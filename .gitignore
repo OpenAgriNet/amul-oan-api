@@ -190,4 +190,5 @@ cython_debug/
 # Local
 /scripts/*
 /exploration/*
-/evals/*
+/eval_outputs/
+/evals/__pycache__/
