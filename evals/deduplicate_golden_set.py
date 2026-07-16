@@ -74,6 +74,19 @@ class MergeRecord:
 class DedupState:
     merges: list[MergeRecord] = field(default_factory=list)
     gemma_review: list[dict[str, Any]] = field(default_factory=list)
+    audit_rows: list[dict[str, Any]] = field(default_factory=list)
+
+
+
+def parse_boolish(value: Any) -> bool:
+    """Parse LLM/JSON bools without treating string false as truthy."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "y"}
+    return False
 
 
 def normalize_question(text: str) -> str:
@@ -351,18 +364,29 @@ def stage_gemma(
                 api_key=api_key,
                 timeout=timeout,
             )
-            duplicate = bool(verdict.get("duplicate"))
+            duplicate = parse_boolish(verdict.get("duplicate"))
             confidence = float(verdict.get("confidence") or 0.0)
             reason = str(verdict.get("reason") or "")
         except Exception as exc:
-            state.gemma_review.append(
-                {
+            err_rec = {
                     "row_id_a": rows[i].row_id,
                     "row_id_b": rows[j].row_id,
                     "question_a": rows[i].question_gu,
                     "question_b": rows[j].question_gu,
                     "string_score": str_sc,
                     "error": str(exc),
+                }
+            state.gemma_review.append(err_rec)
+            state.audit_rows.append(
+                {
+                    **err_rec,
+                    "stage": "gemma",
+                    "action": "error",
+                    "kept_row_id": "",
+                    "dropped_row_id": "",
+                    "gemma_duplicate": "",
+                    "gemma_confidence": "",
+                    "gemma_reason": "",
                 }
             )
             continue
@@ -392,9 +416,27 @@ def stage_gemma(
                     gemma_reason=reason,
                 )
             )
+            state.audit_rows.append(
+                {
+                    **record,
+                    "stage": "gemma",
+                    "action": "merged",
+                    "kept_row_id": rows[keep].row_id,
+                    "dropped_row_id": rows[drop].row_id,
+                }
+            )
             merged += 1
         else:
             state.gemma_review.append(record)
+            state.audit_rows.append(
+                {
+                    **record,
+                    "stage": "gemma",
+                    "action": "kept_distinct",
+                    "kept_row_id": "",
+                    "dropped_row_id": "",
+                }
+            )
     return merged
 
 
@@ -476,10 +518,59 @@ def write_outputs(
 
     review_path = output_dir / "GoldenSet_review.csv"
     if state.gemma_review:
+        review_fields: list[str] = []
+        for row in state.gemma_review:
+            for key in row:
+                if key not in review_fields:
+                    review_fields.append(key)
         with review_path.open("w", encoding="utf-8-sig", newline="") as handle:
-            writer = csv.DictWriter(handle, fieldnames=list(state.gemma_review[0].keys()))
+            writer = csv.DictWriter(handle, fieldnames=review_fields, extrasaction="ignore")
             writer.writeheader()
             writer.writerows(state.gemma_review)
+
+    audit_rows = list(state.audit_rows)
+    for merge in state.merges:
+        if merge.stage == "gemma":
+            continue
+        audit_rows.append(
+            {
+                "row_id_a": merge.dropped_row_id,
+                "row_id_b": merge.kept_row_id,
+                "question_a": "",
+                "question_b": "",
+                "string_score": merge.string_score,
+                "vector_score": merge.vector_score,
+                "stage": merge.stage,
+                "action": "merged",
+                "kept_row_id": merge.kept_row_id,
+                "dropped_row_id": merge.dropped_row_id,
+                "gemma_duplicate": merge.gemma_duplicate,
+                "gemma_confidence": merge.gemma_confidence,
+                "gemma_reason": merge.gemma_reason,
+                "error": "",
+            }
+        )
+    audit_path = output_dir / "GoldenSet_merge_audit.csv"
+    audit_fields = [
+        "row_id_a",
+        "row_id_b",
+        "question_a",
+        "question_b",
+        "stage",
+        "action",
+        "kept_row_id",
+        "dropped_row_id",
+        "string_score",
+        "vector_score",
+        "gemma_duplicate",
+        "gemma_confidence",
+        "gemma_reason",
+        "error",
+    ]
+    with audit_path.open("w", encoding="utf-8-sig", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=audit_fields, extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows(audit_rows)
 
     summary_path = output_dir / "GoldenSet_dedup_summary.json"
     summary = {
@@ -489,6 +580,7 @@ def write_outputs(
         "duplicates_removed": len(rows) - len(deduped_rows),
         "merge_events": len(state.merges),
         "review_pairs": len(state.gemma_review),
+        "audit_rows": len(audit_rows),
         "stages": {
             stage: sum(1 for m in state.merges if m.stage == stage)
             for stage in ["exact", "string", "vector", "gemma"]
@@ -587,7 +679,29 @@ def main() -> None:
                 reverse=True,
             )
             limited = ranked[: args.max_gemma_pairs]
-            print(f"Gemma judge on {len(limited)} pairs via {base_url} model={model}")
+            skipped = ranked[args.max_gemma_pairs :]
+            for i, j in skipped:
+                skip_rec = {
+                    "row_id_a": rows[i].row_id,
+                    "row_id_b": rows[j].row_id,
+                    "question_a": rows[i].question_gu,
+                    "question_b": rows[j].question_gu,
+                    "string_score": string_score(rows[i].normalized, rows[j].normalized),
+                    "stage": "gemma_cap",
+                    "action": "skipped_cap",
+                    "kept_row_id": "",
+                    "dropped_row_id": "",
+                    "gemma_duplicate": "",
+                    "gemma_confidence": "",
+                    "gemma_reason": f"beyond --max-gemma-pairs={args.max_gemma_pairs}",
+                    "error": "",
+                }
+                state.gemma_review.append(skip_rec)
+                state.audit_rows.append(skip_rec)
+            print(
+                f"Gemma judge on {len(limited)} pairs via {base_url} model={model} "
+                f"(skipped_cap={len(skipped)})"
+            )
             gemma_n = stage_gemma(
                 rows,
                 uf,

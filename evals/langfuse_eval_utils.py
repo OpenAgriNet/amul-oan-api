@@ -1,5 +1,5 @@
 """
-Shared helpers for Langfuse-based offline evaluation scripts.
+Shared helpers for Langfuse-based offline answer-collection scripts (transport/trace export for human review — not an automated judge).
 
 Uses Langfuse Python SDK 4.x public REST API clients exposed on Langfuse().api:
   - api.health.health()
@@ -526,6 +526,7 @@ def flatten_json_artifact_for_team_csv(data: dict[str, Any], query_index: int) -
         or data.get("final_answer")
         or data.get("chat_response")
     )
+    # success = transport/trace collection OK — not answer-quality judgment
     status = "failed" if error_text and not has_answer else "success"
     if data.get("langfuse_error") and has_answer:
         status = "partial"
@@ -622,7 +623,16 @@ def write_team_shareable_csv(
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    upper = max_queries if max_queries is not None else 10_000
+    if max_queries is not None:
+        upper = max_queries
+    else:
+        upper = 0
+        if raw_json_dir.exists():
+            for path in raw_json_dir.glob('query_*.json'):
+                try:
+                    upper = max(upper, int(path.stem.split('_')[1]))
+                except (IndexError, ValueError):
+                    pass
     rows: list[dict[str, Any]] = []
     for index in range(1, upper + 1):
         json_path = raw_json_dir / f"query_{index:04d}.json"
@@ -658,9 +668,15 @@ def collect_retry_indices(
     raw_json_dir: Path,
     *,
     team_csv_path: Optional[Path] = None,
-    max_index: int = 200,
+    max_index: Optional[int] = None,
+    include_missing: bool = False,
 ) -> list[int]:
-    """Indices to re-run: non-success team rows and/or raw JSON artifacts that need retry."""
+    """Indices to re-run: failed/partial team rows and/or incomplete existing raw JSON.
+
+    By default, missing query_XXXX.json files are NOT treated as failed (avoids
+    flooding chat after a --limit smoke test). Pass include_missing=True only when
+    intentionally backfilling a contiguous range.
+    """
     raw_json_dir = Path(raw_json_dir)
     indices: set[int] = set()
 
@@ -676,14 +692,26 @@ def collect_retry_indices(
                     except (KeyError, ValueError):
                         pass
 
-    for index in range(1, max_index + 1):
-        json_path = raw_json_dir / f"query_{index:04d}.json"
-        if not json_path.exists():
-            indices.add(index)
+    existing = sorted(raw_json_dir.glob("query_*.json")) if raw_json_dir.exists() else []
+    inferred_max = 0
+    for json_path in existing:
+        try:
+            inferred_max = max(inferred_max, int(json_path.stem.split("_")[1]))
+        except (IndexError, ValueError):
             continue
         data = json.loads(json_path.read_text(encoding="utf-8"))
         if artifact_needs_retry(data):
-            indices.add(index)
+            try:
+                indices.add(int(json_path.stem.split("_")[1]))
+            except (IndexError, ValueError):
+                pass
+
+    if include_missing:
+        upper = max_index if max_index is not None else inferred_max
+        for index in range(1, upper + 1):
+            json_path = raw_json_dir / f"query_{index:04d}.json"
+            if not json_path.exists():
+                indices.add(index)
 
     return sorted(indices)
 
@@ -728,9 +756,9 @@ def rebuild_detail_csv_from_raw(
     raw_json_dir: Path,
     output_path: Path,
     *,
-    max_index: int = 200,
+    max_index: Optional[int] = None,
 ) -> int:
-    """Rewrite detail eval CSV from all query_XXXX.json files (1..max_index)."""
+    """Rewrite detail collection CSV from existing query_XXXX.json files."""
     import csv
 
     raw_json_dir = Path(raw_json_dir)
@@ -738,11 +766,16 @@ def rebuild_detail_csv_from_raw(
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     rows: list[dict[str, Any]] = []
-    for index in range(1, max_index + 1):
-        json_path = raw_json_dir / f"query_{index:04d}.json"
-        if not json_path.exists():
-            continue
-        data = json.loads(json_path.read_text(encoding="utf-8"))
+    if max_index is None:
+        paths = sorted(raw_json_dir.glob('query_*.json')) if raw_json_dir.exists() else []
+    else:
+        paths = [
+            raw_json_dir / f'query_{index:04d}.json'
+            for index in range(1, max_index + 1)
+            if (raw_json_dir / f'query_{index:04d}.json').exists()
+        ]
+    for json_path in paths:
+        data = json.loads(json_path.read_text(encoding='utf-8'))
         rows.append(artifact_to_detail_row(data))
 
     with output_path.open("w", encoding="utf-8", newline="") as handle:

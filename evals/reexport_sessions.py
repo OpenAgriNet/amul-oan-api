@@ -33,11 +33,11 @@ from evals.langfuse_eval_utils import (  # noqa: E402
 )
 
 
-def _save_raw_json(index: int, payload: dict) -> None:
+def _save_raw_json(index: int, payload: dict, raw_json_dir: Path) -> None:
     import json
 
-    RAW_JSON_DIR.mkdir(parents=True, exist_ok=True)
-    path = RAW_JSON_DIR / f"query_{index:04d}.json"
+    raw_json_dir.mkdir(parents=True, exist_ok=True)
+    path = raw_json_dir / f"query_{index:04d}.json"
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
@@ -63,13 +63,21 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--detail-csv",
         default=str(DEFAULT_OUTPUT_DIR / "langfuse_queries_eval.csv"),
     )
-    parser.add_argument("--max-index", type=int, default=200)
+    parser.add_argument("--max-index", type=int, default=None)
+    parser.add_argument(
+        "--raw-json-dir",
+        default=None,
+        help="Raw JSON dir (default: eval_outputs/langfuse_raw_json; use golden_langfuse_raw_json for golden runs)",
+    )
     return parser
 
 
 def main() -> None:
     args = build_arg_parser().parse_args()
     api = get_langfuse_api()
+    raw_json_dir = Path(args.raw_json_dir) if args.raw_json_dir else RAW_JSON_DIR
+    if not raw_json_dir.is_absolute():
+        raw_json_dir = _REPO_ROOT / raw_json_dir
 
     items: list[tuple[int, str, str]] = []
     if args.from_team_csv:
@@ -100,7 +108,7 @@ def main() -> None:
             reconstructed = reconstruct_session(api, session_id)
             if question_gu:
                 reconstructed["question_gu"] = question_gu
-            _save_raw_json(query_index, reconstructed)
+            _save_raw_json(query_index, reconstructed, raw_json_dir)
             succeeded += 1
             print(f"Q{query_index} OK session_id={session_id}")
         except Exception as exc:
@@ -114,8 +122,8 @@ def main() -> None:
     if not detail.is_absolute():
         detail = _REPO_ROOT / detail
 
-    detail_count = rebuild_detail_csv_from_raw(RAW_JSON_DIR, detail, max_index=args.max_index)
-    team_count = write_team_shareable_csv(RAW_JSON_DIR, shareable, max_queries=args.max_index)
+    detail_count = rebuild_detail_csv_from_raw(raw_json_dir, detail, max_index=args.max_index)
+    team_count = write_team_shareable_csv(raw_json_dir, shareable, max_queries=args.max_index)
 
     print("")
     print(f"Re-exported: {succeeded} ok, {failed} failed")

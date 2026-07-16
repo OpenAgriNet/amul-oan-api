@@ -1,5 +1,9 @@
 """
-Run queries from a CSV against dev chat, then export eval rows from Langfuse traces.
+Run queries from a CSV against dev chat, then export collection rows from Langfuse traces.
+
+This is an answer-collection harness for human review — not an automated evaluator.
+Exported status=success means the chat/trace path completed without a transport error;
+it does not judge answer quality.
 
 You do NOT need session_id in queries.csv — a fresh UUID is generated per row and sent
 to /api/chat so Langfuse groups traces under that session.
@@ -16,7 +20,7 @@ Usage (from repo root):
     # Or API-key auth (WhatsApp-style):
     python evals/batch_langfuse_queries.py evals/queries.csv --limit 3 \\
         --chat-base-url https://<dev-api-host> \\
-        --chat-api-key "<key>" --user-phone 7567376166
+        --chat-api-key "<key>" --user-phone 9876543210
 
     # Re-export only (CSV must have session_id column — no chat calls):
     python evals/batch_langfuse_queries.py evals/sessions.csv --langfuse-only
@@ -236,13 +240,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--jwt-token", default=os.getenv("EVAL_CHAT_JWT"), help="Bearer JWT for /api/chat")
     parser.add_argument(
         "--chat-api-key",
-        default=os.getenv("EVAL_CHAT_API_KEY") or os.getenv("CHAT_API_KEY", "test123"),
-        help="X-API-Key (default: EVAL_CHAT_API_KEY, CHAT_API_KEY, or test123)",
+        default=os.getenv("EVAL_CHAT_API_KEY") or os.getenv("CHAT_API_KEY") or None,
+        help="X-API-Key (EVAL_CHAT_API_KEY or CHAT_API_KEY). No hardcoded default.",
     )
     parser.add_argument(
         "--user-phone",
-        default=os.getenv("EVAL_CHAT_USER_PHONE", "9876543210"),
-        help="X-User-Phone for farmer context (default: EVAL_CHAT_USER_PHONE or 9876543210)",
+        default=os.getenv("EVAL_CHAT_USER_PHONE"),
+        help="X-User-Phone for API-key auth (EVAL_CHAT_USER_PHONE). Use a synthetic test phone only.",
     )
     parser.add_argument("--source-lang", default="gu")
     parser.add_argument("--target-lang", default="gu")
@@ -283,13 +287,16 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--retry-failed",
         action="store_true",
-        help="Re-run indices marked failed/partial in team CSV or incomplete raw JSON",
+        help="Re-run failed/partial team-CSV rows or incomplete existing raw JSON (never invents never-run indices)",
     )
     parser.add_argument(
         "--max-index",
         type=int,
-        default=200,
-        help="Highest query index when rebuilding CSVs from raw JSON (default: 200)",
+        default=None,
+        help=(
+            "Highest query index when scanning raw JSON / --retry-failed "
+            "(default: infer from existing query_*.json files)"
+        ),
     )
     parser.add_argument(
         "--raw-json-dir",
@@ -388,8 +395,16 @@ async def _run_batch(args: argparse.Namespace) -> int:
                 )
             print(f"[{index}/{total}] completed")
     else:
-        if not args.jwt_token and not args.chat_api_key:
-            raise LangfuseEvalError("Provide --jwt-token or --chat-api-key for chat authentication.")
+        has_jwt = bool(args.jwt_token)
+        has_key = bool(args.chat_api_key)
+        if has_jwt == has_key:
+            raise LangfuseEvalError(
+                "Provide exactly one of --jwt-token or --chat-api-key for chat authentication."
+            )
+        if has_key and not args.user_phone:
+            raise LangfuseEvalError(
+                "Provide --user-phone (synthetic test phone) when using --chat-api-key."
+            )
 
         items = _read_questions_indexed(
             csv_path,
@@ -415,8 +430,8 @@ async def _run_batch(args: argparse.Namespace) -> int:
                     target_lang=args.target_lang,
                     use_translation_pipeline=use_translation,
                     jwt_token=args.jwt_token,
-                    chat_api_key=args.chat_api_key,
-                    user_phone=args.user_phone,
+                    chat_api_key=(None if args.jwt_token else args.chat_api_key),
+                    user_phone=(None if args.jwt_token else args.user_phone),
                     timeout_s=args.chat_timeout,
                 )
                 chat_response = str(chat_payload.get("response") or "")
