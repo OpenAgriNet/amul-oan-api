@@ -13,6 +13,11 @@ from agents.tools.search import search_documents
 from agents.tools.union_schemes import get_union_scheme_data, prepare_get_union_scheme_data
 from agents.tools.loan import check_loan_eligibility, prepare_check_loan_eligibility
 from agents.tools.scheme_details import get_scheme_details
+from agents.tools.vistaar import (
+    get_vistaar_weather,
+    get_vistaar_mandi_prices,
+    get_vistaar_scheme_info,
+)
 
 TOOLS = [
     # # Search Terms
@@ -66,6 +71,26 @@ TOOLS = [
     # Scheme details via Amul Beckn BAP (Bharat Vistaar)
     Tool(
         get_scheme_details,
+        takes_ctx=False,
+        docstring_format='auto',
+        require_parameter_descriptions=True,
+    ),
+
+    # Bharat Vistaar discovery — weather, mandi prices, scheme info (Beckn shortcut)
+    Tool(
+        get_vistaar_weather,
+        takes_ctx=False,
+        docstring_format='auto',
+        require_parameter_descriptions=True,
+    ),
+    Tool(
+        get_vistaar_mandi_prices,
+        takes_ctx=False,
+        docstring_format='auto',
+        require_parameter_descriptions=True,
+    ),
+    Tool(
+        get_vistaar_scheme_info,
         takes_ctx=False,
         docstring_format='auto',
         require_parameter_descriptions=True,
