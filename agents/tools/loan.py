@@ -64,8 +64,8 @@ def _message_for(result: "le.LoanResult") -> str:
             f"APPROVED. Confirm to the farmer that their KDCC Bank micro loan of up to ₹{amt:,} has been "
             f"approved/processed. Their loan reference code is {result.code}, and it has been sent to "
             f"their registered mobile number by SMS. They should visit their KDCC cooperative bank branch "
-            f"and present this code, and must carry their Aadhaar card, their milk cooperative society "
-            f"membership certificate, and a one-month milk deposit transaction statement. Also briefly "
+            f"and present this code, and must carry only two documents: their Aadhaar card and their "
+            f"proof of milk cooperative society membership. Also briefly "
             f"tell them this micro-loan facility is currently in a pilot phase."
         )
     if result.outcome == le.ALREADY_ISSUED:
