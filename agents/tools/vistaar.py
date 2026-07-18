@@ -30,6 +30,13 @@ VISTAAR_TIMEOUT_S = float(os.getenv("VISTAAR_TIMEOUT_S", "40"))
 DEFAULT_LAT = float(os.getenv("VISTAAR_DEFAULT_LAT", "22.55"))
 DEFAULT_LON = float(os.getenv("VISTAAR_DEFAULT_LON", "72.93"))
 
+# Route BV searches through Amul's Beckn seeker (canonical N-N: the seeker signs
+# as bap.amul-net.internal -> gateway -> BH BPP, then returns the on_search it
+# gets back). Set VISTAAR_SEEKER_URL="" to fall back to calling the BV sandbox
+# BAP directly (VISTAAR_BAP_URL, sync inline).
+VISTAAR_SEEKER_URL = os.getenv("VISTAAR_SEEKER_URL", "http://amul-bap-seeker:3000").rstrip("/")
+VISTAAR_LEG = os.getenv("VISTAAR_LEG", "vistaar")
+
 # BV's get_scheme_info codes (domain schemes:vistaar, category schemes-agri).
 SCHEME_CODES = {
     "kcc", "pmkisan", "pmfby", "shc", "pmksy", "sathi", "pmasha", "aif",
@@ -71,9 +78,23 @@ def _items(body: dict) -> list[dict]:
 
 
 async def _vistaar_search(intent: dict) -> list[dict]:
-    payload = {"context": _context(), "message": {"intent": intent}}
     async with httpx.AsyncClient(timeout=VISTAAR_TIMEOUT_S) as client:
-        r = await client.post(f"{VISTAAR_BAP_URL}/search", json=payload)
+        if VISTAAR_SEEKER_URL:
+            # Canonical Beckn path: hand the raw intent to the seeker, which
+            # signs + routes it to BH and returns the on_search it gets back
+            # under results.<leg>.
+            r = await client.post(
+                f"{VISTAAR_SEEKER_URL}/search",
+                json={"intent": intent, "legs": [VISTAAR_LEG]},
+            )
+            r.raise_for_status()
+            on_search = (r.json().get("results") or {}).get(VISTAAR_LEG)
+            return _items(on_search) if isinstance(on_search, dict) else []
+        # Fallback: call the BV sandbox BAP directly (sync inline on_search).
+        r = await client.post(
+            f"{VISTAAR_BAP_URL}/search",
+            json={"context": _context(), "message": {"intent": intent}},
+        )
         r.raise_for_status()
         return _items(r.json())
 
@@ -111,16 +132,15 @@ def _format_items(items: list[dict], max_items: int = 20) -> str:
     return "\n\n".join(blocks)
 
 
-async def get_vistaar_weather(latitude: float | None = None, longitude: float | None = None) -> str:
-    """Get the weather forecast for a location from Bharat Vistaar (Mausamgram).
+async def get_vistaar_weather() -> str:
+    """Get the current weather forecast for the Amul region (Anand, Gujarat) from
+    Bharat Vistaar (Mausamgram). Call this directly for any weather question — no
+    location argument is needed; the location is fixed to Anand.
 
-    Args:
-        latitude: location latitude. Defaults to the Amul region if omitted.
-        longitude: location longitude. Defaults to the Amul region if omitted.
-    Returns a day-wise forecast (rainfall, min/max temp, humidity, etc.).
+    Returns a day-wise forecast (rainfall, min/max temp, humidity, wind, etc.).
     """
-    lat = latitude if latitude is not None else DEFAULT_LAT
-    lon = longitude if longitude is not None else DEFAULT_LON
+    lat = DEFAULT_LAT
+    lon = DEFAULT_LON
     intent = {
         "category": {"descriptor": {"name": "Weather-Forecast-Mausamgram", "code": "WFC"}},
         "fulfillment": {"stops": [{"location": {"lat": lat, "lon": lon}}]},
@@ -135,27 +155,22 @@ async def get_vistaar_weather(latitude: float | None = None, longitude: float | 
     return _format_items(items)
 
 
-async def get_vistaar_mandi_prices(
-    commodity_name: str,
-    latitude: float | None = None,
-    longitude: float | None = None,
-    location_name: str = "",
-) -> str:
-    """Get live mandi (market) prices for a commodity from Bharat Vistaar.
+async def get_vistaar_mandi_prices(commodity_name: str) -> str:
+    """Get live mandi (market) prices for a commodity near the Amul region
+    (Anand, Gujarat) from Bharat Vistaar. Call this directly with just the
+    commodity — do NOT ask the user for a market or city; the location is fixed
+    to Anand.
 
     Args:
-        commodity_name: e.g. "Onion", "Wheat", "Cotton".
-        latitude: location latitude. Defaults to the Amul region if omitted.
-        longitude: location longitude. Defaults to the Amul region if omitted.
-        location_name: optional human-readable location.
-    Returns nearby market prices (min / max / modal, market, arrival date).
+        commodity_name: the commodity to price, e.g. "Tomato", "Onion", "Wheat".
+    Returns market prices (min / max / modal, market, arrival date).
     """
-    lat = latitude if latitude is not None else DEFAULT_LAT
-    lon = longitude if longitude is not None else DEFAULT_LON
+    lat = DEFAULT_LAT
+    lon = DEFAULT_LON
     intent = {
         "category": {"descriptor": {"code": "price-discovery"}},
         "item": {"descriptor": {"name": commodity_name}},
-        "fulfillment": {"end": {"location": {"descriptor": {"name": location_name}, "gps": f"{lat},{lon}"}}},
+        "fulfillment": {"end": {"location": {"descriptor": {"name": "Anand"}, "gps": f"{lat},{lon}"}}},
     }
     try:
         items = await _vistaar_search(intent)
@@ -168,11 +183,15 @@ async def get_vistaar_mandi_prices(
 
 
 async def get_vistaar_scheme_info(scheme_code: str) -> str:
-    """Get information about a central agriculture scheme from Bharat Vistaar.
+    """Get information about a CENTRAL / national government agriculture scheme
+    (e.g. KCC / Kisan Credit Card, PM-KISAN, PMFBY, Soil Health Card) from Bharat
+    Vistaar. Use this for ANY central government scheme a farmer asks about — do
+    NOT use get_union_scheme_data for these (that is only for Amul dairy-union
+    welfare schemes).
 
     Args:
-        scheme_code: one of kcc, pmkisan, pmfby, shc, pmksy, sathi, pmasha, aif,
-            smam, pdmc, pkvy, nfsm, rad, ffs, nbhm.
+        scheme_code: one of kcc (Kisan Credit Card), pmkisan, pmfby, shc, pmksy,
+            sathi, pmasha, aif, smam, pdmc, pkvy, nfsm, rad, ffs, nbhm.
     Returns the scheme's eligibility, benefits, and application details.
     """
     code = (scheme_code or "").strip().lower()

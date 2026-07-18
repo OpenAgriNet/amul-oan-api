@@ -69,12 +69,15 @@ TOOLS = [
     ),
 
     # Scheme details via Amul Beckn BAP (Bharat Vistaar)
-    Tool(
-        get_scheme_details,
-        takes_ctx=False,
-        docstring_format='auto',
-        require_parameter_descriptions=True,
-    ),
+    # DISABLED (2026-07-17): superseded by get_vistaar_scheme_info, which routes
+    # schemes through the canonical Beckn seeker (N-N). Re-enabling this would
+    # let the LLM pick the old direct-sandbox path (bap.dev.amulai.in) instead.
+    # Tool(
+    #     get_scheme_details,
+    #     takes_ctx=False,
+    #     docstring_format='auto',
+    #     require_parameter_descriptions=True,
+    # ),
 
     # Bharat Vistaar discovery — weather, mandi prices, scheme info (Beckn shortcut)
     Tool(
