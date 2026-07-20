@@ -59,3 +59,14 @@ def test_gujarati_mini_glossary_remains_unchanged():
     assert f"{pair.en} -> {pair.gu}" in mini
 
 
+def test_hindi_glossary_load_warns_when_file_missing(caplog):
+    missing_file = "missing_hindi_glossary_for_test.json"
+    with caplog.at_level("WARNING"):
+        loaded = terms_module._load_glossary_file(missing_file, warn_on_fail=True)
+    assert loaded == []
+    assert any(
+        "Glossary file missing_hindi_glossary_for_test.json not found" in record.message
+        for record in caplog.records
+    )
+
+

@@ -4,8 +4,11 @@ from enum import Enum
 from pydantic import BaseModel, Field, field_validator
 from rapidfuzz import fuzz
 import re
+from helpers.utils import get_logger
 
-def _load_glossary_file(filename: str) -> list[dict]:
+logger = get_logger(__name__)
+
+def _load_glossary_file(filename: str, *, warn_on_fail: bool = False) -> list[dict]:
     candidates = [
         Path.cwd() / "assets" / filename,
         Path(__file__).resolve().parents[2] / "assets" / filename,
@@ -16,14 +19,22 @@ def _load_glossary_file(filename: str) -> list[dict]:
                 with path.open("r", encoding="utf-8") as f:
                     loaded = json.load(f)
                     return loaded if isinstance(loaded, list) else []
-            except Exception:
+            except Exception as e:
+                if warn_on_fail:
+                    logger.warning("Failed loading glossary file %s at %s: %s", filename, path, e)
                 return []
+    if warn_on_fail:
+        logger.warning(
+            "Glossary file %s not found in expected locations: %s",
+            filename,
+            ", ".join(str(p) for p in candidates),
+        )
     return []
 
 
 # Load term pairs from JSON files with UTF-8 encoding.
 term_pairs = _load_glossary_file("glossary_terms.json")
-hindi_term_pairs = _load_glossary_file("glossary_terms_hindi_openrouter.json")
+hindi_term_pairs = _load_glossary_file("glossary_terms_hindi_openrouter.json", warn_on_fail=True)
 
 
 def _load_gu_term_policy() -> dict:
