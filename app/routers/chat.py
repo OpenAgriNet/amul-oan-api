@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, BackgroundTasks
 from fastapi.responses import JSONResponse, StreamingResponse
 from app.auth.jwt_auth import get_chat_user
 from app.services.chat import stream_chat_messages
-from app.services.pipeline_router import resolve_pipeline_variant
+from app.llm_core import split as _llm_split
 from app.config import settings
 from app.utils import _get_message_history
 from app.models.requests import ChatRequest
@@ -36,17 +36,13 @@ async def chat_endpoint(
     history = await _get_message_history(session_id)
     logger.debug(f"Retrieved message history for session {session_id} - length: {len(history)}")
 
-    # Sticky per-session routing (no-op while OSS_PIPELINE_PCT=0).
-    # PROFILES_ENABLED off (default): legacy OSS/legacy variant bit from
-    # pipeline_router. On: the weighted named-profile split (llm_core), mapped
-    # back to the same variant string for the unchanged downstream path — with the
-    # shim's seeded 2-profile config this is distribution-identical (same
-    # bit-compatible bucket, same sticky assignment).
-    if settings.profiles_enabled:
-        from app.llm_core import split as _llm_split
-        pipeline_variant = await _llm_split.resolve_variant(session_id)
-    else:
-        pipeline_variant = await resolve_pipeline_variant(session_id)
+    # Sticky per-session routing via the unified weighted named-profile split
+    # (the only path). The resolved profile is mapped back to the legacy
+    # "oss"/"legacy" variant string the downstream chat pipeline branches on. With
+    # the env-synthesized config (OSS_PIPELINE_PCT -> profile weights) this is the
+    # same bit-compatible sha256 bucket + Redis-sticky assignment as before, so it
+    # is distribution-identical to the removed pipeline_router.
+    pipeline_variant = await _llm_split.resolve_variant(session_id)
 
     message_stream = stream_chat_messages(
         query=request.query,

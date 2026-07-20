@@ -101,9 +101,9 @@ def test_resolve_chain_populates_profile_and_step(monkeypatch):
 def test_flags_present_in_metadata():
     trace.begin("legacy")
     flags = trace.current().to_metadata()["flags"]
+    # P4 removed the llm_core/profiles kill-switches; only the operational triggers remain.
     assert set(flags) == {
-        "llm_core_enabled", "profiles_enabled", "health_breaker_enabled",
-        "health_poller_enabled", "concurrency_gauge_enabled",
+        "health_breaker_enabled", "health_poller_enabled", "concurrency_gauge_enabled",
     }
 
 
@@ -149,8 +149,12 @@ def test_fallback_walker_records_served_index(monkeypatch):
     import asyncio
 
     fb = pytest.importorskip("app.services.fallback")
-    oss = fb.Attempt("oss", object(), "gemma", "vllm", "http://oss:8020/v1", None)
-    managed = fb.Attempt("managed", object(), "gpt-4.1", "openai", "managed", None)
+    # P4 removed the hardwired ``Attempt``; the walkers now consume MaterializedTier.
+    from app.llm_core.factory import MaterializedTier
+    oss = MaterializedTier(kind="oss", handle=object(), model_name="gemma",
+                           provider="vllm", endpoint="http://oss:8020/v1", timeout=None)
+    managed = MaterializedTier(kind="managed", handle=object(), model_name="gpt-4.1",
+                               provider="openai", endpoint="managed", timeout=None)
 
     async def _chain(**kw):
         return [oss, managed]
@@ -225,7 +229,9 @@ def test_populate_sets_profile_and_per_step_primary_tiers(monkeypatch):
     assert md["steps"]["agent"]["provider"] == "vllm"
     assert md["steps"]["agent"]["model"] == "gemma"
     assert md["steps"]["moderation"]["model"] == "gemma"
-    assert len(md["flags"]) == 5
+    # P4 removed the llm_core/profiles kill-switches; only the 3 operational
+    # trigger flags (health-breaker/poller, concurrency-gauge) remain.
+    assert len(md["flags"]) == 3
 
 
 def test_compact_metadata_produces_short_flat_keys(monkeypatch):
@@ -238,9 +244,10 @@ def test_compact_metadata_produces_short_flat_keys(monkeypatch):
 
     m = trace.compact_metadata(pt)
     assert m["pipeline_profile"] == "oss"
-    # all-on flags (test env) -> the 5 short names
+    # all-on flags (test env) -> the 3 short names. P4 removed the llm_core/profiles
+    # kill-switches (unified pipeline is the only path), leaving the operational triggers.
     assert set(m["pipeline_flags"].split(",")) == {
-        "llm_core", "profiles", "health_breaker", "health_poller", "concurrency_gauge",
+        "health_breaker", "health_poller", "concurrency_gauge",
     }
     assert m["pc_agent"] == "vllm:gemma@http://oss:8020/v1#oss(8000ms)"
     assert m["pc_moderation"] == "vllm:gemma@http://oss:8020/v1#oss(8000ms)"
