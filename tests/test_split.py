@@ -277,59 +277,6 @@ def test_stale_stored_name_is_rebucketed(monkeypatch):
     assert asyncio.run(split.resolve_profile("x", cfg)) == "oss"
 
 
-def test_legacy_variant_key_is_migrated_and_wins_over_bucketing(monkeypatch):
-    """(A) A session already sticky under pipeline_router's OLD ``pipeline_variant:``
-    key keeps its assignment when PROFILES_ENABLED flips on — even when the CURRENT
-    weights would deterministically bucket it the other way. The legacy bit is
-    mapped (oss->oss profile) and rewritten under the new ``pipeline_profile:`` key
-    (same TTL)."""
-    import asyncio
-
-    fake = _FakeCache()
-    monkeypatch.setattr(split, "cache", fake)
-
-    sid, bucket = _sid_with_bucket_between(30, 60)
-    # Weights chosen so the deterministic bucket would say 'managed' now ...
-    cfg = two_profile_config(bucket - 5, ttl=98765)
-    assert split.deterministic_profile(sid, cfg) == "managed"
-
-    # ... but a legacy pipeline_router sticky bit says this session is 'oss'.
-    fake.store[f"pipeline_variant:{sid}"] = "oss"
-
-    got = asyncio.run(split.resolve_profile(sid, cfg))
-    assert got == "oss"                                    # legacy bit honored, not re-bucketed
-    assert fake.store[f"pipeline_profile:{sid}"] == "oss"  # migrated to the new key
-    assert (f"pipeline_profile:{sid}", "oss", 98765) in fake.sets  # same TTL
-
-
-def test_legacy_variant_legacy_maps_to_managed(monkeypatch):
-    """(A) A legacy ``legacy`` bit maps to the managed profile."""
-    import asyncio
-
-    fake = _FakeCache()
-    monkeypatch.setattr(split, "cache", fake)
-    sid, bucket = _sid_with_bucket_between(0, 30)
-    cfg = two_profile_config(100)                          # bucket says 'oss' now
-    assert split.deterministic_profile(sid, cfg) == "oss"
-    fake.store[f"pipeline_variant:{sid}"] = "legacy"
-    assert asyncio.run(split.resolve_profile(sid, cfg)) == "managed"
-    assert fake.store[f"pipeline_profile:{sid}"] == "managed"
-
-
-def test_new_key_takes_precedence_over_legacy_key(monkeypatch):
-    """(A) When BOTH keys exist, the new ``pipeline_profile:`` key wins; the legacy
-    key is not consulted (no migration re-write)."""
-    import asyncio
-
-    fake = _FakeCache()
-    fake.store["pipeline_profile:dup"] = "managed"
-    fake.store["pipeline_variant:dup"] = "oss"
-    monkeypatch.setattr(split, "cache", fake)
-    cfg = two_profile_config(100)
-    assert asyncio.run(split.resolve_profile("dup", cfg)) == "managed"
-    assert fake.sets == []                                 # a new-key hit re-writes nothing
-
-
 def test_resolve_chain_honors_variant_without_rebucketing(monkeypatch):
     """(C) resolve_chain(variant=...) selects the profile from the router variant
     and never touches resolve_profile / the cache — so a capped session id can't

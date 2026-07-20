@@ -41,10 +41,6 @@ logger = get_logger(__name__)
 
 # New sticky namespace (distinct from pipeline_router's ``pipeline_variant:``).
 _PROFILE_KEY_PREFIX = "pipeline_profile:"
-# The OLD sticky key that the live ``pipeline_router`` wrote (``oss``/``legacy``).
-# Migrated into the new key on first read so enabling PROFILES_ENABLED never
-# re-buckets an already-sticky session (see ``resolve_profile``).
-_LEGACY_VARIANT_KEY_PREFIX = "pipeline_variant:"
 
 
 def _profile_name_for_variant(variant: str, pipeline: PipelineConfig) -> str:
@@ -98,11 +94,7 @@ async def resolve_profile(
     * no session id      -> deterministic bucket (no Redis);
     * Redis hit (valid)  -> the stored profile name (sticky; a later weight change
                             does not move the session);
-    * NEW key absent, OLD ``pipeline_variant:`` key present -> migrate that legacy
-                            bit into the new key (same TTL) and honor it, so
-                            enabling PROFILES_ENABLED never re-buckets a session
-                            already assigned under a different ``OSS_PIPELINE_PCT``;
-    * both keys absent   -> deterministic bucket, persisted best-effort;
+    * Redis miss         -> deterministic bucket, persisted best-effort;
     * any Redis error    -> deterministic bucket, never raised into the caller.
 
     A stored name that is no longer a configured profile is ignored (re-bucketed),
@@ -123,27 +115,6 @@ async def resolve_profile(
     except Exception as e:  # Redis down / timeout -> deterministic fallback
         logger.warning("llm_core.split: cache read failed for %s: %s", session_id, e)
         return deterministic_profile(session_id, pipeline)
-
-    # ── (A) Legacy sticky-key migration ──────────────────────────────────────
-    # The NEW key is absent (Redis is up — a read error returned above). Before
-    # bucketing, honor an existing ``pipeline_router`` sticky bit so a session that
-    # was assigned OSS/legacy under a prior ``OSS_PIPELINE_PCT`` is not re-bucketed
-    # when the weights differ now. Map oss->OSS-primary profile, legacy->managed
-    # profile, persist under the new key (same TTL), and return. Only bucket when
-    # BOTH keys are absent.
-    try:
-        legacy = await cache.get(f"{_LEGACY_VARIANT_KEY_PREFIX}{session_id}")
-    except Exception as e:  # a legacy-read blip must not break assignment
-        logger.warning("llm_core.split: legacy cache read failed for %s: %s", session_id, e)
-        legacy = None
-    if legacy in ("oss", "legacy"):
-        migrated = _profile_name_for_variant(legacy, pipeline)
-        if migrated in valid:
-            try:
-                await cache.set(key, migrated, ttl=pipeline.sticky_ttl_s)
-            except Exception as e:  # persistence best-effort; assignment still stable
-                logger.warning("llm_core.split: migration write failed for %s: %s", session_id, e)
-            return migrated
 
     name = deterministic_profile(session_id, pipeline)
 
