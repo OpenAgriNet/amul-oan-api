@@ -161,6 +161,9 @@ except ImportError:
     propagate_attributes = None
     get_langfuse_client = None
 
+# Per-turn resolved-pipeline-config tracer (tracing-only; no behaviour change).
+from app.llm_core import trace as _pipeline_trace
+
 
 def _response_max_chars_for_channel(channel: str | None) -> int | None:
     if (channel or "").lower() == "whatsapp":
@@ -221,6 +224,10 @@ async def stream_chat_messages(
         "variant": pipeline_variant,
     }
     langfuse_tags = [f"pipeline:{pipeline_name}", f"variant:{pipeline_variant}"]
+    # Open the per-turn pipeline-config tracer. Every llm_core seam records the
+    # resolved profile / step tiers / trigger outcomes into this context; it is
+    # flushed to the Langfuse trace metadata (a `pipeline` object) at each exit.
+    _pipeline_trace.begin(pipeline_variant)
     session_ctx = (
         propagate_attributes(
             session_id=session_id_safe,
@@ -520,6 +527,7 @@ async def stream_chat_messages(
                         decline_text[:160],
                     )
                     yield decline_text
+                    _pipeline_trace.emit_to_trace()
                     return
                 deps.update_moderation_str(str(moderation_data))
         except Exception as e:
@@ -531,6 +539,7 @@ async def stream_chat_messages(
                 fail_closed_message[:160],
             )
             yield fail_closed_message
+            _pipeline_trace.emit_to_trace()
             return
 
         user_message = deps.get_user_message()
@@ -997,3 +1006,7 @@ async def stream_chat_messages(
 
         logger.info(f"Updating message history for session {session_id} with {len(messages)} messages")
         await update_message_history(session_id, messages)
+
+        # Flush the full resolved-pipeline-config (profile + per-step served tiers +
+        # trigger decisions) onto the Langfuse trace metadata as a `pipeline` object.
+        _pipeline_trace.emit_to_trace()

@@ -338,6 +338,17 @@ def emit(event: FallbackEvent) -> None:
             pass
 
 
+def _record_served(pipeline: str, kind: str, index: int) -> None:
+    """Tracing-only: thread the tier that actually served (kind + 0-based chain
+    index) back to the current turn's pipeline-trace, keyed by the pipeline's
+    Step. No-op when no trace context is active; never breaks the request path."""
+    try:  # pragma: no cover - best effort
+        from app.llm_core import trace as _trace
+        _trace.record_served(_PIPELINE_TO_STEP.get(pipeline, pipeline), kind, index)
+    except Exception:
+        pass
+
+
 async def execute_with_fallback(
     *,
     pipeline: str,
@@ -395,6 +406,7 @@ async def execute_with_fallback(
             # Clean success resets the breaker for this endpoint (P2). No-op unless
             # HEALTH_BREAKER_ENABLED.
             health.record_success(attempt.endpoint)
+            _record_served(pipeline, attempt.kind, i)
             return result
 
 
@@ -521,6 +533,7 @@ async def stream_with_fallback(
                 yield chunk
             # Clean stream finish resets the breaker for this endpoint (P2).
             health.record_success(attempt.endpoint)
+            _record_served(pipeline, attempt.kind, i)
             return  # stream finished cleanly
         except asyncio.CancelledError:
             raise
