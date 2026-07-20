@@ -225,12 +225,15 @@ def test_resolver_falls_back_to_managed_when_oss_profile_absent():
     assert len(chain) >= 1
 
 
-# ── default-OFF flag posture ──────────────────────────────────────────────────
+# ── default flag posture (ENABLED at the P3 enable) + env-overridable ─────────
 
-def test_llm_core_flag_defaults_off(monkeypatch):
+def test_llm_core_flag_defaults_on(monkeypatch):
+    """As of the enable, LLM_CORE_ENABLED defaults ON but stays env-overridable."""
     monkeypatch.delenv("LLM_CORE_ENABLED", raising=False)
     from app.config import Settings
-    assert Settings().llm_core_enabled is False
+    assert Settings().llm_core_enabled is True
+    monkeypatch.setenv("LLM_CORE_ENABLED", "false")
+    assert Settings().llm_core_enabled is False   # any flag can still revert to legacy
 
 
 def test_self_check_enforces_identity_when_flag_on(monkeypatch):
@@ -254,9 +257,122 @@ def test_self_check_enforces_identity_when_flag_on(monkeypatch):
         runtime.self_check()
 
 
-def test_configure_does_not_raise_with_flag_off():
-    """Flag-off startup must be robust even if the self-check can't import a
-    legacy module in this env (pre-existing pydantic-ai mismatch) — configure()
-    swallows non-assertion errors from the self-check when the flag is off."""
-    cfg = runtime.configure()  # run_self_check defaults True; flag off => no raise
+def test_configure_boots_clean_for_default_env():
+    """Full configure() — now with the flags defaulting ON — boots clean for the
+    default env (openai pretranslation, OSS unconfigured): the RAW_OPENAI provider
+    validation passes (openai is legal) and the resolve==legacy self-check passes
+    (or is skipped-with-a-log if a legacy module can't import under the pydantic-ai
+    mismatch). No raise."""
+    cfg = runtime.configure()  # run_self_check defaults True; enforce == llm_core_enabled
     assert cfg is not None and len(cfg.profiles) >= 1
+
+
+# ── (D) vLLM/OSS tier without an endpoint must RAISE (not silently build OpenAI) ─
+
+def test_vllm_raw_openai_without_endpoint_raises():
+    """A vLLM RAW_OPENAI tier missing its endpoint raises instead of building an
+    OpenAI-default client — preserving the legacy fail-OPEN behaviour when OSS is
+    unconfigured (moderation/pretranslation catch the raise and fail open)."""
+    tier = Tier(provider=Provider.VLLM, model="gemma-4-31b-it",
+                api_key_env="OSS_INFERENCE_API_KEY")  # endpoint omitted
+    with pytest.raises(ValueError, match="endpoint"):
+        build_handle(tier, StepClientKind.RAW_OPENAI)
+
+
+def test_vllm_agent_without_endpoint_raises():
+    """Same guard on the AGENT builder."""
+    tier = Tier(provider=Provider.VLLM, model="gemma-4-31b-it",
+                api_key_env="OSS_INFERENCE_API_KEY")  # endpoint omitted
+    with pytest.raises(ValueError, match="endpoint"):
+        build_handle(tier, StepClientKind.AGENT)
+
+
+def test_openai_raw_without_endpoint_is_fine():
+    """An OpenAI (managed) RAW_OPENAI tier legitimately has no endpoint (base_url
+    None => OpenAI proper) and must NOT raise."""
+    tier = Tier(provider=Provider.OPENAI, model="gpt-4.1", api_key_env="OPENAI_API_KEY")
+    client = build_handle(tier, StepClientKind.RAW_OPENAI)
+    assert client is not None
+
+
+# ── (E) startup config validation rejects an anthropic RAW_OPENAI step ──────────
+
+def _cfg_with_pretranslation_provider(provider: Provider) -> "object":
+    from app.llm_core.config_model import (
+        NamedProfile, PipelineConfig, StepConfig, Tier as _Tier,
+    )
+    pre = _Tier(provider=provider, model="some-model", api_key_env="X")
+    agent = _Tier(provider=Provider.OPENAI, model="gpt-4.1", api_key_env="OPENAI_API_KEY")
+    steps = {
+        Step.AGENT: StepConfig(tiers=[agent]),
+        Step.PRE_TRANSLATION: StepConfig(tiers=[pre]),
+    }
+    return PipelineConfig(profiles=[NamedProfile(name="managed", weight=100, steps=steps)])
+
+
+def test_validate_config_rejects_anthropic_raw_pretranslation_when_enforced():
+    """PRE_TRANSLATION is RAW_OPENAI; an anthropic tier there would crash per-request,
+    so validate_config raises at startup when LLM_CORE_ENABLED (enforce=True)."""
+    cfg = _cfg_with_pretranslation_provider(Provider.ANTHROPIC)
+    with pytest.raises(ValueError, match="RAW_OPENAI"):
+        runtime.validate_config(cfg, enforce=True)
+
+
+def test_validate_config_rejects_gemini_raw_pretranslation_when_enforced():
+    cfg = _cfg_with_pretranslation_provider(Provider.GEMINI)
+    with pytest.raises(ValueError, match="RAW_OPENAI"):
+        runtime.validate_config(cfg, enforce=True)
+
+
+def test_validate_config_warns_not_raises_when_flag_off():
+    """Flag-off boot on the legacy path (which handles anthropic pretranslation
+    itself) must NOT be broken — validate_config only warns."""
+    cfg = _cfg_with_pretranslation_provider(Provider.ANTHROPIC)
+    runtime.validate_config(cfg, enforce=False)  # no raise
+
+
+def test_validate_config_accepts_openai_and_vllm_raw_pretranslation():
+    cfg = _cfg_with_pretranslation_provider(Provider.OPENAI)
+    runtime.validate_config(cfg, enforce=True)  # openai is RAW_OPENAI-legal
+    from app.llm_core.config_model import (
+        NamedProfile, PipelineConfig, StepConfig, Tier as _Tier,
+    )
+    vllm_pre = _Tier(provider=Provider.VLLM, model="gemma", endpoint="http://oss:8020/v1",
+                     api_key_env="OSS_INFERENCE_API_KEY")
+    agent = _Tier(provider=Provider.OPENAI, model="gpt-4.1", api_key_env="OPENAI_API_KEY")
+    cfg2 = PipelineConfig(profiles=[NamedProfile(name="managed", weight=100, steps={
+        Step.AGENT: StepConfig(tiers=[agent]),
+        Step.PRE_TRANSLATION: StepConfig(tiers=[vllm_pre]),
+    })])
+    runtime.validate_config(cfg2, enforce=True)  # vllm is RAW_OPENAI-legal
+
+
+# ── (ENABLE) concurrency gate is attached from AGENT_CONCURRENCY_METRICS_URL ────
+
+def test_concurrency_gate_attached_from_env(monkeypatch):
+    """When AGENT_CONCURRENCY_METRICS_URL is set (with OSS configured), the shim
+    attaches a ConcurrencyGate to the OSS AGENT step; CONCURRENCY_MAX sets the
+    threshold. Unset => no gate (harmless no-op)."""
+    from app.llm_core.config_model import ConcurrencyGate
+
+    monkeypatch.setenv("OSS_INFERENCE_ENDPOINT_URL", "http://oss:8020/v1")
+    monkeypatch.setenv("OSS_PIPELINE_PCT", "80")
+    monkeypatch.setenv("AGENT_CONCURRENCY_METRICS_URL", "http://oss:8020/metrics")
+    monkeypatch.setenv("CONCURRENCY_MAX", "7")
+
+    cfg = synthesize_from_env()
+    oss = cfg.by_name("oss")
+    gate = oss.steps[Step.AGENT].triggers.concurrency_gate
+    assert isinstance(gate, ConcurrencyGate)
+    assert gate.metrics_url == "http://oss:8020/metrics"
+    assert gate.max_concurrency == 7
+
+
+def test_no_concurrency_gate_without_env(monkeypatch):
+    monkeypatch.setenv("OSS_INFERENCE_ENDPOINT_URL", "http://oss:8020/v1")
+    monkeypatch.setenv("OSS_PIPELINE_PCT", "80")
+    monkeypatch.delenv("AGENT_CONCURRENCY_METRICS_URL", raising=False)
+
+    cfg = synthesize_from_env()
+    oss = cfg.by_name("oss")
+    assert oss.steps[Step.AGENT].triggers.concurrency_gate is None

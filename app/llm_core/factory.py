@@ -142,6 +142,17 @@ def _key(tier: Tier) -> Optional[str]:
 def _build_agent_model(tier: Tier) -> Any:
     """AGENT kind -> pydantic-ai Model."""
     if tier.provider in (Provider.VLLM, Provider.OPENAI):
+        # (D) A vLLM/OSS tier MUST carry its endpoint. The legacy
+        # ``_get_oss_pretranslation_client`` RAISED when the OSS endpoint was
+        # absent (so moderation/non_meaningful caught it and failed OPEN); an
+        # endpoint-less vLLM tier here would otherwise silently build an
+        # OpenAI-default client labeled vLLM (base_url=None -> OpenAI proper),
+        # flipping behaviour. Fail loudly instead to preserve the legacy semantics.
+        if tier.provider is Provider.VLLM and not tier.endpoint:
+            raise ValueError(
+                "vLLM/OSS agent tier requires an endpoint; refusing to build an "
+                "OpenAI-default client for a vLLM-labeled tier"
+            )
         base_url = tier.endpoint if tier.provider is Provider.VLLM else None
         return _build_openai_compatible_model(tier.model, base_url=base_url, api_key=_key(tier))
 
@@ -204,6 +215,16 @@ def _build_raw_openai(tier: Tier) -> AsyncOpenAI:
             api_version=tier.api_version,
             api_key=api_key,
             http_client=_capture_http_client(),
+        )
+    # (D) Same guard as the agent builder: a vLLM/OSS RAW_OPENAI tier without an
+    # endpoint must RAISE (mirrors legacy ``_get_oss_pretranslation_client``), not
+    # silently fall through to an OpenAI-default client (base_url=None) that is
+    # labeled vLLM — which would flip pre-translation/moderation from fail-OPEN
+    # (OSS unconfigured) to actually calling OpenAI.
+    if tier.provider is Provider.VLLM and not tier.endpoint:
+        raise ValueError(
+            "vLLM/OSS raw-openai tier requires an endpoint; refusing to build an "
+            "OpenAI-default client for a vLLM-labeled tier"
         )
     base_url = tier.endpoint if tier.provider is Provider.VLLM else None
     return AsyncOpenAI(api_key=_key(tier), base_url=base_url, http_client=_capture_http_client())

@@ -25,6 +25,7 @@ import os
 
 from app.llm_core.config_model import (
     ApiStyle,
+    ConcurrencyGate,
     NamedProfile,
     PipelineConfig,
     Provider,
@@ -137,6 +138,19 @@ def _oss_configured() -> bool:
     return bool(_env("OSS_INFERENCE_ENDPOINT_URL"))
 
 
+def _agent_concurrency_gate() -> ConcurrencyGate | None:
+    """The P3 concurrency gate for the AGENT step, from an EXPLICIT metrics URL.
+
+    ``AGENT_CONCURRENCY_METRICS_URL`` (the vLLM Prometheus ``/metrics``, e.g.
+    ``http://10.185.25.197:8020/metrics``) arms the gate; ``CONCURRENCY_MAX`` (or
+    10) is the in-flight threshold. Unset -> ``None`` -> the gauge is a harmless
+    no-op. Never derived by stripping ``/v1`` off the inference endpoint (plan §2)."""
+    metrics_url = _env("AGENT_CONCURRENCY_METRICS_URL")
+    if not metrics_url:
+        return None
+    return ConcurrencyGate(metrics_url=metrics_url, max_concurrency=_int_env("CONCURRENCY_MAX", 10))
+
+
 def synthesize_from_env() -> PipelineConfig:
     """Build a behaviour-identical PipelineConfig from the current environment."""
     managed_ms = _int_env("FALLBACK_MANAGED_TIMEOUT_MS", 20000)
@@ -176,10 +190,11 @@ def synthesize_from_env() -> PipelineConfig:
     # OSS configured: two profiles. OSS profile carries [oss, managed] per step
     # (mirrors fallback.attempt_chain); managed carries [managed].
     pct = max(0, min(100, _int_env("OSS_PIPELINE_PCT", 0)))
+    agent_gate = _agent_concurrency_gate()  # None unless AGENT_CONCURRENCY_METRICS_URL is set
     oss_steps = {
         Step.AGENT: StepConfig(
             tiers=[_oss_agent_tier(oss_chat_ms, "oss-agent"), managed_agent],
-            triggers=Triggers(ttft_deadline_ms=oss_chat_ms),
+            triggers=Triggers(ttft_deadline_ms=oss_chat_ms, concurrency_gate=agent_gate),
         ),
         Step.MODERATION: StepConfig(tiers=[_oss_agent_tier(oss_mod_ms, "oss-moderation"), managed_agent]),
         Step.SUGGESTIONS: StepConfig(tiers=[_oss_agent_tier(oss_sug_ms, "oss-suggestions"), managed_agent]),

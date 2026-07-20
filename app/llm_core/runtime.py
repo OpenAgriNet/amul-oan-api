@@ -35,6 +35,59 @@ def _load_from_yaml(path: str) -> PipelineConfig:
     return PipelineConfig(**data)
 
 
+# Providers that can materialize as a RAW_OPENAI client (AsyncOpenAI-compatible).
+# anthropic/gemini are AGENT-kind only; a RAW_OPENAI step (chat pre-translation)
+# configured with them would crash per-request in the factory, so reject at boot.
+_RAW_OPENAI_OK = {"vllm", "openai", "azure-openai"}
+# Enhancement tracking for real anthropic/gemini RAW pretranslation support.
+_RAW_PROVIDER_ENH_ISSUE = (
+    "https://github.com/OpenAgriNet/amul-oan-api/issues "
+    "(enhancement: support anthropic/gemini RAW pretranslation)"
+)
+
+
+def validate_config(pipeline: PipelineConfig, *, enforce: bool) -> None:
+    """(E) Fail-fast on a RAW_OPENAI-kind step whose tier provider is unsupported.
+
+    ``Step.PRE_TRANSLATION`` materializes as a RAW_OPENAI client, which the factory
+    rejects for ``anthropic``/``gemini``. If the shim synthesizes an anthropic
+    pretranslation tier (``PRETRANSLATION_PROVIDER=anthropic`` or
+    ``LLM_PROVIDER=anthropic``), that would crash on every request. Catch it at
+    startup with a clear message instead. Gated on ``enforce`` (== LLM_CORE_ENABLED)
+    so a flag-off boot on the legacy path — which handles anthropic pretranslation
+    itself — is never broken; setting the flag on is what makes the config binding
+    and thus the one that must be legal."""
+    from app.llm_core.config_model import StepClientKind
+    from app.llm_core.resolver import STEP_CLIENT_KIND
+
+    raw_steps = [s for s, k in STEP_CLIENT_KIND.items() if k is StepClientKind.RAW_OPENAI]
+    problems: list[str] = []
+    for profile in pipeline.profiles:
+        for step in raw_steps:
+            cfg = pipeline.step_config(profile, step)
+            if cfg is None:
+                continue
+            for tier in cfg.tiers:
+                if tier.provider.value not in _RAW_OPENAI_OK:
+                    problems.append(
+                        f"profile={profile.name} step={step.value} "
+                        f"provider={tier.provider.value} is not RAW_OPENAI-compatible "
+                        f"(allowed: {sorted(_RAW_OPENAI_OK)})"
+                    )
+    if not problems:
+        return
+    msg = (
+        "llm_core config INVALID — unsupported provider for a RAW_OPENAI step; "
+        "anthropic/gemini need the AGENT client kind. Track "
+        + _RAW_PROVIDER_ENH_ISSUE
+        + ":\n  - "
+        + "\n  - ".join(problems)
+    )
+    if enforce:
+        raise ValueError(msg)
+    logger.warning("%s\n(LLM_CORE_ENABLED is off; not raising)", msg)
+
+
 def configure(*, run_self_check: bool = True) -> PipelineConfig:
     """Load / synthesize the pipeline config, validate, store, self-check."""
     global PIPELINE
@@ -48,6 +101,9 @@ def configure(*, run_self_check: bool = True) -> PipelineConfig:
             "llm_core: synthesized pipeline config from env (profiles=%s)",
             [f"{p.name}:{p.weight}" for p in PIPELINE.profiles],
         )
+    # (E) Provider/step legality — fail-fast at boot when LLM_CORE_ENABLED.
+    from app.config import settings as _settings
+    validate_config(PIPELINE, enforce=bool(getattr(_settings, "llm_core_enabled", False)))
     if run_self_check:
         try:
             self_check()
