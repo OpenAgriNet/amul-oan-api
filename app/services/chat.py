@@ -240,6 +240,13 @@ async def stream_chat_messages(
         "variant": pipeline_variant,
     }
     langfuse_tags = [f"pipeline:{pipeline_name}", f"variant:{pipeline_variant}"]
+    # Serialize the resolved pipeline config into COMPACT flat keys and merge them
+    # into the same langfuse_metadata dict propagate_attributes lands on OTEL span
+    # attributes (a big nested blob is size-capped/dropped; this SDK has no
+    # update_current_trace). Adds `pipeline_profile`, `pipeline_flags`, and one
+    # `pc_<step>` per step (~50 chars each). Full static config is in the
+    # `llm_core.full_config` boot log. Best-effort — never breaks the turn.
+    _pipeline_trace.add_compact_metadata(pt, langfuse_metadata)
     session_ctx = (
         propagate_attributes(
             session_id=session_id_safe,
@@ -539,7 +546,6 @@ async def stream_chat_messages(
                         decline_text[:160],
                     )
                     yield decline_text
-                    _pipeline_trace.emit_to_trace(pt)
                     return
                 deps.update_moderation_str(str(moderation_data))
         except Exception as e:
@@ -551,7 +557,6 @@ async def stream_chat_messages(
                 fail_closed_message[:160],
             )
             yield fail_closed_message
-            _pipeline_trace.emit_to_trace(pt)
             return
 
         user_message = deps.get_user_message()
@@ -1018,7 +1023,3 @@ async def stream_chat_messages(
 
         logger.info(f"Updating message history for session {session_id} with {len(messages)} messages")
         await update_message_history(session_id, messages)
-
-        # Flush the full resolved-pipeline-config (profile + per-step served tiers +
-        # trigger decisions) onto the Langfuse trace metadata as a `pipeline` object.
-        _pipeline_trace.emit_to_trace(pt)

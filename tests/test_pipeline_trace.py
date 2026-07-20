@@ -210,32 +210,7 @@ def test_concurrency_deprioritize_trigger_recorded(monkeypatch):
     assert c["metrics_url"] == "http://oss:8020/metrics"
 
 
-# ── (f) emit lands under `pipeline_config` (NOT `pipeline`) + is POPULATED ─────
-class _FakeClient:
-    def __init__(self):
-        self.metadata = None
-
-    def update_current_trace(self, **kw):
-        # Langfuse merges; capture the metadata dict this emit passed.
-        if kw.get("metadata"):
-            self.metadata = kw["metadata"]
-
-
-def test_emit_uses_pipeline_config_key_not_pipeline(monkeypatch):
-    """The emitted key MUST be `pipeline_config` — reusing `pipeline` collides with
-    chat's existing `metadata['pipeline']` = pipeline NAME string, which then wins."""
-    fake = _FakeClient()
-    monkeypatch.setattr(trace, "_get_langfuse_client", lambda: fake)
-
-    pt = trace.begin("oss")
-    trace.set_profile(pt, "oss", 100)
-    trace.emit_to_trace(pt)
-
-    assert "pipeline_config" in fake.metadata
-    assert "pipeline" not in fake.metadata          # must not collide with the name string
-    assert fake.metadata["pipeline_config"]["profile"] == {"name": "oss", "weight": 100}
-
-
+# ── (f) populate + COMPACT flat metadata keys (the path that lands) ───────────
 def test_populate_sets_profile_and_per_step_primary_tiers(monkeypatch):
     """`populate` (the explicit, contextvar-independent path the request path uses)
     fills profile + each step's PRIMARY tier via the SYNC resolver.primary_tier —
@@ -253,66 +228,60 @@ def test_populate_sets_profile_and_per_step_primary_tiers(monkeypatch):
     assert len(md["flags"]) == 5
 
 
-def test_explicit_emit_survives_contextvar_loss(monkeypatch):
-    """THE regression this fixes: prod consumes stream_chat_messages as a
-    StreamingResponse async generator, and the ContextVar does NOT survive to the
-    emit site — a contextvar-based emit read an EMPTY object. Simulate that boundary
-    by CLEARING the contextvar after populate, then assert emit(pt) still serializes
-    the fully-populated explicit instance (profile + steps + flags)."""
-    import asyncio
-    fake = _FakeClient()
-    monkeypatch.setattr(trace, "_get_langfuse_client", lambda: fake)
+def test_compact_metadata_produces_short_flat_keys(monkeypatch):
+    """The keys that actually land on the trace: `pipeline_profile`, `pipeline_flags`,
+    and one `pc_<step>` per step — short flat strings, under the OTEL attribute cap."""
     cfg = _cfg(100)
     monkeypatch.setattr(resolver.runtime, "get_pipeline", lambda: cfg)
-
-    async def _agen():
-        pt = trace.begin("oss")
-        # Exactly how chat.py populates: the SYNC resolver.primary_tier.
-        trace.populate(pt, cfg, resolver.primary_tier, "oss", (Step.AGENT, Step.MODERATION))
-        yield "chunk"
-        # Simulate the prod boundary: the contextvar is gone by the emit site.
-        trace.clear()
-        assert trace.current() is None
-        # A contextvar read would now be EMPTY — the explicit pt must still work.
-        trace.emit_to_trace(pt)
-
-    async def _drive():
-        async for _ in _agen():
-            pass
-
-    asyncio.run(_drive())
-
-    pc = fake.metadata["pipeline_config"]
-    assert pc["profile"] == {"name": "oss", "weight": 100}   # NOT None despite ctxvar loss
-    assert len(pc["flags"]) == 5
-    assert set(pc["steps"]) == {"agent", "moderation"}
-    assert pc["steps"]["agent"]["model"] == "gemma"
-
-
-def test_contextvar_emit_would_be_empty_after_loss(monkeypatch):
-    """Proves the OLD (contextvar) emit path is exactly what broke: after the
-    boundary clears the contextvar, emit_to_trace() with NO explicit pt is a no-op
-    (nothing emitted) — i.e. the empty-object prod symptom."""
-    fake = _FakeClient()
-    monkeypatch.setattr(trace, "_get_langfuse_client", lambda: fake)
     pt = trace.begin("oss")
-    trace.set_profile(pt, "oss", 100)
-    trace.clear()                      # boundary loses the contextvar
-    trace.emit_to_trace()              # no explicit pt -> reads empty contextvar
-    assert fake.metadata is None       # nothing emitted (the prod empty symptom)
+    trace.populate(pt, cfg, resolver.primary_tier, "oss", (Step.AGENT, Step.MODERATION))
+
+    m = trace.compact_metadata(pt)
+    assert m["pipeline_profile"] == "oss"
+    # all-on flags (test env) -> the 5 short names
+    assert set(m["pipeline_flags"].split(",")) == {
+        "llm_core", "profiles", "health_breaker", "health_poller", "concurrency_gauge",
+    }
+    assert m["pc_agent"] == "vllm:gemma@http://oss:8020/v1#oss(8000ms)"
+    assert m["pc_moderation"] == "vllm:gemma@http://oss:8020/v1#oss(8000ms)"
+    # every value is a short string, safely under the ~128-256 char OTEL cap.
+    assert all(isinstance(v, str) or v is None for v in m.values())
+    assert all(v is None or len(v) < 120 for v in m.values())
 
 
-def test_emit_flags_present_even_when_nothing_resolved(monkeypatch):
-    """A turn that resolves no step still emits a `pipeline_config` whose static
-    `flags` are populated from settings (never None/empty)."""
-    fake = _FakeClient()
-    monkeypatch.setattr(trace, "_get_langfuse_client", lambda: fake)
-    pt = trace.begin("legacy")
-    trace.emit_to_trace(pt)
-    pc = fake.metadata["pipeline_config"]
-    assert len(pc["flags"]) == 5
-    assert pc["steps"] == {}
-    assert pc["profile"] is None
+def test_add_compact_metadata_merges_into_request_metadata_dict(monkeypatch):
+    """The request path merges the compact keys into the SAME dict it already hands
+    to propagate_attributes / VoiceTrace.metadata — existing keys preserved."""
+    cfg = _cfg(100)
+    monkeypatch.setattr(resolver.runtime, "get_pipeline", lambda: cfg)
+    pt = trace.begin("oss")
+    trace.populate(pt, cfg, resolver.primary_tier, "oss", (Step.AGENT,))
+
+    langfuse_metadata = {"pipeline": "translation", "variant": "oss"}  # pre-existing keys
+    trace.add_compact_metadata(pt, langfuse_metadata)
+
+    assert langfuse_metadata["pipeline"] == "translation"   # existing key untouched
+    assert langfuse_metadata["variant"] == "oss"
+    assert langfuse_metadata["pipeline_profile"] == "oss"
+    assert langfuse_metadata["pc_agent"].startswith("vllm:gemma@")
+
+
+def test_compact_metadata_empty_pt_is_empty_dict():
+    """A None/empty pt yields an empty dict (never raises) — nothing to add."""
+    assert trace.compact_metadata(None) == {}
+    d = {"keep": 1}
+    trace.add_compact_metadata(None, d)
+    assert d == {"keep": 1}
+
+
+def test_no_update_current_trace_symbol_remains():
+    """Guard: the dead SDK-incompatible machinery is gone (no update_current_trace,
+    no emit_to_trace) — the module must not reference them again."""
+    assert not hasattr(trace, "emit_to_trace")
+    assert not hasattr(trace, "_get_langfuse_client")
+    src = __import__("inspect").getsource(trace)
+    assert "update_current_trace(" not in src   # no CALL to the missing SDK method
+    assert "import get_client" not in src
 
 
 # ── (e) no active context -> recorders are a cheap no-op ───────────────────────
@@ -324,7 +293,6 @@ def test_recorders_noop_without_context():
     trace.record_profile("oss", 100)
     trace.record_step_chain(Step.AGENT, [])
     trace.record_served(Step.AGENT, "managed", 1)
-    trace.emit_to_trace()
     # split resolving with no context is still a clean no-op for tracing.
     asyncio.run(split.resolve_chain("", Step.AGENT, _cfg(100)))
     assert trace.current() is None

@@ -1,22 +1,31 @@
-"""Per-turn pipeline-trace recorder — the full RESOLVED config + routing
-decisions of one turn, emitted as a single ``pipeline`` object into the Langfuse
-trace metadata.
+"""Per-turn pipeline-trace recorder — the RESOLVED config + routing decisions of
+one turn, surfaced on the Langfuse trace as a handful of COMPACT flat metadata
+keys.
 
-TRACING ONLY — this module changes NO pipeline behaviour. Every recorder is a
-no-op unless a :class:`PipelineTrace` context is active (opened per-turn by the
-chat/voice request path via :func:`begin`), so the core seams
-(``split``/``health``/``concurrency``/``fallback``) can call the ``record_*``
-hooks unconditionally and cheaply — a bare ``ContextVar.get()`` when nothing is
-listening. Nothing here is on any poll loop; it only ever runs on the request
-path.
+TRACING ONLY — this module changes NO pipeline behaviour.
 
-SECRETS: this records endpoints (already in logs), providers, model names and
-timeouts — and the *name* of a tier's api-key env var, never its value. It never
-reads or stores an api key. See :func:`_no_secret_assert` in the tests.
+Landing path (important): this Langfuse SDK has **no** ``update_current_trace``,
+and the working ``propagate_attributes(metadata=...)`` path maps to OTEL span
+attributes whose values are SIZE-CAPPED (~128-256 chars) — a big nested blob is
+silently dropped. So the request path builds ``pt`` (via :func:`begin` +
+:func:`populate`) and merges :func:`compact_metadata` (short flat keys —
+``pipeline_profile`` / ``pipeline_flags`` / ``pc_<step>``) into the SAME metadata
+dict it already hands to ``propagate_attributes`` / ``VoiceTrace.metadata``. The
+COMPLETE static config is logged once at boot by :func:`log_full_config`
+(``grep llm_core.full_config``).
 
-Kept import-clean (stdlib + ``app.config`` + ``config_model`` + a best-effort
-Langfuse import) so the voice repo mirrors this file byte-for-byte and the
-eventual repo-merge stays mechanical (this file is one of the convergent cores).
+The ``pt`` instance is threaded EXPLICITLY (not read from the ContextVar at the
+emit site): the ContextVar does not survive Starlette's StreamingResponse
+async-generator boundary. The ContextVar is kept only for the best-effort deep
+recorders (health/concurrency/served-tier) that mutate ``pt`` mid-turn.
+
+SECRETS: records endpoints (already in logs), providers, model names and timeouts
+— and the *name* of a tier's api-key env var, never its value. It never reads or
+stores an api key.
+
+Kept import-clean (stdlib + ``app.config`` + ``config_model`` only) so the voice
+repo mirrors this file byte-for-byte and the eventual repo-merge stays mechanical
+(this file is one of the convergent cores).
 """
 
 from __future__ import annotations
@@ -29,12 +38,6 @@ from typing import Any, Optional
 from helpers.utils import get_logger
 
 logger = get_logger(__name__)
-
-# Best-effort Langfuse trace tagging (same import shape as services.fallback).
-try:  # pragma: no cover - import guard
-    from langfuse import get_client as _get_langfuse_client
-except Exception:  # pragma: no cover
-    _get_langfuse_client = None
 
 
 # ── per-step + per-turn records ───────────────────────────────────────────────
@@ -268,15 +271,13 @@ def record_served(step: Any, kind: Optional[str], index: int) -> None:
 
 def record_health_prune(step: Any, pruned: list, breaker_states: dict) -> None:
     """Health-filter outcome for a step: the endpoints pruned (breaker ``open``)
-    and the breaker state consulted per endpoint. Adds a cheap trace tag when a
-    tier was actually pruned so a turn's routing decision is visible."""
+    and the breaker state consulted per endpoint. Best-effort — mutates ``pt`` on
+    the current turn's context; the data surfaces via the compact metadata keys."""
     pt = _CTX.get()
     if pt is None:
         return
     name = getattr(step, "value", step)
     pt.step(name).health = {"pruned": list(pruned), "breaker_states": dict(breaker_states)}
-    if pruned:
-        _tag_trace([f"health_prune:{name}"])
 
 
 def record_concurrency(
@@ -288,8 +289,8 @@ def record_concurrency(
     metrics_url: Optional[str],
 ) -> None:
     """Concurrency-gauge outcome for a step: the gauge read, the threshold, and
-    whether the vLLM tier was deprioritized. Adds a cheap trace tag when a tier
-    was actually deprioritized."""
+    whether the vLLM tier was deprioritized. Best-effort — mutates ``pt`` on the
+    current turn's context; the data surfaces via the compact metadata keys."""
     pt = _CTX.get()
     if pt is None:
         return
@@ -300,53 +301,59 @@ def record_concurrency(
         "deprioritized": bool(deprioritized),
         "metrics_url": metrics_url,
     }
-    if deprioritized:
-        _tag_trace([f"concurrency_deprioritize:{name}"])
 
 
-# ── emission ──────────────────────────────────────────────────────────────────
-def _tag_trace(tags: list) -> None:
-    if _get_langfuse_client is None:
-        return
-    try:  # pragma: no cover - best effort
-        client = _get_langfuse_client()
-        if client is not None:
-            client.update_current_trace(tags=tags)
-    except Exception:
-        pass
+# ── compact trace-metadata keys (the path that actually lands) ────────────────
+# The Langfuse SDK here has NO ``update_current_trace``; the working path is the
+# ``propagate_attributes(metadata=...)`` dict (chat) / ``VoiceTrace.metadata``
+# (voice), which maps to OTEL span attributes — and those SIZE-CAP each value
+# (~128-256 chars), so a big nested blob is silently dropped. So we serialize the
+# resolved config into a handful of SHORT flat string keys that fit under the cap
+# and land reliably. The COMPLETE static config still goes to the boot log via
+# ``log_full_config`` (``grep llm_core.full_config``).
+def compact_metadata(pt: Optional[PipelineTrace]) -> dict:
+    """Flatten ``pt`` into short, cap-safe metadata keys:
 
+    * ``pipeline_profile`` = resolved profile name;
+    * ``pipeline_flags``   = comma-joined enabled guard flags (``_enabled`` stripped);
+    * ``pc_<step>``        = ``"<provider>:<model>@<endpoint>#<served>(<timeout_ms>ms)"``
+                             per executed step (~50 chars each).
 
-# The trace-metadata key the resolved-config object is emitted under. It is
-# deliberately NOT ``pipeline`` — chat already sets ``metadata["pipeline"]`` to
-# the pipeline NAME string ("translation"/"default") via propagate_attributes, so
-# reusing that key would collide (the string shadows the object). ``pipeline_config``
-# is a distinct namespace; the existing ``pipeline``/``variant`` keys are untouched.
-METADATA_KEY = "pipeline_config"
-
-
-def emit_to_trace(pt: Optional[PipelineTrace] = None) -> None:
-    """Flush the resolved-config object onto the current Langfuse trace's metadata
-    under the ``pipeline_config`` key. Best-effort and merge-only: it never
-    overwrites the existing ``pipeline``/``variant``/``pipeline_variant`` keys or
-    scores (those stay for dashboard continuity).
-
-    IMPORTANT: pass the EXPLICIT ``pt`` returned by ``begin()``. The contextvar is
-    NOT a reliable read across Starlette's StreamingResponse async-generator
-    boundary — reading it here yielded an empty object in production. ``pt=None``
-    falls back to the contextvar only for callers that share one context."""
+    Returns ``{}`` on any error / empty pt (never raises into the request path)."""
+    out: dict = {}
     if pt is None:
-        pt = _CTX.get()
-    if pt is None or _get_langfuse_client is None:
+        return out
+    try:
+        pc = pt.to_metadata()
+        out["pipeline_profile"] = (pc.get("profile") or {}).get("name")
+        out["pipeline_flags"] = ",".join(
+            k.replace("_enabled", "") for k, v in (pc.get("flags") or {}).items() if v
+        )
+        for step_name, sv in (pc.get("steps") or {}).items():
+            sv = sv or {}
+            served = (sv.get("tier_served") or {}).get("kind")
+            out[f"pc_{step_name}"] = (
+                f'{sv.get("provider")}:{sv.get("model")}@{sv.get("endpoint")}'
+                f'#{served}({sv.get("timeout_ms")}ms)'
+            )
+    except Exception as e:  # pragma: no cover - defensive
+        logger.debug("llm_core.trace: compact_metadata failed: %s", e)
+    return out
+
+
+def add_compact_metadata(pt: Optional[PipelineTrace], metadata: dict) -> None:
+    """Merge :func:`compact_metadata` into an existing metadata dict IN PLACE — the
+    same dict the request path already hands to ``propagate_attributes`` (chat) /
+    ``VoiceTrace.metadata`` (voice). No-op-safe (never raises)."""
+    if metadata is None:
         return
-    try:  # pragma: no cover - best effort
-        client = _get_langfuse_client()
-        if client is not None:
-            client.update_current_trace(metadata={METADATA_KEY: pt.to_metadata()})
-    except Exception as e:
-        logger.debug("llm_core.trace: emit_to_trace failed: %s", e)
+    try:
+        metadata.update(compact_metadata(pt))
+    except Exception as e:  # pragma: no cover - defensive
+        logger.debug("llm_core.trace: add_compact_metadata failed: %s", e)
 
 
-# ── startup full-config dump (item 4) ─────────────────────────────────────────
+# ── startup full-config dump ──────────────────────────────────────────────────
 def config_to_dict(pipeline: Any) -> dict:
     """The COMPLETE loaded ``PipelineConfig`` as a plain dict — all profiles, all
     step tiers, all triggers — for one greppable structured boot log line.
