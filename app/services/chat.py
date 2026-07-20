@@ -189,13 +189,22 @@ async def stream_chat_messages(
     # with OSS_PIPELINE_PCT=0 every session is 'legacy'.
     is_oss = pipeline_variant == "oss"
     use_translation_pipeline = bool(use_translation_pipeline) or is_oss
-    # Open the per-turn pipeline-config tracer FIRST — before any resolver /
-    # primary_handle / resolve_chain call below — so every step resolution this
-    # turn (agent, moderation, pre/post-translation, suggestions) records into
-    # this same context. `begin()` also snapshots the guard flags so `flags` is
-    # never empty even on a turn that resolves nothing. Flushed to the Langfuse
-    # trace metadata as a `pipeline_config` object at each exit point.
-    _pipeline_trace.begin(pipeline_variant)
+    # Open the per-turn pipeline-config tracer and hold the EXPLICIT instance.
+    # The ContextVar does NOT survive Starlette's StreamingResponse async-generator
+    # consumption, so we populate the must-have static fields (profile, variant,
+    # flags, per-step PRIMARY tier) directly onto `pt` here and pass `pt` to every
+    # emit site — never relying on a contextvar read at emit time. Deep trigger /
+    # served-tier recording stays best-effort on top (via the contextvar).
+    pt = _pipeline_trace.begin(pipeline_variant)
+    try:
+        from app.llm_core import resolver as _lr, runtime as _lrt
+        from app.llm_core.config_model import Step as _LS
+        _pipeline_trace.populate(
+            pt, _lrt.get_pipeline(), _lr.primary_tier, pipeline_variant,
+            (_LS.PRE_TRANSLATION, _LS.MODERATION, _LS.AGENT, _LS.SUGGESTIONS, _LS.POST_TRANSLATION),
+        )
+    except Exception as _pt_exc:  # pragma: no cover - tracing must never break the turn
+        logger.debug("pipeline_config populate skipped: %s", _pt_exc)
     if settings.llm_core_enabled:
         # Flag-on: obtain the agent/moderation model handle + provider from the
         # unified pipeline resolver instead of the legacy singletons. P0 identity —
@@ -530,7 +539,7 @@ async def stream_chat_messages(
                         decline_text[:160],
                     )
                     yield decline_text
-                    _pipeline_trace.emit_to_trace()
+                    _pipeline_trace.emit_to_trace(pt)
                     return
                 deps.update_moderation_str(str(moderation_data))
         except Exception as e:
@@ -542,7 +551,7 @@ async def stream_chat_messages(
                 fail_closed_message[:160],
             )
             yield fail_closed_message
-            _pipeline_trace.emit_to_trace()
+            _pipeline_trace.emit_to_trace(pt)
             return
 
         user_message = deps.get_user_message()
@@ -1012,4 +1021,4 @@ async def stream_chat_messages(
 
         # Flush the full resolved-pipeline-config (profile + per-step served tiers +
         # trigger decisions) onto the Langfuse trace metadata as a `pipeline` object.
-        _pipeline_trace.emit_to_trace()
+        _pipeline_trace.emit_to_trace(pt)

@@ -153,6 +153,70 @@ def record_profile(name: str, weight: Optional[int]) -> None:
     pt.profile_weight = weight
 
 
+# ── EXPLICIT-instance API (contextvar-independent) ────────────────────────────
+# The ContextVar does NOT survive Starlette's StreamingResponse async-generator
+# consumption (each __anext__ step can run under a different context snapshot), so
+# an ``emit_to_trace()`` that read the contextvar got a fresh EMPTY PipelineTrace.
+# The request path therefore holds the ``pt`` returned by ``begin()`` and threads
+# it explicitly: populate the static must-have fields on it here, and pass it to
+# ``emit_to_trace(pt)``. Deep trigger/served recording via the contextvar stays
+# best-effort on top.
+def set_profile(pt: Optional[PipelineTrace], name: str, weight: Optional[int]) -> None:
+    if pt is None:
+        return
+    pt.profile_name = name
+    pt.profile_weight = weight
+
+
+def set_step_primary(pt: Optional[PipelineTrace], step: Any, tier: Any) -> None:
+    """Set a step's PRIMARY resolved tier (provider/model/endpoint/timeout) on an
+    EXPLICIT pt, from a resolved ``MaterializedTier``/``Attempt``. Independent of
+    the contextvar. Preserves any served/trigger fields a deep recorder may have
+    already set on the same step."""
+    if pt is None or tier is None:
+        return
+    name = getattr(step, "value", step)
+    rec = pt.step(name)
+    rec.provider = getattr(tier, "provider", None)
+    rec.model = getattr(tier, "model_name", None)
+    rec.endpoint = getattr(tier, "endpoint", None)
+    rec.timeout_ms = _timeout_ms(tier)
+    if not rec.tier_chain:
+        rec.tier_chain = [_tier_summary(tier)]
+    if rec.tier_served_index is None:
+        rec.tier_served_kind = getattr(tier, "kind", None)
+        rec.tier_served_index = 0
+
+
+def populate(
+    pt: Optional[PipelineTrace],
+    pipeline: Any,
+    primary_tier_fn: Any,
+    variant: Optional[str],
+    steps: Any,
+) -> None:
+    """Explicitly (contextvar-independent) populate the fields the emit MUST carry:
+    the resolved profile (from the pipeline + variant) and each step's PRIMARY tier
+    (resolved via ``primary_tier_fn(step, variant)``). Best-effort per step; a
+    resolve failure for one step is skipped, never raised into the request path.
+
+    ``pipeline`` and ``primary_tier_fn`` are passed in (duck-typed) so this module
+    stays import-clean — it never imports resolver/runtime itself."""
+    if pt is None:
+        return
+    try:
+        name = "oss" if variant == "oss" else "managed"
+        prof = pipeline.by_name(name) or pipeline.by_name("managed") or pipeline.profiles[0]
+        set_profile(pt, prof.name, prof.weight)
+    except Exception as e:  # pragma: no cover - defensive
+        logger.debug("llm_core.trace: profile populate skipped: %s", e)
+    for step in steps:
+        try:
+            set_step_primary(pt, step, primary_tier_fn(step, variant))
+        except Exception:
+            continue
+
+
 def _tier_summary(tier: Any) -> dict:
     """A secret-free summary of a resolved tier (``MaterializedTier``/``Attempt``)."""
     return {
@@ -260,13 +324,18 @@ def _tag_trace(tags: list) -> None:
 METADATA_KEY = "pipeline_config"
 
 
-def emit_to_trace() -> None:
-    """Flush the accumulated resolved-config object onto the current Langfuse
-    trace's metadata under the ``pipeline_config`` key. Best-effort and merge-only:
-    it never overwrites the existing ``pipeline``/``variant``/``pipeline_variant``
-    keys or scores (those stay for dashboard continuity). No-op when no context is
-    active or Langfuse is unavailable."""
-    pt = _CTX.get()
+def emit_to_trace(pt: Optional[PipelineTrace] = None) -> None:
+    """Flush the resolved-config object onto the current Langfuse trace's metadata
+    under the ``pipeline_config`` key. Best-effort and merge-only: it never
+    overwrites the existing ``pipeline``/``variant``/``pipeline_variant`` keys or
+    scores (those stay for dashboard continuity).
+
+    IMPORTANT: pass the EXPLICIT ``pt`` returned by ``begin()``. The contextvar is
+    NOT a reliable read across Starlette's StreamingResponse async-generator
+    boundary — reading it here yielded an empty object in production. ``pt=None``
+    falls back to the contextvar only for callers that share one context."""
+    if pt is None:
+        pt = _CTX.get()
     if pt is None or _get_langfuse_client is None:
         return
     try:  # pragma: no cover - best effort

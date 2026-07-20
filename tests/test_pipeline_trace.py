@@ -227,31 +227,54 @@ def test_emit_uses_pipeline_config_key_not_pipeline(monkeypatch):
     fake = _FakeClient()
     monkeypatch.setattr(trace, "_get_langfuse_client", lambda: fake)
 
-    trace.begin("oss")
-    trace.record_profile("oss", 100)
-    trace.emit_to_trace()
+    pt = trace.begin("oss")
+    trace.set_profile(pt, "oss", 100)
+    trace.emit_to_trace(pt)
 
     assert "pipeline_config" in fake.metadata
     assert "pipeline" not in fake.metadata          # must not collide with the name string
     assert fake.metadata["pipeline_config"]["profile"] == {"name": "oss", "weight": 100}
 
 
-def test_emit_populated_across_async_and_child_task_boundary(monkeypatch):
-    """Catches the empty-emit regression: the SAME PipelineTrace that resolve_chain
-    populates (across an await AND an asyncio child-task boundary) must be the one
-    emit serializes — profile + steps present, flags never empty. Mirrors the chat
-    streaming generator shape (begin at top, resolve mid-turn, emit at the end)."""
-    import asyncio
+def test_populate_sets_profile_and_per_step_primary_tiers(monkeypatch):
+    """`populate` (the explicit, contextvar-independent path the request path uses)
+    fills profile + each step's PRIMARY tier via the SYNC resolver.primary_tier —
+    exactly as chat.py/voice.py call it (`resolver.primary_tier`)."""
+    cfg = _cfg(100)
+    monkeypatch.setattr(resolver.runtime, "get_pipeline", lambda: cfg)
 
+    pt = trace.begin("oss")
+    trace.populate(pt, cfg, resolver.primary_tier, "oss", (Step.AGENT, Step.MODERATION))
+    md = pt.to_metadata()
+    assert md["profile"] == {"name": "oss", "weight": 100}
+    assert md["steps"]["agent"]["provider"] == "vllm"
+    assert md["steps"]["agent"]["model"] == "gemma"
+    assert md["steps"]["moderation"]["model"] == "gemma"
+    assert len(md["flags"]) == 5
+
+
+def test_explicit_emit_survives_contextvar_loss(monkeypatch):
+    """THE regression this fixes: prod consumes stream_chat_messages as a
+    StreamingResponse async generator, and the ContextVar does NOT survive to the
+    emit site — a contextvar-based emit read an EMPTY object. Simulate that boundary
+    by CLEARING the contextvar after populate, then assert emit(pt) still serializes
+    the fully-populated explicit instance (profile + steps + flags)."""
+    import asyncio
     fake = _FakeClient()
     monkeypatch.setattr(trace, "_get_langfuse_client", lambda: fake)
+    cfg = _cfg(100)
+    monkeypatch.setattr(resolver.runtime, "get_pipeline", lambda: cfg)
 
     async def _agen():
-        trace.begin("oss")
-        await split.resolve_chain("", Step.AGENT, _cfg(100))            # same-task await
-        await asyncio.create_task(split.resolve_chain("", Step.MODERATION, _cfg(100)))  # child task
+        pt = trace.begin("oss")
+        # Exactly how chat.py populates: the SYNC resolver.primary_tier.
+        trace.populate(pt, cfg, resolver.primary_tier, "oss", (Step.AGENT, Step.MODERATION))
         yield "chunk"
-        trace.emit_to_trace()
+        # Simulate the prod boundary: the contextvar is gone by the emit site.
+        trace.clear()
+        assert trace.current() is None
+        # A contextvar read would now be EMPTY — the explicit pt must still work.
+        trace.emit_to_trace(pt)
 
     async def _drive():
         async for _ in _agen():
@@ -260,10 +283,23 @@ def test_emit_populated_across_async_and_child_task_boundary(monkeypatch):
     asyncio.run(_drive())
 
     pc = fake.metadata["pipeline_config"]
-    assert pc["profile"] == {"name": "oss", "weight": 100}   # NOT None (empty-emit guard)
-    assert len(pc["flags"]) == 5                              # flags never empty
-    assert set(pc["steps"]) >= {"agent", "moderation"}       # child-task record survived
+    assert pc["profile"] == {"name": "oss", "weight": 100}   # NOT None despite ctxvar loss
+    assert len(pc["flags"]) == 5
+    assert set(pc["steps"]) == {"agent", "moderation"}
     assert pc["steps"]["agent"]["model"] == "gemma"
+
+
+def test_contextvar_emit_would_be_empty_after_loss(monkeypatch):
+    """Proves the OLD (contextvar) emit path is exactly what broke: after the
+    boundary clears the contextvar, emit_to_trace() with NO explicit pt is a no-op
+    (nothing emitted) — i.e. the empty-object prod symptom."""
+    fake = _FakeClient()
+    monkeypatch.setattr(trace, "_get_langfuse_client", lambda: fake)
+    pt = trace.begin("oss")
+    trace.set_profile(pt, "oss", 100)
+    trace.clear()                      # boundary loses the contextvar
+    trace.emit_to_trace()              # no explicit pt -> reads empty contextvar
+    assert fake.metadata is None       # nothing emitted (the prod empty symptom)
 
 
 def test_emit_flags_present_even_when_nothing_resolved(monkeypatch):
@@ -271,8 +307,8 @@ def test_emit_flags_present_even_when_nothing_resolved(monkeypatch):
     `flags` are populated from settings (never None/empty)."""
     fake = _FakeClient()
     monkeypatch.setattr(trace, "_get_langfuse_client", lambda: fake)
-    trace.begin("legacy")
-    trace.emit_to_trace()
+    pt = trace.begin("legacy")
+    trace.emit_to_trace(pt)
     pc = fake.metadata["pipeline_config"]
     assert len(pc["flags"]) == 5
     assert pc["steps"] == {}
