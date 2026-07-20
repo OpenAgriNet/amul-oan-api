@@ -39,6 +39,7 @@ from agents.models import (
     oss_model_available,
 )
 from app.llm_core.config_model import Step
+from app.llm_core import health
 from helpers.utils import get_logger
 
 logger = get_logger(__name__)
@@ -219,19 +220,32 @@ async def _resolve_chain(*, pipeline: str, session_id: str, variant: str) -> lis
         factory-built handles, which are P0's (``LLM_CORE_ENABLED``) domain.
 
     Any failure resolving the config chain degrades to ``attempt_chain`` — the
-    fallback path must never be broken by a config/Redis edge case."""
-    if settings.profiles_enabled and settings.llm_core_enabled:
-        step = _PIPELINE_TO_STEP.get(pipeline)
-        if step is not None:
-            try:
-                from app.llm_core import split
-                return await split.resolve_chain(session_id, step)
-            except Exception as exc:  # never break the fallback path on a config edge
-                logger.warning(
-                    "fallback: profiles chain resolve failed (pipeline=%s): %s; "
-                    "using legacy attempt_chain", pipeline, exc,
-                )
-    return attempt_chain(variant, pipeline)
+    fallback path must never be broken by a config/Redis edge case.
+
+    P2 health prune (a pre-flight FILTER) is applied on BOTH branches, so the
+    breaker/poller work independent of PROFILES: the config path is pruned inside
+    ``split.resolve_chain`` (before materialize — the documented P3 seam); the
+    legacy ``attempt_chain`` path is pruned here on the resulting ``Attempt`` s
+    (both expose ``.endpoint``). No-op unless a HEALTH_* flag is on; never empties
+    the chain."""
+    step = _PIPELINE_TO_STEP.get(pipeline)
+    if settings.profiles_enabled and settings.llm_core_enabled and step is not None:
+        try:
+            from app.llm_core import split
+            return await split.resolve_chain(session_id, step)  # health-pruned inside
+        except Exception as exc:  # never break the fallback path on a config edge
+            logger.warning(
+                "fallback: profiles chain resolve failed (pipeline=%s): %s; "
+                "using legacy attempt_chain", pipeline, exc,
+            )
+
+    chain = attempt_chain(variant, pipeline)
+    if settings.health_breaker_enabled or settings.health_poller_enabled:
+        try:
+            chain = health.prune_unhealthy(step, chain)
+        except Exception as exc:  # a prune bug must never break the fallback path
+            logger.warning("fallback: health prune failed (pipeline=%s): %s", pipeline, exc)
+    return chain
 
 
 @dataclass
@@ -338,15 +352,21 @@ async def execute_with_fallback(
         t0 = time.monotonic()
         try:
             if attempt.timeout is None:
-                return await run(attempt)
-            with anyio.fail_after(attempt.timeout):
-                return await run(attempt)
+                result = await run(attempt)
+            else:
+                with anyio.fail_after(attempt.timeout):
+                    result = await run(attempt)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
             reason = classify(exc)
             is_last = i == len(chain) - 1
             will_fall_back = reason in FALLBACKABLE and not is_last
+            # P2 passive breaker feed: an infrastructure (FALLBACKABLE) failure is
+            # evidence this endpoint is down — count it toward the trip. Self-gated:
+            # a no-op unless HEALTH_BREAKER_ENABLED, so flag-off behaviour is identical.
+            if reason in FALLBACKABLE:
+                health.record_failure(attempt.endpoint)
             emit(
                 FallbackEvent(
                     pipeline=pipeline,
@@ -364,6 +384,11 @@ async def execute_with_fallback(
             )
             if not will_fall_back:
                 raise
+        else:
+            # Clean success resets the breaker for this endpoint (P2). No-op unless
+            # HEALTH_BREAKER_ENABLED.
+            health.record_success(attempt.endpoint)
+            return result
 
 
 async def with_first_token_deadline(attempt: Attempt, agen: AsyncIterator[Any]) -> AsyncIterator[Any]:
@@ -487,6 +512,8 @@ async def stream_with_fallback(
             async for chunk in make_stream(attempt):
                 committed = True
                 yield chunk
+            # Clean stream finish resets the breaker for this endpoint (P2).
+            health.record_success(attempt.endpoint)
             return  # stream finished cleanly
         except asyncio.CancelledError:
             raise
@@ -513,6 +540,12 @@ async def stream_with_fallback(
                 )
                 raise
             will_fall_back = reason in FALLBACKABLE and not is_last
+            # P2 passive breaker feed: only PRE-commit infrastructure failures are
+            # evidence the endpoint is down. A post-commit failure (handled above)
+            # is NOT — the box answered and streamed tokens — so it must not trip
+            # the breaker. Self-gated (no-op unless HEALTH_BREAKER_ENABLED).
+            if reason in FALLBACKABLE:
+                health.record_failure(attempt.endpoint)
             emit(
                 FallbackEvent(
                     pipeline=pipeline,

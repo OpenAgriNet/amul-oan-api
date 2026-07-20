@@ -223,6 +223,33 @@ class Settings(BaseSettings):
     profiles_enabled: bool = os.getenv("PROFILES_ENABLED", "false").strip().lower() in {
         "1", "true", "yes", "on"
     }
+    # Health filter — pre-flight chain FILTER (llm_core P2). Two independent
+    # kill-switches, both default OFF (zero behaviour change when off):
+    #   * HEALTH_BREAKER_ENABLED — the passive circuit-breaker, fed by the
+    #     fallback failure/success path (per-endpoint consecutive-failure trip).
+    #   * HEALTH_POLLER_ENABLED  — the active LB `/health` poller (a lifespan
+    #     background task) that updates breaker state with hysteresis failback.
+    # The health prune is active when EITHER is on; it only ever DROPS tiers whose
+    # endpoint is currently `open` from an already-resolved chain, never reorders,
+    # and never returns an empty chain (degrade-safe). Orthogonal to the sticky
+    # split: a session's profile assignment is unchanged; only its chain is pruned
+    # while an endpoint is down.
+    health_breaker_enabled: bool = os.getenv("HEALTH_BREAKER_ENABLED", "false").strip().lower() in {
+        "1", "true", "yes", "on"
+    }
+    health_poller_enabled: bool = os.getenv("HEALTH_POLLER_ENABLED", "false").strip().lower() in {
+        "1", "true", "yes", "on"
+    }
+    # Consecutive FALLBACKABLE failures on an endpoint before the breaker trips.
+    health_breaker_fail_threshold: int = int(os.getenv("HEALTH_BREAKER_FAIL_THRESHOLD", "5"))
+    # Cooldown before an `open` endpoint is allowed a single half-open probe.
+    health_breaker_cooldown_ms: int = int(os.getenv("HEALTH_BREAKER_COOLDOWN_MS", "30000"))
+    # Active poller cadence and per-probe HTTP timeout.
+    health_poller_interval_ms: int = int(os.getenv("HEALTH_POLLER_INTERVAL_MS", "10000"))
+    health_poller_timeout_ms: int = int(os.getenv("HEALTH_POLLER_TIMEOUT_MS", "2000"))
+    # Hysteresis: consecutive healthy polls required to fail an `open` endpoint
+    # back to `closed` (guards against the H200 crash-and-half-boot flap).
+    health_poller_healthy_polls: int = int(os.getenv("HEALTH_POLLER_HEALTHY_POLLS", "3"))
     # Scheme tool union scoping:
     # true  -> require authenticated farmer union to match a supported scheme union
     # false -> testing mode; allow any farmer union and fall back to supported unions

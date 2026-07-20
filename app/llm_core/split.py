@@ -136,7 +136,21 @@ async def resolve_chain(
     if step_cfg is None:
         raise ValueError(f"no config for step={step.value} in profile={profile.name}")
 
-    return materialize(STEP_CLIENT_KIND[step], list(step_cfg.tiers))
+    # ── P2 pre-flight FILTER: health prune (before materialize) ──────────────
+    # Drop tiers whose endpoint is currently `open` (per-endpoint breaker). No-op
+    # unless a HEALTH_* flag is on; contract: never empties the chain. Runs on the
+    # inert Tiers so a pruned tier's client is never even built.
+    from app.llm_core import health
+    tiers = health.prune_unhealthy(step, list(step_cfg.tiers))
+
+    # ── P3 composition seam ──────────────────────────────────────────────────
+    # The concurrency-gauge REORDER slots in HERE — AFTER the health prune, BEFORE
+    # materialize (fixed order: health-prune -> concurrency-reorder -> materialize
+    # -> classify-walk). It only DEPRIORITIZES saturated-but-up tiers, so it must
+    # see the already-health-pruned list. Left as a no-op hook for P3:
+    #   tiers = concurrency.reorder(step, tiers)
+
+    return materialize(STEP_CLIENT_KIND[step], tiers)
 
 
 def variant_for_profile(name: str) -> str:
