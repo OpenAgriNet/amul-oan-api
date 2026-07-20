@@ -15,6 +15,7 @@ from app.observability import start_observation
 # NOTE: This is a hack to add Gujarati terms to the search results.
 from agents.tools.terms import normalize_text_with_glossary
 
+
 logger = get_logger(__name__)
 _index_capabilities_cache: Dict[str, Dict[str, Any]] = {}
 _TOKEN_RE = re.compile(r"[\w\-]+", re.UNICODE)
@@ -231,6 +232,182 @@ def _doc_key(hit: Dict[str, Any]) -> str:
     )
 
 
+
+_HEADING_RE = re.compile(r"^#{1,3}\s+(.+)$", re.MULTILINE)
+_DOC_HASH_RE = re.compile(r"^doc-[0-9a-f]{6,}$", re.IGNORECASE)
+_HEX_ID_RE = re.compile(r"^[0-9a-f]{16,}$", re.IGNORECASE)
+
+# Marqo / ingestion fields we surface in Langfuse (first non-empty wins per alias group).
+_HIT_FIELD_ALIASES: dict[str, tuple[str, ...]] = {
+    "document_number": ("document_number", "doc_number", "document_no", "doc_no"),
+    "section": ("section", "section_title", "section_name", "heading", "section_id"),
+    "chunk_index": ("chunk_num", "chunk_index", "chunk_idx", "chunk_number", "chunk_no"),
+    "page_start": ("page_start", "page", "page_no"),
+    "page_end": ("page_end",),
+    "filename": ("filename", "name_en", "name"),
+}
+
+
+def _retrieval_provenance_enabled() -> bool:
+    """Kill switch for attaching documents[] provenance to Langfuse / logs."""
+    return _env_bool("SEARCH_RETRIEVAL_PROVENANCE", True)
+
+
+def _first_hit_field(hit: Dict[str, Any], aliases: tuple[str, ...]) -> str:
+    for key in aliases:
+        value = hit.get(key)
+        if value is not None and str(value).strip():
+            return str(value).strip()
+    return ""
+
+
+def _infer_section_from_text(text: str) -> str:
+    match = _HEADING_RE.search(text or "")
+    if not match:
+        return ""
+    return re.sub(r"\s+", " ", match.group(1)).strip()
+
+
+def _is_opaque_doc_label(value: str) -> bool:
+    """True for doc-<hash>, long hex UUIDs, or empty — not farmer-facing titles."""
+    label = (value or "").strip()
+    if not label:
+        return True
+    if _DOC_HASH_RE.match(label) or _HEX_ID_RE.match(label):
+        return True
+    return False
+
+
+def _human_display_title(
+    *,
+    name: str = "",
+    document_number: str = "",
+    section: str = "",
+) -> str:
+    """Agent/chat citation title: never surface internal Marqo / doc-hash IDs or section glyph."""
+    base = name.strip() if name and not _is_opaque_doc_label(name) else ""
+    doc_no = (document_number or "").strip()
+    sec = (section or "").strip()
+
+    if base and doc_no and doc_no not in base:
+        base = f"{base} (doc #{doc_no})"
+    elif not base and doc_no:
+        base = f"Document #{doc_no}"
+
+    if sec:
+        return f"{base} — {sec}" if base else sec
+    return base or "Document"
+
+
+def _build_hit_provenance(hit: Dict[str, Any], *, rank: int) -> dict[str, Any]:
+    text = str(hit.get("text") or "")
+    filename = _first_hit_field(hit, _HIT_FIELD_ALIASES["filename"])
+    internal_doc_id = str(hit.get("doc_id") or "").strip()
+    doc_id = filename or internal_doc_id or str(hit.get("_id") or "").strip()
+    section = _first_hit_field(hit, _HIT_FIELD_ALIASES["section"]) or _infer_section_from_text(text)
+    document_number = _first_hit_field(hit, _HIT_FIELD_ALIASES["document_number"])
+    chunk_raw = _first_hit_field(hit, _HIT_FIELD_ALIASES["chunk_index"])
+    page_start = _first_hit_field(hit, _HIT_FIELD_ALIASES["page_start"])
+    page_end = _first_hit_field(hit, _HIT_FIELD_ALIASES["page_end"])
+    score = float(hit.get("_rerank_score", hit.get("_score", hit.get("score", 0.0))) or 0.0)
+
+    human_name = str(
+        hit.get("name")
+        or hit.get("name_en")
+        or hit.get("name_gu")
+        or ""
+    ).strip()
+    if _is_opaque_doc_label(human_name):
+        human_name = ""
+
+    chunk_index: int | str | None
+    if chunk_raw.isdigit():
+        chunk_index = int(chunk_raw)
+    elif chunk_raw:
+        chunk_index = chunk_raw
+    else:
+        chunk_index = None
+
+    page_range: str | None = None
+    if page_start and page_end:
+        page_range = page_start if page_start == page_end else f"{page_start}-{page_end}"
+    elif page_start:
+        page_range = page_start
+
+    return {
+        "rank": rank,
+        "doc_id": doc_id,
+        "doc_name": doc_id,
+        "internal_doc_id": internal_doc_id or None,
+        "document_number": document_number or None,
+        "section": section or None,
+        "chunk_index": chunk_index,
+        "page_start": int(page_start) if page_start.isdigit() else (page_start or None),
+        "page_end": int(page_end) if page_end.isdigit() else (page_end or None),
+        "page_range": page_range,
+        "marqo_id": str(hit.get("_id") or hit.get("id") or ""),
+        # Keep raw labels for Langfuse; display path uses _human_display_title.
+        "name": human_name or filename or doc_id,
+        "display_title": _human_display_title(
+            name=human_name,
+            document_number=document_number,
+            section=section,
+        ),
+        "score": round(score, 4),
+        "is_reference": bool(hit.get("is_reference", False)),
+    }
+
+
+def _build_search_observability_output(
+    *,
+    query: str,
+    index_name: str,
+    search_mode: str,
+    final_top_k: int,
+    hits: List[Dict[str, Any]],
+    documents: List[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    if documents is None:
+        documents = [_build_hit_provenance(hit, rank=i) for i, hit in enumerate(hits, start=1)]
+    unique_doc_ids = sorted({d["doc_id"] for d in documents if d.get("doc_id")})
+    return {
+        "query": query,
+        "index": index_name,
+        "search_mode": search_mode,
+        "requested_top_k": final_top_k,
+        "hit_count": len(documents),
+        "unique_doc_count": len(unique_doc_ids),
+        "unique_doc_ids": unique_doc_ids,
+        "documents": documents,
+    }
+
+
+def _provenance_summary(documents: List[dict[str, Any]]) -> str:
+    summary = []
+    for prov in documents:
+        parts = [prov.get("doc_id") or prov.get("marqo_id") or ""]
+        if prov.get("document_number"):
+            parts.append(f"doc_no={prov['document_number']}")
+        if prov.get("section"):
+            parts.append(f"section={prov['section']}")
+        if prov.get("chunk_index") is not None:
+            parts.append(f"chunk={prov['chunk_index']}")
+        if prov.get("page_range"):
+            parts.append(f"pages={prov['page_range']}")
+        summary.append("|".join(p for p in parts if p))
+    return "; ".join(summary)
+
+
+def _safe_update_observation(observation: Any, **kwargs: Any) -> None:
+    """Best-effort Langfuse update — never fail the search tool."""
+    if observation is None:
+        return
+    try:
+        observation.update(**kwargs)
+    except Exception:
+        logger.warning("Langfuse observation update failed; continuing search", exc_info=True)
+
+
 def _apply_doc_diversity(hits: List[Dict[str, Any]], top_k: int, max_per_doc: int) -> List[Dict[str, Any]]:
     selected: List[Dict[str, Any]] = []
     per_doc_counts: Dict[str, int] = {}
@@ -325,6 +502,9 @@ class SearchHit(BaseModel):
     name: str = ""
     text: str = ""
     doc_id: str = ""
+    document_number: str = ""
+    section: str = ""
+    chunk_index: Optional[int] = None
     type: str = "document"  # Default to document since index only contains documents
     source: str = ""  # Make optional since it might not be in all results
     score: float = Field(default=0.0)
@@ -346,9 +526,18 @@ class SearchHit(BaseModel):
         cleaned = normalize_text_with_glossary(cleaned)
         return cleaned
 
+    @property
+    def display_title(self) -> str:
+        return _human_display_title(
+            name=self.name,
+            document_number=self.document_number,
+            section=self.section,
+        )
+
     def __str__(self) -> str:
-        # All results are documents in this index
-        return f"**{self.name}**\n" + "```\n" + self.processed_text +  "\n```\n"
+        # All results are documents in this index.
+        # Format pin for #116 parsers: bold title line + fenced body.
+        return f"**{self.display_title}**\n" + "```\n" + self.processed_text +  "\n```\n"
 
 
 async def search_documents(
@@ -443,7 +632,9 @@ async def search_documents(
             search_params["filter_string"] = "is_reference:false"
 
         # Marqo client is sync; run in thread pool to avoid blocking the event loop.
-        # Wrapped in start_observation (bucket C central span) — no-op when Langfuse off.
+        # Single marqo_search span covers retrieval + rerank/diversity + provenance update.
+        # start_observation is a no-op when Langfuse is off (key-gated in app.observability).
+        provenance_enabled = _retrieval_provenance_enabled()
         with start_observation(
             "marqo_search",
             input={"query": query, "search_params": search_params},
@@ -469,80 +660,157 @@ async def search_documents(
                     }
                     if exclude_reference_chunks and capabilities.get("has_is_reference_filter", False):
                         fallback_params["filter_string"] = "is_reference:false"
-                    if observation is not None:
-                        observation.update(
-                            metadata={
-                                "endpoint_url": endpoint_url,
-                                "index_name": index_name,
-                                "search_mode": search_mode,
-                                "fallback_mode": "tensor",
-                                "initial_error": str(e),
-                                "tool": "search_documents",
-                            }
-                        )
+                    _safe_update_observation(
+                        observation,
+                        metadata={
+                            "endpoint_url": endpoint_url,
+                            "index_name": index_name,
+                            "search_mode": search_mode,
+                            "fallback_mode": "tensor",
+                            "initial_error": str(e),
+                            "tool": "search_documents",
+                        },
+                    )
                     results = await asyncio.to_thread(
                         _marqo_search_sync, endpoint_url, index_name, fallback_params
                     )
                 else:
-                    if observation is not None:
-                        observation.update(
-                            output={"error": str(e)},
-                            metadata={
-                                "endpoint_url": endpoint_url,
-                                "index_name": index_name,
-                                "search_mode": search_mode,
-                                "tool": "search_documents",
-                            },
-                        )
+                    _safe_update_observation(
+                        observation,
+                        output={"error": str(e)},
+                        metadata={
+                            "endpoint_url": endpoint_url,
+                            "index_name": index_name,
+                            "search_mode": search_mode,
+                            "tool": "search_documents",
+                        },
+                    )
                     raise
 
-            if observation is not None:
-                observation.update(
-                    output={"hit_count": len(results)},
+            rerank_mode = (os.getenv("MARQO_RERANK_MODE", "bm25lite") or "bm25lite").strip().lower()
+            if rerank_mode not in {"off", "none", "disabled"}:
+                results = _rerank_hits(query, results)
+            results = _apply_doc_diversity(results, top_k=final_top_k, max_per_doc=max_per_doc)
+
+            # Provenance for Langfuse + agent titles. Best-effort: never fail the tool
+            # if helpers / observation update blow up after a successful Marqo fetch.
+            documents: List[dict[str, Any]] = []
+            try:
+                documents = [
+                    _build_hit_provenance(hit, rank=i) for i, hit in enumerate(results, start=1)
+                ]
+                if provenance_enabled:
+                    observability_output = _build_search_observability_output(
+                        query=query,
+                        index_name=index_name,
+                        search_mode=search_mode,
+                        final_top_k=final_top_k,
+                        hits=results,
+                        documents=documents,
+                    )
+                else:
+                    observability_output = {
+                        "query": query,
+                        "index": index_name,
+                        "search_mode": search_mode,
+                        "requested_top_k": final_top_k,
+                        "hit_count": len(results),
+                        "documents": [],
+                    }
+
+                _safe_update_observation(
+                    observation,
+                    output=observability_output,
                     metadata={
                         "endpoint_url": endpoint_url,
                         "index_name": index_name,
                         "search_mode": search_mode,
                         "query_expansion_profile": query_expansion_profile,
                         "tool": "search_documents",
+                        "retrieval_provenance": provenance_enabled,
+                    },
+                )
+            except Exception:
+                logger.warning(
+                    "Retrieval provenance attach failed; continuing with search hits",
+                    exc_info=True,
+                )
+                if not documents:
+                    documents = [
+                        {
+                            "doc_id": str(
+                                hit.get("filename") or hit.get("doc_id") or hit.get("_id") or ""
+                            ),
+                            "document_number": None,
+                            "section": None,
+                            "chunk_index": None,
+                            "score": float(hit.get("_score", 0.0) or 0.0),
+                            "marqo_id": str(hit.get("_id") or hit.get("id") or ""),
+                        }
+                        for hit in results
+                    ]
+                _safe_update_observation(
+                    observation,
+                    output={"hit_count": len(results), "documents": []},
+                    metadata={
+                        "endpoint_url": endpoint_url,
+                        "index_name": index_name,
+                        "search_mode": search_mode,
+                        "tool": "search_documents",
+                        "retrieval_provenance": False,
                     },
                 )
 
-        rerank_mode = (os.getenv("MARQO_RERANK_MODE", "bm25lite") or "bm25lite").strip().lower()
-        if rerank_mode not in {"off", "none", "disabled"}:
-            results = _rerank_hits(query, results)
-        results = _apply_doc_diversity(results, top_k=final_top_k, max_per_doc=max_per_doc)
-
-        logger.info(
-            "Search completed: query=%s expanded_query=%s mode=%s top_k=%s hits=%s profile=%s",
-            query,
-            expanded_query,
-            search_mode,
-            final_top_k,
-            len(results),
-            query_expansion_profile,
-        )
+        if provenance_enabled and documents:
+            logger.info(
+                "Search completed: query=%s expanded_query=%s mode=%s top_k=%s hits=%s profile=%s docs=%s",
+                query,
+                expanded_query,
+                search_mode,
+                final_top_k,
+                len(results),
+                query_expansion_profile,
+                _provenance_summary(documents),
+            )
+        else:
+            logger.info(
+                "Search completed: query=%s expanded_query=%s mode=%s top_k=%s hits=%s profile=%s",
+                query,
+                expanded_query,
+                search_mode,
+                final_top_k,
+                len(results),
+                query_expansion_profile,
+            )
 
         if len(results) == 0:
             return f"No results found for `{query}`"
-        else:
-            # Process hits and handle missing fields
-            search_hits = []
-            for hit in results:
-                # Map Marqo fields to our model
-                processed_hit = {
-                    "name": hit.get("name") or hit.get("name_en") or hit.get("name_gu") or hit.get("filename", ""),
-                    "text": hit.get("text", ""),
-                    "doc_id": hit.get("doc_id", hit.get("_id", "")),
-                    "type": hit.get("type", "document"),
-                    "source": hit.get("source", ""),
-                    "score": hit.get("_rerank_score", hit.get("_score", hit.get("score", 0.0))),
-                    "id": hit.get("_id", hit.get("id", ""))
-                }
-                search_hits.append(SearchHit(**processed_hit))            
-            # Convert back to dict format for compatibility
-            document_string = '\n\n----\n\n'.join([str(document) for document in search_hits])
-            return "> Search Results for `" + query + "`\n\n" + document_string
+
+        search_hits: list[SearchHit] = []
+        for hit, provenance in zip(results, documents):
+            human_name = str(
+                hit.get("name") or hit.get("name_en") or hit.get("name_gu") or ""
+            ).strip()
+            if _is_opaque_doc_label(human_name):
+                human_name = ""
+            processed_hit = {
+                "name": human_name,
+                "text": hit.get("text", ""),
+                "doc_id": provenance.get("doc_id") or "",
+                "document_number": provenance.get("document_number") or "",
+                "section": provenance.get("section") or "",
+                "chunk_index": provenance.get("chunk_index")
+                if isinstance(provenance.get("chunk_index"), int)
+                else None,
+                "type": hit.get("type", "document"),
+                "source": hit.get("source", ""),
+                "score": float(provenance.get("score", 0.0) or 0.0),
+                "id": provenance.get("marqo_id") or "",
+            }
+            search_hits.append(SearchHit(**processed_hit))
+
+        document_string = '\n\n----\n\n'.join([str(document) for document in search_hits])
+        return "> Search Results for `" + query + "`\n\n" + document_string
     except Exception as e:
         logger.error(f"Error searching documents: {e} for query: {query}")
         raise ModelRetry(f"Error searching documents, please try again")
