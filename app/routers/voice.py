@@ -65,9 +65,16 @@ async def voice_endpoint(
     )
     logger.debug(f"Retrieved message history for session {session_id} - length: {len(history)}")
 
-    # Sticky per-session OSS/legacy routing (no-op while OSS_PIPELINE_PCT=0
-    # or OSS_INFERENCE_ENDPOINT_URL unset — resolver returns 'legacy').
-    pipeline_variant = await resolve_pipeline_variant(session_id)
+    # Sticky per-session routing (no-op while OSS_PIPELINE_PCT=0 or
+    # OSS_INFERENCE_ENDPOINT_URL unset — resolver returns 'legacy').
+    # PROFILES_ENABLED off (default): legacy variant bit from pipeline_router.
+    # On: the weighted named-profile split (llm_core), mapped back to the same
+    # variant string for the unchanged downstream path (seeded config = identical).
+    if settings.profiles_enabled:
+        from app.llm_core import split as _llm_split
+        pipeline_variant = await _llm_split.resolve_variant(session_id)
+    else:
+        pipeline_variant = await resolve_pipeline_variant(session_id)
 
     return StreamingResponse(
         stream_voice_message(

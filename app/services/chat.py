@@ -27,6 +27,7 @@ from app.services.fallback import execute_with_fallback, stream_with_fallback, w
 from app.core.cache import cache
 from agents.deps import FarmerContext
 from agents.farmer_context import get_farmer_context_bundle_by_mobile
+from agents.tools.farmer import normalize_phone_to_mobile
 from app.services.translation import (
     translate_text,
     translate_to_english_pretranslation,
@@ -185,8 +186,23 @@ async def stream_chat_messages(
     # with OSS_PIPELINE_PCT=0 every session is 'legacy'.
     is_oss = pipeline_variant == "oss"
     use_translation_pipeline = bool(use_translation_pipeline) or is_oss
-    request_model = get_model_for_variant(pipeline_variant)
-    request_provider = provider_for_variant(pipeline_variant)
+    if settings.llm_core_enabled:
+        # Flag-on: obtain the agent/moderation model handle + provider from the
+        # unified pipeline resolver instead of the legacy singletons. P0 identity —
+        # for the current env this resolves the same provider/base_url/model as
+        # get_model_for_variant (verified at startup by llm_core.runtime.self_check).
+        # P1 generalizes this to the weighted split + config-driven fallback chain
+        # behind the same resolver API. Fallback-path (settings.fallback_enabled)
+        # still uses attempt.model from fallback.attempt_chain — untouched in P0.
+        from app.llm_core import resolver as _llm_resolver
+        from app.llm_core.config_model import Step as _LlmStep
+        request_model = _llm_resolver.primary_handle(_LlmStep.AGENT, pipeline_variant)
+        request_provider = _llm_resolver.primary_provider(_LlmStep.AGENT, pipeline_variant)
+        moderation_model = _llm_resolver.primary_handle(_LlmStep.MODERATION, pipeline_variant)
+    else:
+        request_model = get_model_for_variant(pipeline_variant)
+        request_provider = provider_for_variant(pipeline_variant)
+        moderation_model = request_model
     request_model_name = OSS_LLM_MODEL_NAME if is_oss else LLM_MODEL_NAME
     # Langfuse: propagate session_id, metadata, and tags for dashboard filtering (max 200 chars per value)
     session_id_safe = (session_id or "")[:200]
@@ -308,12 +324,29 @@ async def stream_chat_messages(
 
         pretranslation_source_langs = {"gu", "gujarati", "hi", "hindi"}
         if use_translation_pipeline and source_lang.lower() in pretranslation_source_langs:
-            pretrans_provider = "vllm" if is_oss else None
+            if settings.llm_core_enabled:
+                # Route the pre-translation tier decision through the resolver. In
+                # P0 translate_to_english_pretranslation() is a forced-endpoint
+                # toggle (provider="vllm" pins the OSS vLLM endpoint), so map the
+                # resolved primary tier -> that toggle: OSS-endpoint tier => "vllm",
+                # else None. Byte-identical to `"vllm" if is_oss else None` for the
+                # shim config; P1 makes pretranslation a fully tier-parameterized
+                # RAW_OPENAI call (its own client from the factory).
+                from app.llm_core import resolver as _llm_resolver
+                from app.llm_core.config_model import Step as _LlmStep
+                _pre_tier = _llm_resolver.primary_tier(_LlmStep.PRE_TRANSLATION, pipeline_variant)
+                pretrans_provider = (
+                    "vllm"
+                    if (settings.oss_inference_endpoint_url
+                        and _pre_tier.endpoint == settings.oss_inference_endpoint_url)
+                    else None
+                )
+            else:
+                pretrans_provider = "vllm" if is_oss else None
             logger.info(
-                "request_id=%s translation_pipeline=True variant=%s pretranslating %s->en with %s/%s",
+                "request_id=%s translation_pipeline=True variant=%s pretranslating gu->en with %s/%s",
                 request_id,
                 pipeline_variant,
-                source_lang.lower(),
                 pretrans_provider or PRETRANSLATION_PROVIDER,
                 request_model_name if is_oss else PRETRANSLATION_MODEL,
             )
@@ -394,6 +427,10 @@ async def stream_chat_messages(
             # Agent responds in English; response will be translated to target_lang downstream
             processing_lang = "en"
 
+        # Normalized caller phone — the micro-loan tool reads this from deps so it
+        # never has to trust an LLM-supplied number. None for anonymous sessions.
+        loan_mobile = normalize_phone_to_mobile(user_info['phone']) if user_info and user_info.get('phone') else None
+
         deps = FarmerContext(
             query=processing_query,
             session_id=session_id,
@@ -402,6 +439,7 @@ async def stream_chat_messages(
             farmer_unions=farmer_unions,
             use_translation_pipeline=use_translation_pipeline,
             response_max_chars=_response_max_chars_for_channel(channel),
+            mobile=loan_mobile,
         )
 
         message_pairs = "\n\n".join(format_message_pairs(history, 3))
@@ -443,7 +481,7 @@ async def stream_chat_messages(
                         run=lambda a: moderation_agent.run(user_message, model=a.model),
                     )
                 else:
-                    moderation_run = await moderation_agent.run(user_message, model=request_model)
+                    moderation_run = await moderation_agent.run(user_message, model=moderation_model)
                 moderation_data = moderation_run.output
                 logger.info(
                     "request_id=%s moderation_category=%s moderation_action=%s",

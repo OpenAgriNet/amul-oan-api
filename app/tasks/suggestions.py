@@ -37,7 +37,15 @@ async def create_suggestions(session_id: str, target_lang: str = 'mr', variant: 
     # use the self-hosted gemma model (no API cost; completes full-OSS for chat),
     # legacy stays on the default model. Falls back to the default model if OSS
     # is unconfigured.
-    sug_model = get_model_for_variant(variant)
+    if settings.llm_core_enabled:
+        # Flag-on: resolve the suggestions model handle from the unified pipeline
+        # (P0 identity with get_model_for_variant; verified by runtime.self_check).
+        # Fallback path below still uses attempt.model — untouched in P0.
+        from app.llm_core import resolver as _llm_resolver
+        from app.llm_core.config_model import Step as _LlmStep
+        sug_model = _llm_resolver.primary_handle(_LlmStep.SUGGESTIONS, variant)
+    else:
+        sug_model = get_model_for_variant(variant)
     sug_model_name = (
         OSS_LLM_MODEL_NAME if (variant == "oss" and oss_model_available()) else LLM_MODEL_NAME
     )

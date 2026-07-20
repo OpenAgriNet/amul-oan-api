@@ -8,6 +8,9 @@ from app.tasks.telemetry_queue import start_telemetry_worker, stop_telemetry_wor
 # Imported before the routers so the cold import order matches the cycle-safety
 # regression test (worker module is side-effect-free; see farmer_refresh_worker).
 from app.tasks.farmer_refresh_worker import start_farmer_refresh_worker, stop_farmer_refresh_worker
+# P2 health poller: active LB /health probe feeding the per-endpoint breaker.
+# start_/stop_ are no-ops unless HEALTH_POLLER_ENABLED (flag-off boot is untouched).
+from app.tasks.health_poller import start_health_poller, stop_health_poller
 
 load_dotenv()
 
@@ -29,11 +32,23 @@ async def lifespan(app: FastAPI):
     # Load prompt templates into memory (no disk I/O at request time)
     from helpers.utils import load_prompt_templates
     load_prompt_templates(settings.base_dir / "assets" / "prompts")
+    # Unified LLM pipeline: synthesize/validate the config and run the identity
+    # self-check (logs resolved vs legacy wiring; raises only when the flag is on).
+    # Best-effort: a self-check bug must never block startup on the flag-off path.
+    try:
+        from app.llm_core import runtime as _llm_runtime
+        _llm_runtime.configure()
+    except AssertionError:
+        raise
+    except Exception as _llm_exc:  # pragma: no cover - defensive
+        print(f"⚠️  llm_core configure skipped: {_llm_exc}")
     await start_telemetry_worker()
     await start_scheme_scheduler()
     await start_farmer_refresh_worker()
+    await start_health_poller()
     yield
     # Shutdown
+    await stop_health_poller()
     await stop_farmer_refresh_worker()
     await stop_scheme_scheduler()
     await stop_telemetry_worker()
