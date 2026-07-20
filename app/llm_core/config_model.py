@@ -71,13 +71,31 @@ class Tier(BaseModel):
     model_config = {"frozen": True}
 
 
+class ConcurrencyGate(BaseModel):
+    """Explicit config for the P3 concurrency-gauge trigger on a step.
+
+    ``metrics_url`` is the vLLM Prometheus ``/metrics`` URL, given **explicitly**
+    — never derived by regex-stripping ``/v1`` off the inference endpoint (that is
+    bh-voice-prod's fragile derivation; the plan §2 hardens it out). ``max_concurrency``
+    is the in-flight (``num_requests_running + num_requests_waiting``) threshold
+    at/above which this step's vLLM tier is DEPRIORITIZED (reordered toward the
+    back) so the managed tier is tried first under load. The gauge only reorders;
+    it never drops a tier.
+    """
+
+    metrics_url: str
+    max_concurrency: int = 10
+
+    model_config = {"frozen": True}
+
+
 class Triggers(BaseModel):
-    """Composable pre-flight trigger config. Health / concurrency gates are
-    stubs in P0 (declared, never evaluated) — wired in P2/P3."""
+    """Composable pre-flight trigger config. ``health_check`` is consumed by P2;
+    ``concurrency_gate`` by P3 (a step without one is untouched by the gauge)."""
 
     ttft_deadline_ms: Optional[int] = None
     health_check: bool = False
-    concurrency_gate: Optional[dict] = None
+    concurrency_gate: Optional[ConcurrencyGate] = None
 
 
 class StepConfig(BaseModel):

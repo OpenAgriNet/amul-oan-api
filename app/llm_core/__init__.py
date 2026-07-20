@@ -11,6 +11,7 @@ the legacy singletons for the current env (see ``runtime.self_check``).
 
 from app.llm_core.config_model import (
     ApiStyle,
+    ConcurrencyGate,
     NamedProfile,
     PipelineConfig,
     Provider,
@@ -27,10 +28,11 @@ from app.llm_core.factory import (
     materialize,
 )
 from app.llm_core.legacy_shim import synthesize_from_env
-from app.llm_core import runtime, resolver, split
+from app.llm_core import runtime, resolver, split, concurrency
 
 __all__ = [
     "ApiStyle",
+    "ConcurrencyGate",
     "NamedProfile",
     "PipelineConfig",
     "Provider",
@@ -47,4 +49,5 @@ __all__ = [
     "runtime",
     "resolver",
     "split",
+    "concurrency",
 ]

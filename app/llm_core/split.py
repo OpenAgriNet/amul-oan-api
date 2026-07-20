@@ -143,12 +143,17 @@ async def resolve_chain(
     from app.llm_core import health
     tiers = health.prune_unhealthy(step, list(step_cfg.tiers))
 
-    # ── P3 composition seam ──────────────────────────────────────────────────
-    # The concurrency-gauge REORDER slots in HERE — AFTER the health prune, BEFORE
-    # materialize (fixed order: health-prune -> concurrency-reorder -> materialize
-    # -> classify-walk). It only DEPRIORITIZES saturated-but-up tiers, so it must
-    # see the already-health-pruned list. Left as a no-op hook for P3:
-    #   tiers = concurrency.reorder(step, tiers)
+    # ── P3 pre-flight FILTER: concurrency-gauge REORDER (after prune, before
+    # materialize; fixed order health-prune -> concurrency-reorder -> materialize
+    # -> classify-walk). It only DEPRIORITIZES a saturated-but-UP vLLM tier behind
+    # the managed tier, reading the gauge from the step's explicit ConcurrencyGate.
+    # A no-op unless CONCURRENCY_GAUGE_ENABLED and a gate is configured on the step;
+    # never drops a tier / empties the chain. Because health has already pruned any
+    # DOWN tier, a down tier is gone here and can never be reordered back to front.
+    from app.llm_core import concurrency
+    tiers = await concurrency.reprioritize_by_load(
+        step, tiers, step_cfg.triggers.concurrency_gate
+    )
 
     return materialize(STEP_CLIENT_KIND[step], tiers)
 

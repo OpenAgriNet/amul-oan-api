@@ -250,6 +250,21 @@ class Settings(BaseSettings):
     # Hysteresis: consecutive healthy polls required to fail an `open` endpoint
     # back to `closed` (guards against the H200 crash-and-half-boot flap).
     health_poller_healthy_polls: int = int(os.getenv("HEALTH_POLLER_HEALTHY_POLLS", "3"))
+    # Concurrency-gauge trigger — pre-flight REORDER filter (llm_core P3). Default
+    # OFF (zero behaviour change when off). When on, a step carrying an explicit
+    # ConcurrencyGate (metrics_url + max_concurrency) has its vLLM tier
+    # DEPRIORITIZED behind the managed tier while that box's in-flight
+    # (running+waiting) requests are at/above max_concurrency — so managed is tried
+    # first under load. Unreadable metrics FAIL OPEN (order unchanged), never a
+    # forced flip to managed. Never drops a tier and never empties the chain;
+    # orthogonal to the sticky split and composes AFTER the health prune.
+    concurrency_gauge_enabled: bool = os.getenv("CONCURRENCY_GAUGE_ENABLED", "false").strip().lower() in {
+        "1", "true", "yes", "on"
+    }
+    # Short TTL (seconds) for the shared Redis cache of a vLLM engine's in-flight
+    # count (mirrors bh's ~2s), and the per-probe metrics HTTP timeout.
+    concurrency_metrics_cache_ttl_s: int = int(os.getenv("CONCURRENCY_METRICS_CACHE_TTL_S", "2"))
+    concurrency_metrics_timeout_ms: int = int(os.getenv("CONCURRENCY_METRICS_TIMEOUT_MS", "2000"))
     # Scheme tool union scoping:
     # true  -> require authenticated farmer union to match a supported scheme union
     # false -> testing mode; allow any farmer union and fall back to supported unions
