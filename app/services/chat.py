@@ -189,6 +189,13 @@ async def stream_chat_messages(
     # with OSS_PIPELINE_PCT=0 every session is 'legacy'.
     is_oss = pipeline_variant == "oss"
     use_translation_pipeline = bool(use_translation_pipeline) or is_oss
+    # Open the per-turn pipeline-config tracer FIRST — before any resolver /
+    # primary_handle / resolve_chain call below — so every step resolution this
+    # turn (agent, moderation, pre/post-translation, suggestions) records into
+    # this same context. `begin()` also snapshots the guard flags so `flags` is
+    # never empty even on a turn that resolves nothing. Flushed to the Langfuse
+    # trace metadata as a `pipeline_config` object at each exit point.
+    _pipeline_trace.begin(pipeline_variant)
     if settings.llm_core_enabled:
         # Flag-on: obtain the agent/moderation model handle + provider from the
         # unified pipeline resolver instead of the legacy singletons. P0 identity —
@@ -224,10 +231,6 @@ async def stream_chat_messages(
         "variant": pipeline_variant,
     }
     langfuse_tags = [f"pipeline:{pipeline_name}", f"variant:{pipeline_variant}"]
-    # Open the per-turn pipeline-config tracer. Every llm_core seam records the
-    # resolved profile / step tiers / trigger outcomes into this context; it is
-    # flushed to the Langfuse trace metadata (a `pipeline` object) at each exit.
-    _pipeline_trace.begin(pipeline_variant)
     session_ctx = (
         propagate_attributes(
             session_id=session_id_safe,

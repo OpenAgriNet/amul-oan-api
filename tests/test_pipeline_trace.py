@@ -210,6 +210,75 @@ def test_concurrency_deprioritize_trigger_recorded(monkeypatch):
     assert c["metrics_url"] == "http://oss:8020/metrics"
 
 
+# ── (f) emit lands under `pipeline_config` (NOT `pipeline`) + is POPULATED ─────
+class _FakeClient:
+    def __init__(self):
+        self.metadata = None
+
+    def update_current_trace(self, **kw):
+        # Langfuse merges; capture the metadata dict this emit passed.
+        if kw.get("metadata"):
+            self.metadata = kw["metadata"]
+
+
+def test_emit_uses_pipeline_config_key_not_pipeline(monkeypatch):
+    """The emitted key MUST be `pipeline_config` — reusing `pipeline` collides with
+    chat's existing `metadata['pipeline']` = pipeline NAME string, which then wins."""
+    fake = _FakeClient()
+    monkeypatch.setattr(trace, "_get_langfuse_client", lambda: fake)
+
+    trace.begin("oss")
+    trace.record_profile("oss", 100)
+    trace.emit_to_trace()
+
+    assert "pipeline_config" in fake.metadata
+    assert "pipeline" not in fake.metadata          # must not collide with the name string
+    assert fake.metadata["pipeline_config"]["profile"] == {"name": "oss", "weight": 100}
+
+
+def test_emit_populated_across_async_and_child_task_boundary(monkeypatch):
+    """Catches the empty-emit regression: the SAME PipelineTrace that resolve_chain
+    populates (across an await AND an asyncio child-task boundary) must be the one
+    emit serializes — profile + steps present, flags never empty. Mirrors the chat
+    streaming generator shape (begin at top, resolve mid-turn, emit at the end)."""
+    import asyncio
+
+    fake = _FakeClient()
+    monkeypatch.setattr(trace, "_get_langfuse_client", lambda: fake)
+
+    async def _agen():
+        trace.begin("oss")
+        await split.resolve_chain("", Step.AGENT, _cfg(100))            # same-task await
+        await asyncio.create_task(split.resolve_chain("", Step.MODERATION, _cfg(100)))  # child task
+        yield "chunk"
+        trace.emit_to_trace()
+
+    async def _drive():
+        async for _ in _agen():
+            pass
+
+    asyncio.run(_drive())
+
+    pc = fake.metadata["pipeline_config"]
+    assert pc["profile"] == {"name": "oss", "weight": 100}   # NOT None (empty-emit guard)
+    assert len(pc["flags"]) == 5                              # flags never empty
+    assert set(pc["steps"]) >= {"agent", "moderation"}       # child-task record survived
+    assert pc["steps"]["agent"]["model"] == "gemma"
+
+
+def test_emit_flags_present_even_when_nothing_resolved(monkeypatch):
+    """A turn that resolves no step still emits a `pipeline_config` whose static
+    `flags` are populated from settings (never None/empty)."""
+    fake = _FakeClient()
+    monkeypatch.setattr(trace, "_get_langfuse_client", lambda: fake)
+    trace.begin("legacy")
+    trace.emit_to_trace()
+    pc = fake.metadata["pipeline_config"]
+    assert len(pc["flags"]) == 5
+    assert pc["steps"] == {}
+    assert pc["profile"] is None
+
+
 # ── (e) no active context -> recorders are a cheap no-op ───────────────────────
 def test_recorders_noop_without_context():
     import asyncio

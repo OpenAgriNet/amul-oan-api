@@ -252,18 +252,27 @@ def _tag_trace(tags: list) -> None:
         pass
 
 
+# The trace-metadata key the resolved-config object is emitted under. It is
+# deliberately NOT ``pipeline`` — chat already sets ``metadata["pipeline"]`` to
+# the pipeline NAME string ("translation"/"default") via propagate_attributes, so
+# reusing that key would collide (the string shadows the object). ``pipeline_config``
+# is a distinct namespace; the existing ``pipeline``/``variant`` keys are untouched.
+METADATA_KEY = "pipeline_config"
+
+
 def emit_to_trace() -> None:
-    """Flush the accumulated ``pipeline`` object onto the current Langfuse trace's
-    metadata. Best-effort and merge-only: it never overwrites the existing
-    ``pipeline_variant``/``provider`` tags or scores (those stay for dashboard
-    continuity). No-op when no context is active or Langfuse is unavailable."""
+    """Flush the accumulated resolved-config object onto the current Langfuse
+    trace's metadata under the ``pipeline_config`` key. Best-effort and merge-only:
+    it never overwrites the existing ``pipeline``/``variant``/``pipeline_variant``
+    keys or scores (those stay for dashboard continuity). No-op when no context is
+    active or Langfuse is unavailable."""
     pt = _CTX.get()
     if pt is None or _get_langfuse_client is None:
         return
     try:  # pragma: no cover - best effort
         client = _get_langfuse_client()
         if client is not None:
-            client.update_current_trace(metadata={"pipeline": pt.to_metadata()})
+            client.update_current_trace(metadata={METADATA_KEY: pt.to_metadata()})
     except Exception as e:
         logger.debug("llm_core.trace: emit_to_trace failed: %s", e)
 
