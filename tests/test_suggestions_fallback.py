@@ -17,6 +17,9 @@ from app.services import fallback as fb
 @pytest.fixture
 def oss_on(monkeypatch):
     monkeypatch.setattr(fb.settings, "fallback_enabled", True)
+    # Legacy attempt_chain walker path (split defaults are now ON at boot).
+    monkeypatch.setattr(fb.settings, "profiles_enabled", False)
+    monkeypatch.setattr(fb.settings, "llm_core_enabled", False)
     monkeypatch.setattr(fb, "oss_model_available", lambda: True)
     monkeypatch.setattr(fb, "OSS_LLM_MODEL", "OSS")
     monkeypatch.setattr(fb, "OSS_LLM_MODEL_NAME", "gemma")
