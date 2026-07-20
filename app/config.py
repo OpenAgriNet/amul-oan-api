@@ -210,6 +210,19 @@ class Settings(BaseSettings):
     llm_core_enabled: bool = os.getenv("LLM_CORE_ENABLED", "false").strip().lower() in {
         "1", "true", "yes", "on"
     }
+    # Weighted named-profile split + config-driven attempt chain (llm_core P1).
+    # Kill-switch defaults OFF: when off, the sticky OSS/legacy variant comes from
+    # `pipeline_router` and the fallback chain from `fallback.attempt_chain`
+    # (byte-identical to today). When on, the session is bucketed into an
+    # llm_core NamedProfile (cumulative sha256 buckets, bit-compatible with
+    # pipeline_router) and the fallback walkers materialize the profile's tiers.
+    # Composes with LLM_CORE_ENABLED: PROFILES_ENABLED gates the split (which
+    # profile a session lands in, driving the downstream variant string); the
+    # config-driven chain of factory handles is only materialized when BOTH this
+    # and LLM_CORE_ENABLED are on (the chain's handles are P0-factory-built).
+    profiles_enabled: bool = os.getenv("PROFILES_ENABLED", "false").strip().lower() in {
+        "1", "true", "yes", "on"
+    }
     # Scheme tool union scoping:
     # true  -> require authenticated farmer union to match a supported scheme union
     # false -> testing mode; allow any farmer union and fall back to supported unions

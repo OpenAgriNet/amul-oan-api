@@ -38,6 +38,7 @@ from agents.models import (
     OSS_LLM_MODEL_NAME,
     oss_model_available,
 )
+from app.llm_core.config_model import Step
 from helpers.utils import get_logger
 
 logger = get_logger(__name__)
@@ -192,6 +193,47 @@ def attempt_chain(variant: str, pipeline: str) -> list[Attempt]:
     return [_managed_attempt()]
 
 
+# ── config-driven chain (llm_core P1) ─────────────────────────────────────────
+# Maps the pipeline label the walkers receive to an llm_core Step, so a
+# PROFILES_ENABLED session materializes the resolved profile's tiers instead of
+# the hardwired attempt_chain. The materialized chain (list[MaterializedTier]) is
+# a drop-in for list[Attempt]: the walkers only read .kind/.model/.model_name/
+# .provider/.endpoint/.timeout, all of which MaterializedTier carries.
+_PIPELINE_TO_STEP = {
+    "chat": Step.AGENT,
+    "moderation": Step.MODERATION,
+    "pretranslation": Step.PRE_TRANSLATION,
+    "suggestions": Step.SUGGESTIONS,
+}
+
+
+async def _resolve_chain(*, pipeline: str, session_id: str, variant: str) -> list:
+    """How the walkers receive their chain (the ONLY thing P1 changes about them).
+
+    Composition of the two P0/P1 kill-switches:
+      * flags off (default) -> legacy ``attempt_chain(variant, pipeline)`` — the
+        result is byte-identical to today, so the walker bodies are unchanged;
+      * ``PROFILES_ENABLED`` AND ``LLM_CORE_ENABLED`` -> the config-driven chain:
+        the session's weighted profile's step tiers, materialized via the P0
+        factory. Both flags are required because the materialized chain carries
+        factory-built handles, which are P0's (``LLM_CORE_ENABLED``) domain.
+
+    Any failure resolving the config chain degrades to ``attempt_chain`` — the
+    fallback path must never be broken by a config/Redis edge case."""
+    if settings.profiles_enabled and settings.llm_core_enabled:
+        step = _PIPELINE_TO_STEP.get(pipeline)
+        if step is not None:
+            try:
+                from app.llm_core import split
+                return await split.resolve_chain(session_id, step)
+            except Exception as exc:  # never break the fallback path on a config edge
+                logger.warning(
+                    "fallback: profiles chain resolve failed (pipeline=%s): %s; "
+                    "using legacy attempt_chain", pipeline, exc,
+                )
+    return attempt_chain(variant, pipeline)
+
+
 @dataclass
 class FallbackEvent:
     """Recorded for every classified OSS failure — both fallbacks (``fell_back=True``)
@@ -291,7 +333,7 @@ async def execute_with_fallback(
     exhausted, so the caller's existing degrade path (moderation fail-closed,
     pretranslation safe-default, suggestions ``[]``) stays the terminal net.
     """
-    chain = attempt_chain(variant, pipeline)
+    chain = await _resolve_chain(pipeline=pipeline, session_id=session_id, variant=variant)
     for i, attempt in enumerate(chain):
         t0 = time.monotonic()
         try:
@@ -427,7 +469,7 @@ async def stream_with_fallback(
     Every classified failure is recorded via ``emit`` (``committed`` distinguishes
     pre- from post-commit).
     """
-    chain = attempt_chain(variant, pipeline)
+    chain = await _resolve_chain(pipeline=pipeline, session_id=session_id, variant=variant)
     last_exc: Optional[BaseException] = None
     for i, attempt in enumerate(chain):
         t0 = time.monotonic()

@@ -264,13 +264,16 @@ def materialize(step_client_kind: StepClientKind, tiers: list[Tier]) -> list[Mat
     """Build a live handle per tier, preserving order (primary first). Never
     empty when ``tiers`` is non-empty (StepConfig guarantees ``min_length=1``)."""
     out: list[MaterializedTier] = []
-    for i, tier in enumerate(tiers):
+    for tier in tiers:
         handle = build_handle(tier, step_client_kind)
-        # kind label: primary tier's provider drives the "oss"/"managed" intent
-        # in the shim; keep the provider string for telemetry parity with Attempt.
+        # kind label mirrors fallback.Attempt exactly: a vLLM (self-hosted) tier is
+        # "oss"; every other provider is "managed". The run/stream closures branch
+        # only on ``kind == "oss"`` and moderation maps non-"oss" -> managed OpenAI,
+        # so this reproduces attempt_chain's [oss, managed] / [managed] labels and
+        # keeps ``emit`` telemetry (from_variant/to_variant) byte-identical.
         out.append(
             MaterializedTier(
-                kind="oss" if tier.provider is Provider.VLLM else ("primary" if i == 0 else "managed"),
+                kind="oss" if tier.provider is Provider.VLLM else "managed",
                 handle=handle,
                 model_name=tier.model,
                 provider=tier.provider.value,
