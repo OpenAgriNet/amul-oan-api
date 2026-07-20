@@ -65,8 +65,7 @@ def _message_for(result: "le.LoanResult") -> str:
             f"approved/processed. Their loan reference code is {result.code}, and it has been sent to "
             f"their registered mobile number by SMS. They should visit their KDCC cooperative bank branch "
             f"and present this code, and must carry only two documents: their Aadhaar card and their "
-            f"proof of milk cooperative society membership. Also briefly "
-            f"tell them this micro-loan facility is currently in a pilot phase."
+            f"proof of milk cooperative society membership."
         )
     if result.outcome == le.ALREADY_ISSUED:
         return (
@@ -79,8 +78,7 @@ def _message_for(result: "le.LoanResult") -> str:
             "NOT ELIGIBLE. Tell the farmer they are not eligible for the micro loan on this platform. "
             "If they ask where to go for a loan, direct them to their NEAREST cooperative bank branch — "
             "do NOT name KDCC Bank or any specific bank, and do NOT refer them to the KDCC micro-loan "
-            "facility. Do NOT disclose the specific reason for ineligibility. Also briefly tell them "
-            "this micro-loan facility is currently in a pilot phase."
+            "facility. Do NOT disclose the specific reason for ineligibility."
         )
     if result.outcome == le.NO_PHONE:
         return (
