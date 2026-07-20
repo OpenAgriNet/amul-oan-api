@@ -306,12 +306,14 @@ async def stream_chat_messages(
         processing_lang = target_lang
         needs_output_translation = use_translation_pipeline and target_lang.lower() in INDIAN_LANGUAGES
 
-        if use_translation_pipeline and source_lang.lower() in {"gu", "gujarati"}:
+        pretranslation_source_langs = {"gu", "gujarati", "hi", "hindi"}
+        if use_translation_pipeline and source_lang.lower() in pretranslation_source_langs:
             pretrans_provider = "vllm" if is_oss else None
             logger.info(
-                "request_id=%s translation_pipeline=True variant=%s pretranslating gu->en with %s/%s",
+                "request_id=%s translation_pipeline=True variant=%s pretranslating %s->en with %s/%s",
                 request_id,
                 pipeline_variant,
+                source_lang.lower(),
                 pretrans_provider or PRETRANSLATION_PROVIDER,
                 request_model_name if is_oss else PRETRANSLATION_MODEL,
             )

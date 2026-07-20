@@ -480,8 +480,8 @@ def _format_translation_prompt(
     max_output_chars: Optional[int] = None,
 ) -> str:
     """Format the translation prompt using TranslateGemma's official chat template.
-    When target is Gujarati and mini_glossary is provided, injects a dynamic term list
-    so the model uses consistent domain terminology."""
+    When mini_glossary is provided, injects a dynamic term list so the model uses
+    consistent domain terminology."""
     source_name = LANG_NAMES.get(source_lang.lower(), source_lang.capitalize())
     target_name = LANG_NAMES.get(target_lang.lower(), target_lang.capitalize())
     source_code = LANG_CODES.get(source_lang.lower(), source_lang.lower())
@@ -499,8 +499,8 @@ def _format_translation_prompt(
         rules = []
         for line in lines:
             if " -> " in line:
-                en_term, gu_term = line.split(" -> ", 1)
-                rules.append(f"Rule: '{en_term.strip()}' must be translated as '{gu_term.strip()}'.")
+                en_term, target_term = line.split(" -> ", 1)
+                rules.append(f"Rule: '{en_term.strip()}' must be translated as '{target_term.strip()}'.")
         if rules:
             instruction += "\n\n**Terminology Rules (mandatory):**\n" + "\n".join(rules) + "\n"
     if target_code == "gu":
@@ -583,8 +583,13 @@ async def translate_text(
         raise ValueError(f"Invalid translation model size: {model_size}")
 
     mini_glossary = ""
-    if target_lang.lower() in ("gujarati", "gu"):
-        mini_glossary = get_mini_glossary_for_text(text, threshold=0.90, max_terms=40)
+    if target_lang.lower() in ("gujarati", "gu", "hindi", "hi"):
+        mini_glossary = get_mini_glossary_for_text(
+            text,
+            threshold=0.90,
+            max_terms=40,
+            target_lang=target_lang,
+        )
         if mini_glossary:
             logger.info(f"Translation prompt: injected mini glossary ({len(mini_glossary.splitlines())} terms)")
     prompt = _format_translation_prompt(
@@ -860,8 +865,13 @@ async def translate_text_stream_fast(
         raise ValueError(f"Invalid translation model size: {model_size}")
 
     mini_glossary = ""
-    if target_lang.lower() in ("gujarati", "gu"):
-        mini_glossary = get_mini_glossary_for_text(text, threshold=0.90, max_terms=40)
+    if target_lang.lower() in ("gujarati", "gu", "hindi", "hi"):
+        mini_glossary = get_mini_glossary_for_text(
+            text,
+            threshold=0.90,
+            max_terms=40,
+            target_lang=target_lang,
+        )
         if mini_glossary:
             logger.info(f"Translation prompt: injected mini glossary ({len(mini_glossary.splitlines())} terms)")
     prompt = _format_translation_prompt(
