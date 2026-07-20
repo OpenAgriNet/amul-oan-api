@@ -29,6 +29,16 @@ async def lifespan(app: FastAPI):
     # Load prompt templates into memory (no disk I/O at request time)
     from helpers.utils import load_prompt_templates
     load_prompt_templates(settings.base_dir / "assets" / "prompts")
+    # Unified LLM pipeline: synthesize/validate the config and run the identity
+    # self-check (logs resolved vs legacy wiring; raises only when the flag is on).
+    # Best-effort: a self-check bug must never block startup on the flag-off path.
+    try:
+        from app.llm_core import runtime as _llm_runtime
+        _llm_runtime.configure()
+    except AssertionError:
+        raise
+    except Exception as _llm_exc:  # pragma: no cover - defensive
+        print(f"⚠️  llm_core configure skipped: {_llm_exc}")
     await start_telemetry_worker()
     await start_scheme_scheduler()
     await start_farmer_refresh_worker()

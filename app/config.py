@@ -200,6 +200,16 @@ class Settings(BaseSettings):
     fallback_suggestions_oss_timeout_ms: int = int(os.getenv("FALLBACK_SUGGESTIONS_OSS_TIMEOUT_MS", "6000"))
     # Deadline for the managed (fallback) tier.
     fallback_managed_timeout_ms: int = int(os.getenv("FALLBACK_MANAGED_TIMEOUT_MS", "20000"))
+
+    # Unified LLM pipeline core (app/llm_core). Kill-switch defaults OFF: when
+    # on, the chat agent/moderation/suggestions/pretranslation call sites obtain
+    # the model handle from the llm_core resolver instead of the legacy singletons
+    # (identity for the current env, verified at startup by
+    # app.llm_core.runtime.self_check). When off, every path is byte-identical to
+    # today's behaviour.
+    llm_core_enabled: bool = os.getenv("LLM_CORE_ENABLED", "false").strip().lower() in {
+        "1", "true", "yes", "on"
+    }
     # Scheme tool union scoping:
     # true  -> require authenticated farmer union to match a supported scheme union
     # false -> testing mode; allow any farmer union and fall back to supported unions
