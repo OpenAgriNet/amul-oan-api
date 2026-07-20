@@ -36,6 +36,8 @@ from app.services.translation import (
     PRETRANSLATION_PROVIDER,
     PRETRANSLATION_MODEL,
 )
+from pydantic_ai.messages import ModelRequest, ModelResponse, UserPromptPart, TextPart
+from app.services.identity_profile import is_identity_query, build_identity_profile_table
 
 
 class SentenceSegmenter:
@@ -291,6 +293,34 @@ async def stream_chat_messages(
         # Generate a unique content ID for this query
         content_id = f"query_{session_id}_{len(history)//2 + 1}"
         logger.info("request_id=%s user_info=%s", request_id, user_info)
+
+        if is_identity_query(query):
+            identity_response = build_identity_profile_table(
+                source_lang=source_lang,
+                target_lang=target_lang,
+                query=query,
+            )
+            logger.info("request_id=%s identity_short_circuit=True", request_id)
+            if get_langfuse_client:
+                try:
+                    langfuse = get_langfuse_client()
+                    langfuse.set_current_trace_io(output=identity_response)
+                except Exception as e:
+                    logger.warning("Langfuse: failed to record identity output: %s", e)
+
+            messages = [
+                *history,
+                ModelRequest(parts=[UserPromptPart(content=query)]),
+                ModelResponse(parts=[TextPart(content=identity_response)]),
+            ]
+            logger.info(
+                "request_id=%s updating_history_identity_path=True total_messages=%s",
+                request_id,
+                len(messages),
+            )
+            await update_message_history(session_id, messages)
+            yield identity_response
+            return
 
         # Extract farmer context from phone in JWT via cache-first fetch
         farmer_data = ""
