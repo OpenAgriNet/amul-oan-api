@@ -20,7 +20,11 @@ from app.llm_core import runtime
 from app.llm_core.config_model import Step, StepClientKind
 from app.llm_core.factory import MaterializedTier, materialize
 
-# Which client kind each step materializes to.
+# Which client kind each step materializes to. For every step but POST_TRANSLATION
+# this is a single fixed kind for the whole chain. POST_TRANSLATION's chain is
+# mixed-provider ([TranslateGemma, LLM-overflow]); the value here is the PRIMARY's
+# kind (TRANSLATEGEMMA), and ``factory._tier_client_kind`` redirects a non-TG
+# overflow tier under this step to RAW_OPENAI per tier at materialize time.
 STEP_CLIENT_KIND: dict[Step, StepClientKind] = {
     Step.AGENT: StepClientKind.AGENT,
     Step.MODERATION: StepClientKind.AGENT,
