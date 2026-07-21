@@ -485,50 +485,64 @@ async def test_e2e_tg_fails_pre_commit_llm_serves(monkeypatch, _managed_pipeline
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 8. Review fixes: faithful HTTP status classify + degrade-drop materialization
+# 8. Review fixes: faithful HTTP status classify + LAZY per-tier handle build
 # ══════════════════════════════════════════════════════════════════════════════
 from app.services.fallback import classify, FallbackReason
-from app.llm_core import factory
-from app.llm_core.config_model import Provider, Tier, ApiStyle, StepClientKind
+from app.llm_core.config_model import Provider, Tier, ApiStyle
 
 
 def test_tg_http_error_carries_status_for_classify():
     """A TG non-200 must classify by real status, not collapse to UNKNOWN."""
     assert classify(tr._TranslationHTTPError(503, "upstream down")) is FallbackReason.HTTP_5XX
     assert classify(tr._TranslationHTTPError(429, "slow down")) is FallbackReason.RATE_LIMITED
-    # OOM markers in the body still win over the generic 5xx bucket.
     assert classify(tr._TranslationHTTPError(500, "CUDA out of memory")) is FallbackReason.OOM
 
 
-def _tg_tier():
+def _tg_inert():
     return Tier(provider=Provider.TRANSLATEGEMMA, model="tg", endpoint="http://lb/v1",
                 api_style=ApiStyle.TEXT_COMPLETION, timeout_ms=60000, label="translategemma")
 
 
-def _unbuildable_llm_tier():
-    # openai provider with no api_key_env -> AsyncOpenAI() raises OpenAIError when
-    # OPENAI_API_KEY is absent from the env, i.e. an unbuildable overflow tier.
+def _unbuildable_llm_inert():
+    # openai provider, no api_key_env -> AsyncOpenAI() raises when OPENAI_API_KEY
+    # is absent, i.e. an overflow tier that cannot be built in this env.
     return Tier(provider=Provider.OPENAI, model="gpt-x", endpoint=None,
                 api_style=ApiStyle.CHAT, timeout_ms=30000, label="llm-fallback")
 
 
-def test_materialize_drops_unbuildable_overflow_keeps_tg(monkeypatch):
-    """A broken overflow tier must NOT take down a healthy TranslateGemma primary."""
+def test_lazy_tier_metadata_available_without_building_handle():
+    """The walker's metadata is readable without constructing any client."""
+    llm = tr._PostTranslationTier(_unbuildable_llm_inert())
+    assert (llm.kind, llm.provider, llm.model_name, llm.timeout) == ("managed", "openai", "gpt-x", 30.0)
+    assert llm._memo == []  # reading metadata never triggered a build
+
+
+def test_lazy_overflow_build_is_isolated_from_healthy_primary(monkeypatch):
+    """Constructing the chain builds NO handles; a broken overflow tier can't take
+    the primary down — TG builds fine, and the overflow only errors if its handle
+    is actually accessed."""
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    chain = factory.materialize(StepClientKind.TRANSLATEGEMMA, [_tg_tier(), _unbuildable_llm_tier()])
-    assert len(chain) == 1
-    assert chain[0].provider == Provider.TRANSLATEGEMMA.value
+    tg = tr._PostTranslationTier(_tg_inert())
+    llm = tr._PostTranslationTier(_unbuildable_llm_inert())
+    assert tg._memo == [] and llm._memo == []           # nothing built yet
+    assert isinstance(tg.handle, tr._TGDescriptor)       # primary builds independently
+    with pytest.raises(Exception):                       # overflow only raises when reached
+        llm.handle
 
 
-def test_materialize_keeps_overflow_when_buildable(monkeypatch):
-    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
-    llm = _unbuildable_llm_tier().model_copy(update={"api_key_env": "OPENAI_API_KEY"})
-    chain = factory.materialize(StepClientKind.TRANSLATEGEMMA, [_tg_tier(), llm])
-    assert len(chain) == 2
-
-
-def test_materialize_non_post_translation_still_fails_fast(monkeypatch):
-    """Degrade-drop is scoped to POST_TRANSLATION; other steps keep fail-fast."""
+@pytest.mark.asyncio
+async def test_walk_tg_serves_never_builds_overflow(monkeypatch):
+    """The blocker, proven end-to-end: when TG serves, the overflow client is
+    never constructed — even if it is unbuildable."""
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    with pytest.raises(Exception):
-        factory.materialize(StepClientKind.RAW_OPENAI, [_unbuildable_llm_tier()])
+    tg = tr._PostTranslationTier(_tg_inert())
+    llm = tr._PostTranslationTier(_unbuildable_llm_inert())
+
+    def make_stream(tier):
+        assert tier is tg  # walker only reaches the serving tier
+        return _agen("ok")
+
+    out = [c async for c in tr._stream_post_translation_chain(
+        [tg, llm], make_stream, source_lang="english", target_lang="gujarati")]
+    assert out == ["ok"]
+    assert llm._memo == []  # overflow handle never built

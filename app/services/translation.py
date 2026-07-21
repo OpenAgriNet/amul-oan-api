@@ -30,8 +30,14 @@ from agents.tools.terms import get_mini_glossary_for_text, get_ambiguity_hints_f
 # new.
 from app.llm_core import resolver as _llm_resolver
 from app.llm_core import health as _llm_health
-from app.llm_core.config_model import Step as _Step
-from app.llm_core.factory import TGDescriptor as _TGDescriptor
+from app.llm_core import trace as _llm_trace
+from app.llm_core.config_model import (
+    Step as _Step,
+    Tier as _Tier,
+    Provider as _Provider,
+    StepClientKind as _StepClientKind,
+)
+from app.llm_core.factory import TGDescriptor as _TGDescriptor, build_handle as _build_handle
 from app.services.fallback import (
     FALLBACKABLE as _FALLBACKABLE,
     FallbackEvent as _FallbackEvent,
@@ -623,11 +629,58 @@ def _prepare_translation_inputs(text, source_lang, target_lang, max_output_chars
 
 
 def _is_translategemma_tier(tier) -> bool:
-    """A tier whose handle speaks TranslateGemma ``/completions`` over aiohttp."""
-    return (
-        getattr(tier, "provider", "") == "translategemma"
-        or isinstance(getattr(tier, "handle", None), _TGDescriptor)
-    )
+    """A tier whose handle speaks TranslateGemma ``/completions`` over aiohttp.
+    Decided from the provider label alone so it never forces a lazy handle build."""
+    return getattr(tier, "provider", "") == "translategemma"
+
+
+class _PostTranslationTier:
+    """One entry in the post-translation fallback chain. Carries the telemetry
+    metadata the walkers read (``kind``/``provider``/``model_name``/``endpoint``/
+    ``timeout``) but builds its client handle LAZILY, memoized, on first access.
+
+    TranslateGemma serves ~every turn and its ``TGDescriptor`` primary is a cheap,
+    provider-independent URL holder; the managed-LLM overflow is an ``AsyncOpenAI``
+    client that is expensive to construct and can legitimately fail to build in a
+    healthy-TG env. Building lazily means the overflow client is constructed ONLY
+    when a request actually falls through to it — never eagerly per call, and a
+    misconfigured overflow tier can never take a healthy primary down (its build
+    error, if reached, is just this tier's failure and hits the caller degrade net,
+    exactly like the old pure-TG path)."""
+
+    __slots__ = ("_tier", "kind", "model_name", "endpoint", "timeout", "_memo")
+
+    def __init__(self, tier: _Tier):
+        self._tier = tier
+        self.kind = "oss" if tier.provider is _Provider.VLLM else "managed"
+        self.model_name = tier.model
+        self.endpoint = tier.endpoint or "managed"
+        self.timeout = (tier.timeout_ms / 1000.0) if tier.timeout_ms is not None else None
+        self._memo: list = []
+
+    @property
+    def provider(self) -> str:
+        return self._tier.provider.value
+
+    @property
+    def handle(self):
+        if not self._memo:
+            kind = (
+                _StepClientKind.TRANSLATEGEMMA
+                if self._tier.provider is _Provider.TRANSLATEGEMMA
+                else _StepClientKind.RAW_OPENAI
+            )
+            self._memo.append(_build_handle(self._tier, kind))
+        return self._memo[0]
+
+
+def _post_translation_chain():
+    """Resolve the INERT POST_TRANSLATION tiers and wrap them as lazy-handle chain
+    entries + record the trace chain. Post-translation is profile-invariant
+    (llm_core ``defaults``), so we resolve with ``"legacy"``."""
+    chain = [_PostTranslationTier(t) for t in _llm_resolver.post_translation_tiers("legacy")]
+    _llm_trace.record_step_chain(_Step.POST_TRANSLATION, chain)
+    return chain
 
 
 async def _translategemma_stream(descriptor, prompt, source_lang, target_lang, text, temperature, max_tokens):
@@ -1036,7 +1089,7 @@ async def translate_text(
     )
     logger.info(f"Translating {source_lang} -> {target_lang} via post-translation chain")
 
-    chain = _llm_resolver.resolve_chain(_Step.POST_TRANSLATION, "legacy")
+    chain = _post_translation_chain()
 
     async def _run(tier):
         if _is_translategemma_tier(tier):
@@ -1239,7 +1292,7 @@ async def translate_text_stream_fast(
     )
     logger.info(f"Fast streaming translation {source_lang} -> {target_lang} via post-translation chain")
 
-    chain = _llm_resolver.resolve_chain(_Step.POST_TRANSLATION, "legacy")
+    chain = _post_translation_chain()
 
     def _make_stream(tier):
         if _is_translategemma_tier(tier):

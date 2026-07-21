@@ -17,7 +17,7 @@ from __future__ import annotations
 from typing import Any
 
 from app.llm_core import runtime
-from app.llm_core.config_model import Step, StepClientKind
+from app.llm_core.config_model import Step, StepClientKind, Tier
 from app.llm_core.factory import MaterializedTier, materialize
 
 # Which client kind each step materializes to. For every step but POST_TRANSLATION
@@ -56,6 +56,30 @@ def resolve_chain(step: Step, variant: str = "legacy") -> list[MaterializedTier]
     _trace.record_profile(profile.name, profile.weight)
     _trace.record_step_chain(step, chain)
     return chain
+
+
+def post_translation_tiers(variant: str = "legacy") -> list[Tier]:
+    """The INERT POST_TRANSLATION tier chain — NOT materialized.
+
+    Post-translation is unique: TranslateGemma serves ~every turn, and its cheap
+    :class:`TGDescriptor` primary is provider-independent, whereas the managed-LLM
+    overflow tier is an ``AsyncOpenAI`` client that is both expensive to build and
+    can legitimately fail to construct in a healthy-TG deployment (no OPENAI key,
+    incomplete Azure env, unset INFERENCE_ENDPOINT_URL, anthropic/gemini provider).
+    Eagerly materializing the whole chain on EVERY translate call would waste that
+    construction and let a misconfigured overflow tier take a healthy primary down.
+    So the translation adapter takes the tiers INERT and builds each handle LAZILY
+    only as the fallback walker reaches it (see ``translation._PostTranslationTier``).
+    Records the resolved profile for tracing, exactly as ``resolve_chain`` does."""
+    pipeline = runtime.get_pipeline()
+    name = _profile_name_for_variant(variant)
+    profile = pipeline.by_name(name) or pipeline.by_name("managed") or pipeline.profiles[0]
+    step_cfg = pipeline.step_config(profile, Step.POST_TRANSLATION)
+    if step_cfg is None:
+        raise ValueError("no config for step=post_translation")
+    from app.llm_core import trace as _trace
+    _trace.record_profile(profile.name, profile.weight)
+    return list(step_cfg.tiers)
 
 
 def chain_for(step: Step, variant: str = "legacy") -> list[MaterializedTier]:
