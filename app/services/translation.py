@@ -31,6 +31,7 @@ from agents.tools.terms import get_mini_glossary_for_text, get_ambiguity_hints_f
 from app.llm_core import resolver as _llm_resolver
 from app.llm_core import health as _llm_health
 from app.llm_core import trace as _llm_trace
+from app import metrics as _metrics
 from app.llm_core.config_model import (
     Step as _Step,
     Tier as _Tier,
@@ -648,7 +649,7 @@ class _PostTranslationTier:
     error, if reached, is just this tier's failure and hits the caller degrade net,
     exactly like the old pure-TG path)."""
 
-    __slots__ = ("_tier", "kind", "model_name", "endpoint", "timeout", "_memo")
+    __slots__ = ("_tier", "kind", "model_name", "endpoint", "timeout", "ttft", "_memo")
 
     def __init__(self, tier: _Tier):
         self._tier = tier
@@ -656,6 +657,10 @@ class _PostTranslationTier:
         self.model_name = tier.model
         self.endpoint = tier.endpoint or "managed"
         self.timeout = (tier.timeout_ms / 1000.0) if tier.timeout_ms is not None else None
+        # Distinct SHORT first-token deadline (seconds) — the stream walker bounds
+        # time-to-first-token by this, keeping ``timeout`` as the overall/total cap.
+        # ``None`` (e.g. the managed overflow tier) -> walker falls back to ``timeout``.
+        self.ttft = (tier.ttft_ms / 1000.0) if tier.ttft_ms is not None else None
         self._memo: list = []
 
     @property
@@ -674,11 +679,49 @@ class _PostTranslationTier:
         return self._memo[0]
 
 
+class _TtftDeadlineView:
+    """Minimal view exposing ONLY the attributes ``with_first_token_deadline`` reads
+    (``timeout``/``kind``/``endpoint``), so a post-translation tier can present a
+    SHORT first-token bound (its ``ttft``) to that primitive while its real
+    ``timeout`` stays the 60s overall/total cap the unary walker + aiohttp honor.
+    A saturated-but-ALIVE TranslateGemma thus overflows in single-digit seconds
+    instead of blocking a voice turn for up to the full 60s."""
+
+    __slots__ = ("timeout", "kind", "endpoint")
+
+    def __init__(self, tier, ttft):
+        self.timeout = ttft
+        self.kind = tier.kind
+        self.endpoint = tier.endpoint
+
+
+def _record_served_tier(tier, index: int) -> None:
+    """Record the tier that actually served this post-translation turn: onto the
+    per-turn Langfuse pipeline trace (served kind + 0-based chain index) and the
+    Prometheus served counter (the managed-share KPI). Both hooks are best-effort
+    no-ops off-path (no active trace context / prometheus_client absent)."""
+    _llm_trace.record_served(_Step.POST_TRANSLATION, tier.kind, index)
+    _metrics.record_served(
+        _Step.POST_TRANSLATION.value, tier.kind, tier.provider, tier.model_name
+    )
+
+
 def _post_translation_chain():
-    """Resolve the INERT POST_TRANSLATION tiers and wrap them as lazy-handle chain
-    entries + record the trace chain. Post-translation is profile-invariant
-    (llm_core ``defaults``), so we resolve with ``"legacy"``."""
-    chain = [_PostTranslationTier(t) for t in _llm_resolver.post_translation_tiers("legacy")]
+    """Resolve the INERT POST_TRANSLATION tiers, HEALTH-PRUNE known-down endpoints,
+    wrap the survivors as lazy-handle chain entries + record the trace chain.
+    Post-translation is profile-invariant (llm_core ``defaults``), so we resolve
+    with ``"legacy"``.
+
+    The prune is why this exists: the post-translation walkers DO feed the breaker
+    (``record_failure``/``record_success``) and the poller polls the TG ``/health``,
+    but without pruning here a down TG is re-attempted (and re-timed-out) EVERY turn
+    on the most-traveled path. ``prune_unhealthy`` drops tiers whose endpoint breaker
+    is ``open`` and is contractually never-empty (all-open -> chain returned
+    unchanged), and it is a settings-gated identity no-op when the health flags are
+    off, so the flags-off path is byte-identical."""
+    tiers = _llm_resolver.post_translation_tiers("legacy")
+    tiers = _llm_health.prune_unhealthy(_Step.POST_TRANSLATION, tiers)
+    chain = [_PostTranslationTier(t) for t in tiers]
     _llm_trace.record_step_chain(_Step.POST_TRANSLATION, chain)
     return chain
 
@@ -978,10 +1021,19 @@ async def _stream_post_translation_chain(chain, make_stream, *, source_lang, tar
         t0 = time.monotonic()
         committed = False
         try:
-            async for chunk in _with_first_token_deadline(tier, make_stream(tier)):
+            # Bound the FIRST-token wait by the tier's short ``ttft`` (falling back to
+            # its ``timeout`` when unset); the 60s ``timeout`` remains the overall/total
+            # cap (aiohttp total + unary walker), so a saturated-but-alive TG overflows
+            # fast instead of holding a voice turn for the whole 60s.
+            _ttft = getattr(tier, "ttft", None)
+            _deadline_view = _TtftDeadlineView(
+                tier, _ttft if _ttft is not None else tier.timeout
+            )
+            async for chunk in _with_first_token_deadline(_deadline_view, make_stream(tier)):
                 committed = True
                 yield chunk
             _llm_health.record_success(tier.endpoint)
+            _record_served_tier(tier, i)
             return
         except asyncio.CancelledError:
             raise
@@ -1053,6 +1105,7 @@ async def _run_post_translation_chain(chain, run):
                 raise
         else:
             _llm_health.record_success(tier.endpoint)
+            _record_served_tier(tier, i)
             return result
     if last_exc is not None:
         raise last_exc

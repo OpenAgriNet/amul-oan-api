@@ -24,6 +24,31 @@ Two hardening changes vs bh (plan §2):
       a metrics read error was the opposite bias; the plan reverses it so an
       observability blip cannot dump 100% of traffic onto the managed tier.)
 
+Two aggregation/shed improvements over the naive single-scrape bang-bang:
+
+  1. **Fleet-aggregate load via Prometheus (optional).** A single vLLM
+     ``/metrics`` scrape behind an nginx ``least_conn`` LB samples the
+     LEAST-loaded replica, under-reads the true fleet load, and sheds late/never.
+     When ``CONCURRENCY_PROMETHEUS_URL`` is set, the gauge instead comes from the
+     Prometheus HTTP API (``/api/v1/query`` of ``CONCURRENCY_PROMETHEUS_QUERY``,
+     default ``sum(vllm:num_requests_running + vllm:num_requests_waiting)``) — the
+     summed fleet aggregate. The single-endpoint ``/metrics`` scrape remains the
+     fallback when the Prometheus URL is unset. Both paths share the same short
+     Redis cache and the same FAIL-OPEN posture (any read error -> ``None``).
+
+  2. **Smooth probabilistic shed (not bang-bang at the cap).** The old filter
+     flipped 100% of gated traffic the instant the gauge reached
+     ``max_concurrency`` and back the instant it dropped — with a 2s-cached gauge
+     shared across workers, that synchronized flip/flip-back is a herd
+     oscillation. Instead, each call deprioritizes with a PROBABILITY that rises
+     with load: 0 below ``shed_start`` (``CONCURRENCY_SHED_START_FRAC`` * cap,
+     default 0.7*cap), ramping linearly to 1.0 AT the cap (and staying 1.0 above
+     it). So as load approaches the ceiling, only a self-proportioning *fraction*
+     of gated calls shed — "shed SOME gemma" — smoothing the boundary instead of
+     an all-or-nothing cliff, while the configured cap is still a hard 100%-shed
+     ceiling. (Normal Python runtime ``random`` — the "no ``Math.random()``"
+     rule is about deterministic-config contexts, not this load shed.)
+
 Composition (fixed order, plan §2): ``health-prune -> concurrency-reorder ->
 materialize -> classify-walk``. Health prunes known-DOWN tiers FIRST, so a down
 tier is already gone before this reorder runs and can never be reordered back to
@@ -32,15 +57,18 @@ the front — this filter only ever touches saturated-but-UP vLLM tiers.
 Gated by ``CONCURRENCY_GAUGE_ENABLED`` (default off) and only active where a
 ``ConcurrencyGate`` is configured on the step; both off => identity (zero
 behaviour change). Kept import-clean (stdlib + httpx + ``app.config`` + the app
-cache + ``config_model``) so the voice repo can mirror the same public API and the
-eventual repo-merge stays mechanical.
+cache + ``config_model`` + ``app.metrics``) so the voice repo can mirror the same
+public API and the eventual repo-merge stays mechanical.
 """
 
 from __future__ import annotations
 
+import os
+import random
 import re
 from typing import Optional
 
+from app import metrics
 from app.config import settings
 from app.core.cache import cache
 from app.llm_core.config_model import ConcurrencyGate, Provider, Step
@@ -48,9 +76,18 @@ from helpers.utils import get_logger
 
 logger = get_logger(__name__)
 
-# Per-metrics-url cache namespace (bh used a single fixed key; we key by URL so
-# independent boxes cache independently). Short TTL, shared across workers.
+# Per-source cache namespace (bh used a single fixed key; we key by the concrete
+# read source — the single ``/metrics`` URL, or the Prometheus query — so
+# independent boxes / the fleet aggregate cache independently). Short TTL, shared
+# across workers.
 _CACHE_KEY_PREFIX = "llm_core_concurrency:"
+
+# Default Prometheus aggregate query: the summed fleet in-flight request count.
+_DEFAULT_PROM_QUERY = "sum(vllm:num_requests_running + vllm:num_requests_waiting)"
+
+# Fraction of ``max_concurrency`` at which probabilistic shedding STARTS ramping
+# from 0. At/above the cap the shed probability is a hard 1.0. Env-tunable.
+_SHED_START_FRAC = float(os.getenv("CONCURRENCY_SHED_START_FRAC", "0.7"))
 
 # vLLM Prometheus gauges summed into one in-flight number (identical to bh).
 _NUM_RE = re.compile(
@@ -59,8 +96,11 @@ _NUM_RE = re.compile(
 
 
 async def _fetch_concurrency(metrics_url: str) -> Optional[int]:
-    """Sum ``num_requests_running + num_requests_waiting`` from a vLLM ``/metrics``
-    endpoint, or ``None`` on ANY read failure (the fail-open signal)."""
+    """Sum ``num_requests_running + num_requests_waiting`` from a single vLLM
+    ``/metrics`` endpoint, or ``None`` on ANY read failure (the fail-open signal).
+
+    NOTE: behind an nginx ``least_conn`` LB this samples ONE (the least-loaded)
+    replica; prefer the Prometheus aggregate path when a fleet-wide read matters."""
     import httpx  # lazy: keep module import side-effect-free
 
     timeout_s = settings.concurrency_metrics_timeout_ms / 1000.0
@@ -80,34 +120,118 @@ async def _fetch_concurrency(metrics_url: str) -> Optional[int]:
     return total
 
 
+async def _fetch_concurrency_prometheus(prom_url: str, query: str) -> Optional[int]:
+    """Query the Prometheus HTTP API for a scalar/vector aggregate and sum its
+    result values into one in-flight number, or ``None`` on ANY read failure
+    (fail-open). This reads the WHOLE fleet's load (``sum(...)`` across replicas),
+    unlike a single ``/metrics`` scrape that a ``least_conn`` LB biases low."""
+    import httpx  # lazy: keep module import side-effect-free
+
+    timeout_s = settings.concurrency_metrics_timeout_ms / 1000.0
+    url = prom_url.rstrip("/") + "/api/v1/query"
+    try:
+        async with httpx.AsyncClient(timeout=timeout_s) as client:
+            resp = await client.get(url, params={"query": query})
+            resp.raise_for_status()
+            payload = resp.json()
+    except Exception as e:  # HTTP error / timeout / bad JSON -> fail-open
+        logger.warning("concurrency: prometheus query failed for %s (%s): %s", url, query, e)
+        return None
+
+    if not isinstance(payload, dict) or payload.get("status") != "success":
+        logger.warning("concurrency: prometheus non-success payload for %s: %r", url, payload)
+        return None
+
+    result = (payload.get("data") or {}).get("result") or []
+    total = 0.0
+    saw_value = False
+    for series in result:
+        value = series.get("value") if isinstance(series, dict) else None
+        if value and len(value) >= 2:
+            try:
+                total += float(value[1])
+                saw_value = True
+            except (TypeError, ValueError):
+                continue
+    if not saw_value:
+        # Empty result vector (no series yet / query matched nothing). Treat as a
+        # read miss -> fail-open (None) rather than asserting a real "0 in flight".
+        logger.info("concurrency: prometheus query %s returned no series (fail-open)", query)
+        return None
+    return int(total)
+
+
 async def get_concurrency(metrics_url: str) -> Optional[int]:
-    """Short-TTL Redis-cached read of a vLLM engine's in-flight request count.
+    """Short-TTL Redis-cached read of the vLLM in-flight request count.
+
+    Source selection: if ``CONCURRENCY_PROMETHEUS_URL`` is set, the value is the
+    FLEET AGGREGATE from the Prometheus HTTP API (``CONCURRENCY_PROMETHEUS_QUERY``);
+    otherwise it is the single ``metrics_url`` ``/metrics`` scrape (the fallback).
 
     Cache errors degrade to a direct fetch (a Redis blip must never break the
     request path); a fetch failure returns ``None`` — the fail-open signal the
-    reorder honors (treat as NOT saturated)."""
-    if not metrics_url:
-        return None
-    key = f"{_CACHE_KEY_PREFIX}{metrics_url}"
+    reorder honors (treat as NOT saturated). A successful fresh read publishes
+    ``metrics.set_inflight`` for the read source."""
+    prom_url = os.getenv("CONCURRENCY_PROMETHEUS_URL")
+    prom_url = prom_url.strip() if prom_url else ""
+
+    if prom_url:
+        query = os.getenv("CONCURRENCY_PROMETHEUS_QUERY", _DEFAULT_PROM_QUERY)
+        cache_source = f"prom:{prom_url}:{query}"
+        inflight_label = prom_url
+
+        async def _do_fetch() -> Optional[int]:
+            return await _fetch_concurrency_prometheus(prom_url, query)
+    else:
+        if not metrics_url:
+            return None
+        cache_source = metrics_url
+        inflight_label = metrics_url
+
+        async def _do_fetch() -> Optional[int]:
+            return await _fetch_concurrency(metrics_url)
+
+    key = f"{_CACHE_KEY_PREFIX}{cache_source}"
     try:
         cached = await cache.get(key)
     except Exception as e:  # Redis down -> direct fetch, don't break routing
-        logger.warning("concurrency: cache read failed for %s: %s", metrics_url, e)
+        logger.warning("concurrency: cache read failed for %s: %s", cache_source, e)
         cached = None
     if cached is not None:
         return cached
 
-    value = await _fetch_concurrency(metrics_url)
+    value = await _do_fetch()
     if value is not None:
+        metrics.set_inflight(inflight_label, value)  # no-op if prom lib absent; never raises
         try:
             await cache.set(key, value, ttl=settings.concurrency_metrics_cache_ttl_s)
         except Exception as e:  # persistence best-effort
-            logger.warning("concurrency: cache write failed for %s: %s", metrics_url, e)
+            logger.warning("concurrency: cache write failed for %s: %s", cache_source, e)
     return value
 
 
 def _is_vllm(tier) -> bool:
     return getattr(tier, "provider", None) is Provider.VLLM
+
+
+def _shed_probability(gauge: int, max_concurrency: int) -> float:
+    """Probability that a gated call deprioritizes the vLLM tier at ``gauge``
+    in-flight requests.
+
+    * ``gauge <= shed_start`` (``_SHED_START_FRAC`` * cap): 0.0 — no shed.
+    * ``shed_start < gauge < cap``: linear ramp in (0, 1) — shed a rising,
+      self-proportioning fraction (the smooth band).
+    * ``gauge >= cap``: 1.0 — the configured cap is a hard 100%-shed ceiling.
+
+    A non-positive cap degrades to "any load sheds fully" (defensive)."""
+    if max_concurrency <= 0:
+        return 1.0 if gauge > 0 else 0.0
+    shed_start = _SHED_START_FRAC * max_concurrency
+    if gauge >= max_concurrency:
+        return 1.0
+    if gauge <= shed_start:
+        return 0.0
+    return (gauge - shed_start) / (max_concurrency - shed_start)
 
 
 async def reprioritize_by_load(
@@ -123,14 +247,16 @@ async def reprioritize_by_load(
     * the step has no ``ConcurrencyGate`` configured (``gate is None``) — a step
       without a gate is untouched;
     * the gauge is unreadable (``None``) — **fail-open**: treat as NOT saturated;
-    * the gauge is below ``gate.max_concurrency``.
+    * the probabilistic shed roll declines this call (below the ramp, or a losing
+      draw inside the smooth band).
 
-    Only when the gauge is at/above threshold are the vLLM tiers STABLY moved
-    behind the non-vLLM (managed) tiers, so the managed tier — already the next
-    tier in the chain — is tried first while the box is hot. In the single
-    vLLM-primary + managed-fallback config this is exactly "deprioritize the
-    primary"; "primary" is only index 0, and no primary/secondary inversion
-    exists (see the module docstring).
+    When the shed roll fires, the vLLM tiers are STABLY moved behind the non-vLLM
+    (managed) tiers, so the managed tier — already the next tier in the chain — is
+    tried first while the box is hot. In the single vLLM-primary + managed-fallback
+    config this is exactly "deprioritize the primary"; "primary" is only index 0,
+    and no primary/secondary inversion exists (see the module docstring). Shed
+    probability rises with load (``_shed_probability``): a self-proportioning
+    fraction near the cap, a hard 1.0 at/above it.
 
     Runs on the already-HEALTH-PRUNED inert ``Tier`` list, BEFORE materialize, so
     a tier the health filter already dropped is gone and can never be reordered
@@ -167,9 +293,13 @@ async def reprioritize_by_load(
         )
         _record(False)
         return tiers
-    if gauge < gate.max_concurrency:
+
+    # Probabilistic proportional shed: below the ramp -> never; in the band -> a
+    # rising fraction; at/above the cap -> always. Smooths the 2s-cache herd flip.
+    p = _shed_probability(gauge, gate.max_concurrency)
+    if p <= 0.0 or random.random() >= p:
         _record(False)
-        return tiers            # below threshold -> primary stays primary
+        return tiers            # this call does not shed -> primary stays primary
 
     vllm = [t for t in tiers if _is_vllm(t)]
     others = [t for t in tiers if not _is_vllm(t)]
@@ -180,8 +310,9 @@ async def reprioritize_by_load(
         return tiers
 
     logger.info(
-        "concurrency: step=%s vLLM gauge %d >= %d; deprioritizing %d vLLM tier(s) behind managed",
-        getattr(step, "value", step), gauge, gate.max_concurrency, len(vllm),
+        "concurrency: step=%s vLLM gauge %d vs cap %d (p_shed=%.2f); deprioritizing %d vLLM tier(s) behind managed",
+        getattr(step, "value", step), gauge, gate.max_concurrency, p, len(vllm),
     )
     _record(True)
+    metrics.record_deprioritized(step)  # no-op if prom lib absent; never raises
     return others + vllm

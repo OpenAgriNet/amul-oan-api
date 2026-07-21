@@ -186,9 +186,13 @@ class Settings(BaseSettings):
     # OSS_LLM_MODEL_NAME) by app/llm_core/legacy_shim.py. The env vars stay; the
     # duplicate settings attributes + the pipeline_router that read them are gone.
 
-    # Standard OSS -> managed fallback (see docs/oss-fallback-design.md).
-    # Kill-switch defaults OFF: when false, pipelines keep today's behaviour.
-    fallback_enabled: bool = os.getenv("FALLBACK_ENABLED", "false").strip().lower() in {
+    # Standard OSS -> managed overflow/fallback (see docs/oss-fallback-design.md).
+    # ARMS the whole overflow system: the OSS->managed attempt chain AND the health
+    # + concurrency guards (which fire ONLY via the fallback walkers) are inert
+    # while this is off. Post-P4 the unified pipeline is the ONLY path (legacy
+    # deleted), so shipping with overflow off makes no sense — DEFAULTS TRUE. Envs
+    # that deliberately want it off can still set FALLBACK_ENABLED=false.
+    fallback_enabled: bool = os.getenv("FALLBACK_ENABLED", "true").strip().lower() in {
         "1", "true", "yes", "on"
     }
     # Per-pipeline OSS time-to-respond budgets before falling back to managed.

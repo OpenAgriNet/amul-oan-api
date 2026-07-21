@@ -193,6 +193,26 @@ def test_shim_pretranslation_and_post_translation(monkeypatch):
     assert post.model == "translategemma-27b-base"
 
 
+def test_shim_post_translation_tg_ttft_deadline(monkeypatch):
+    """TG carries a distinct SHORT first-token deadline (ttft_ms) separate from its
+    60s overall/total cap (timeout_ms); default 5000ms, overridable via env. The
+    managed overflow tier has none (it keeps only its own timeout)."""
+    monkeypatch.delenv("OSS_INFERENCE_ENDPOINT_URL", raising=False)
+    monkeypatch.setenv("LLM_PROVIDER", "openai")
+    monkeypatch.setenv("TRANSLATEGEMMA_27B_BASE_ENDPOINT", "http://localhost:18002/v1")
+
+    monkeypatch.delenv("FALLBACK_POST_TRANSLATION_TG_TTFT_MS", raising=False)
+    tiers = synthesize_from_env().defaults[Step.POST_TRANSLATION].tiers
+    tg, overflow = tiers[0], tiers[1]
+    assert tg.timeout_ms == 60000       # overall/total cap unchanged
+    assert tg.ttft_ms == 5000           # distinct short first-token deadline (default)
+    assert overflow.ttft_ms is None     # overflow keeps only its own timeout
+
+    monkeypatch.setenv("FALLBACK_POST_TRANSLATION_TG_TTFT_MS", "3500")
+    tg2 = synthesize_from_env().defaults[Step.POST_TRANSLATION].tiers[0]
+    assert tg2.ttft_ms == 3500 and tg2.timeout_ms == 60000
+
+
 def test_shim_agent_resolves_to_env_managed_tier(monkeypatch):
     """Resolver's AGENT primary reflects the env-synthesized managed tier
     (provider + model come from LLM_PROVIDER / LLM_MODEL_NAME)."""

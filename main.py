@@ -1,5 +1,5 @@
 from dotenv import load_dotenv
-from fastapi import FastAPI
+from fastapi import FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
 from app.config import settings
 from contextlib import asynccontextmanager
@@ -86,6 +86,15 @@ async def root():
         "debug": settings.debug,
         "api_prefix": settings.api_prefix
     }
+
+@app.get("/metrics")
+async def metrics():
+    """Prometheus exposition for the unified LLM pipeline (plain text, no auth,
+    scraped internally). render() is a no-op safe stub when prometheus_client is
+    absent, so this route works whether or not the dependency is installed."""
+    from app import metrics as _metrics
+    body, content_type = _metrics.render()
+    return Response(content=body, media_type=content_type)
 
 # Include all routers with API prefix from settings
 app.include_router(auth.router, prefix=settings.api_prefix)  # Auth router (no auth required)
