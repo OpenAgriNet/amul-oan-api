@@ -93,6 +93,13 @@ def _truthy_env(name: str) -> bool:
     return v is not None and v.strip().lower() in {"1", "true", "yes", "on"}
 
 
+class BootRefused(RuntimeError):
+    """Intentional hard-gate boot failure (e.g. REQUIRE_OVERFLOW_ARMED with overflow
+    DISARMED). Distinct type so the best-effort ``configure()`` call site in main.py
+    can re-raise it (a deliberate refusal to boot) while still swallowing genuine
+    non-fatal configure/self-check edge cases."""
+
+
 def _assert_boot_posture() -> None:
     """Emit a LOUD one-line 'overflow ARMED / DISARMED' posture summary at boot.
 
@@ -128,7 +135,7 @@ def _assert_boot_posture() -> None:
             "walkers); %s", guards,
         )
         if _truthy_env("REQUIRE_OVERFLOW_ARMED"):
-            raise RuntimeError(
+            raise BootRefused(
                 "llm_core boot refused: REQUIRE_OVERFLOW_ARMED=true but overflow is "
                 "DISARMED (FALLBACK_ENABLED=false). Set FALLBACK_ENABLED=true to arm "
                 "the unified overflow/fallback path, or unset REQUIRE_OVERFLOW_ARMED."

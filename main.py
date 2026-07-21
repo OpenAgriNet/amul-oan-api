@@ -36,9 +36,11 @@ async def lifespan(app: FastAPI):
     # config and run the resolvability self-check (logs the resolved per-step
     # provider/model/endpoint; non-fatal). Best-effort — a configure/self-check
     # edge case must never block startup.
+    from app.llm_core import runtime as _llm_runtime
     try:
-        from app.llm_core import runtime as _llm_runtime
         _llm_runtime.configure()
+    except _llm_runtime.BootRefused:  # intentional hard-gate — must NOT be swallowed
+        raise
     except Exception as _llm_exc:  # pragma: no cover - defensive
         print(f"⚠️  llm_core configure skipped: {_llm_exc}")
     await start_telemetry_worker()
