@@ -161,6 +161,9 @@ except ImportError:
     propagate_attributes = None
     get_langfuse_client = None
 
+# Per-turn resolved-pipeline-config tracer (tracing-only; no behaviour change).
+from app.llm_core import trace as _pipeline_trace
+
 
 def _response_max_chars_for_channel(channel: str | None) -> int | None:
     if (channel or "").lower() == "whatsapp":
@@ -186,6 +189,22 @@ async def stream_chat_messages(
     # with OSS_PIPELINE_PCT=0 every session is 'legacy'.
     is_oss = pipeline_variant == "oss"
     use_translation_pipeline = bool(use_translation_pipeline) or is_oss
+    # Open the per-turn pipeline-config tracer and hold the EXPLICIT instance.
+    # The ContextVar does NOT survive Starlette's StreamingResponse async-generator
+    # consumption, so we populate the must-have static fields (profile, variant,
+    # flags, per-step PRIMARY tier) directly onto `pt` here and pass `pt` to every
+    # emit site — never relying on a contextvar read at emit time. Deep trigger /
+    # served-tier recording stays best-effort on top (via the contextvar).
+    pt = _pipeline_trace.begin(pipeline_variant)
+    try:
+        from app.llm_core import resolver as _lr, runtime as _lrt
+        from app.llm_core.config_model import Step as _LS
+        _pipeline_trace.populate(
+            pt, _lrt.get_pipeline(), _lr.primary_tier, pipeline_variant,
+            (_LS.PRE_TRANSLATION, _LS.MODERATION, _LS.AGENT, _LS.SUGGESTIONS, _LS.POST_TRANSLATION),
+        )
+    except Exception as _pt_exc:  # pragma: no cover - tracing must never break the turn
+        logger.debug("pipeline_config populate skipped: %s", _pt_exc)
     if settings.llm_core_enabled:
         # Flag-on: obtain the agent/moderation model handle + provider from the
         # unified pipeline resolver instead of the legacy singletons. P0 identity —
@@ -221,6 +240,13 @@ async def stream_chat_messages(
         "variant": pipeline_variant,
     }
     langfuse_tags = [f"pipeline:{pipeline_name}", f"variant:{pipeline_variant}"]
+    # Serialize the resolved pipeline config into COMPACT flat keys and merge them
+    # into the same langfuse_metadata dict propagate_attributes lands on OTEL span
+    # attributes (a big nested blob is size-capped/dropped; this SDK has no
+    # update_current_trace). Adds `pipeline_profile`, `pipeline_flags`, and one
+    # `pc_<step>` per step (~50 chars each). Full static config is in the
+    # `llm_core.full_config` boot log. Best-effort — never breaks the turn.
+    _pipeline_trace.add_compact_metadata(pt, langfuse_metadata)
     session_ctx = (
         propagate_attributes(
             session_id=session_id_safe,

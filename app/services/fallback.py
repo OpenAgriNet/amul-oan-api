@@ -317,25 +317,22 @@ def emit(event: FallbackEvent) -> None:
         except Exception:
             pass
 
-    if _get_langfuse_client is not None:
-        try:  # pragma: no cover - best effort
-            client = _get_langfuse_client()
-            if client is not None:
-                client.update_current_trace(
-                    tags=[f"oss_fallback:{event.pipeline}:{event.reason.value}"],
-                    metadata={
-                        "oss_fallback": {
-                            "pipeline": event.pipeline,
-                            "reason": event.reason.value,
-                            "fell_back": event.fell_back,
-                            "endpoint": event.oss_endpoint,
-                            "model": event.oss_model,
-                            "latency_ms": event.latency_ms,
-                        }
-                    },
-                )
-        except Exception:
-            pass
+    # NOTE: the fallback event lands via the structured log line above + the Sentry
+    # breadcrumb. A prior ``client.update_current_trace(...)`` call was removed here:
+    # this Langfuse SDK has no ``update_current_trace`` (it always raised and was
+    # swallowed, so the tag/metadata never landed). Re-landing fallback-event tags
+    # via a supported API (update_current_span) is a tracked follow-up.
+
+
+def _record_served(pipeline: str, kind: str, index: int) -> None:
+    """Tracing-only: thread the tier that actually served (kind + 0-based chain
+    index) back to the current turn's pipeline-trace, keyed by the pipeline's
+    Step. No-op when no trace context is active; never breaks the request path."""
+    try:  # pragma: no cover - best effort
+        from app.llm_core import trace as _trace
+        _trace.record_served(_PIPELINE_TO_STEP.get(pipeline, pipeline), kind, index)
+    except Exception:
+        pass
 
 
 async def execute_with_fallback(
@@ -395,6 +392,7 @@ async def execute_with_fallback(
             # Clean success resets the breaker for this endpoint (P2). No-op unless
             # HEALTH_BREAKER_ENABLED.
             health.record_success(attempt.endpoint)
+            _record_served(pipeline, attempt.kind, i)
             return result
 
 
@@ -521,6 +519,7 @@ async def stream_with_fallback(
                 yield chunk
             # Clean stream finish resets the breaker for this endpoint (P2).
             health.record_success(attempt.endpoint)
+            _record_served(pipeline, attempt.kind, i)
             return  # stream finished cleanly
         except asyncio.CancelledError:
             raise

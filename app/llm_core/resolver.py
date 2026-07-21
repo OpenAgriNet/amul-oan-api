@@ -45,7 +45,13 @@ def resolve_chain(step: Step, variant: str = "legacy") -> list[MaterializedTier]
         raise ValueError(f"no config for step={step.value} in profile={profile.name}")
 
     kind = STEP_CLIENT_KIND[step]
-    return materialize(kind, list(step_cfg.tiers))
+    chain = materialize(kind, list(step_cfg.tiers))
+    # tracing-only (no behaviour change): record the resolved profile + step chain
+    # for the non-fallback primary-tier seam (primary_tier/primary_handle callers).
+    from app.llm_core import trace as _trace
+    _trace.record_profile(profile.name, profile.weight)
+    _trace.record_step_chain(step, chain)
+    return chain
 
 
 def chain_for(step: Step, variant: str = "legacy") -> list[MaterializedTier]:

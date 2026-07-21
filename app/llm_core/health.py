@@ -278,7 +278,26 @@ def prune_unhealthy(step: Optional[Step], tiers: list) -> list:
     if not tiers:
         return tiers
 
-    kept = [t for t in tiers if not _registry.is_open(_endpoint_of(t) or "")]
+    # ``is_open`` has a lazy open->half_open side effect, so evaluate it exactly
+    # once per tier and reuse the result for both the filter and the trace record.
+    open_by_tier = {id(t): _registry.is_open(_endpoint_of(t) or "") for t in tiers}
+    kept = [t for t in tiers if not open_by_tier[id(t)]]
+
+    # ── tracing-only (no behaviour change): record which endpoints were pruned
+    # and the breaker state consulted per endpoint, onto the current turn's trace.
+    from app.llm_core import trace as _trace
+    if _trace.current() is not None:
+        pruned = [
+            ep for t in tiers
+            if open_by_tier[id(t)] and (ep := _endpoint_of(t)) is not None
+        ]
+        breaker_states = {
+            ep: _registry.state_of(ep).value
+            for t in tiers
+            if (ep := _endpoint_of(t)) is not None
+        }
+        _trace.record_health_prune(step, pruned, breaker_states)
+
     if not kept:
         # Contract: never return an empty chain. Every tier's endpoint is open —
         # degrade to trying the whole (suspect) chain rather than having none.

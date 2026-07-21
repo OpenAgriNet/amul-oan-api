@@ -144,6 +144,20 @@ async def reprioritize_by_load(
         return tiers
 
     gauge = await get_concurrency(gate.metrics_url)
+
+    # ── tracing-only (no behaviour change): record the gauge read + whether the
+    # vLLM tier was deprioritized onto the current turn's trace, at each outcome.
+    from app.llm_core import trace as _trace
+
+    def _record(deprioritized: bool) -> None:
+        _trace.record_concurrency(
+            step,
+            gauge=gauge,
+            max_concurrency=gate.max_concurrency,
+            deprioritized=deprioritized,
+            metrics_url=gate.metrics_url,
+        )
+
     if gauge is None:
         # Fail-open: metrics unreadable -> assume NOT saturated -> order unchanged.
         # (Deliberately NOT a forced flip to managed — the plan's reversal of bh.)
@@ -151,8 +165,10 @@ async def reprioritize_by_load(
             "concurrency: metrics unreadable for step=%s (%s); fail-open, order unchanged",
             getattr(step, "value", step), gate.metrics_url,
         )
+        _record(False)
         return tiers
     if gauge < gate.max_concurrency:
+        _record(False)
         return tiers            # below threshold -> primary stays primary
 
     vllm = [t for t in tiers if _is_vllm(t)]
@@ -160,10 +176,12 @@ async def reprioritize_by_load(
     if not vllm or not others:
         # All-vLLM or no-vLLM chain: nothing to reorder behind. Never churn /
         # empty — a saturated-but-only vLLM tier still runs (degrade-safe).
+        _record(False)
         return tiers
 
     logger.info(
         "concurrency: step=%s vLLM gauge %d >= %d; deprioritizing %d vLLM tier(s) behind managed",
         getattr(step, "value", step), gauge, gate.max_concurrency, len(vllm),
     )
+    _record(True)
     return others + vllm
