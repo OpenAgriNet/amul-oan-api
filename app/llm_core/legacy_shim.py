@@ -144,9 +144,14 @@ def _post_translation_tiers() -> list[Tier]:
         )
     endpoint = _env("TRANSLATEGEMMA_27B_BASE_ENDPOINT", "http://localhost:18002/v1") or "http://localhost:18002/v1"
     model_id = _env("TRANSLATEGEMMA_27B_BASE_MODEL", "translategemma-27b-base") or "translategemma-27b-base"
+    # ``timeout_ms`` is the 60s overall/total per-attempt cap; ``ttft_ms`` is the
+    # distinct, SHORT first-token deadline (single-digit seconds) so a saturated-
+    # but-alive TG overflows fast instead of blocking a voice turn for the full 60s.
     tg = Tier(
         provider=Provider.TRANSLATEGEMMA, model=model_id, endpoint=endpoint,
-        api_style=ApiStyle.TEXT_COMPLETION, timeout_ms=60000, label="translategemma",
+        api_style=ApiStyle.TEXT_COMPLETION, timeout_ms=60000,
+        ttft_ms=_int_env("FALLBACK_POST_TRANSLATION_TG_TTFT_MS", 5000),
+        label="translategemma",
     )
     # Cross-provider overflow = the managed agent tier, but forced to CHAT api_style
     # and given its own (shorter) first-token deadline. Reuses the managed builder so

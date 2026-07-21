@@ -21,6 +21,8 @@ own task + queue, so it stays disconnect-safe (see its docstring).
 from __future__ import annotations
 
 import asyncio
+import os
+import random
 import time
 
 import anyio
@@ -73,6 +75,21 @@ FALLBACKABLE = {
     FallbackReason.RATE_LIMITED,
     FallbackReason.OOM,
     FallbackReason.UNKNOWN,
+}
+
+# (G) Breaker evidence — the subset of FALLBACKABLE that genuinely indicts the
+# ENDPOINT (the box is down / erroring / overloaded), as distinct from a
+# caller-side or context problem. We still fall to the next tier on ANY
+# FALLBACKABLE reason, but only feed the health breaker on BREAKER_EVIDENCE — so a
+# caller ``TypeError`` (-> UNKNOWN) or a 4xx context-overflow (-> UNKNOWN) can no
+# longer trip the OSS breaker and shift everyone to the managed tier. UNKNOWN is
+# deliberately excluded; it is fallbackable but is NOT endpoint evidence.
+BREAKER_EVIDENCE = {
+    FallbackReason.CONNECTION,
+    FallbackReason.HTTP_5XX,
+    FallbackReason.OOM,
+    FallbackReason.RATE_LIMITED,
+    FallbackReason.TIMEOUT,
 }
 
 _OOM_MARKERS = ("out of memory", "cuda", "oom", "kv cache", "no available memory")
@@ -206,6 +223,10 @@ def emit(event: FallbackEvent) -> None:
     Sentry breadcrumb are added best-effort. NOTE: this intentionally does not use
     the canonical telemetry queue — that pipeline is for farmer Q&A analytics, not
     ops metrics; revisit if a fallback event type is added there."""
+    reason_value = event.reason.value
+    from app import metrics
+    metrics.record_fallback(event.pipeline, reason_value, event.fell_back, event.committed)
+
     logger.warning(
         "oss_fallback pipeline=%s reason=%s fell_back=%s from=%s to=%s "
         "endpoint=%s model=%s latency_ms=%s error_class=%s committed=%s session=%s detail=%s",
@@ -258,6 +279,95 @@ def _record_served(pipeline: str, kind: str, index: int) -> None:
         pass
 
 
+# (D) Internal commit sentinel. Agent producers yield this the instant the agent
+# does ANY work — the FIRST pydantic-ai model event, which is a tool-call part that
+# pydantic-ai emits BEFORE it runs the tools and long before the first TEXT delta.
+# ``with_first_token_deadline`` treats the sentinel as the first-token commit, so a
+# turn that has begun executing tools can never trip the TTFT deadline and force a
+# cross-tier re-run of side-effecting tools (duplicate bookings / SMS) or poison the
+# OSS breaker. The sentinel is consumed by the deadline wrapper and is NEVER
+# forwarded to the caller. (Liveness is preserved: a truly hung endpoint emits no
+# event, so no sentinel arrives and the deadline still fires -> swap.)
+class _AgentActivity:
+    __slots__ = ()
+
+    def __repr__(self) -> str:  # pragma: no cover - debug aid only
+        return "<AGENT_ACTIVITY>"
+
+
+AGENT_ACTIVITY = _AgentActivity()
+
+
+# (F) Bound concurrent MANAGED-tier admission + honor 429 on the last tier.
+# During a full GPU outage ~100% of turns overflow to the managed tier; with no cap
+# we drive it into its own 429 with nothing behind it. A per-process semaphore caps
+# concurrent managed calls (size from ``MANAGED_MAX_CONCURRENCY``); OSS tiers are
+# uncapped. Acquisition is FAIL-OPEN — if a slot can't be had within a short
+# timeout we proceed anyway rather than deadlock a farmer's turn.
+def _managed_max_concurrency() -> int:
+    try:
+        return max(1, int(os.getenv("MANAGED_MAX_CONCURRENCY", "64")))
+    except Exception:
+        return 64
+
+
+_MANAGED_ACQUIRE_TIMEOUT = 5.0   # fail-open cap on waiting for a managed slot (s)
+_RATE_LIMIT_MAX_WAIT = 5.0       # cap on honoring a last-tier 429 Retry-After (s)
+
+# The semaphore is (re)bound to the RUNNING loop lazily: a module-level Semaphore
+# binds to whatever loop imported this module and then explodes when awaited from a
+# different loop (per-test ``asyncio.run`` loops, a reloaded app loop). Keyed on the
+# identity of the running loop, so production creates it exactly once and tests get
+# a fresh one per loop.
+_managed_sem_state: dict = {"loop": None, "sem": None}
+
+
+def _get_managed_sem() -> asyncio.Semaphore:
+    loop = asyncio.get_running_loop()
+    if _managed_sem_state["sem"] is None or _managed_sem_state["loop"] is not loop:
+        _managed_sem_state["loop"] = loop
+        _managed_sem_state["sem"] = asyncio.Semaphore(_managed_max_concurrency())
+    return _managed_sem_state["sem"]
+
+
+async def _acquire_managed_slot(sem: asyncio.Semaphore) -> bool:
+    """Acquire a managed-tier slot; FAIL-OPEN on timeout so a turn never deadlocks.
+
+    Returns True if the slot was acquired (caller must ``release``), False if it
+    proceeded uncapped after the acquire timed out."""
+    try:
+        await asyncio.wait_for(sem.acquire(), _MANAGED_ACQUIRE_TIMEOUT)
+        return True
+    except asyncio.TimeoutError:
+        logger.warning(
+            "fallback: managed-tier slot acquire timed out (%.1fs); proceeding uncapped",
+            _MANAGED_ACQUIRE_TIMEOUT,
+        )
+        return False
+
+
+def _retry_after_seconds(exc: BaseException) -> float:
+    """Best-effort ``Retry-After`` (seconds) from a 429, capped + jittered.
+
+    Reads a numeric ``Retry-After`` header off the exception's response when
+    present; otherwise a small default backoff. Always bounded by
+    ``_RATE_LIMIT_MAX_WAIT`` so a hostile/huge value can't stall the turn."""
+    delay: Optional[float] = None
+    resp = getattr(exc, "response", None)
+    headers = getattr(resp, "headers", None) or getattr(exc, "headers", None)
+    if headers is not None:
+        try:
+            getter = getattr(headers, "get", None)
+            raw = (getter("retry-after") or getter("Retry-After")) if getter else None
+            if raw is not None:
+                delay = float(str(raw).strip())
+        except Exception:
+            delay = None
+    if delay is None or delay < 0:
+        delay = 0.5
+    return min(delay, _RATE_LIMIT_MAX_WAIT) + random.uniform(0.0, 0.25)
+
+
 async def execute_with_fallback(
     *,
     pipeline: str,
@@ -276,47 +386,67 @@ async def execute_with_fallback(
     """
     chain = await _resolve_chain(pipeline=pipeline, session_id=session_id, variant=variant)
     for i, attempt in enumerate(chain):
-        t0 = time.monotonic()
-        try:
-            if attempt.timeout is None:
-                result = await run(attempt)
-            else:
-                with anyio.fail_after(attempt.timeout):
+        is_last = i == len(chain) - 1
+        # (F) Cap concurrent MANAGED-tier admission; OSS tiers stay uncapped.
+        sem = _get_managed_sem() if attempt.kind == "managed" else None
+        retried_rate_limit = False
+        while True:
+            t0 = time.monotonic()
+            acquired = False
+            try:
+                if sem is not None:
+                    acquired = await _acquire_managed_slot(sem)
+                if attempt.timeout is None:
                     result = await run(attempt)
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            reason = classify(exc)
-            is_last = i == len(chain) - 1
-            will_fall_back = reason in FALLBACKABLE and not is_last
-            # P2 passive breaker feed: an infrastructure (FALLBACKABLE) failure is
-            # evidence this endpoint is down — count it toward the trip. Self-gated:
-            # a no-op unless HEALTH_BREAKER_ENABLED, so flag-off behaviour is identical.
-            if reason in FALLBACKABLE:
-                health.record_failure(attempt.endpoint)
-            emit(
-                FallbackEvent(
-                    pipeline=pipeline,
-                    session_id=session_id,
-                    from_variant=attempt.kind,
-                    to_variant=chain[i + 1].kind if will_fall_back else None,
-                    reason=reason,
-                    error_class=type(exc).__name__,
-                    error_detail=str(exc)[:500],
-                    oss_endpoint=attempt.endpoint,
-                    oss_model=attempt.model_name,
-                    latency_ms=int((time.monotonic() - t0) * 1000),
-                    fell_back=will_fall_back,
-                )
-            )
-            if not will_fall_back:
+                else:
+                    with anyio.fail_after(attempt.timeout):
+                        result = await run(attempt)
+            except asyncio.CancelledError:
                 raise
-        else:
-            # Clean success resets the breaker for this endpoint (P2). No-op unless
-            # HEALTH_BREAKER_ENABLED.
-            health.record_success(attempt.endpoint)
-            _record_served(pipeline, attempt.kind, i)
-            return result
+            except Exception as exc:
+                reason = classify(exc)
+                will_fall_back = reason in FALLBACKABLE and not is_last
+                # (G) FALLBACKABLE decides fall-to-next-tier; only BREAKER_EVIDENCE
+                # (never UNKNOWN) feeds the health breaker, so a caller error / 4xx
+                # overflow can't trip the OSS breaker. Self-gated: a no-op unless
+                # HEALTH_BREAKER_ENABLED, so flag-off behaviour is identical.
+                if reason in BREAKER_EVIDENCE:
+                    health.record_failure(attempt.endpoint)
+                emit(
+                    FallbackEvent(
+                        pipeline=pipeline,
+                        session_id=session_id,
+                        from_variant=attempt.kind,
+                        to_variant=chain[i + 1].kind if will_fall_back else None,
+                        reason=reason,
+                        error_class=type(exc).__name__,
+                        error_detail=str(exc)[:500],
+                        oss_endpoint=attempt.endpoint,
+                        oss_model=attempt.model_name,
+                        latency_ms=int((time.monotonic() - t0) * 1000),
+                        fell_back=will_fall_back,
+                    )
+                )
+                # (F) Last tier hit 429 with nothing behind it: ONE bounded retry
+                # honoring Retry-After (capped + jittered) before giving up.
+                if is_last and reason is FallbackReason.RATE_LIMITED and not retried_rate_limit:
+                    retried_rate_limit = True
+                    await asyncio.sleep(_retry_after_seconds(exc))
+                    continue
+                if not will_fall_back:
+                    raise
+                break  # fall to the next tier
+            else:
+                # Clean success resets the breaker for this endpoint (P2). No-op unless
+                # HEALTH_BREAKER_ENABLED.
+                health.record_success(attempt.endpoint)
+                _record_served(pipeline, attempt.kind, i)
+                from app import metrics
+                metrics.record_served(pipeline, attempt.kind, attempt.provider, attempt.model_name)
+                return result
+            finally:
+                if acquired:
+                    sem.release()
 
 
 async def with_first_token_deadline(attempt: MaterializedTier, agen: AsyncIterator[Any]) -> AsyncIterator[Any]:
@@ -375,7 +505,11 @@ async def with_first_token_deadline(attempt: MaterializedTier, agen: AsyncIterat
                 return
             if kind == _ERR:
                 raise val
-            yield val
+            # (D) The AGENT_ACTIVITY sentinel satisfies the first-token deadline (the
+            # endpoint is alive and working — a tool-call event precedes any text) but
+            # is INTERNAL: it commits the turn without being forwarded to the caller.
+            if val is not AGENT_ACTIVITY:
+                yield val
             kind, val = await queue.get()
     finally:
         # Single-task teardown: cancelling _drain unwinds run_stream's scope in its
@@ -425,76 +559,98 @@ async def stream_with_fallback(
     chain = await _resolve_chain(pipeline=pipeline, session_id=session_id, variant=variant)
     last_exc: Optional[BaseException] = None
     for i, attempt in enumerate(chain):
-        t0 = time.monotonic()
-        committed = False
+        is_last = i == len(chain) - 1
+        # (F) Cap concurrent MANAGED-tier admission; OSS tiers stay uncapped. The slot
+        # is held for the whole managed stream and released in `finally` — including on
+        # a client disconnect / aclose, which unwinds through this frame's finally.
+        sem = _get_managed_sem() if attempt.kind == "managed" else None
+        retried_rate_limit = False
+        while True:
+            t0 = time.monotonic()
+            committed = False
+            acquired = False
 
-        # IMPORTANT: consume make_stream here with a plain `async for` and never
-        # wrap THIS loop in an external timeout/cancel scope — pydantic-ai's
-        # run_stream opens an anyio cancel scope inside make_stream that stays open
-        # across the `yield`, so any scope spanning these yields unwinds out of order
-        # on aclose/disconnect ("cancel scope in a different task"). The
-        # time-to-first-token deadline is applied by callers wrapping make_stream in
-        # `with_first_token_deadline`, which isolates run_stream in its own task +
-        # queue precisely so no anyio scope is ever open at a `yield` (disconnect-safe).
-        try:
-            async for chunk in make_stream(attempt):
-                committed = True
-                yield chunk
-            # Clean stream finish resets the breaker for this endpoint (P2).
-            health.record_success(attempt.endpoint)
-            _record_served(pipeline, attempt.kind, i)
-            return  # stream finished cleanly
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            reason = classify(exc)
-            is_last = i == len(chain) - 1
-            if committed:
-                # Client already received output — a transparent swap is impossible.
+            # IMPORTANT: consume make_stream here with a plain `async for` and never
+            # wrap THIS loop in an external timeout/cancel scope — pydantic-ai's
+            # run_stream opens an anyio cancel scope inside make_stream that stays open
+            # across the `yield`, so any scope spanning these yields unwinds out of order
+            # on aclose/disconnect ("cancel scope in a different task"). The plain
+            # semaphore `finally` below is NOT a cancel scope, so it is disconnect-safe.
+            # The time-to-first-token deadline is applied by callers wrapping make_stream
+            # in `with_first_token_deadline`, which isolates run_stream in its own task +
+            # queue precisely so no anyio scope is ever open at a `yield`.
+            try:
+                if sem is not None:
+                    acquired = await _acquire_managed_slot(sem)
+                async for chunk in make_stream(attempt):
+                    committed = True
+                    yield chunk
+                # Clean stream finish resets the breaker for this endpoint (P2).
+                health.record_success(attempt.endpoint)
+                _record_served(pipeline, attempt.kind, i)
+                from app import metrics
+                metrics.record_served(pipeline, attempt.kind, attempt.provider, attempt.model_name)
+                return  # stream finished cleanly
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                reason = classify(exc)
+                if committed:
+                    # Client already received output — a transparent swap is impossible.
+                    emit(
+                        FallbackEvent(
+                            pipeline=pipeline,
+                            session_id=session_id,
+                            from_variant=attempt.kind,
+                            to_variant=None,
+                            reason=reason,
+                            error_class=type(exc).__name__,
+                            error_detail=str(exc)[:500],
+                            oss_endpoint=attempt.endpoint,
+                            oss_model=attempt.model_name,
+                            latency_ms=int((time.monotonic() - t0) * 1000),
+                            fell_back=False,
+                            committed=True,
+                        )
+                    )
+                    raise
+                will_fall_back = reason in FALLBACKABLE and not is_last
+                # (G) Only PRE-commit BREAKER_EVIDENCE feeds the breaker: a post-commit
+                # failure (handled above) is NOT evidence — the box answered and
+                # streamed tokens — and neither is UNKNOWN (a caller/context problem).
+                # Self-gated (no-op unless HEALTH_BREAKER_ENABLED).
+                if reason in BREAKER_EVIDENCE:
+                    health.record_failure(attempt.endpoint)
                 emit(
                     FallbackEvent(
                         pipeline=pipeline,
                         session_id=session_id,
                         from_variant=attempt.kind,
-                        to_variant=None,
+                        to_variant=chain[i + 1].kind if will_fall_back else None,
                         reason=reason,
                         error_class=type(exc).__name__,
                         error_detail=str(exc)[:500],
                         oss_endpoint=attempt.endpoint,
                         oss_model=attempt.model_name,
                         latency_ms=int((time.monotonic() - t0) * 1000),
-                        fell_back=False,
-                        committed=True,
+                        fell_back=will_fall_back,
+                        committed=False,
                     )
                 )
+                last_exc = exc
+                # (F) Last tier hit 429 pre-commit with nothing behind it: ONE bounded
+                # retry honoring Retry-After. Safe because committed is False (no output
+                # reached the caller), so the retried stream can't duplicate anything.
+                if is_last and reason is FallbackReason.RATE_LIMITED and not retried_rate_limit:
+                    retried_rate_limit = True
+                    await asyncio.sleep(_retry_after_seconds(exc))
+                    continue
+                if will_fall_back:
+                    break  # fall to the next tier
                 raise
-            will_fall_back = reason in FALLBACKABLE and not is_last
-            # P2 passive breaker feed: only PRE-commit infrastructure failures are
-            # evidence the endpoint is down. A post-commit failure (handled above)
-            # is NOT — the box answered and streamed tokens — so it must not trip
-            # the breaker. Self-gated (no-op unless HEALTH_BREAKER_ENABLED).
-            if reason in FALLBACKABLE:
-                health.record_failure(attempt.endpoint)
-            emit(
-                FallbackEvent(
-                    pipeline=pipeline,
-                    session_id=session_id,
-                    from_variant=attempt.kind,
-                    to_variant=chain[i + 1].kind if will_fall_back else None,
-                    reason=reason,
-                    error_class=type(exc).__name__,
-                    error_detail=str(exc)[:500],
-                    oss_endpoint=attempt.endpoint,
-                    oss_model=attempt.model_name,
-                    latency_ms=int((time.monotonic() - t0) * 1000),
-                    fell_back=will_fall_back,
-                    committed=False,
-                )
-            )
-            last_exc = exc
-            if will_fall_back:
-                continue
-            raise
+            finally:
+                if acquired:
+                    sem.release()
 
     # All tiers failed before commit (every fallbackable tier swapped, last raised).
     if last_exc is not None:

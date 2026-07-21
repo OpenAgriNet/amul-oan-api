@@ -88,6 +88,60 @@ def validate_config(pipeline: PipelineConfig, *, enforce: bool) -> None:
     logger.warning("%s\n(LLM_CORE_ENABLED is off; not raising)", msg)
 
 
+def _truthy_env(name: str) -> bool:
+    v = os.getenv(name)
+    return v is not None and v.strip().lower() in {"1", "true", "yes", "on"}
+
+
+class BootRefused(RuntimeError):
+    """Intentional hard-gate boot failure (e.g. REQUIRE_OVERFLOW_ARMED with overflow
+    DISARMED). Distinct type so the best-effort ``configure()`` call site in main.py
+    can re-raise it (a deliberate refusal to boot) while still swallowing genuine
+    non-fatal configure/self-check edge cases."""
+
+
+def _assert_boot_posture() -> None:
+    """Emit a LOUD one-line 'overflow ARMED / DISARMED' posture summary at boot.
+
+    The whole overflow system — the OSS->managed attempt chain AND the health +
+    concurrency guards, which fire ONLY via the fallback walkers — is inert unless
+    ``FALLBACK_ENABLED`` is on. A deploy from defaults could therefore ship dark
+    with nothing in the logs saying so. This line makes the armament state greppable
+    at startup (``grep 'llm_core posture'``): INFO when armed, WARNING when disarmed.
+
+    Honors the opt-in ``REQUIRE_OVERFLOW_ARMED``: when truthy, a DISARMED boot is a
+    hard error (raises) so prod can gate on it and never ship overflow-off."""
+    from app.config import settings
+
+    def _onoff(b: bool) -> str:
+        return "on" if b else "off"
+
+    fallback_on = bool(settings.fallback_enabled)
+    if settings.concurrency_gauge_enabled:
+        conc = "on(metrics_url set)" if settings.agent_concurrency_metrics_url else "on(metrics_url unset — no-op)"
+    else:
+        conc = "off"
+    guards = (
+        f"health_breaker={_onoff(settings.health_breaker_enabled)} "
+        f"health_poller={_onoff(settings.health_poller_enabled)} "
+        f"concurrency={conc}"
+    )
+    if fallback_on:
+        logger.info("llm_core posture: overflow=ARMED fallback=on %s", guards)
+    else:
+        logger.warning(
+            "llm_core posture: overflow=DISARMED (FALLBACK_ENABLED=false) — "
+            "health/concurrency guards inert (they fire only via the fallback "
+            "walkers); %s", guards,
+        )
+        if _truthy_env("REQUIRE_OVERFLOW_ARMED"):
+            raise BootRefused(
+                "llm_core boot refused: REQUIRE_OVERFLOW_ARMED=true but overflow is "
+                "DISARMED (FALLBACK_ENABLED=false). Set FALLBACK_ENABLED=true to arm "
+                "the unified overflow/fallback path, or unset REQUIRE_OVERFLOW_ARMED."
+            )
+
+
 def configure(*, run_self_check: bool = True) -> PipelineConfig:
     """Load / synthesize the pipeline config, validate, store, self-check."""
     global PIPELINE
@@ -110,6 +164,10 @@ def configure(*, run_self_check: bool = True) -> PipelineConfig:
     # in logs even before any turn arrives (`grep llm_core.full_config`).
     from app.llm_core import trace as _trace
     _trace.log_full_config(PIPELINE)
+    # Boot posture assertion: LOUD ARMED/DISARMED overflow summary (+ hard-gate via
+    # REQUIRE_OVERFLOW_ARMED). Placed after config load so a hard-gate raise fires
+    # before the (non-fatal) self-check.
+    _assert_boot_posture()
     if run_self_check:
         try:
             self_check()

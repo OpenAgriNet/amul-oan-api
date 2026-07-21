@@ -70,15 +70,18 @@ def post_translation_tiers(variant: str = "legacy") -> list[Tier]:
     construction and let a misconfigured overflow tier take a healthy primary down.
     So the translation adapter takes the tiers INERT and builds each handle LAZILY
     only as the fallback walker reaches it (see ``translation._PostTranslationTier``).
-    Records the resolved profile for tracing, exactly as ``resolve_chain`` does."""
+
+    Deliberately does NOT ``record_profile``: post-translation runs AFTER the agent
+    step and is profile-INVARIANT (it lives in ``defaults``), so recording a profile
+    here would last-write-wins CLOBBER the turn's real ``pipeline_profile`` (set by
+    the agent-step ``resolve_chain``) to "managed". The step chain is still recorded
+    by the translation adapter's ``_post_translation_chain`` via ``record_step_chain``."""
     pipeline = runtime.get_pipeline()
     name = _profile_name_for_variant(variant)
     profile = pipeline.by_name(name) or pipeline.by_name("managed") or pipeline.profiles[0]
     step_cfg = pipeline.step_config(profile, Step.POST_TRANSLATION)
     if step_cfg is None:
         raise ValueError("no config for step=post_translation")
-    from app.llm_core import trace as _trace
-    _trace.record_profile(profile.name, profile.weight)
     return list(step_cfg.tiers)
 
 

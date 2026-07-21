@@ -546,3 +546,85 @@ async def test_walk_tg_serves_never_builds_overflow(monkeypatch):
         [tg, llm], make_stream, source_lang="english", target_lang="gujarati")]
     assert out == ["ok"]
     assert llm._memo == []  # overflow handle never built
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 9. Review fixes: distinct TG first-token deadline (ttft) + health-prune wiring
+# ══════════════════════════════════════════════════════════════════════════════
+def _tg_inert_ttft():
+    return Tier(provider=Provider.TRANSLATEGEMMA, model="tg", endpoint="http://lb/v1",
+                api_style=ApiStyle.TEXT_COMPLETION, timeout_ms=60000, ttft_ms=5000,
+                label="translategemma")
+
+
+def test_post_translation_tier_carries_distinct_ttft():
+    """_PostTranslationTier exposes ttft (the SHORT first-token bound) alongside the
+    unchanged timeout (the overall/total cap). The overflow tier (no ttft_ms) -> None."""
+    pt = tr._PostTranslationTier(_tg_inert_ttft())
+    assert pt.timeout == 60.0     # overall/total cap unchanged
+    assert pt.ttft == 5.0         # distinct short first-token deadline
+    assert tr._PostTranslationTier(_unbuildable_llm_inert()).ttft is None
+
+
+@pytest.mark.asyncio
+async def test_stream_walker_bounds_first_token_by_ttft_not_total(monkeypatch):
+    """The stream walker hands with_first_token_deadline the tier's SHORT ttft as the
+    bound (NOT the 60s total), while preserving kind/endpoint for its telemetry."""
+    captured = {}
+
+    def fake_deadline(attempt, agen):
+        captured["timeout"] = attempt.timeout
+        captured["endpoint"] = attempt.endpoint
+        captured["kind"] = attempt.kind
+        return agen
+
+    monkeypatch.setattr(tr, "_with_first_token_deadline", fake_deadline)
+    tg = tr._PostTranslationTier(_tg_inert_ttft())
+    out = [c async for c in tr._stream_post_translation_chain(
+        [tg], lambda tier: _agen("ok"), source_lang="english", target_lang="gujarati")]
+    assert out == ["ok"]
+    assert captured["timeout"] == 5.0              # ttft, NOT the 60s total cap
+    assert captured["endpoint"] == "http://lb/v1"  # tier identity preserved for errors
+    assert captured["kind"] == "managed"
+
+
+@pytest.mark.asyncio
+async def test_stream_walker_ttft_falls_back_to_timeout_when_unset(monkeypatch):
+    """A tier without ttft (the managed overflow) bounds first-token by its own timeout."""
+    captured = {}
+
+    def fake_deadline(attempt, agen):
+        captured["timeout"] = attempt.timeout
+        return agen
+
+    monkeypatch.setattr(tr, "_with_first_token_deadline", fake_deadline)
+    llm = tr._PostTranslationTier(_unbuildable_llm_inert())  # timeout_ms=30000, no ttft
+    out = [c async for c in tr._stream_post_translation_chain(
+        [llm], lambda tier: _agen("ok"), source_lang="english", target_lang="gujarati")]
+    assert out == ["ok"]
+    assert captured["timeout"] == 30.0
+
+
+def test_post_translation_chain_invokes_health_prune(monkeypatch, _managed_pipeline):
+    """_post_translation_chain routes the INERT tiers through health.prune_unhealthy
+    BEFORE wrapping them — so a down TG is pruned at resolve time, not re-discovered
+    (and re-timed-out) every turn. Proven by a prune that drops the TG tier."""
+    seen = {}
+
+    def fake_prune(step, tiers):
+        seen["step"] = step
+        seen["endpoints"] = [t.endpoint for t in tiers]  # inert Tiers, pre-wrap
+        return [t for t in tiers if t.provider is not Provider.TRANSLATEGEMMA]
+
+    monkeypatch.setattr(tr._llm_health, "prune_unhealthy", fake_prune)
+    chain = tr._post_translation_chain()
+    assert seen["step"] is Step.POST_TRANSLATION
+    assert "http://lb/v1" in seen["endpoints"]
+    assert [t.provider for t in chain] == ["openai"]  # TG pruned, overflow kept
+
+
+def test_post_translation_chain_prune_noop_when_flags_off(_managed_pipeline):
+    """Flags-off path is byte-identical: the real prune is a settings-gated identity,
+    so the full [TG, overflow] chain survives unchanged."""
+    chain = tr._post_translation_chain()
+    assert [t.provider for t in chain] == ["translategemma", "openai"]

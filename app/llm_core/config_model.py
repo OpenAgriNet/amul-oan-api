@@ -64,6 +64,12 @@ class Tier(BaseModel):
     api_key_env: Optional[str] = None
     api_style: ApiStyle = ApiStyle.CHAT
     timeout_ms: Optional[int] = None
+    # Distinct FIRST-token deadline (ms) — bounds only the wait for the first
+    # streamed token, independent of ``timeout_ms`` (the overall/total per-attempt
+    # cap). Set for the post-translation TranslateGemma tier so a saturated-but-
+    # ALIVE TG overflows in single-digit seconds instead of blocking a voice turn
+    # for the full 60s total. ``None`` -> the consumer falls back to ``timeout_ms``.
+    ttft_ms: Optional[int] = None
     api_version: Optional[str] = None
     max_tokens: Optional[int] = None
     label: Optional[str] = None

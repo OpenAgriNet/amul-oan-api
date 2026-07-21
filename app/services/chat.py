@@ -18,7 +18,7 @@ from app.utils import (
 )
 from app.tasks.suggestions import create_suggestions
 from app.config import settings
-from app.services.fallback import execute_with_fallback, stream_with_fallback, with_first_token_deadline
+from app.services.fallback import AGENT_ACTIVITY, execute_with_fallback, stream_with_fallback, with_first_token_deadline
 from app.core.cache import cache
 from agents.deps import FarmerContext
 from agents.farmer_context import get_farmer_context_bundle_by_mobile
@@ -585,42 +585,45 @@ async def stream_chat_messages(
             _stream_holder: dict = {}
 
             async def _raw_agent_text_stream(provider, model):
-                # Anthropic streams via agent.iter()+node.stream() (run_stream() is
-                # unsupported for its tool loop); every other provider uses
-                # run_stream().stream_text(). new_messages is captured into
-                # _stream_holder before the run context closes.
-                if provider == 'anthropic':
-                    async with agrinet_agent.iter(
-                        user_prompt=user_message,
-                        message_history=trimmed_history,
-                        deps=deps,
-                        model=model,
-                    ) as agent_run:
-                        async for node in agent_run:
-                            if type(node).__name__ == 'ModelRequestNode':
-                                async with node.stream(agent_run.ctx) as request_stream:
-                                    async for event in request_stream:
-                                        event_type = type(event).__name__
-                                        text = None
-                                        if event_type == 'PartStartEvent' and hasattr(event, 'part'):
-                                            if type(event.part).__name__ == 'TextPart' and hasattr(event.part, 'content'):
-                                                text = event.part.content
-                                        elif event_type == 'PartDeltaEvent' and hasattr(event, 'delta'):
-                                            if type(event.delta).__name__ == 'TextPartDelta':
-                                                text = event.delta.content_delta
-                                        if text:
-                                            yield text
-                        _stream_holder["new_messages"] = agent_run.result.new_messages()
-                else:
-                    async with agrinet_agent.run_stream(
-                        user_prompt=user_message,
-                        message_history=trimmed_history,
-                        deps=deps,
-                        model=model,
-                    ) as response_stream:
-                        async for chunk in response_stream.stream_text(delta=True):
-                            yield chunk
-                        _stream_holder["new_messages"] = response_stream.new_messages()
+                # (D) COMMIT-ON-FIRST-ACTIVITY. Both providers now iterate the agent via
+                # agent.iter()+node.stream() (anthropic always required it — run_stream()
+                # is unsupported for its tool loop; every other provider joins so the fix
+                # is uniform for the OSS gemma tier where the slow 20s milk-collection
+                # tool lives). The FIRST pydantic-ai model event — a tool-call part that
+                # pydantic-ai emits BEFORE it runs the tools and long before the first
+                # TEXT delta — is surfaced once as the AGENT_ACTIVITY sentinel.
+                # with_first_token_deadline treats that sentinel as the first-token
+                # commit, so a slow tool can no longer trip the TTFT deadline and force a
+                # cross-tier re-run of side-effecting tools. The sentinel is swallowed by
+                # the deadline wrapper and never reaches the client; TEXT extraction is
+                # unchanged. Liveness is preserved: a truly hung endpoint emits no event,
+                # so no sentinel arrives and the deadline still fires -> swap.
+                # new_messages is captured before the run context closes.
+                _activity_signaled = False
+                async with agrinet_agent.iter(
+                    user_prompt=user_message,
+                    message_history=trimmed_history,
+                    deps=deps,
+                    model=model,
+                ) as agent_run:
+                    async for node in agent_run:
+                        if type(node).__name__ == 'ModelRequestNode':
+                            async with node.stream(agent_run.ctx) as request_stream:
+                                async for event in request_stream:
+                                    if not _activity_signaled:
+                                        _activity_signaled = True
+                                        yield AGENT_ACTIVITY
+                                    event_type = type(event).__name__
+                                    text = None
+                                    if event_type == 'PartStartEvent' and hasattr(event, 'part'):
+                                        if type(event.part).__name__ == 'TextPart' and hasattr(event.part, 'content'):
+                                            text = event.part.content
+                                    elif event_type == 'PartDeltaEvent' and hasattr(event, 'delta'):
+                                        if type(event.delta).__name__ == 'TextPartDelta':
+                                            text = event.delta.content_delta
+                                    if text:
+                                        yield text
+                    _stream_holder["new_messages"] = agent_run.result.new_messages()
 
             async def _stream_to_client(english_src):
                 if needs_output_translation:
@@ -714,7 +717,14 @@ async def stream_chat_messages(
                 )
             else:
                 # No fallback: stream the single resolved primary tier directly.
-                english_src = _raw_agent_text_stream(request_provider, request_model)
+                # _raw_agent_text_stream still yields the internal AGENT_ACTIVITY
+                # commit sentinel; with no with_first_token_deadline wrapper on this
+                # path, strip it here so only text reaches _stream_to_client.
+                async def _strip_activity(_src):
+                    async for _c in _src:
+                        if _c is not AGENT_ACTIVITY:
+                            yield _c
+                english_src = _strip_activity(_raw_agent_text_stream(request_provider, request_model))
 
             async for _out in _stream_to_client(english_src):
                 yield _out
