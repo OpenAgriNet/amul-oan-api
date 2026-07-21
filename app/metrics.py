@@ -20,7 +20,16 @@ Design constraints:
 
 from __future__ import annotations
 
+import os
 from typing import Optional
+
+# Multi-worker aggregation: uvicorn/gunicorn with >1 worker gives each process its
+# OWN in-process registry, so a /metrics scrape hits only one worker and undercounts.
+# When PROMETHEUS_MULTIPROC_DIR is set, prometheus_client writes metrics to that
+# shared dir and render() aggregates across all workers via a MultiProcessCollector.
+# Leave it UNSET for single-worker deployments (simple in-process registry). Set it
+# (e.g. /tmp/prom_multiproc, a fresh dir per container) whenever workers > 1.
+_MULTIPROC_DIR = os.environ.get("PROMETHEUS_MULTIPROC_DIR") or None
 
 try:  # optional dependency — the pipeline runs fine without it (no-op mode)
     from prometheus_client import (
@@ -32,8 +41,18 @@ try:  # optional dependency — the pipeline runs fine without it (no-op mode)
     )
 
     _ENABLED = True
+    if _MULTIPROC_DIR:
+        from prometheus_client import multiprocess as _multiprocess
+
+        # Best-effort: ensure the shared dir exists (fresh per container, so no stale
+        # cross-restart files). Never fatal — fall back to in-process on any error.
+        try:
+            os.makedirs(_MULTIPROC_DIR, exist_ok=True)
+        except Exception:
+            _MULTIPROC_DIR = None
 except Exception:  # pragma: no cover - exercised only where the lib is absent
     _ENABLED = False
+    _MULTIPROC_DIR = None
     CONTENT_TYPE_LATEST = "text/plain; version=0.0.4; charset=utf-8"
 
 
@@ -45,7 +64,15 @@ def _s(v: object) -> str:
 
 
 if _ENABLED:
-    REGISTRY = CollectorRegistry()
+    # In multiproc mode, metrics MUST NOT bind a custom registry — the library
+    # collects them from PROMETHEUS_MULTIPROC_DIR and render() aggregates. In
+    # single-process mode they live on our own dedicated registry.
+    if _MULTIPROC_DIR:
+        REGISTRY = None
+        _reg_kw: dict = {}
+    else:
+        REGISTRY = CollectorRegistry()
+        _reg_kw = {"registry": REGISTRY}
 
     # Which tier actually served a step (incremented where fallback commits/returns).
     # kind = "oss" | "managed"; provider/model identify the concrete tier.
@@ -53,35 +80,38 @@ if _ENABLED:
         "llm_served_total",
         "Turns served, by step and the tier that actually served them.",
         ["step", "kind", "provider", "model"],
-        registry=REGISTRY,
+        **_reg_kw,
     )
     # Every classified failure the fallback engine emits (fallbacks AND terminals).
     _fallback_total = Counter(
         "llm_fallback_total",
         "Classified overflow/fallback events by step, reason and outcome.",
         ["step", "reason", "fell_back", "committed"],
-        registry=REGISTRY,
+        **_reg_kw,
     )
     # Per-endpoint circuit-breaker state: 0 closed, 1 half-open, 2 open.
+    # ``multiprocess_mode="max"`` so a scrape reflects the worst (most-open) worker.
     _breaker_state = Gauge(
         "llm_health_breaker_state",
         "Per-endpoint health breaker state (0=closed, 1=half_open, 2=open).",
         ["endpoint"],
-        registry=REGISTRY,
+        multiprocess_mode="max",
+        **_reg_kw,
     )
     # Concurrency-gauge deprioritizations (a saturated vLLM tier pushed back).
     _deprioritized_total = Counter(
         "llm_concurrency_deprioritized_total",
         "Times a saturated vLLM tier was deprioritized by the concurrency gauge.",
         ["step"],
-        registry=REGISTRY,
+        **_reg_kw,
     )
     # Last-scraped in-flight (running+waiting) request count per vLLM endpoint.
     _inflight = Gauge(
         "llm_concurrency_inflight",
         "Last-scraped in-flight (running+waiting) requests per vLLM endpoint.",
         ["endpoint"],
-        registry=REGISTRY,
+        multiprocess_mode="max",
+        **_reg_kw,
     )
 
 _BREAKER_STATE_CODES = {"closed": 0, "half_open": 1, "half-open": 1, "open": 2}
@@ -152,6 +182,12 @@ def render() -> tuple[bytes, str]:
             CONTENT_TYPE_LATEST,
         )
     try:
+        if _MULTIPROC_DIR:
+            # Aggregate every worker's metrics from the shared dir into a fresh
+            # registry (the documented multiprocess exposition pattern).
+            reg = CollectorRegistry()
+            _multiprocess.MultiProcessCollector(reg)
+            return generate_latest(reg), CONTENT_TYPE_LATEST
         return generate_latest(REGISTRY), CONTENT_TYPE_LATEST
     except Exception:
         return b"# metrics render error\n", CONTENT_TYPE_LATEST
