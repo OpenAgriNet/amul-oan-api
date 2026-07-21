@@ -213,7 +213,7 @@ def test_resolve_chain_never_empty_for_configured_step():
     assert len(chain) >= 1
 
 
-# ── (c) sticky assignment: a config change does not re-bucket ─────────────────
+# ── (c) deterministic assignment: a weight change RE-BUCKETS (refresh-on-change) ─
 
 def _sid_with_bucket_between(lo, hi):
     i = 0
@@ -224,63 +224,46 @@ def _sid_with_bucket_between(lo, hi):
         i += 1
 
 
-def test_sticky_profile_persists_across_weight_change(monkeypatch):
+def test_resolve_profile_is_pure_deterministic():
+    """resolve_profile == deterministic bucket over the CURRENT weights; no Redis
+    state, so nothing pins a session across weight changes."""
     import asyncio
 
-    fake = _FakeCache()
-    monkeypatch.setattr(split, "cache", fake)
+    cfg = two_profile_config(70)
+    for sid in ("a", "b", "sess-xyz", ""):
+        assert asyncio.run(split.resolve_profile(sid, cfg)) == split.deterministic_profile(sid, cfg)
+
+
+def test_weight_change_rebuckets_continuing_session():
+    """The refresh-on-change contract: a session assigned to one model at a given
+    weight MOVES to the other model when the weight changes — it is not frozen."""
+    import asyncio
 
     sid, bucket = _sid_with_bucket_between(30, 60)
-    cfg_a = two_profile_config(bucket + 5)   # bucket < pct -> 'oss'
-    cfg_b = two_profile_config(bucket - 5)   # bucket >= pct -> deterministic 'managed'
-
-    first = asyncio.run(split.resolve_profile(sid, cfg_a))
-    assert first == "oss"
-    assert fake.store[f"pipeline_profile:{sid}"] == "oss"   # stored under the P1 key
-
-    # Deterministic assignment WOULD flip under cfg_b ...
-    assert split.deterministic_profile(sid, cfg_b) == "managed"
-    # ... but the sticky session keeps its original profile.
-    assert asyncio.run(split.resolve_profile(sid, cfg_b)) == "oss"
+    cfg_hi = two_profile_config(bucket + 5)   # bucket < pct -> 'oss'
+    cfg_lo = two_profile_config(bucket - 5)   # bucket >= pct -> 'managed'
+    assert asyncio.run(split.resolve_profile(sid, cfg_hi)) == "oss"
+    # SAME session id, weight changed -> re-buckets to the new model (does NOT stick).
+    assert asyncio.run(split.resolve_profile(sid, cfg_lo)) == "managed"
 
 
-def test_sticky_hit_short_circuits_bucketing(monkeypatch):
+def test_zero_to_fifty_moves_about_half_of_continuing_sessions():
+    """0 -> 50% for the oss model moves ~half of continuing (same-id) sessions onto
+    it — exactly the redeploy scenario, not 0%."""
     import asyncio
 
-    fake = _FakeCache()
-    fake.store["pipeline_profile:preset"] = "managed"
-    monkeypatch.setattr(split, "cache", fake)
-    # bucket would say 'oss' at pct=100, but the stored name wins.
-    cfg = two_profile_config(100)
-    assert asyncio.run(split.resolve_profile("preset", cfg)) == "managed"
-    assert fake.sets == []   # a hit must not re-write
-
-
-def test_sticky_ttl_comes_from_config(monkeypatch):
-    import asyncio
-
-    fake = _FakeCache()
-    monkeypatch.setattr(split, "cache", fake)
-    cfg = two_profile_config(50, ttl=12345)
-    asyncio.run(split.resolve_profile("ttl-sess", cfg))
-    assert fake.sets and fake.sets[0][2] == 12345
-
-
-def test_stale_stored_name_is_rebucketed(monkeypatch):
-    import asyncio
-
-    fake = _FakeCache()
-    fake.store["pipeline_profile:x"] = "no-such-profile"
-    monkeypatch.setattr(split, "cache", fake)
-    cfg = two_profile_config(100)
-    # invalid stored name ignored -> deterministic (oss at pct=100)
-    assert asyncio.run(split.resolve_profile("x", cfg)) == "oss"
+    ids = [f"s{i}" for i in range(400)]
+    at_zero = [asyncio.run(split.resolve_profile(s, two_profile_config(0))) for s in ids]
+    at_fifty = [asyncio.run(split.resolve_profile(s, two_profile_config(50))) for s in ids]
+    assert all(p == "managed" for p in at_zero)          # 0% oss -> everyone on managed
+    moved = sum(1 for a, b in zip(at_zero, at_fifty) if a != b and b == "oss")
+    assert 150 <= moved <= 250                            # ~50% of continuing sessions moved
 
 
 def test_resolve_chain_honors_variant_without_rebucketing(monkeypatch):
     """(C) resolve_chain(variant=...) selects the profile from the router variant
-    and never touches resolve_profile / the cache — so a capped session id can't
-    diverge from the primary path."""
+    and never calls resolve_profile — so a capped session id can't diverge from
+    the primary path."""
     import asyncio
 
     def _boom(*a, **k):
@@ -288,31 +271,10 @@ def test_resolve_chain_honors_variant_without_rebucketing(monkeypatch):
 
     monkeypatch.setattr(split, "resolve_profile", _boom)
     cfg = two_profile_config(0)   # deterministic bucket would be 'managed' for all
-    # ... but the router already resolved 'oss' -> we must get the oss chain.
     chain = asyncio.run(split.resolve_chain("any-session", Step.AGENT, cfg, variant="oss"))
     assert [c.kind for c in chain] == ["oss", "managed"]
     legacy_chain = asyncio.run(split.resolve_chain("x", Step.AGENT, cfg, variant="legacy"))
     assert [c.kind for c in legacy_chain] == ["managed"]
-
-
-def test_resolve_profile_fail_safe_on_cache_error(monkeypatch):
-    import asyncio
-
-    monkeypatch.setattr(split, "cache", _BrokenCache())
-    cfg = two_profile_config(70)
-    # A Redis error degrades to the deterministic bucket, never raises.
-    got = asyncio.run(split.resolve_profile("err-sess", cfg))
-    assert got == split.deterministic_profile("err-sess", cfg)
-
-
-def test_empty_session_id_skips_cache(monkeypatch):
-    import asyncio
-
-    fake = _FakeCache()
-    monkeypatch.setattr(split, "cache", fake)
-    cfg = two_profile_config(50)
-    asyncio.run(split.resolve_profile("", cfg))
-    assert fake.sets == [] and fake.store == {}   # no id -> no Redis touch
 
 
 # ── (d) flags-OFF path untouched + composition with fallback walkers ──────────

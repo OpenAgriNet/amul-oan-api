@@ -14,12 +14,12 @@ This is the generalization of two hardwired pieces:
   resolved profile's ``StepConfig.tiers`` materialized through the P0 factory
   (:func:`app.llm_core.factory.materialize`), preserving order (primary first).
 
-Stickiness mirrors ``pipeline_router`` **exactly**: deterministic hash bucket,
-Redis-sticky under a new key prefix (``pipeline_profile:``) storing the profile
-NAME, shared across instances, fail-safe to the deterministic bucket on any Redis
-error. TTL comes from ``PipelineConfig.sticky_ttl_s`` (= ``OSS_VARIANT_TTL`` via
-the shim). A config *weight* change never re-buckets an already-sticky session:
-the stored name is honored as long as that profile still exists.
+Stickiness is the deterministic hash bucket itself — no Redis state. Same
+``session_id`` + same weights -> same profile (stable within a config version);
+a weight change re-maps the bucket so continuing sessions FOLLOW the new % on a
+redeploy / config change rather than freezing on the old model. (``pipeline_router``
+pinned the profile name in Redis, which froze sessions across weight changes —
+deliberately dropped: it defeats the refresh-on-change contract.)
 
 Gated by ``PROFILES_ENABLED`` at the call seams (router split + the fallback
 walkers); nothing here reads that flag — it is inert until a caller invokes it.
@@ -30,7 +30,6 @@ from __future__ import annotations
 import hashlib
 from typing import Optional
 
-from app.core.cache import cache
 from helpers.utils import get_logger
 from app.llm_core import runtime
 from app.llm_core.config_model import PipelineConfig, Step
@@ -38,10 +37,6 @@ from app.llm_core.factory import MaterializedTier, materialize
 from app.llm_core.resolver import STEP_CLIENT_KIND
 
 logger = get_logger(__name__)
-
-# New sticky namespace (distinct from pipeline_router's ``pipeline_variant:``).
-_PROFILE_KEY_PREFIX = "pipeline_profile:"
-
 
 def _profile_name_for_variant(variant: str, pipeline: PipelineConfig) -> str:
     """Map a legacy variant string (``oss``/``legacy``) to a configured profile NAME.
@@ -87,43 +82,20 @@ def deterministic_profile(session_id: str, pipeline: PipelineConfig) -> str:
 async def resolve_profile(
     session_id: str, pipeline: Optional[PipelineConfig] = None
 ) -> str:
-    """Sticky weighted-profile assignment for a session (profile NAME).
+    """Deterministic weighted-profile assignment for a session (profile NAME).
 
-    Mirrors ``pipeline_router.resolve_pipeline_variant`` key-for-key:
+    The ``sha256(session_id)`` bucket IS the sticky key: same ``session_id`` +
+    same weights -> same profile, so a session stays on one model within a config
+    version (no mid-session flapping) with zero Redis state. A weight change
+    re-maps the bucket, so continuing sessions FOLLOW the new % on a redeploy /
+    config change instead of freezing on the old model -- e.g. flipping a model
+    0 -> 50% moves ~50% of in-flight sessions, not 0%.
 
-    * no session id      -> deterministic bucket (no Redis);
-    * Redis hit (valid)  -> the stored profile name (sticky; a later weight change
-                            does not move the session);
-    * Redis miss         -> deterministic bucket, persisted best-effort;
-    * any Redis error    -> deterministic bucket, never raised into the caller.
-
-    A stored name that is no longer a configured profile is ignored (re-bucketed),
-    guarding against a profile being renamed/removed out from under a sticky key.
+    Deliberately no Redis profile-name pin (``pipeline_router`` had one; it froze
+    sessions across weight changes, defeating the refresh-on-change contract).
+    Kept ``async`` so the call seams are unchanged.
     """
-    pipeline = pipeline or runtime.get_pipeline()
-
-    if not session_id:
-        return deterministic_profile(session_id, pipeline)
-
-    key = f"{_PROFILE_KEY_PREFIX}{session_id}"
-    valid = {p.name for p in pipeline.profiles}
-
-    try:
-        stored = await cache.get(key)
-        if stored in valid:
-            return stored
-    except Exception as e:  # Redis down / timeout -> deterministic fallback
-        logger.warning("llm_core.split: cache read failed for %s: %s", session_id, e)
-        return deterministic_profile(session_id, pipeline)
-
-    name = deterministic_profile(session_id, pipeline)
-
-    try:
-        await cache.set(key, name, ttl=pipeline.sticky_ttl_s)
-    except Exception as e:  # persistence is best-effort; assignment still stable
-        logger.warning("llm_core.split: cache write failed for %s: %s", session_id, e)
-
-    return name
+    return deterministic_profile(session_id, pipeline or runtime.get_pipeline())
 
 
 def _profile_for(pipeline: PipelineConfig, name: str):
