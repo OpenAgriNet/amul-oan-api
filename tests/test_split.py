@@ -8,12 +8,12 @@ The bar these pin:
       (bit-compatible ``int(sha256(sid)[:8], 16) % 100``).
   (b) ``resolve_chain`` returns a non-empty materialized chain matching the
       resolved profile's tiers (order + models + kind labels).
-  (c) a config (weight) change does not re-bucket an already-sticky session.
+  (c) a config (weight) change RE-BUCKETS a continuing session — the sha256
+      bucket over the CURRENT weights is the sticky key; no Redis pin freezes it.
   (d) the flags-OFF path is byte-untouched: PROFILES_ENABLED defaults off and the
       fallback chain acquisition degrades to the legacy ``attempt_chain``.
 
-Zero network: session_id="" avoids Redis entirely (deterministic path); the
-sticky/fail-safe tests inject an in-memory fake cache. Building a factory handle
+Zero network: routing is pure deterministic (no Redis). Building a factory handle
 is lazy (no model call is ever made). A dummy OPENAI_API_KEY / OSS key is set
 before importing app code (agents.models + the factory read keys at build time).
 These tests deliberately avoid app.services.translation / agents.tools, which
@@ -72,29 +72,6 @@ def two_profile_config(pct: int, ttl: int = 604800) -> PipelineConfig:
         ],
         sticky_ttl_s=ttl,
     )
-
-
-class _FakeCache:
-    """In-memory async cache mirroring the aiocache surface split uses."""
-
-    def __init__(self):
-        self.store = {}
-        self.sets = []
-
-    async def get(self, key):
-        return self.store.get(key)
-
-    async def set(self, key, value, ttl=None):
-        self.store[key] = value
-        self.sets.append((key, value, ttl))
-
-
-class _BrokenCache:
-    async def get(self, key):
-        raise RuntimeError("redis down")
-
-    async def set(self, key, value, ttl=None):
-        raise RuntimeError("redis down")
 
 
 def _ref_bucket(session_id: str) -> int:

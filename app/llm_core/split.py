@@ -43,9 +43,8 @@ def _profile_name_for_variant(variant: str, pipeline: PipelineConfig) -> str:
 
     Mirrors ``resolver._profile_name_for_variant``: the OSS variant selects the
     OSS-primary profile (``oss``, else the first profile); anything else selects
-    the managed profile (``managed``, else the last profile). Used both to honor an
-    already-resolved router variant (skipping a divergent re-bucket, fix C) and to
-    migrate a legacy ``pipeline_router`` sticky key (fix A)."""
+    the managed profile (``managed``, else the last profile). Used to honor an
+    already-resolved router variant, skipping a divergent re-bucket (fix C)."""
     if variant == "oss":
         p = pipeline.by_name("oss")
         return p.name if p else pipeline.profiles[0].name
