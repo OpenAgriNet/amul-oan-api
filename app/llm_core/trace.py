@@ -311,15 +311,30 @@ def record_concurrency(
 # resolved config into a handful of SHORT flat string keys that fit under the cap
 # and land reliably. The COMPLETE static config still goes to the boot log via
 # ``log_full_config`` (``grep llm_core.full_config``).
+#
+# Every emitted value is HARD-CAPPED to ``_ATTR_CAP`` chars so a long configured
+# endpoint/model/profile can never push a key over the OTEL cap and silently drop
+# it (the exact failure this compact path exists to avoid). Truncation is safe:
+# the complete untruncated config is always in the boot ``llm_core.full_config``.
+_ATTR_CAP = 240
+
+
 def compact_metadata(pt: Optional[PipelineTrace]) -> dict:
     """Flatten ``pt`` into short, cap-safe metadata keys:
 
     * ``pipeline_profile`` = resolved profile name;
     * ``pipeline_flags``   = comma-joined enabled guard flags (``_enabled`` stripped);
-    * ``pc_<step>``        = ``"<provider>:<model>@<endpoint>#<served>(<timeout_ms>ms)"``
-                             per executed step (~50 chars each).
+    * ``pc_<step>``        = ``"<provider>:<model>@<endpoint>#<kind>(<timeout_ms>ms)"``
+                             per step, where ``<kind>`` is the CONFIGURED PRIMARY
+                             tier (oss/managed) — NOT necessarily the tier that
+                             actually served. Health-prune / concurrency-reorder /
+                             failure fallback can route a given request to a
+                             different tier; that is visible only in the pydantic-ai
+                             GENERATION observations on the same trace (tracked
+                             follow-up to surface the served tier here).
 
-    Returns ``{}`` on any error / empty pt (never raises into the request path)."""
+    Returns ``{}`` on any error / empty pt (never raises into the request path).
+    None-valued keys are dropped (propagate_attributes wants string values)."""
     out: dict = {}
     if pt is None:
         return out
@@ -338,7 +353,11 @@ def compact_metadata(pt: Optional[PipelineTrace]) -> dict:
             )
     except Exception as e:  # pragma: no cover - defensive
         logger.debug("llm_core.trace: compact_metadata failed: %s", e)
-    return out
+    # Hard-cap every value (a long endpoint/model can't exceed the OTEL cap and
+    # silently drop the key) and drop None values (propagate_attributes expects
+    # string attribute values — a None profile on the populate-failure path must
+    # never reach it).
+    return {k: v[:_ATTR_CAP] for k, v in out.items() if isinstance(v, str)}
 
 
 def add_compact_metadata(pt: Optional[PipelineTrace], metadata: dict) -> None:

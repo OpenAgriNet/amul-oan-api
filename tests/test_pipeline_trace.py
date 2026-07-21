@@ -249,6 +249,29 @@ def test_compact_metadata_produces_short_flat_keys(monkeypatch):
     assert all(v is None or len(v) < 120 for v in m.values())
 
 
+def test_compact_metadata_hard_caps_long_values(monkeypatch):
+    """A long configured endpoint/model must NOT push a pc_<step> value over the
+    OTEL attribute cap (which would silently DROP the key). Values are truncated to
+    _ATTR_CAP; the full untruncated config is always in the boot full_config dump."""
+    from app.llm_core.config_model import (
+        NamedProfile, PipelineConfig, Provider, StepConfig, Tier,
+    )
+
+    long_ep = "http://" + "x" * 500 + ":8020/v1"
+    cfg = PipelineConfig(profiles=[NamedProfile(name="oss", weight=100, steps={
+        Step.AGENT: StepConfig(tiers=[Tier(
+            provider=Provider.VLLM, model="m" * 300, endpoint=long_ep,
+            api_key_env="OSS_INFERENCE_API_KEY", timeout_ms=8000)]),
+    })])
+    monkeypatch.setattr(resolver.runtime, "get_pipeline", lambda: cfg)
+    pt = trace.begin("oss")
+    trace.populate(pt, cfg, resolver.primary_tier, "oss", (Step.AGENT,))
+
+    m = trace.compact_metadata(pt)
+    assert len(m["pc_agent"]) == trace._ATTR_CAP           # truncated -> the key still LANDS
+    assert all(v is None or len(v) <= trace._ATTR_CAP for v in m.values())
+
+
 def test_add_compact_metadata_merges_into_request_metadata_dict(monkeypatch):
     """The request path merges the compact keys into the SAME dict it already hands
     to propagate_attributes / VoiceTrace.metadata — existing keys preserved."""

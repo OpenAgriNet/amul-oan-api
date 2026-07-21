@@ -317,25 +317,11 @@ def emit(event: FallbackEvent) -> None:
         except Exception:
             pass
 
-    if _get_langfuse_client is not None:
-        try:  # pragma: no cover - best effort
-            client = _get_langfuse_client()
-            if client is not None:
-                client.update_current_trace(
-                    tags=[f"oss_fallback:{event.pipeline}:{event.reason.value}"],
-                    metadata={
-                        "oss_fallback": {
-                            "pipeline": event.pipeline,
-                            "reason": event.reason.value,
-                            "fell_back": event.fell_back,
-                            "endpoint": event.oss_endpoint,
-                            "model": event.oss_model,
-                            "latency_ms": event.latency_ms,
-                        }
-                    },
-                )
-        except Exception:
-            pass
+    # NOTE: the fallback event lands via the structured log line above + the Sentry
+    # breadcrumb. A prior ``client.update_current_trace(...)`` call was removed here:
+    # this Langfuse SDK has no ``update_current_trace`` (it always raised and was
+    # swallowed, so the tag/metadata never landed). Re-landing fallback-event tags
+    # via a supported API (update_current_span) is a tracked follow-up.
 
 
 def _record_served(pipeline: str, kind: str, index: int) -> None:
