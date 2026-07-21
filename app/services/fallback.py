@@ -29,16 +29,8 @@ from enum import Enum
 from typing import Any, AsyncIterator, Awaitable, Callable, Optional
 
 from app.config import settings
-from agents.models import (
-    LLM_MODEL,
-    LLM_MODEL_NAME,
-    LLM_PROVIDER,
-    OSS_INFERENCE_ENDPOINT_URL,
-    OSS_LLM_MODEL,
-    OSS_LLM_MODEL_NAME,
-    oss_model_available,
-)
 from app.llm_core.config_model import Step
+from app.llm_core.factory import MaterializedTier
 from app.llm_core import health
 from helpers.utils import get_logger
 
@@ -132,74 +124,13 @@ def classify(exc: BaseException) -> FallbackReason:
     return FallbackReason.UNKNOWN
 
 
-@dataclass(frozen=True)
-class Attempt:
-    """One tier in a fallback chain. Carries the pydantic-ai model object (agent
-    pipelines pass it as ``model=``), telemetry labels, and a per-attempt
-    timeout. ``timeout=None`` means no deadline (used when fallback is disabled)."""
-
-    kind: str                 # "oss" | "managed"
-    model: Any                # pydantic-ai model object
-    model_name: str
-    provider: str             # "vllm" | "openai" | "anthropic"
-    endpoint: str             # OSS endpoint URL, or "managed"
-    timeout: Optional[float]  # seconds
-
-
-def _oss_timeout_for(pipeline: str) -> float:
-    return {
-        "chat": settings.fallback_chat_oss_timeout_ms,
-        "moderation": settings.fallback_moderation_oss_timeout_ms,
-        "pretranslation": settings.fallback_pretranslation_oss_timeout_ms,
-        "suggestions": settings.fallback_suggestions_oss_timeout_ms,
-    }.get(pipeline, settings.fallback_moderation_oss_timeout_ms) / 1000.0
-
-
-def _managed_attempt() -> Attempt:
-    return Attempt(
-        kind="managed",
-        model=LLM_MODEL,
-        model_name=LLM_MODEL_NAME,
-        provider=LLM_PROVIDER,
-        endpoint="managed",
-        timeout=settings.fallback_managed_timeout_ms / 1000.0,
-    )
-
-
-def attempt_chain(variant: str, pipeline: str) -> list[Attempt]:
-    """Ordered tiers for a resolved variant.
-
-    * fallback disabled -> single tier = the variant's own model, no deadline
-      (behaviour identical to today; only used if a caller routes through here).
-    * OSS session with OSS configured -> ``[oss, managed]``.
-    * everything else -> ``[managed]`` (nothing to fall back to).
-    """
-    if not settings.fallback_enabled:
-        # Single tier matching the variant; no fallback, no added deadline.
-        if variant == "oss" and oss_model_available():
-            return [Attempt("oss", OSS_LLM_MODEL, OSS_LLM_MODEL_NAME or "oss",
-                            "vllm", OSS_INFERENCE_ENDPOINT_URL or "oss", None)]
-        return [Attempt("managed", LLM_MODEL, LLM_MODEL_NAME, LLM_PROVIDER, "managed", None)]
-
-    if variant == "oss" and oss_model_available():
-        oss = Attempt(
-            kind="oss",
-            model=OSS_LLM_MODEL,
-            model_name=OSS_LLM_MODEL_NAME or "oss",
-            provider="vllm",
-            endpoint=OSS_INFERENCE_ENDPOINT_URL or "oss",
-            timeout=_oss_timeout_for(pipeline),
-        )
-        return [oss, _managed_attempt()]
-    return [_managed_attempt()]
-
-
-# ── config-driven chain (llm_core P1) ─────────────────────────────────────────
-# Maps the pipeline label the walkers receive to an llm_core Step, so a
-# PROFILES_ENABLED session materializes the resolved profile's tiers instead of
-# the hardwired attempt_chain. The materialized chain (list[MaterializedTier]) is
-# a drop-in for list[Attempt]: the walkers only read .kind/.model/.model_name/
-# .provider/.endpoint/.timeout, all of which MaterializedTier carries.
+# ── config-driven chain (the only path after P4) ──────────────────────────────
+# Maps the pipeline label the walkers receive to an llm_core Step, so a session's
+# resolved weighted profile materializes that step's tiers (the config-driven
+# successor to the removed hardwired ``attempt_chain([oss, managed])``). The
+# materialized chain (list[MaterializedTier]) is what the walkers read: they only
+# touch .kind/.model/.model_name/.provider/.endpoint/.timeout, all carried by
+# MaterializedTier (the drop-in successor to the removed ``Attempt``).
 _PIPELINE_TO_STEP = {
     "chat": Step.AGENT,
     "moderation": Step.MODERATION,
@@ -209,27 +140,23 @@ _PIPELINE_TO_STEP = {
 
 
 async def _resolve_chain(*, pipeline: str, session_id: str, variant: str) -> list:
-    """How the walkers receive their chain (the ONLY thing P1 changes about them).
+    """How the walkers receive their chain — always the config-driven pipeline.
 
-    Composition of the two P0/P1 kill-switches:
-      * flags off (default) -> legacy ``attempt_chain(variant, pipeline)`` — the
-        result is byte-identical to today, so the walker bodies are unchanged;
-      * ``PROFILES_ENABLED`` AND ``LLM_CORE_ENABLED`` -> the config-driven chain:
-        the session's weighted profile's step tiers, materialized via the P0
-        factory. Both flags are required because the materialized chain carries
-        factory-built handles, which are P0's (``LLM_CORE_ENABLED``) domain.
+    Resolves the session's sticky weighted profile, looks up the step's tiers, and
+    materializes them (primary first, never empty). Health pruning (the pre-flight
+    FILTER) and concurrency reordering happen inside ``split.resolve_chain`` — a
+    no-op unless a HEALTH_* / CONCURRENCY_GAUGE flag is on.
 
-    Any failure resolving the config chain degrades to ``attempt_chain`` — the
-    fallback path must never be broken by a config/Redis edge case.
+    ``variant`` is kept in the signature (walker call sites + telemetry) but the
+    chain is driven by the session's sticky profile, not the variant string.
 
-    P2 health prune (a pre-flight FILTER) is applied on BOTH branches, so the
-    breaker/poller work independent of PROFILES: the config path is pruned inside
-    ``split.resolve_chain`` (before materialize — the documented P3 seam); the
-    legacy ``attempt_chain`` path is pruned here on the resulting ``Attempt`` s
-    (both expose ``.endpoint``). No-op unless a HEALTH_* flag is on; never empties
-    the chain."""
+    A config/Redis edge case must never break the fallback path: on any failure
+    (or an unmapped pipeline) it degrades to the resolver's managed-tier chain for
+    the step, so callers still get a non-empty chain and their terminal net
+    (moderation fail-closed, pretranslation safe-default, suggestions ``[]``)
+    remains the last line of defence."""
     step = _PIPELINE_TO_STEP.get(pipeline)
-    if settings.profiles_enabled and settings.llm_core_enabled and step is not None:
+    if step is not None:
         try:
             from app.llm_core import split
             # (C) Honor the variant the router already resolved from the FULL
@@ -242,17 +169,13 @@ async def _resolve_chain(*, pipeline: str, session_id: str, variant: str) -> lis
             )  # health-pruned inside
         except Exception as exc:  # never break the fallback path on a config edge
             logger.warning(
-                "fallback: profiles chain resolve failed (pipeline=%s): %s; "
-                "using legacy attempt_chain", pipeline, exc,
+                "fallback: config chain resolve failed (pipeline=%s): %s; "
+                "degrading to managed tier", pipeline, exc,
             )
 
-    chain = attempt_chain(variant, pipeline)
-    if settings.health_breaker_enabled or settings.health_poller_enabled:
-        try:
-            chain = health.prune_unhealthy(step, chain)
-        except Exception as exc:  # a prune bug must never break the fallback path
-            logger.warning("fallback: health prune failed (pipeline=%s): %s", pipeline, exc)
-    return chain
+    from app.llm_core import resolver as _resolver
+    degrade_step = step or Step.AGENT
+    return _resolver.resolve_chain(degrade_step, "legacy")
 
 
 @dataclass
@@ -340,12 +263,12 @@ async def execute_with_fallback(
     pipeline: str,
     session_id: str,
     variant: str,
-    run: Callable[[Attempt], Awaitable[Any]],
+    run: Callable[[MaterializedTier], Awaitable[Any]],
 ) -> Any:
     """Run ``run(attempt)`` against each tier of the chain, falling back on a
     classified infrastructure failure and recording every failure via ``emit``.
 
-    ``run`` receives the active :class:`Attempt` and returns the awaitable for that
+    ``run`` receives the active :class:`MaterializedTier` and returns the awaitable for that
     tier (e.g. ``agent.run(..., model=attempt.model)``). Returns whatever ``run``
     returns. Re-raises when the failure is non-fallbackable or the chain is
     exhausted, so the caller's existing degrade path (moderation fail-closed,
@@ -396,7 +319,7 @@ async def execute_with_fallback(
             return result
 
 
-async def with_first_token_deadline(attempt: Attempt, agen: AsyncIterator[Any]) -> AsyncIterator[Any]:
+async def with_first_token_deadline(attempt: MaterializedTier, agen: AsyncIterator[Any]) -> AsyncIterator[Any]:
     """Bound time-to-first-token only — safely across client disconnects.
 
     ``attempt.timeout`` bounds only the wait for the FIRST chunk; mid-stream gaps
@@ -480,7 +403,7 @@ async def stream_with_fallback(
     pipeline: str,
     session_id: str,
     variant: str,
-    make_stream: Callable[[Attempt], AsyncIterator[Any]],
+    make_stream: Callable[[MaterializedTier], AsyncIterator[Any]],
 ) -> AsyncIterator[Any]:
     """Stream a chain tier with *first-token commit* semantics.
 

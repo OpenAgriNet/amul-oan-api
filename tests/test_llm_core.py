@@ -193,17 +193,17 @@ def test_shim_pretranslation_and_post_translation(monkeypatch):
     assert post.model == "translategemma-27b-base"
 
 
-def test_shim_identity_agent_matches_legacy_singleton():
-    """Resolver's AGENT primary == agents.models legacy singleton (real identity)."""
-    from agents.models import get_model_for_variant, provider_for_variant, LLM_MODEL_NAME
-
+def test_shim_agent_resolves_to_env_managed_tier(monkeypatch):
+    """Resolver's AGENT primary reflects the env-synthesized managed tier
+    (provider + model come from LLM_PROVIDER / LLM_MODEL_NAME)."""
+    monkeypatch.delenv("OSS_INFERENCE_ENDPOINT_URL", raising=False)
+    monkeypatch.setenv("LLM_PROVIDER", "openai")
+    monkeypatch.setenv("LLM_MODEL_NAME", "gpt-4.1")
     runtime.configure(run_self_check=False)
     mt = resolver.primary_tier(Step.AGENT, "legacy")
-    legacy = get_model_for_variant("legacy")
-    assert mt.model_name == getattr(legacy, "model_name", LLM_MODEL_NAME)
-    assert mt.provider == provider_for_variant("legacy")
-    # base_url identity (both build the same OpenAI-compatible client)
-    assert str(mt.handle.base_url).rstrip("/") == str(legacy.base_url).rstrip("/")
+    assert mt.provider == "openai"
+    assert mt.model_name == "gpt-4.1"
+    assert mt.handle is not None
 
 
 # ── resolver ──────────────────────────────────────────────────────────────────
@@ -225,45 +225,24 @@ def test_resolver_falls_back_to_managed_when_oss_profile_absent():
     assert len(chain) >= 1
 
 
-# ── default flag posture (ENABLED at the P3 enable) + env-overridable ─────────
+# ── self-check (resolvability, non-fatal) ─────────────────────────────────────
 
-def test_llm_core_flag_defaults_on(monkeypatch):
-    """As of the enable, LLM_CORE_ENABLED defaults ON but stays env-overridable."""
-    monkeypatch.delenv("LLM_CORE_ENABLED", raising=False)
-    from app.config import Settings
-    assert Settings().llm_core_enabled is True
-    monkeypatch.setenv("LLM_CORE_ENABLED", "false")
-    assert Settings().llm_core_enabled is False   # any flag can still revert to legacy
-
-
-def test_self_check_enforces_identity_when_flag_on(monkeypatch):
-    """With the flag on, a resolve-vs-legacy mismatch must raise AssertionError."""
+def test_self_check_is_non_fatal_on_unresolvable_step(monkeypatch):
+    """The P4 self-check logs+warns on a step that fails to resolve; it must NOT
+    raise (a materialize edge case must never block startup)."""
     runtime.configure(run_self_check=False)
-    monkeypatch.setattr("app.config.settings.llm_core_enabled", True, raising=False)
 
-    real_primary_tier = resolver.primary_tier
+    def _boom(step, variant="legacy"):
+        raise RuntimeError("cannot build handle in this env")
 
-    def _wrong(step, variant="legacy"):
-        mt = real_primary_tier(step, variant)
-        if step is Step.AGENT:
-            return MaterializedTier(
-                kind=mt.kind, handle=mt.handle, model_name="not-the-legacy-model",
-                provider=mt.provider, endpoint=mt.endpoint, timeout=mt.timeout,
-            )
-        return mt
-
-    monkeypatch.setattr(resolver, "primary_tier", _wrong)
-    with pytest.raises(AssertionError):
-        runtime.self_check()
+    monkeypatch.setattr(resolver, "primary_tier", _boom)
+    # No exception — self_check swallows resolve failures into a warning log.
+    runtime.self_check()
 
 
-def test_configure_boots_clean_for_default_env():
-    """Full configure() — now with the flags defaulting ON — boots clean for the
-    default env (openai pretranslation, OSS unconfigured): the RAW_OPENAI provider
-    validation passes (openai is legal) and the resolve==legacy self-check passes
-    (or is skipped-with-a-log if a legacy module can't import under the pydantic-ai
-    mismatch). No raise."""
-    cfg = runtime.configure()  # run_self_check defaults True; enforce == llm_core_enabled
+def test_configure_runs_self_check_without_raising():
+    """Startup config load + self-check must be robust and return a valid config."""
+    cfg = runtime.configure()  # run_self_check defaults True
     assert cfg is not None and len(cfg.profiles) >= 1
 
 

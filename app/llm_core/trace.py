@@ -117,13 +117,13 @@ _CTX: contextvars.ContextVar[Optional[PipelineTrace]] = contextvars.ContextVar(
 
 
 def snapshot_flags() -> dict:
-    """The five guard flags that gate the pipeline — recorded so a turn's trace
-    shows which machinery was even eligible to fire."""
+    """The operational trigger flags that gate the pipeline — recorded so a turn's
+    trace shows which machinery was even eligible to fire. The llm_core/profiles
+    kill-switches were removed in P4 (the unified pipeline is now the only path),
+    leaving only the health-breaker/poller and concurrency-gauge triggers."""
     from app.config import settings
 
     return {
-        "llm_core_enabled": bool(getattr(settings, "llm_core_enabled", False)),
-        "profiles_enabled": bool(getattr(settings, "profiles_enabled", False)),
         "health_breaker_enabled": bool(getattr(settings, "health_breaker_enabled", False)),
         "health_poller_enabled": bool(getattr(settings, "health_poller_enabled", False)),
         "concurrency_gauge_enabled": bool(getattr(settings, "concurrency_gauge_enabled", False)),

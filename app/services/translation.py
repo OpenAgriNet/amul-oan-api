@@ -419,10 +419,9 @@ def _post_normalize_gu_translation(
     return out.strip() if strip_outer else out
 
 
+# Only the 27b-base TranslateGemma is deployed — the 4b/12b/27b maps were dead
+# (every translation resolves to 27b-base via _resolve_model). Removed at P4.
 TRANSLATION_ENDPOINTS = {
-    "4b": os.getenv("TRANSLATEGEMMA_4B_ENDPOINT", "http://10.128.170.2:8081/v1"),
-    "12b": os.getenv("TRANSLATEGEMMA_12B_ENDPOINT", "http://10.128.170.2:8082/v1"),
-    "27b": os.getenv("TRANSLATEGEMMA_27B_ENDPOINT", "http://localhost:8085/v1"),
     "27b-base": os.getenv("TRANSLATEGEMMA_27B_BASE_ENDPOINT", "http://localhost:18002/v1"),
 }
 
@@ -434,12 +433,7 @@ TRANSLATION_ENDPOINTS_27B_BASE: list[str] = (
     else [TRANSLATION_ENDPOINTS["27b-base"]]
 )
 
-DEFAULT_TRANSLATION_MODEL = os.getenv("DEFAULT_TRANSLATION_MODEL", "27b-base")
-
 TRANSLATION_MODEL_IDS = {
-    "4b": os.getenv("TRANSLATEGEMMA_4B_MODEL", "translategemma-4b"),
-    "12b": os.getenv("TRANSLATEGEMMA_12B_MODEL", "translategemma-12b"),
-    "27b": os.getenv("TRANSLATEGEMMA_27B_MODEL", "marathi-translategemma-27b-2250"),
     "27b-base": os.getenv("TRANSLATEGEMMA_27B_BASE_MODEL", "translategemma-27b-base"),
 }
 
@@ -828,10 +822,6 @@ async def translate_to_english_pretranslation(
         observation.update(output=translated_text)
         return translated_text
 
-
-# Backward-compatible alias
-translate_to_english_with_gemma4 = translate_to_english_pretranslation
-translate_to_english_with_haiku = translate_to_english_pretranslation
 
 
 async def translate_text_stream_fast(

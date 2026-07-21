@@ -72,12 +72,8 @@ from app.services.voice_trace import VoiceTrace, create_voice_trace
 # NOTE: Removing telemetry for now.
 # from app.tasks.telemetry import send_telemetry
 from agents.deps import FarmerAccount, FarmerContext
-from agents.models import (
-    LLM_MODEL_NAME,
-    OSS_LLM_MODEL_NAME,
-    get_model_for_variant,
-    provider_for_variant,
-)
+from app.llm_core import resolver as _llm_resolver
+from app.llm_core.config_model import Step as _LlmStep
 from agents.models.farmer import FarmerDataEnvelope, FarmerRecord
 try:  # Langfuse is optional at import time
     from langfuse import get_client as _get_langfuse_client
@@ -990,9 +986,14 @@ async def stream_voice_message(
     # gemma pretranslation). 'legacy' keeps current prod behaviour byte-for-byte;
     # with OSS_PIPELINE_PCT=0 (or OSS endpoint unset) every session is 'legacy'.
     is_oss = pipeline_variant == "oss"
-    request_model = get_model_for_variant(pipeline_variant)
-    request_provider = provider_for_variant(pipeline_variant)
-    request_model_name = OSS_LLM_MODEL_NAME if is_oss else LLM_MODEL_NAME
+    # Model selection resolved by the unified pipeline (the only path); identity
+    # with the removed get_model_for_variant/provider_for_variant for the current
+    # env. (Voice's streaming / moderation / pre-translation twins remain on their
+    # own code paths — folded in from the voice repo, out of scope for chat P4.)
+    _agent_tier = _llm_resolver.primary_tier(_LlmStep.AGENT, pipeline_variant)
+    request_model = _agent_tier.handle
+    request_provider = _agent_tier.provider
+    request_model_name = _agent_tier.model_name
     last_owner_refresh_at = 0.0
     last_emitted_sig_char: str | None = None
     trace = trace or create_voice_trace(

@@ -241,10 +241,10 @@ def test_module_healthy_poll_noop_when_poller_disabled(monkeypatch):
 
 def test_endpoint_of_skips_managed_and_none():
     assert health._endpoint_of(_managed_tier()) is None    # openai tier -> endpoint None
-    from app.services.fallback import Attempt
-    managed_attempt = Attempt(kind="managed", model=object(), model_name="gpt", provider="openai",
-                              endpoint="managed", timeout=None)
-    assert health._endpoint_of(managed_attempt) is None    # "managed" sentinel -> not tracked
+    from app.llm_core.factory import MaterializedTier
+    managed_mt = MaterializedTier(kind="managed", handle=object(), model_name="gpt",
+                                  provider="openai", endpoint="managed", timeout=None)
+    assert health._endpoint_of(managed_mt) is None         # "managed" sentinel -> not tracked
 
 
 # ── poller helpers (zero network) ─────────────────────────────────────────────
@@ -340,49 +340,58 @@ def test_start_health_poller_noop_when_disabled(monkeypatch):
 
 # ── composition with the fallback walkers ─────────────────────────────────────
 
-def test_fallback_resolve_chain_prunes_legacy_path_when_breaker_on(monkeypatch):
-    """HEALTH_BREAKER_ENABLED alone (PROFILES off) still prunes the legacy
-    attempt_chain, so the OSS timeout tax is skipped during an outage."""
-    from app.services import fallback as fb
+def _oss_moderation_pipeline():
+    """A 2-profile config whose oss profile's MODERATION step is [oss, managed],
+    with the oss endpoint at ``http://oss:8020/v1`` (so it can be tripped)."""
+    from app.llm_core.config_model import (
+        NamedProfile, PipelineConfig, StepConfig, Tier,
+    )
+    oss = Tier(provider=Provider.VLLM, model="gemma", endpoint="http://oss:8020/v1",
+               api_key_env="OSS_INFERENCE_API_KEY", timeout_ms=5000)
+    managed = Tier(provider=Provider.OPENAI, model="gpt-4.1",
+                   api_key_env="OPENAI_API_KEY", timeout_ms=20000)
+    return PipelineConfig(profiles=[
+        NamedProfile(name="oss", weight=100,
+                     steps={Step.MODERATION: StepConfig(tiers=[oss, managed])}),
+        NamedProfile(name="managed", weight=0,
+                     steps={Step.MODERATION: StepConfig(tiers=[managed])}),
+    ])
 
+
+def test_fallback_resolve_chain_prunes_when_breaker_on(monkeypatch):
+    """HEALTH_BREAKER_ENABLED prunes the config-driven chain, so the OSS timeout
+    tax is skipped during an outage (the whole win of the pre-flight filter)."""
+    from app.services import fallback as fb
+    from app.llm_core import runtime
+
+    monkeypatch.setattr(runtime, "PIPELINE", _oss_moderation_pipeline())
     monkeypatch.setattr(fb.settings, "fallback_enabled", True)
-    monkeypatch.setattr(fb.settings, "profiles_enabled", False)
-    monkeypatch.setattr(fb.settings, "llm_core_enabled", False)
     monkeypatch.setattr(fb.settings, "health_breaker_enabled", True)
     monkeypatch.setattr(fb.settings, "health_poller_enabled", False)
-    monkeypatch.setattr(fb, "oss_model_available", lambda: True)
-    monkeypatch.setattr(fb, "OSS_LLM_MODEL", object())
-    monkeypatch.setattr(fb, "OSS_LLM_MODEL_NAME", "gemma-test")
-    monkeypatch.setattr(fb, "OSS_INFERENCE_ENDPOINT_URL", "http://oss:8020/v1")
 
     health.reset(_cfg(n=1, cooldown=1e12))
     health._registry.record_failure("http://oss:8020/v1")            # OSS endpoint down
 
-    chain = asyncio.run(fb._resolve_chain(pipeline="moderation", session_id="s", variant="oss"))
-    # legacy chain is [oss, managed]; oss endpoint is open -> pruned to [managed].
-    assert [a.kind for a in chain] == ["managed"]
+    # session_id="" -> deterministic profile (no Redis); oss weight 100 -> [oss, managed]
+    chain = asyncio.run(fb._resolve_chain(pipeline="moderation", session_id="", variant="oss"))
+    assert [a.kind for a in chain] == ["managed"]                    # oss pruned
     health.reset()
 
 
 def test_fallback_resolve_chain_untouched_when_health_off(monkeypatch):
-    """Flags off -> the legacy chain is byte-identical to attempt_chain even with a
-    tripped endpoint in the registry (the filter is inert)."""
+    """Flags off -> the config-driven chain is intact even with a tripped endpoint
+    in the registry (the filter is inert)."""
     from app.services import fallback as fb
+    from app.llm_core import runtime
 
+    monkeypatch.setattr(runtime, "PIPELINE", _oss_moderation_pipeline())
     monkeypatch.setattr(fb.settings, "fallback_enabled", True)
-    monkeypatch.setattr(fb.settings, "profiles_enabled", False)
-    monkeypatch.setattr(fb.settings, "llm_core_enabled", False)
     monkeypatch.setattr(fb.settings, "health_breaker_enabled", False)
     monkeypatch.setattr(fb.settings, "health_poller_enabled", False)
-    monkeypatch.setattr(fb, "oss_model_available", lambda: True)
-    monkeypatch.setattr(fb, "OSS_LLM_MODEL", object())
-    monkeypatch.setattr(fb, "OSS_LLM_MODEL_NAME", "gemma-test")
-    monkeypatch.setattr(fb, "OSS_INFERENCE_ENDPOINT_URL", "http://oss:8020/v1")
 
     health.reset(_cfg(n=1))
     health._registry.record_failure("http://oss:8020/v1", now=0.0)
 
-    chain = asyncio.run(fb._resolve_chain(pipeline="moderation", session_id="s", variant="oss"))
-    legacy = fb.attempt_chain("oss", "moderation")
-    assert [a.kind for a in chain] == [a.kind for a in legacy] == ["oss", "managed"]
+    chain = asyncio.run(fb._resolve_chain(pipeline="moderation", session_id="", variant="oss"))
+    assert [a.kind for a in chain] == ["oss", "managed"]
     health.reset()
