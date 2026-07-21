@@ -306,7 +306,34 @@ def materialize(step_client_kind: StepClientKind, tiers: list[Tier]) -> list[Mat
     and an AsyncOpenAI client for the overflow tier from ONE call."""
     out: list[MaterializedTier] = []
     for tier in tiers:
-        handle = build_handle(tier, _tier_client_kind(step_client_kind, tier))
+        tier_kind = _tier_client_kind(step_client_kind, tier)
+        try:
+            handle = build_handle(tier, tier_kind)
+        except Exception as exc:
+            # POST_TRANSLATION overflow tiers are best-effort. The step kind is
+            # TRANSLATEGEMMA (unique to POST_TRANSLATION), so a tier here that is
+            # NOT the TranslateGemma primary is the cross-provider LLM overflow.
+            # Its build can legitimately fail in a healthy TG deployment — missing
+            # OPENAI_API_KEY, incomplete Azure env, unset INFERENCE_ENDPOINT_URL,
+            # or an anthropic/gemini LLM_PROVIDER. Dropping it (with a loud warning)
+            # keeps the byte-identical TranslateGemma primary independently
+            # runnable; failing the whole chain would REGRESS the old pure-TG path
+            # to English/trouble-message. ``out`` is non-empty here because the TG
+            # primary is first and only needs its endpoint, so we never drop to an
+            # empty chain. Any other step keeps its original fail-fast contract.
+            is_post_translation_overflow = (
+                step_client_kind is StepClientKind.TRANSLATEGEMMA
+                and tier.provider is not Provider.TRANSLATEGEMMA
+                and out
+            )
+            if is_post_translation_overflow:
+                logger.warning(
+                    "post-translation overflow tier %s/%s is unbuildable, dropping "
+                    "it and keeping the TranslateGemma primary: %s",
+                    tier.provider.value, tier.model, exc,
+                )
+                continue
+            raise
         # kind label: a vLLM (self-hosted) tier is "oss"; every other provider is
         # "managed". The run/stream closures branch only on ``kind == "oss"`` and
         # moderation maps non-"oss" -> managed OpenAI, so a config-driven

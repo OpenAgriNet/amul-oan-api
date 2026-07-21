@@ -21,6 +21,7 @@ so the core stays import-clean.
 
 from __future__ import annotations
 
+import logging
 import os
 
 from app.llm_core.config_model import (
@@ -34,6 +35,9 @@ from app.llm_core.config_model import (
     Tier,
     Triggers,
 )
+
+
+logger = logging.getLogger(__name__)
 
 
 def _env(name: str, default: str | None = None) -> str | None:
@@ -127,6 +131,17 @@ def _oss_pretranslation_tier(timeout_ms: int) -> Tier:
 # en→target translation via chat.completions with the SAME glossary/rules prompt;
 # it serves only when TranslateGemma fails before the first streamed token.
 def _post_translation_tiers() -> list[Tier]:
+    # TranslateGemma is fronted by an nginx LB, so post-translation reads the
+    # SINGULAR endpoint. The old client-side plural list (+random.choice) is gone;
+    # warn loudly if a stale env still sets only the plural var, which would
+    # otherwise be silently ignored and drop TG to the localhost default.
+    if _env("TRANSLATEGEMMA_27B_BASE_ENDPOINTS") and not _env("TRANSLATEGEMMA_27B_BASE_ENDPOINT"):
+        logger.warning(
+            "TRANSLATEGEMMA_27B_BASE_ENDPOINTS (plural) is set but the singular "
+            "TRANSLATEGEMMA_27B_BASE_ENDPOINT is not — the plural var is DEPRECATED "
+            "and ignored; TranslateGemma will fall back to the localhost default. "
+            "Set TRANSLATEGEMMA_27B_BASE_ENDPOINT to the nginx LB URL."
+        )
     endpoint = _env("TRANSLATEGEMMA_27B_BASE_ENDPOINT", "http://localhost:18002/v1") or "http://localhost:18002/v1"
     model_id = _env("TRANSLATEGEMMA_27B_BASE_MODEL", "translategemma-27b-base") or "translategemma-27b-base"
     tg = Tier(
