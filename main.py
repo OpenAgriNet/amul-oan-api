@@ -19,7 +19,9 @@ load_dotenv()
 import app.observability  # noqa: F401, E402
 
 # Import all routers
-from app.routers import chat, transcribe, suggestions, tts, health, auth, user, telemetry, voice
+from app.routers import chat, transcribe, suggestions, tts, health, auth, user, telemetry
+# NOTE: `voice` is intentionally NOT imported here — importing it constructs the
+# voice Agents at module load. It is imported lazily below, only when ENABLE_VOICE.
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -105,7 +107,11 @@ app.include_router(transcribe.router, prefix=settings.api_prefix)
 app.include_router(suggestions.router, prefix=settings.api_prefix)
 app.include_router(tts.router, prefix=settings.api_prefix)
 app.include_router(user.router, prefix=settings.api_prefix)
-app.include_router(voice.router, prefix=settings.api_prefix)
+# Voice pipeline is opt-in. Gated so a chat-only deployment never imports the voice
+# module (no Agent construction) nor registers /voice unless ENABLE_VOICE is set.
+if settings.enable_voice:
+    from app.routers import voice
+    app.include_router(voice.router, prefix=settings.api_prefix)
 app.include_router(health.router, prefix=settings.api_prefix)
 # Keep telemetry path compatible with existing frontend calls:
 # /observability-service/action/data/v3/telemetry
