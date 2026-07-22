@@ -4,9 +4,37 @@ from enum import Enum
 from pydantic import BaseModel, Field, field_validator
 from rapidfuzz import fuzz
 import re
+from helpers.utils import get_logger
 
-# Load term pairs from JSON file with UTF-8 encoding
-term_pairs = json.load(open('assets/glossary_terms.json', 'r', encoding='utf-8'))
+logger = get_logger(__name__)
+
+def _load_glossary_file(filename: str, *, warn_on_fail: bool = False) -> list[dict]:
+    candidates = [
+        Path.cwd() / "assets" / filename,
+        Path(__file__).resolve().parents[2] / "assets" / filename,
+    ]
+    for path in candidates:
+        if path.exists():
+            try:
+                with path.open("r", encoding="utf-8") as f:
+                    loaded = json.load(f)
+                    return loaded if isinstance(loaded, list) else []
+            except Exception as e:
+                if warn_on_fail:
+                    logger.warning("Failed loading glossary file %s at %s: %s", filename, path, e)
+                return []
+    if warn_on_fail:
+        logger.warning(
+            "Glossary file %s not found in expected locations: %s",
+            filename,
+            ", ".join(str(p) for p in candidates),
+        )
+    return []
+
+
+# Load term pairs from JSON files with UTF-8 encoding.
+term_pairs = _load_glossary_file("glossary_terms.json")
+hindi_term_pairs = _load_glossary_file("glossary_terms_hindi_openrouter.json", warn_on_fail=True)
 
 
 def _load_gu_term_policy() -> dict:
@@ -44,11 +72,13 @@ INPUT_ALIASES_BY_EN = {
 class Language(str, Enum):
     ENGLISH = "en"
     GUJARATI = "gu"
+    HINDI = "hi"
     TRANSLITERATION = "transliteration"
 
 class TermPair(BaseModel):
     en: str = Field(description="English term")
     gu: str = Field(description="Gujarati term")
+    hi: str = Field(default="", description="Hindi term")
     transliteration: str = Field(description="Transliteration of Gujarati term to English")
     mr: str = Field(default="", description="Marathi term (for backward compatibility)")
 
@@ -66,6 +96,20 @@ for pair in term_pairs:
     if en_key in PREFERRED_GU_BY_EN:
         pair["gu"] = PREFERRED_GU_BY_EN[en_key]
     TERM_PAIRS.append(TermPair(**pair))
+
+HI_TERM_PAIRS = []
+for pair in hindi_term_pairs:
+    try:
+        parsed = TermPair(
+            en=str(pair.get("en", "")),
+            gu="",
+            hi=str(pair.get("hi", "")),
+            transliteration=str(pair.get("transliteration", "")),
+        )
+        if parsed.en.strip() and parsed.hi.strip():
+            HI_TERM_PAIRS.append(parsed)
+    except Exception:
+        continue
 
 
 async def search_terms(
@@ -103,6 +147,11 @@ async def search_terms(
         if language in [None, Language.GUJARATI]:
             gu_score = fuzz.ratio(term, term_pair.gu.lower()) / 100.0
             max_score = max(max_score, gu_score)
+
+        # Check Hindi term if no language specified or language is Hindi
+        if language in [None, Language.HINDI]:
+            hi_score = fuzz.ratio(term, term_pair.hi.lower()) / 100.0
+            max_score = max(max_score, hi_score)
             
         # Check transliteration if no language specified or language is transliteration
         if language in [None, Language.TRANSLITERATION]:
@@ -128,6 +177,8 @@ from rapidfuzz import process
 # Build English index from glossary
 EN_INDEX = {tp.en.lower(): tp for tp in TERM_PAIRS}
 EN_TERMS = list(EN_INDEX.keys())
+HI_EN_INDEX = {tp.en.lower(): tp for tp in HI_TERM_PAIRS}
+HI_EN_TERMS = list(HI_EN_INDEX.keys())
 
 
 def _normalize_lookup_key(text: str) -> str:
@@ -191,6 +242,15 @@ def _has_meaningful_token_overlap(left: str, right: str) -> bool:
         return False
     return bool(left_tokens & right_tokens)
 
+
+def _normalize_target_lang(target_lang: str) -> str:
+    normalized = str(target_lang or "").strip().lower()
+    if normalized in {"gu", "gujarati"}:
+        return "gu"
+    if normalized in {"hi", "hindi"}:
+        return "hi"
+    return "gu"
+
 def build_glossary_pattern(terms):
     """
     Build a regex alternation pattern for glossary terms.
@@ -245,24 +305,37 @@ def get_mini_glossary_for_text(
     text: str,
     threshold: float = 0.95,
     max_terms: int = 25,
+    target_lang: str = "gu",
 ) -> str:
     """
     Find glossary terms that appear in `text` (exact or fuzzy match with high threshold)
     and return a mini-glossary string for injection into a translation prompt.
 
     Uses word and multi-word phrase spans (1–4 words) from the text, fuzzy-matched
-    against EN_TERMS, so Gemma can use consistent Gujarati terminology.
+    against the target glossary index, so Gemma can use consistent terminology.
 
     Args:
         text: The sentence or batch to be translated (English).
         threshold: Minimum similarity 0–1 (default 0.95). Converted to 0–100 for rapidfuzz.
-        max_terms: Maximum number of (en -> gu) pairs to include (default 25).
+        max_terms: Maximum number of (en -> target) pairs to include (default 25).
+        target_lang: Target language for glossary values ("gu"/"gujarati" or "hi"/"hindi").
 
     Returns:
-        Formatted string like "Mastitis -> આઉનો/બાવલાનો સોજો\\nMilk Production -> ..."
+        Formatted string like "Mastitis -> <target term>\\nMilk Production -> ..."
         or empty string if no matches.
     """
     if not text or not text.strip():
+        return ""
+    normalized_target = _normalize_target_lang(target_lang)
+    if normalized_target == "hi":
+        target_en_index = HI_EN_INDEX
+        target_en_terms = HI_EN_TERMS
+        target_value_field = "hi"
+    else:
+        target_en_index = EN_INDEX
+        target_en_terms = EN_TERMS
+        target_value_field = "gu"
+    if not target_en_terms:
         return ""
     score_cutoff = int(threshold * 100) if 0 < threshold <= 1 else 95
     # Normalize phrase candidates so punctuation doesn't reduce fuzzy matches.
@@ -270,7 +343,7 @@ def get_mini_glossary_for_text(
     if not words:
         return ""
     # Dedupe by canonical English term (lowercase key)
-    term_to_gu: dict[str, tuple[str, str]] = {}  # en_lower -> (en_display, gu)
+    term_to_target: dict[str, tuple[str, str]] = {}  # en_lower -> (en_display, target_term)
     seen_phrases: set[str] = set()
 
     # Longer phrases first so we match "Milk Production" before "Milk"
@@ -283,7 +356,7 @@ def get_mini_glossary_for_text(
             normalized_phrase = _normalize_lookup_key(phrase)
             canonical_en = ALIAS_TO_CANONICAL_EN.get(normalized_phrase)
 
-            if not canonical_en:
+            if not canonical_en or canonical_en not in target_en_index:
                 alias_match = None
                 if n >= 2 and len(normalized_phrase) >= 6:
                     alias_match = process.extractOne(
@@ -294,21 +367,27 @@ def get_mini_glossary_for_text(
                     )
                 if alias_match and _has_meaningful_token_overlap(normalized_phrase, alias_match[0]):
                     canonical_en = ALIAS_TO_CANONICAL_EN.get(alias_match[0])
+                if canonical_en and canonical_en not in target_en_index:
+                    canonical_en = None
 
             if canonical_en:
-                if canonical_en in term_to_gu:
+                if canonical_en in term_to_target:
                     continue
-                term_to_gu[canonical_en] = CANONICAL_TERMS[canonical_en]
+                target_pair = target_en_index[canonical_en]
+                target_value = getattr(target_pair, target_value_field, "").strip()
+                if not target_value:
+                    continue
+                term_to_target[canonical_en] = (target_pair.en, target_value)
             else:
                 if n == 1:
-                    exact_term = EN_INDEX.get(normalized_phrase)
+                    exact_term = target_en_index.get(normalized_phrase)
                     if not exact_term:
                         continue
                     match = (exact_term.en.lower(), 100, None)
                 else:
                     match = process.extractOne(
                         normalized_phrase,
-                        EN_TERMS,
+                        target_en_terms,
                         score_cutoff=score_cutoff,
                         scorer=fuzz.ratio,
                     )
@@ -317,19 +396,22 @@ def get_mini_glossary_for_text(
                 if not match:
                     continue
                 en_term, score, _ = match
-                if en_term in term_to_gu:
+                if en_term in term_to_target:
                     continue
-                tp = EN_INDEX[en_term]
+                tp = target_en_index[en_term]
+                target_value = getattr(tp, target_value_field, "").strip()
+                if not target_value:
+                    continue
                 # Use original casing from glossary for display
-                term_to_gu[en_term] = (tp.en, tp.gu)
-            if len(term_to_gu) >= max_terms:
+                term_to_target[en_term] = (tp.en, target_value)
+            if len(term_to_target) >= max_terms:
                 break
-        if len(term_to_gu) >= max_terms:
+        if len(term_to_target) >= max_terms:
             break
 
-    if not term_to_gu:
+    if not term_to_target:
         return ""
-    lines = [f"{en} -> {gu}" for en, gu in term_to_gu.values()]
+    lines = [f"{en} -> {target_value}" for en, target_value in term_to_target.values()]
     return "\n".join(lines)
 
 
