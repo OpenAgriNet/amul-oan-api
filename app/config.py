@@ -141,6 +141,11 @@ class Settings(BaseSettings):
     # observability reconciliation (bucket C).
     nudge_api_url: str = os.getenv("NUDGE_API_URL", "https://vistaar.getraya.app/api/nudge-user")
     nudge_timeout_seconds: float = float(os.getenv("NUDGE_TIMEOUT_SECONDS", "3.0"))
+    # Master switch for the voice pipeline. When false, main.py never imports or
+    # mounts the voice router — no voice Agent is constructed, no /voice route is
+    # registered — so a chat-only deployment carries zero voice cost. Set false on
+    # the chat-prod service (voice is served by the separate voice-oan-api).
+    enable_voice: bool = _get_bool_env("ENABLE_VOICE", default=True)
     enable_voice_nudges: bool = _get_bool_env("ENABLE_VOICE_NUDGES", default=True)
     stt_signal_retry_ceiling: int = int(os.getenv("STT_SIGNAL_RETRY_CEILING", "3"))
     openai_pretranslation_timeout_seconds: float = float(os.getenv("OPENAI_PRETRANSLATION_TIMEOUT_SECONDS", "10.0"))
