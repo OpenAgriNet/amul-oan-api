@@ -71,14 +71,34 @@ class FarmerSummary(BaseModel):
 
 
 class FarmerDataEnvelope(BaseModel):
-    """Consistent wrapper used by both chat and voice backends."""
+    """Consistent wrapper used by both chat and voice backends.
+
+    Bucket B decision: FarmerModel (snake) stays the domain model; this envelope's
+    FarmerRecord stays the camelCase cache/transport shape. from_records keeps
+    chat's snake→camel bridge (model_dump() on non-dict records) so a FarmerModel
+    maps in cleanly. The stale/refreshAfter/lookupStatus/aiTechnicians fields back
+    the farmer SWR cache (bucket A Layer 2); they default to safe no-op values so
+    existing chat callers and the /user response are unaffected (additive only).
+    """
     farmers: List[FarmerRecord] = []
+    aiTechnicians: List[dict] = []
     fetchedAt: Optional[str] = None
     source: Optional[str] = None  # "cache" | "api"
+    stale: bool = False
+    staleReason: Optional[str] = None
+    refreshAfter: Optional[str] = None
+    lookupStatus: Optional[str] = None  # "found" | "not_found"
 
     @classmethod
-    def from_records(cls, records: list, source: str = "api") -> "FarmerDataEnvelope":
-        """Create envelope from raw record dicts or Pydantic models."""
+    def from_records(
+        cls,
+        records: list,
+        source: str = "api",
+        lookup_status: str = "found",
+    ) -> "FarmerDataEnvelope":
+        """Create envelope from raw record dicts or Pydantic models (FarmerModel
+        or FarmerRecord). Non-dicts are model_dump()'d so FarmerModel's snake_case
+        is mapped to camelCase via FarmerRecord.model_validate."""
         farmers = [
             FarmerRecord.model_validate(
                 r if isinstance(r, dict) else r.model_dump()
@@ -89,6 +109,18 @@ class FarmerDataEnvelope(BaseModel):
             farmers=farmers,
             fetchedAt=datetime.now(timezone.utc).isoformat(),
             source=source,
+            lookupStatus=lookup_status,
+        )
+
+    @classmethod
+    def not_found(cls, source: str = "api") -> "FarmerDataEnvelope":
+        """Empty envelope tagged not_found (used by the SWR cache for confirmed
+        empty lookups)."""
+        return cls(
+            farmers=[],
+            fetchedAt=datetime.now(timezone.utc).isoformat(),
+            source=source,
+            lookupStatus="not_found",
         )
 
     def to_summary(self) -> FarmerSummary:

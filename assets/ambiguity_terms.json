@@ -169,7 +169,10 @@
       "જર",
       "જર પડવી",
       "retained placenta",
-      "afterbirth retention"
+      "afterbirth retention",
+      "માટી ન ખસવી",
+      "મેલી ન પડવી",
+      "mati na khasvi"
     ],
     "type": "hardcode",
     "rule": "મેલી / જર refers to retained placenta (afterbirth retention) — the placenta failing to expel within 8-12 hours after calving, risking uterine infection (metritis). When translating to English, always render as 'retained placenta' or 'afterbirth retention'. NEVER translate as Coccidiosis, parasitic infection, or any unrelated condition. Treat as a postpartum reproductive issue requiring veterinary intervention."
@@ -237,6 +240,25 @@
     ],
     "type": "hardcode",
     "rule": "માટી ખસવી / માટી ખસી જવી is the local Gujarati term for **uterine or rectal prolapse** (the uterus or rectum slipping out). It is NOT a placenta issue (that is મેલી / જર) and NOT just 'slipping' in a generic sense. When translating to English, render as 'uterine prolapse' or 'rectal prolapse' depending on context; if unclear, just 'prolapse'. Treat as a surgical / urgent veterinary emergency. Dietary questions about prolapse-prone animals are about prolapse, NOT about placenta retention."
+  },
+  {
+    "gu_terms": [
+      "ફાટેલા ખુરવાળા પશુઓ",
+      "ફાટેલા ખુર વાળા પશુઓ",
+      "fatela khurvala pashuo",
+      "cloven-hoofed animals"
+    ],
+    "type": "hardcode",
+    "rule": "ફાટેલા ખુરવાળા પશુઓ means **cloven-hoofed animals**: animals with split hooves such as cattle, buffalo, sheep, or goats. It is NOT an injury phrase about cracked or broken hooves. Translate as 'cloven-hoofed animals' or 'split-hoofed animals'."
+  },
+  {
+    "gu_terms": [
+      "પેશાબ પર સોજો",
+      "peshab par sojo",
+      "swollen vulva"
+    ],
+    "type": "hardcode",
+    "rule": "પેશાબ પર સોજો is a local Gujarati livestock phrase for **swollen vulva**. It is NOT a generic swelling on urine, urination, or the urinary area. Translate as 'swollen vulva' unless broader context clearly says otherwise."
   },
   {
     "gu_terms": [
@@ -421,5 +443,75 @@
     ],
     "type": "hardcode",
     "rule": "'રેલી' (and inflected forms 'રેલીને', 'રેલીની') is a colloquial term for a **heifer** — a young female cow or buffalo that has not yet calved. It is NOT a proper name. Translate as 'heifer'."
+  },
+  {
+    "gu_terms": [
+      "ફેટ",
+      "fat",
+      "fet",
+      "ફેટ ઓછ",
+      "fat ochi"
+    ],
+    "type": "hardcode",
+    "rule": "'ફેટ' in dairy context means milk fat content or percentage, NOT પેટ (stomach). When a farmer says 'ફેટ ઓછી' or 'fat is low', they mean their milk fat percentage is below expected — answer about milk fat improvement (feed quality, bypass fat, mineral mixture), NOT stomach or digestive issues."
+  },
+  {
+    "gu_terms": [
+      "સમુદ્રી દાણ",
+      "સમુદ્રી",
+      "samudri",
+      "samudri dan"
+    ],
+    "type": "hardcode",
+    "rule": "If ASR or translation yields 'સમુદ્રી' / samudri in a feed question about cows or buffaloes, do not drift into marine feed or seaweed advice by default. If the intended feed term is uncertain, ask the caller to repeat or clarify the word instead of assuming a brand or product."
+  },
+  {
+    "gu_terms": [
+      "વાડો",
+      "vado",
+      "vaado"
+    ],
+    "type": "hardcode",
+    "rule": "'વાડો' means cattle shed or animal enclosure, NOT પાડો (male buffalo calf). When a farmer asks about 'વાડો', they are asking about housing, shelter, or shed management — NOT about calves."
+  },
+  {
+    "gu_terms": [
+      "ભેંસ",
+      "ભેંસને",
+      "ભેંસો",
+      "ભેસ",
+      "ભેસને",
+      "ભેંશ",
+      "ભેંશને",
+      "ભૈંસ",
+      "ભૈંસને",
+      "ભૈસ",
+      "ભૈસને",
+      "ભેન્સ",
+      "ભેન્સને",
+      "ભેસ્ટ",
+      "ભેસ્ટને",
+      "ભંચ",
+      "ભંચને",
+      "ભેંચ",
+      "ભેંચને",
+      "ભેન્ચ",
+      "ભેન્ચને"
+    ],
+    "type": "hardcode",
+    "rule": "'ભેંસ' and ASR/spelling variants such as 'ભેસ્ટ', 'ભંચ', and 'ભેંચને' mean buffalo in Gujarati dairy context, NOT sheep or goat. Translate these as Buffalo. The suffix '-ને' is only the Gujarati object marker, not part of the animal name."
+  },
+  {
+    "gu_terms": [
+      "ગરમી",
+      "ગરમીમાં",
+      "ગરમીમાં આવવું",
+      "ગરમી નથી આવતી",
+      "heat",
+      "garmi",
+      "not coming in heat"
+    ],
+    "type": "hardcode",
+    "rule": "CRITICAL DOMAIN DISTINCTION — ગરમી (heat/estrus) and ગાભણ (pregnancy) are COMPLETELY DIFFERENT concepts. ગરમી means the animal is in heat (estrus cycle, ready for mating). ગાભણ means the animal is pregnant (carrying a calf). When a farmer says 'ગરમી નથી આવતી' or 'not coming in heat', they mean the animal is NOT showing estrus signs — do NOT use the word ગાભણ (pregnant) in your response. Say 'ગરમીમાં ન આવવું' NOT 'ગાભણ ન આવવું'. Say 'છેલ્લે ગરમીમાં ક્યારે આવ્યું?' NOT 'છેલ્લે ક્યારે ગાભણ આવ્યું?'. Anestrus (not coming in heat) is about missing estrus cycles. Pregnancy is about carrying offspring. Never confuse these."
   }
 ]

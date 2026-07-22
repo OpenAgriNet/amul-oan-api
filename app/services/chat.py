@@ -7,13 +7,8 @@ import re
 from fastapi import BackgroundTasks
 from agents.agrinet import agrinet_agent
 from agents.moderation import moderation_agent
-from agents.models import (
-    LLM_MODEL_NAME,
-    LLM_PROVIDER,
-    OSS_LLM_MODEL_NAME,
-    get_model_for_variant,
-    provider_for_variant,
-)
+from app.llm_core import resolver as _llm_resolver
+from app.llm_core.config_model import Step as _LlmStep
 from helpers.utils import get_logger
 from app.utils import (
     update_message_history,
@@ -23,10 +18,11 @@ from app.utils import (
 )
 from app.tasks.suggestions import create_suggestions
 from app.config import settings
-from app.services.fallback import execute_with_fallback, stream_with_fallback, with_first_token_deadline
+from app.services.fallback import AGENT_ACTIVITY, execute_with_fallback, stream_with_fallback, with_first_token_deadline
 from app.core.cache import cache
 from agents.deps import FarmerContext
 from agents.farmer_context import get_farmer_context_bundle_by_mobile
+from agents.tools.farmer import normalize_phone_to_mobile
 from app.services.translation import (
     translate_text,
     translate_to_english_pretranslation,
@@ -62,19 +58,21 @@ class SentenceSegmenter:
 sentence_segmenter = SentenceSegmenter()
 
 
-def _chat_history_trim_max_tokens(variant: str = "legacy") -> int:
-    """Keep fewer past turns for smaller-context vLLM backends so system+tools+history+user fit.
+def _chat_history_trim_max_tokens(agent_provider: str, agent_model_name: str) -> int:
+    """Keep fewer past turns for smaller-context vLLM gemma backends so
+    system+tools+history+user fit.
 
-    OSS sessions get the gemma cap regardless of the startup provider, so a
-    canary OSS session on a prod box running anthropic-as-default still respects
-    the gemma context window (tune via CHAT_HISTORY_MAX_TOKENS_VLLM_GEMMA).
+    Driven by the RESOLVED agent tier (provider + model), not a startup singleton:
+    a self-hosted vLLM gemma tier — whether the session's primary is the gemma
+    profile or the startup default is gemma-on-vLLM — gets the tighter gemma cap
+    (tune via CHAT_HISTORY_MAX_TOKENS_VLLM_GEMMA); everything else gets 80k. This
+    reproduces the old ``is_oss_gemma or is_startup_vllm_gemma`` decision now that
+    the tier is resolved by app/llm_core.
     """
     override = os.getenv("CHAT_HISTORY_MAX_TOKENS")
     if override and override.isdigit():
         return int(override)
-    is_oss_gemma = variant == "oss" and "gemma" in (OSS_LLM_MODEL_NAME or "").lower()
-    is_startup_vllm_gemma = LLM_PROVIDER == "vllm" and "gemma" in LLM_MODEL_NAME.lower()
-    if is_oss_gemma or is_startup_vllm_gemma:
+    if (agent_provider or "").lower() == "vllm" and "gemma" in (agent_model_name or "").lower():
         cap = os.getenv("CHAT_HISTORY_MAX_TOKENS_VLLM_GEMMA", "10000")
         return int(cap) if cap.isdigit() else 10_000
     return 80_000
@@ -160,6 +158,9 @@ except ImportError:
     propagate_attributes = None
     get_langfuse_client = None
 
+# Per-turn resolved-pipeline-config tracer (tracing-only; no behaviour change).
+from app.llm_core import trace as _pipeline_trace
+
 
 def _response_max_chars_for_channel(channel: str | None) -> int | None:
     if (channel or "").lower() == "whatsapp":
@@ -182,12 +183,35 @@ async def stream_chat_messages(
     """Async generator for streaming chat messages."""
     # OSS sticky variant => run the dev OSS path (translation pipeline + vLLM
     # agent model). 'legacy' keeps the current prod behaviour byte-for-byte;
-    # with OSS_PIPELINE_PCT=0 every session is 'legacy'.
+    # with the OSS profile at weight 0 every session is 'legacy'.
     is_oss = pipeline_variant == "oss"
     use_translation_pipeline = bool(use_translation_pipeline) or is_oss
-    request_model = get_model_for_variant(pipeline_variant)
-    request_provider = provider_for_variant(pipeline_variant)
-    request_model_name = OSS_LLM_MODEL_NAME if is_oss else LLM_MODEL_NAME
+    # Open the per-turn pipeline-config tracer and hold the EXPLICIT instance.
+    # The ContextVar does NOT survive Starlette's StreamingResponse async-generator
+    # consumption, so we populate the must-have static fields (profile, variant,
+    # flags, per-step PRIMARY tier) directly onto `pt` here and pass `pt` to every
+    # emit site — never relying on a contextvar read at emit time. Deep trigger /
+    # served-tier recording stays best-effort on top (via the contextvar).
+    pt = _pipeline_trace.begin(pipeline_variant)
+    try:
+        from app.llm_core import resolver as _lr, runtime as _lrt
+        from app.llm_core.config_model import Step as _LS
+        _pipeline_trace.populate(
+            pt, _lrt.get_pipeline(), _lr.primary_tier, pipeline_variant,
+            (_LS.PRE_TRANSLATION, _LS.MODERATION, _LS.AGENT, _LS.SUGGESTIONS, _LS.POST_TRANSLATION),
+        )
+    except Exception as _pt_exc:  # pragma: no cover - tracing must never break the turn
+        logger.debug("pipeline_config populate skipped: %s", _pt_exc)
+    # Model selection is resolved by the unified pipeline (the only path): the
+    # agent + moderation handles, the provider, and the display model name all
+    # come from the resolved primary tier for this session's variant. For the
+    # current env this is the same provider/base_url/model the removed
+    # get_model_for_variant returned, generalized to the weighted-profile split.
+    agent_tier = _llm_resolver.primary_tier(_LlmStep.AGENT, pipeline_variant)
+    request_model = agent_tier.handle
+    request_provider = agent_tier.provider
+    request_model_name = agent_tier.model_name
+    moderation_model = _llm_resolver.primary_handle(_LlmStep.MODERATION, pipeline_variant)
     # Langfuse: propagate session_id, metadata, and tags for dashboard filtering (max 200 chars per value)
     session_id_safe = (session_id or "")[:200]
     pipeline_name = "translation" if use_translation_pipeline else "default"
@@ -205,6 +229,13 @@ async def stream_chat_messages(
         "variant": pipeline_variant,
     }
     langfuse_tags = [f"pipeline:{pipeline_name}", f"variant:{pipeline_variant}"]
+    # Serialize the resolved pipeline config into COMPACT flat keys and merge them
+    # into the same langfuse_metadata dict propagate_attributes lands on OTEL span
+    # attributes (a big nested blob is size-capped/dropped; this SDK has no
+    # update_current_trace). Adds `pipeline_profile`, `pipeline_flags`, and one
+    # `pc_<step>` per step (~50 chars each). Full static config is in the
+    # `llm_core.full_config` boot log. Best-effort — never breaks the turn.
+    _pipeline_trace.add_compact_metadata(pt, langfuse_metadata)
     session_ctx = (
         propagate_attributes(
             session_id=session_id_safe,
@@ -307,6 +338,11 @@ async def stream_chat_messages(
         needs_output_translation = use_translation_pipeline and target_lang.lower() in INDIAN_LANGUAGES
 
         if use_translation_pipeline and source_lang.lower() in {"gu", "gujarati"}:
+            # OSS sessions force pre-translation onto the self-hosted vLLM endpoint
+            # (provider="vllm"); legacy keeps the configured PRETRANSLATION_PROVIDER
+            # (None => default). Equivalent to the resolved PRE_TRANSLATION primary
+            # tier: an OSS-endpoint tier for an OSS session, the managed tier
+            # otherwise.
             pretrans_provider = "vllm" if is_oss else None
             logger.info(
                 "request_id=%s translation_pipeline=True variant=%s pretranslating gu->en with %s/%s",
@@ -392,6 +428,10 @@ async def stream_chat_messages(
             # Agent responds in English; response will be translated to target_lang downstream
             processing_lang = "en"
 
+        # Normalized caller phone — the micro-loan tool reads this from deps so it
+        # never has to trust an LLM-supplied number. None for anonymous sessions.
+        loan_mobile = normalize_phone_to_mobile(user_info['phone']) if user_info and user_info.get('phone') else None
+
         deps = FarmerContext(
             query=processing_query,
             session_id=session_id,
@@ -400,6 +440,7 @@ async def stream_chat_messages(
             farmer_unions=farmer_unions,
             use_translation_pipeline=use_translation_pipeline,
             response_max_chars=_response_max_chars_for_channel(channel),
+            mobile=loan_mobile,
         )
 
         message_pairs = "\n\n".join(format_message_pairs(history, 3))
@@ -441,7 +482,7 @@ async def stream_chat_messages(
                         run=lambda a: moderation_agent.run(user_message, model=a.model),
                     )
                 else:
-                    moderation_run = await moderation_agent.run(user_message, model=request_model)
+                    moderation_run = await moderation_agent.run(user_message, model=moderation_model)
                 moderation_data = moderation_run.output
                 logger.info(
                     "request_id=%s moderation_category=%s moderation_action=%s",
@@ -506,7 +547,7 @@ async def stream_chat_messages(
         # loop, not via message_history. Suggestions already runs this way.
         trimmed_history = trim_history(
             history,
-            max_tokens=_chat_history_trim_max_tokens(pipeline_variant),
+            max_tokens=_chat_history_trim_max_tokens(request_provider, request_model_name),
             include_system_prompts=False,
             include_tool_calls=False
         )
@@ -535,129 +576,138 @@ async def stream_chat_messages(
         )
 
         with _agrinet_obs_ctx as agrinet_obs:
-            if settings.fallback_enabled:
-                # Core-chat streaming with OSS -> managed first-token-commit fallback.
-                # _make_agent_text_stream produces the English token stream for one
-                # attempt (anthropic via .iter, else via .run_stream); stream_with_fallback
-                # swaps OSS -> managed only BEFORE the first token, then the existing
-                # translate/raw downstream logic runs unchanged. new_messages is captured
-                # into _stream_holder by whichever attempt completes.
-                _stream_holder: dict = {}
+            # ── ONE agent-streaming path ─────────────────────────────────
+            # Collapsed from the three duplicated blocks (fallback / anthropic
+            # .iter / openai .run_stream) into a single token stream parameterized
+            # by the resolved tier's provider+model, plus a single downstream that
+            # sentence-batches + stream-translates (or passes English through). The
+            # disconnect-safe first-token-commit primitives are reused verbatim.
+            _stream_holder: dict = {}
 
-                async def _raw_agent_text_stream(attempt):
-                    if attempt.provider == 'anthropic':
-                        async with agrinet_agent.iter(
-                            user_prompt=user_message,
-                            message_history=trimmed_history,
-                            deps=deps,
-                            model=attempt.model,
-                        ) as agent_run:
-                            async for node in agent_run:
-                                if type(node).__name__ == 'ModelRequestNode':
-                                    async with node.stream(agent_run.ctx) as request_stream:
-                                        async for event in request_stream:
-                                            event_type = type(event).__name__
-                                            text = None
-                                            if event_type == 'PartStartEvent' and hasattr(event, 'part'):
-                                                if type(event.part).__name__ == 'TextPart' and hasattr(event.part, 'content'):
-                                                    text = event.part.content
-                                            elif event_type == 'PartDeltaEvent' and hasattr(event, 'delta'):
-                                                if type(event.delta).__name__ == 'TextPartDelta':
-                                                    text = event.delta.content_delta
-                                            if text:
-                                                yield text
-                            _stream_holder["new_messages"] = agent_run.result.new_messages()
-                    else:
-                        async with agrinet_agent.run_stream(
-                            user_prompt=user_message,
-                            message_history=trimmed_history,
-                            deps=deps,
-                            model=attempt.model,
-                        ) as response_stream:
-                            async for chunk in response_stream.stream_text(delta=True):
-                                yield chunk
-                            _stream_holder["new_messages"] = response_stream.new_messages()
+            async def _raw_agent_text_stream(provider, model):
+                # (D) COMMIT-ON-FIRST-ACTIVITY. Both providers now iterate the agent via
+                # agent.iter()+node.stream() (anthropic always required it — run_stream()
+                # is unsupported for its tool loop; every other provider joins so the fix
+                # is uniform for the OSS gemma tier where the slow 20s milk-collection
+                # tool lives). The FIRST pydantic-ai model event — a tool-call part that
+                # pydantic-ai emits BEFORE it runs the tools and long before the first
+                # TEXT delta — is surfaced once as the AGENT_ACTIVITY sentinel.
+                # with_first_token_deadline treats that sentinel as the first-token
+                # commit, so a slow tool can no longer trip the TTFT deadline and force a
+                # cross-tier re-run of side-effecting tools. The sentinel is swallowed by
+                # the deadline wrapper and never reaches the client; TEXT extraction is
+                # unchanged. Liveness is preserved: a truly hung endpoint emits no event,
+                # so no sentinel arrives and the deadline still fires -> swap.
+                # new_messages is captured before the run context closes.
+                _activity_signaled = False
+                async with agrinet_agent.iter(
+                    user_prompt=user_message,
+                    message_history=trimmed_history,
+                    deps=deps,
+                    model=model,
+                ) as agent_run:
+                    async for node in agent_run:
+                        if type(node).__name__ == 'ModelRequestNode':
+                            async with node.stream(agent_run.ctx) as request_stream:
+                                async for event in request_stream:
+                                    if not _activity_signaled:
+                                        _activity_signaled = True
+                                        yield AGENT_ACTIVITY
+                                    event_type = type(event).__name__
+                                    text = None
+                                    if event_type == 'PartStartEvent' and hasattr(event, 'part'):
+                                        if type(event.part).__name__ == 'TextPart' and hasattr(event.part, 'content'):
+                                            text = event.part.content
+                                    elif event_type == 'PartDeltaEvent' and hasattr(event, 'delta'):
+                                        if type(event.delta).__name__ == 'TextPartDelta':
+                                            text = event.delta.content_delta
+                                    if text:
+                                        yield text
+                    _stream_holder["new_messages"] = agent_run.result.new_messages()
 
-                async def _make_agent_text_stream(attempt):
-                    # Bound time-to-first-token (attempt.timeout) so a silent OSS
-                    # hang swaps to managed before any token reaches the client; the
-                    # deadline disarms after the first token, so the rest streams on
-                    # the model's normal read-timeout.
-                    async for chunk in with_first_token_deadline(attempt, _raw_agent_text_stream(attempt)):
+            async def _stream_to_client(english_src):
+                if needs_output_translation:
+                    sentence_buffer = ""
+                    translation_batch = []
+                    batch_word_count = 0
+                    async for chunk in english_src:
+                        sentence_buffer += chunk
+                        complete_sentences, remaining = extract_complete_sentences(sentence_buffer)
+                        if complete_sentences:
+                            for sentence in complete_sentences:
+                                translation_batch.append(sentence)
+                                batch_word_count += len(sentence.split())
+                            batch_text = "".join(translation_batch)
+                            if should_translate_batch(batch_text, batch_word_count):
+                                if translated_output_chunks and _batch_starts_new_line_or_list(batch_text):
+                                    translated_output_chunks.append("\n")
+                                    yield "\n"
+                                try:
+                                    async for translated_chunk in translate_text_stream_fast(
+                                        text=batch_text,
+                                        source_lang="english",
+                                        target_lang=target_lang,
+                                        max_output_chars=deps.response_max_chars,
+                                    ):
+                                        translated_output_chunks.append(translated_chunk)
+                                        yield translated_chunk
+                                except Exception as e:
+                                    logger.error(f"Optimised batch translation failed, falling back to English batch: {e}")
+                                    translated_output_chunks.append(batch_text)
+                                    yield batch_text
+                                translation_batch = []
+                                batch_word_count = 0
+                            sentence_buffer = remaining
+                    if translation_batch:
+                        batch_text = "".join(translation_batch)
+                        if translated_output_chunks and _batch_starts_new_line_or_list(batch_text):
+                            translated_output_chunks.append("\n")
+                            yield "\n"
+                        try:
+                            async for translated_chunk in translate_text_stream_fast(
+                                text=batch_text,
+                                source_lang="english",
+                                target_lang=target_lang,
+                                max_output_chars=deps.response_max_chars,
+                            ):
+                                translated_output_chunks.append(translated_chunk)
+                                yield translated_chunk
+                        except Exception as e:
+                            logger.error(f"Final batch translation failed, falling back to English batch: {e}")
+                            translated_output_chunks.append(batch_text)
+                            yield batch_text
+                    if sentence_buffer.strip():
+                        if translated_output_chunks and _batch_starts_new_line_or_list(sentence_buffer):
+                            translated_output_chunks.append("\n")
+                            yield "\n"
+                        try:
+                            async for translated_chunk in translate_text_stream_fast(
+                                text=sentence_buffer,
+                                source_lang="english",
+                                target_lang=target_lang,
+                                max_output_chars=deps.response_max_chars,
+                            ):
+                                translated_output_chunks.append(translated_chunk)
+                                yield translated_chunk
+                        except Exception as e:
+                            logger.error(f"Tail fragment translation failed, falling back to English fragment: {e}")
+                            translated_output_chunks.append(sentence_buffer)
+                            yield sentence_buffer
+                else:
+                    async for chunk in english_src:
+                        raw_output_chunks.append(chunk)
                         yield chunk
 
-                async def _stream_to_client(english_src):
-                    if needs_output_translation:
-                        sentence_buffer = ""
-                        translation_batch = []
-                        batch_word_count = 0
-                        async for chunk in english_src:
-                            sentence_buffer += chunk
-                            complete_sentences, remaining = extract_complete_sentences(sentence_buffer)
-                            if complete_sentences:
-                                for sentence in complete_sentences:
-                                    translation_batch.append(sentence)
-                                    batch_word_count += len(sentence.split())
-                                batch_text = "".join(translation_batch)
-                                if should_translate_batch(batch_text, batch_word_count):
-                                    if translated_output_chunks and _batch_starts_new_line_or_list(batch_text):
-                                        translated_output_chunks.append("\n")
-                                        yield "\n"
-                                    try:
-                                        async for translated_chunk in translate_text_stream_fast(
-                                            text=batch_text,
-                                            source_lang="english",
-                                            target_lang=target_lang,
-                                            max_output_chars=deps.response_max_chars,
-                                        ):
-                                            translated_output_chunks.append(translated_chunk)
-                                            yield translated_chunk
-                                    except Exception as e:
-                                        logger.error(f"Optimised batch translation failed, falling back to English batch: {e}")
-                                        translated_output_chunks.append(batch_text)
-                                        yield batch_text
-                                    translation_batch = []
-                                    batch_word_count = 0
-                                sentence_buffer = remaining
-                        if translation_batch:
-                            batch_text = "".join(translation_batch)
-                            if translated_output_chunks and _batch_starts_new_line_or_list(batch_text):
-                                translated_output_chunks.append("\n")
-                                yield "\n"
-                            try:
-                                async for translated_chunk in translate_text_stream_fast(
-                                    text=batch_text,
-                                    source_lang="english",
-                                    target_lang=target_lang,
-                                    max_output_chars=deps.response_max_chars,
-                                ):
-                                    translated_output_chunks.append(translated_chunk)
-                                    yield translated_chunk
-                            except Exception as e:
-                                logger.error(f"Final batch translation failed, falling back to English batch: {e}")
-                                translated_output_chunks.append(batch_text)
-                                yield batch_text
-                        if sentence_buffer.strip():
-                            if translated_output_chunks and _batch_starts_new_line_or_list(sentence_buffer):
-                                translated_output_chunks.append("\n")
-                                yield "\n"
-                            try:
-                                async for translated_chunk in translate_text_stream_fast(
-                                    text=sentence_buffer,
-                                    source_lang="english",
-                                    target_lang=target_lang,
-                                    max_output_chars=deps.response_max_chars,
-                                ):
-                                    translated_output_chunks.append(translated_chunk)
-                                    yield translated_chunk
-                            except Exception as e:
-                                logger.error(f"Tail fragment translation failed, falling back to English fragment: {e}")
-                                translated_output_chunks.append(sentence_buffer)
-                                yield sentence_buffer
-                    else:
-                        async for chunk in english_src:
-                            raw_output_chunks.append(chunk)
-                            yield chunk
+            if settings.fallback_enabled:
+                # OSS -> managed first-token-commit fallback: swap tiers only BEFORE
+                # the first token reaches the client. with_first_token_deadline bounds
+                # time-to-first-token (disconnect-safe); after commit the stream runs
+                # to completion on the resolved tier. Reused verbatim from fallback.py.
+                async def _make_agent_text_stream(attempt):
+                    async for chunk in with_first_token_deadline(
+                        attempt, _raw_agent_text_stream(attempt.provider, attempt.model)
+                    ):
+                        yield chunk
 
                 english_src = stream_with_fallback(
                     pipeline="chat",
@@ -665,266 +715,21 @@ async def stream_chat_messages(
                     variant=pipeline_variant,
                     make_stream=_make_agent_text_stream,
                 )
-                async for _out in _stream_to_client(english_src):
-                    yield _out
-                logger.info(f"Streaming complete for session {session_id}")
-                new_messages = _stream_holder.get("new_messages", [])
-            elif request_provider == 'anthropic':
-                # For Anthropic: Use agent.iter() + node.stream() instead of run_stream()
-                async with agrinet_agent.iter(
-                    user_prompt=user_message,
-                    message_history=trimmed_history,
-                    deps=deps,
-                    model=request_model,
-                ) as agent_run:
-                    if needs_output_translation:
-                        # Optimised batched streaming for Anthropic as well
-                        sentence_buffer = ""
-                        translation_batch = []
-                        batch_word_count = 0
-
-                        async for node in agent_run:
-                            node_type = type(node).__name__
-                            if node_type == 'ModelRequestNode':
-                                async with node.stream(agent_run.ctx) as request_stream:
-                                    async for event in request_stream:
-                                        event_type = type(event).__name__
-
-                                        text = None
-                                        if event_type == 'PartStartEvent' and hasattr(event, 'part'):
-                                            part_type = type(event.part).__name__
-                                            if part_type == 'TextPart' and hasattr(event.part, 'content'):
-                                                text = event.part.content
-                                        elif event_type == 'PartDeltaEvent' and hasattr(event, 'delta'):
-                                            delta_type = type(event.delta).__name__
-                                            if delta_type == 'TextPartDelta':
-                                                text = event.delta.content_delta
-
-                                        if text:
-                                            sentence_buffer += text
-                                            complete_sentences, remaining = extract_complete_sentences(sentence_buffer)
-                                            if complete_sentences:
-                                                for sentence in complete_sentences:
-                                                    translation_batch.append(sentence)
-                                                    batch_word_count += len(sentence.split())
-
-                                                batch_text = "".join(translation_batch)
-                                                if should_translate_batch(batch_text, batch_word_count):
-                                                    if translated_output_chunks and _batch_starts_new_line_or_list(batch_text):
-                                                        translated_output_chunks.append("\n")
-                                                        yield "\n"
-                                                    try:
-                                                        logger.info(
-                                                            f"Translation pipeline (Anthropic): "
-                                                            f"streaming optimised batch to {target_lang} "
-                                                            f"({batch_word_count} words)"
-                                                        )
-                                                        async for translated_chunk in translate_text_stream_fast(
-                                                            text=batch_text,
-                                                            source_lang="english",
-                                                            target_lang=target_lang,
-                                                            max_output_chars=deps.response_max_chars,
-                                                        ):
-                                                            translated_output_chunks.append(translated_chunk)
-                                                            yield translated_chunk
-                                                    except Exception as e:
-                                                        logger.error(
-                                                            "Optimised batch translation (Anthropic) failed, "
-                                                            f"falling back to English batch: {e}"
-                                                        )
-                                                        translated_output_chunks.append(batch_text)
-                                                        yield batch_text
-
-                                                    translation_batch = []
-                                                    batch_word_count = 0
-
-                                            sentence_buffer = remaining
-
-                        # Flush remaining batches/fragments at end of stream
-                        if translation_batch:
-                            batch_text = "".join(translation_batch)
-                            if translated_output_chunks and _batch_starts_new_line_or_list(batch_text):
-                                translated_output_chunks.append("\n")
-                                yield "\n"
-                            try:
-                                logger.info(
-                                    f"Translation pipeline (Anthropic): flushing final batch to {target_lang} "
-                                    f"({batch_word_count} words)"
-                                )
-                                async for translated_chunk in translate_text_stream_fast(
-                                    text=batch_text,
-                                    source_lang="english",
-                                    target_lang=target_lang,
-                                    max_output_chars=deps.response_max_chars,
-                                ):
-                                    translated_output_chunks.append(translated_chunk)
-                                    yield translated_chunk
-                            except Exception as e:
-                                logger.error(
-                                    "Final batch translation (Anthropic) failed, "
-                                    f"falling back to English batch: {e}"
-                                )
-                                translated_output_chunks.append(batch_text)
-                                yield batch_text
-
-                        if sentence_buffer.strip():
-                            if translated_output_chunks and _batch_starts_new_line_or_list(sentence_buffer):
-                                translated_output_chunks.append("\n")
-                                yield "\n"
-                            try:
-                                logger.info(
-                                    "Translation pipeline (Anthropic): flushing tail fragment "
-                                    f"to {target_lang}"
-                                )
-                                async for translated_chunk in translate_text_stream_fast(
-                                    text=sentence_buffer,
-                                    source_lang="english",
-                                    target_lang=target_lang,
-                                    max_output_chars=deps.response_max_chars,
-                                ):
-                                    translated_output_chunks.append(translated_chunk)
-                                    yield translated_chunk
-                            except Exception as e:
-                                logger.error(
-                                    "Tail fragment translation (Anthropic) failed, "
-                                    f"falling back to English fragment: {e}"
-                                )
-                                translated_output_chunks.append(sentence_buffer)
-                                yield sentence_buffer
-                    else:
-                        async for node in agent_run:
-                            node_type = type(node).__name__
-                            if node_type == 'ModelRequestNode':
-                                async with node.stream(agent_run.ctx) as request_stream:
-                                    async for event in request_stream:
-                                        event_type = type(event).__name__
-                                        text = None
-                                        if event_type == 'PartStartEvent' and hasattr(event, 'part'):
-                                            part_type = type(event.part).__name__
-                                            if part_type == 'TextPart' and hasattr(event.part, 'content'):
-                                                text = event.part.content
-                                        elif event_type == 'PartDeltaEvent' and hasattr(event, 'delta'):
-                                            delta_type = type(event.delta).__name__
-                                            if delta_type == 'TextPartDelta':
-                                                text = event.delta.content_delta
-
-                                        if text:
-                                            raw_output_chunks.append(text)
-                                            yield text
-
-                    logger.info(f"Streaming complete for session {session_id}")
-                    new_messages = agent_run.result.new_messages()
             else:
-                # For OpenAI/vLLM: Use standard run_stream()
-                async with agrinet_agent.run_stream(
-                    user_prompt=user_message,
-                    message_history=trimmed_history,
-                    deps=deps,
-                    model=request_model,
-                ) as response_stream:
-                    if needs_output_translation:
-                        # Optimised batched streaming: segment English into sentences and translate in good-sized batches
-                        sentence_buffer = ""
-                        translation_batch = []
-                        batch_word_count = 0
+                # No fallback: stream the single resolved primary tier directly.
+                # _raw_agent_text_stream still yields the internal AGENT_ACTIVITY
+                # commit sentinel; with no with_first_token_deadline wrapper on this
+                # path, strip it here so only text reaches _stream_to_client.
+                async def _strip_activity(_src):
+                    async for _c in _src:
+                        if _c is not AGENT_ACTIVITY:
+                            yield _c
+                english_src = _strip_activity(_raw_agent_text_stream(request_provider, request_model))
 
-                        async for chunk in response_stream.stream_text(delta=True):
-                            sentence_buffer += chunk
-
-                            complete_sentences, remaining = extract_complete_sentences(sentence_buffer)
-                            if complete_sentences:
-                                for sentence in complete_sentences:
-                                    translation_batch.append(sentence)
-                                    batch_word_count += len(sentence.split())
-
-                                batch_text = "".join(translation_batch)
-                                if should_translate_batch(batch_text, batch_word_count):
-                                    if translated_output_chunks and _batch_starts_new_line_or_list(batch_text):
-                                        translated_output_chunks.append("\n")
-                                        yield "\n"
-                                    try:
-                                        logger.info(
-                                            f"Translation pipeline: streaming optimised batch to {target_lang} "
-                                            f"({batch_word_count} words)"
-                                        )
-                                        async for translated_chunk in translate_text_stream_fast(
-                                            text=batch_text,
-                                            source_lang="english",
-                                            target_lang=target_lang,
-                                            max_output_chars=deps.response_max_chars,
-                                        ):
-                                            translated_output_chunks.append(translated_chunk)
-                                            yield translated_chunk
-                                    except Exception as e:
-                                        logger.error(
-                                            f"Optimised batch translation failed, falling back to English batch: {e}"
-                                        )
-                                        translated_output_chunks.append(batch_text)
-                                        yield batch_text
-
-                                    translation_batch = []
-                                    batch_word_count = 0
-
-                            sentence_buffer = remaining
-
-                        # Flush remaining batches/fragments at end of stream
-                        if translation_batch:
-                            batch_text = "".join(translation_batch)
-                            if translated_output_chunks and _batch_starts_new_line_or_list(batch_text):
-                                translated_output_chunks.append("\n")
-                                yield "\n"
-                            try:
-                                logger.info(
-                                    f"Translation pipeline: flushing final batch to {target_lang} "
-                                    f"({batch_word_count} words)"
-                                )
-                                async for translated_chunk in translate_text_stream_fast(
-                                    text=batch_text,
-                                    source_lang="english",
-                                    target_lang=target_lang,
-                                    max_output_chars=deps.response_max_chars,
-                                ):
-                                    translated_output_chunks.append(translated_chunk)
-                                    yield translated_chunk
-                            except Exception as e:
-                                logger.error(
-                                    f"Final batch translation failed, falling back to English batch: {e}"
-                                )
-                                translated_output_chunks.append(batch_text)
-                                yield batch_text
-
-                        if sentence_buffer.strip():
-                            if translated_output_chunks and _batch_starts_new_line_or_list(sentence_buffer):
-                                translated_output_chunks.append("\n")
-                                yield "\n"
-                            try:
-                                logger.info(
-                                    f"Translation pipeline: flushing tail fragment to {target_lang}"
-                                )
-                                async for translated_chunk in translate_text_stream_fast(
-                                    text=sentence_buffer,
-                                    source_lang="english",
-                                    target_lang=target_lang,
-                                    max_output_chars=deps.response_max_chars,
-                                ):
-                                    translated_output_chunks.append(translated_chunk)
-                                    yield translated_chunk
-                            except Exception as e:
-                                logger.error(
-                                    f"Tail fragment translation failed, falling back to English fragment: {e}"
-                                )
-                                translated_output_chunks.append(sentence_buffer)
-                                yield sentence_buffer
-
-                        logger.info(f"Streaming complete for session {session_id}")
-                        new_messages = response_stream.new_messages()
-                    else:
-                        async for chunk in response_stream.stream_text(delta=True):
-                            raw_output_chunks.append(chunk)
-                            yield chunk
-
-                        logger.info(f"Streaming complete for session {session_id}")
-                        new_messages = response_stream.new_messages()
+            async for _out in _stream_to_client(english_src):
+                yield _out
+            logger.info(f"Streaming complete for session {session_id}")
+            new_messages = _stream_holder.get("new_messages", [])
 
             # Record trace output: translated response for translation pipeline, raw agent output otherwise.
             if get_langfuse_client:
