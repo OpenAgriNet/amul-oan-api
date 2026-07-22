@@ -36,11 +36,29 @@ def _dead_oss_model():
 @pytest.fixture
 def oss_dead(monkeypatch):
     from app.services import fallback as fb
+    from app.llm_core.factory import MaterializedTier
 
     monkeypatch.setattr(fb.settings, "fallback_enabled", True)
-    monkeypatch.setattr(fb, "oss_model_available", lambda: True)
-    monkeypatch.setattr(fb, "OSS_LLM_MODEL", _dead_oss_model())
-    monkeypatch.setattr(fb, "OSS_INFERENCE_ENDPOINT_URL", DEAD_OSS_URL)
+
+    # Config-driven chain: a DEAD OSS vLLM tier (connection refused) first, then
+    # the real managed model — the walker must classify the connection failure and
+    # fall back before commit.
+    dead = _dead_oss_model()
+
+    def _managed_model():
+        from pydantic_ai.models.openai import OpenAIModel
+        from pydantic_ai.providers.openai import OpenAIProvider
+        return OpenAIModel("gpt-4.1", provider=OpenAIProvider(api_key=_KEY))
+
+    async def _resolve_chain(*, pipeline, session_id, variant):
+        return [
+            MaterializedTier(kind="oss", handle=dead, model_name="gemma-dead",
+                             provider="vllm", endpoint=DEAD_OSS_URL, timeout=5.0),
+            MaterializedTier(kind="managed", handle=_managed_model(), model_name="gpt-4.1",
+                             provider="openai", endpoint="managed", timeout=20.0),
+        ]
+
+    monkeypatch.setattr(fb, "_resolve_chain", _resolve_chain)
     events = []
     monkeypatch.setattr(fb, "emit", events.append)
     return fb, events

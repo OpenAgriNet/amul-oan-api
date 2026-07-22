@@ -15,13 +15,11 @@ from app.services import fallback as fb
 
 
 @pytest.fixture
-def oss_on(monkeypatch):
+def oss_on(monkeypatch, install_chain):
     monkeypatch.setattr(fb.settings, "fallback_enabled", True)
-    monkeypatch.setattr(fb, "oss_model_available", lambda: True)
-    monkeypatch.setattr(fb, "OSS_LLM_MODEL", "OSS")
-    monkeypatch.setattr(fb, "OSS_LLM_MODEL_NAME", "gemma")
-    monkeypatch.setattr(fb, "OSS_INFERENCE_ENDPOINT_URL", "http://oss")
-    monkeypatch.setattr(fb, "LLM_MODEL", "MANAGED")
+    # config-driven chain: oss tier's handle "OSS", managed tier's handle "MANAGED"
+    # (the walker passes attempt.model=handle to suggestions_agent.run).
+    install_chain(oss_handle="OSS", managed_handle="MANAGED")
     events = []
     monkeypatch.setattr(fb, "emit", events.append)
 

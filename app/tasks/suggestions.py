@@ -6,12 +6,8 @@ from contextlib import nullcontext
 from helpers.utils import get_logger
 from app.utils import _get_message_history, trim_history, format_message_pairs, set_cache
 from app.core.cache import cache
-from agents.models import (
-    LLM_MODEL_NAME,
-    OSS_LLM_MODEL_NAME,
-    get_model_for_variant,
-    oss_model_available,
-)
+from app.llm_core import resolver as _llm_resolver
+from app.llm_core.config_model import Step as _LlmStep
 from agents.suggestions import suggestions_agent
 from app.config import settings
 from app.services.fallback import execute_with_fallback
@@ -35,12 +31,13 @@ async def create_suggestions(session_id: str, target_lang: str = 'mr', variant: 
 
     # Run suggestions on the same backend as the session's pipeline: OSS sessions
     # use the self-hosted gemma model (no API cost; completes full-OSS for chat),
-    # legacy stays on the default model. Falls back to the default model if OSS
-    # is unconfigured.
-    sug_model = get_model_for_variant(variant)
-    sug_model_name = (
-        OSS_LLM_MODEL_NAME if (variant == "oss" and oss_model_available()) else LLM_MODEL_NAME
-    )
+    # legacy stays on the default model. The suggestions model handle + display
+    # name come from the resolved primary SUGGESTIONS tier (the only path); when
+    # the session's variant has no OSS profile the resolver falls back to the
+    # managed tier, matching the old oss_model_available() guard.
+    sug_tier = _llm_resolver.primary_tier(_LlmStep.SUGGESTIONS, variant)
+    sug_model = sug_tier.handle
+    sug_model_name = sug_tier.model_name
 
     status_key = f"suggestions_{session_id}_{target_lang}:pending"
     try:
