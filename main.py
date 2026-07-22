@@ -1,5 +1,5 @@
 from dotenv import load_dotenv
-from fastapi import FastAPI
+from fastapi import FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
 from app.config import settings
 from contextlib import asynccontextmanager
@@ -19,7 +19,9 @@ load_dotenv()
 import app.observability  # noqa: F401, E402
 
 # Import all routers
-from app.routers import chat, transcribe, suggestions, tts, health, auth, user, telemetry, voice
+from app.routers import chat, transcribe, suggestions, tts, health, auth, user, telemetry
+# NOTE: `voice` is intentionally NOT imported here — importing it constructs the
+# voice Agents at module load. It is imported lazily below, only when ENABLE_VOICE.
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -32,13 +34,14 @@ async def lifespan(app: FastAPI):
     # Load prompt templates into memory (no disk I/O at request time)
     from helpers.utils import load_prompt_templates
     load_prompt_templates(settings.base_dir / "assets" / "prompts")
-    # Unified LLM pipeline: synthesize/validate the config and run the identity
-    # self-check (logs resolved vs legacy wiring; raises only when the flag is on).
-    # Best-effort: a self-check bug must never block startup on the flag-off path.
+    # Unified LLM pipeline (the only model-selection path): synthesize/validate the
+    # config and run the resolvability self-check (logs the resolved per-step
+    # provider/model/endpoint; non-fatal). Best-effort — a configure/self-check
+    # edge case must never block startup.
+    from app.llm_core import runtime as _llm_runtime
     try:
-        from app.llm_core import runtime as _llm_runtime
         _llm_runtime.configure()
-    except AssertionError:
+    except _llm_runtime.BootRefused:  # intentional hard-gate — must NOT be swallowed
         raise
     except Exception as _llm_exc:  # pragma: no cover - defensive
         print(f"⚠️  llm_core configure skipped: {_llm_exc}")
@@ -88,6 +91,15 @@ async def root():
         "api_prefix": settings.api_prefix
     }
 
+@app.get("/metrics")
+async def metrics():
+    """Prometheus exposition for the unified LLM pipeline (plain text, no auth,
+    scraped internally). render() is a no-op safe stub when prometheus_client is
+    absent, so this route works whether or not the dependency is installed."""
+    from app import metrics as _metrics
+    body, content_type = _metrics.render()
+    return Response(content=body, media_type=content_type)
+
 # Include all routers with API prefix from settings
 app.include_router(auth.router, prefix=settings.api_prefix)  # Auth router (no auth required)
 app.include_router(chat.router, prefix=settings.api_prefix)
@@ -95,7 +107,11 @@ app.include_router(transcribe.router, prefix=settings.api_prefix)
 app.include_router(suggestions.router, prefix=settings.api_prefix)
 app.include_router(tts.router, prefix=settings.api_prefix)
 app.include_router(user.router, prefix=settings.api_prefix)
-app.include_router(voice.router, prefix=settings.api_prefix)
+# Voice pipeline is opt-in. Gated so a chat-only deployment never imports the voice
+# module (no Agent construction) nor registers /voice unless ENABLE_VOICE is set.
+if settings.enable_voice:
+    from app.routers import voice
+    app.include_router(voice.router, prefix=settings.api_prefix)
 app.include_router(health.router, prefix=settings.api_prefix)
 # Keep telemetry path compatible with existing frontend calls:
 # /observability-service/action/data/v3/telemetry

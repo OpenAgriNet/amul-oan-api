@@ -8,12 +8,12 @@ The bar these pin:
       (bit-compatible ``int(sha256(sid)[:8], 16) % 100``).
   (b) ``resolve_chain`` returns a non-empty materialized chain matching the
       resolved profile's tiers (order + models + kind labels).
-  (c) a config (weight) change does not re-bucket an already-sticky session.
+  (c) a config (weight) change RE-BUCKETS a continuing session — the sha256
+      bucket over the CURRENT weights is the sticky key; no Redis pin freezes it.
   (d) the flags-OFF path is byte-untouched: PROFILES_ENABLED defaults off and the
       fallback chain acquisition degrades to the legacy ``attempt_chain``.
 
-Zero network: session_id="" avoids Redis entirely (deterministic path); the
-sticky/fail-safe tests inject an in-memory fake cache. Building a factory handle
+Zero network: routing is pure deterministic (no Redis). Building a factory handle
 is lazy (no model call is ever made). A dummy OPENAI_API_KEY / OSS key is set
 before importing app code (agents.models + the factory read keys at build time).
 These tests deliberately avoid app.services.translation / agents.tools, which
@@ -74,29 +74,6 @@ def two_profile_config(pct: int, ttl: int = 604800) -> PipelineConfig:
     )
 
 
-class _FakeCache:
-    """In-memory async cache mirroring the aiocache surface split uses."""
-
-    def __init__(self):
-        self.store = {}
-        self.sets = []
-
-    async def get(self, key):
-        return self.store.get(key)
-
-    async def set(self, key, value, ttl=None):
-        self.store[key] = value
-        self.sets.append((key, value, ttl))
-
-
-class _BrokenCache:
-    async def get(self, key):
-        raise RuntimeError("redis down")
-
-    async def set(self, key, value, ttl=None):
-        raise RuntimeError("redis down")
-
-
 def _ref_bucket(session_id: str) -> int:
     """Independent recomputation of pipeline_router's bucket (no shared code)."""
     digest = hashlib.sha256((session_id or "").encode("utf-8")).hexdigest()
@@ -128,10 +105,9 @@ def test_deterministic_profile_aggregate_tracks_weights():
 
 def test_two_profile_shim_reproduces_oss_pct_boundary_exactly():
     """The proof: for the seeded 2-profile config, a session is 'oss' iff its
-    bucket < pct — the EXACT boundary pipeline_router._deterministic_variant uses.
-    Checked against a fresh recompute AND against pipeline_router itself."""
-    from app.services import pipeline_router
-
+    bucket < pct — the EXACT boundary the removed pipeline_router used
+    (``int(sha256(sid)[:8],16) % 100 < OSS_PIPELINE_PCT``), checked against a fresh
+    independent recompute of that bucket."""
     for pct in (0, 1, 30, 50, 80, 99, 100):
         cfg = two_profile_config(pct)
         for i in range(500):
@@ -141,18 +117,15 @@ def test_two_profile_shim_reproduces_oss_pct_boundary_exactly():
             assert split.deterministic_profile(sid, cfg) == expected
 
 
-def test_split_variant_is_bit_compatible_with_pipeline_router(monkeypatch):
-    """variant_for_profile(weighted-split) == pipeline_router._deterministic_variant
-    for every pct — i.e. flipping PROFILES_ENABLED never moves a session."""
-    from app.services import pipeline_router
-
-    monkeypatch.setattr(pipeline_router, "oss_model_available", lambda: True)
+def test_split_variant_is_bit_compatible_with_removed_pipeline_router():
+    """variant_for_profile(weighted-split) == the removed pipeline_router's
+    ``bucket < pct -> 'oss' else 'legacy'`` bit for every pct — i.e. moving to the
+    unified split never re-buckets a session (recomputed independently)."""
     for pct in (0, 25, 80, 100):
         cfg = two_profile_config(pct)
-        monkeypatch.setattr(pipeline_router.settings, "oss_pipeline_pct", pct)
         for i in range(500):
             sid = f"compat-{pct}-{i}"
-            legacy = pipeline_router._deterministic_variant(sid)          # 'oss'|'legacy'
+            legacy = "oss" if _ref_bucket(sid) < pct else "legacy"  # old pipeline_router bit
             new = split.variant_for_profile(split.deterministic_profile(sid, cfg))
             assert new == legacy, f"pct={pct} sid={sid}: {new} != {legacy}"
 
@@ -213,7 +186,7 @@ def test_resolve_chain_never_empty_for_configured_step():
     assert len(chain) >= 1
 
 
-# ── (c) sticky assignment: a config change does not re-bucket ─────────────────
+# ── (c) deterministic assignment: a weight change RE-BUCKETS (refresh-on-change) ─
 
 def _sid_with_bucket_between(lo, hi):
     i = 0
@@ -224,63 +197,46 @@ def _sid_with_bucket_between(lo, hi):
         i += 1
 
 
-def test_sticky_profile_persists_across_weight_change(monkeypatch):
+def test_resolve_profile_is_pure_deterministic():
+    """resolve_profile == deterministic bucket over the CURRENT weights; no Redis
+    state, so nothing pins a session across weight changes."""
     import asyncio
 
-    fake = _FakeCache()
-    monkeypatch.setattr(split, "cache", fake)
+    cfg = two_profile_config(70)
+    for sid in ("a", "b", "sess-xyz", ""):
+        assert asyncio.run(split.resolve_profile(sid, cfg)) == split.deterministic_profile(sid, cfg)
+
+
+def test_weight_change_rebuckets_continuing_session():
+    """The refresh-on-change contract: a session assigned to one model at a given
+    weight MOVES to the other model when the weight changes — it is not frozen."""
+    import asyncio
 
     sid, bucket = _sid_with_bucket_between(30, 60)
-    cfg_a = two_profile_config(bucket + 5)   # bucket < pct -> 'oss'
-    cfg_b = two_profile_config(bucket - 5)   # bucket >= pct -> deterministic 'managed'
-
-    first = asyncio.run(split.resolve_profile(sid, cfg_a))
-    assert first == "oss"
-    assert fake.store[f"pipeline_profile:{sid}"] == "oss"   # stored under the P1 key
-
-    # Deterministic assignment WOULD flip under cfg_b ...
-    assert split.deterministic_profile(sid, cfg_b) == "managed"
-    # ... but the sticky session keeps its original profile.
-    assert asyncio.run(split.resolve_profile(sid, cfg_b)) == "oss"
+    cfg_hi = two_profile_config(bucket + 5)   # bucket < pct -> 'oss'
+    cfg_lo = two_profile_config(bucket - 5)   # bucket >= pct -> 'managed'
+    assert asyncio.run(split.resolve_profile(sid, cfg_hi)) == "oss"
+    # SAME session id, weight changed -> re-buckets to the new model (does NOT stick).
+    assert asyncio.run(split.resolve_profile(sid, cfg_lo)) == "managed"
 
 
-def test_sticky_hit_short_circuits_bucketing(monkeypatch):
+def test_zero_to_fifty_moves_about_half_of_continuing_sessions():
+    """0 -> 50% for the oss model moves ~half of continuing (same-id) sessions onto
+    it — exactly the redeploy scenario, not 0%."""
     import asyncio
 
-    fake = _FakeCache()
-    fake.store["pipeline_profile:preset"] = "managed"
-    monkeypatch.setattr(split, "cache", fake)
-    # bucket would say 'oss' at pct=100, but the stored name wins.
-    cfg = two_profile_config(100)
-    assert asyncio.run(split.resolve_profile("preset", cfg)) == "managed"
-    assert fake.sets == []   # a hit must not re-write
-
-
-def test_sticky_ttl_comes_from_config(monkeypatch):
-    import asyncio
-
-    fake = _FakeCache()
-    monkeypatch.setattr(split, "cache", fake)
-    cfg = two_profile_config(50, ttl=12345)
-    asyncio.run(split.resolve_profile("ttl-sess", cfg))
-    assert fake.sets and fake.sets[0][2] == 12345
-
-
-def test_stale_stored_name_is_rebucketed(monkeypatch):
-    import asyncio
-
-    fake = _FakeCache()
-    fake.store["pipeline_profile:x"] = "no-such-profile"
-    monkeypatch.setattr(split, "cache", fake)
-    cfg = two_profile_config(100)
-    # invalid stored name ignored -> deterministic (oss at pct=100)
-    assert asyncio.run(split.resolve_profile("x", cfg)) == "oss"
+    ids = [f"s{i}" for i in range(400)]
+    at_zero = [asyncio.run(split.resolve_profile(s, two_profile_config(0))) for s in ids]
+    at_fifty = [asyncio.run(split.resolve_profile(s, two_profile_config(50))) for s in ids]
+    assert all(p == "managed" for p in at_zero)          # 0% oss -> everyone on managed
+    moved = sum(1 for a, b in zip(at_zero, at_fifty) if a != b and b == "oss")
+    assert 150 <= moved <= 250                            # ~50% of continuing sessions moved
 
 
 def test_resolve_chain_honors_variant_without_rebucketing(monkeypatch):
     """(C) resolve_chain(variant=...) selects the profile from the router variant
-    and never touches resolve_profile / the cache — so a capped session id can't
-    diverge from the primary path."""
+    and never calls resolve_profile — so a capped session id can't diverge from
+    the primary path."""
     import asyncio
 
     def _boom(*a, **k):
@@ -288,101 +244,21 @@ def test_resolve_chain_honors_variant_without_rebucketing(monkeypatch):
 
     monkeypatch.setattr(split, "resolve_profile", _boom)
     cfg = two_profile_config(0)   # deterministic bucket would be 'managed' for all
-    # ... but the router already resolved 'oss' -> we must get the oss chain.
     chain = asyncio.run(split.resolve_chain("any-session", Step.AGENT, cfg, variant="oss"))
     assert [c.kind for c in chain] == ["oss", "managed"]
     legacy_chain = asyncio.run(split.resolve_chain("x", Step.AGENT, cfg, variant="legacy"))
     assert [c.kind for c in legacy_chain] == ["managed"]
 
 
-def test_resolve_profile_fail_safe_on_cache_error(monkeypatch):
-    import asyncio
+# ── (d) the walkers receive the config-driven chain (the only path) ───────────
 
-    monkeypatch.setattr(split, "cache", _BrokenCache())
-    cfg = two_profile_config(70)
-    # A Redis error degrades to the deterministic bucket, never raises.
-    got = asyncio.run(split.resolve_profile("err-sess", cfg))
-    assert got == split.deterministic_profile("err-sess", cfg)
-
-
-def test_empty_session_id_skips_cache(monkeypatch):
-    import asyncio
-
-    fake = _FakeCache()
-    monkeypatch.setattr(split, "cache", fake)
-    cfg = two_profile_config(50)
-    asyncio.run(split.resolve_profile("", cfg))
-    assert fake.sets == [] and fake.store == {}   # no id -> no Redis touch
-
-
-# ── (d) flags-OFF path untouched + composition with fallback walkers ──────────
-
-def test_profiles_enabled_defaults_on_and_is_overridable(monkeypatch):
-    """As of the enable, PROFILES_ENABLED defaults ON but stays env-overridable."""
-    from app.config import Settings
-    monkeypatch.delenv("PROFILES_ENABLED", raising=False)
-    assert Settings().profiles_enabled is True
-    monkeypatch.setenv("PROFILES_ENABLED", "false")
-    assert Settings().profiles_enabled is False
-
-
-def test_fallback_chain_uses_legacy_attempt_chain_when_flag_off(monkeypatch):
-    """With PROFILES_ENABLED off, the walkers' chain acquisition is byte-identical
-    to today: exactly what attempt_chain returns, and split is never consulted."""
+def test_fallback_chain_uses_split(monkeypatch):
+    """The walkers' chain acquisition delegates to the config-driven split for the
+    mapped step (moderation -> Step.MODERATION). The router variant is threaded
+    through (fix C) — asserted in the spy below."""
     import asyncio
     from app.services import fallback as fb
 
-    monkeypatch.setattr(fb.settings, "fallback_enabled", True)
-    monkeypatch.setattr(fb.settings, "profiles_enabled", False)
-    monkeypatch.setattr(fb.settings, "llm_core_enabled", False)
-    monkeypatch.setattr(fb, "oss_model_available", lambda: True)
-    monkeypatch.setattr(fb, "OSS_LLM_MODEL", object())
-    monkeypatch.setattr(fb, "OSS_LLM_MODEL_NAME", "gemma-test")
-    monkeypatch.setattr(fb, "OSS_INFERENCE_ENDPOINT_URL", "http://oss:8020/v1")
-
-    def _boom(*a, **k):
-        raise AssertionError("split must not be consulted with the flag off")
-
-    monkeypatch.setattr(split, "resolve_chain", _boom)
-
-    chain = asyncio.run(fb._resolve_chain(pipeline="moderation", session_id="s", variant="oss"))
-    legacy = fb.attempt_chain("oss", "moderation")
-    assert [a.kind for a in chain] == [a.kind for a in legacy] == ["oss", "managed"]
-
-
-def test_fallback_chain_stays_legacy_when_only_profiles_on(monkeypatch):
-    """Composition: PROFILES_ENABLED on but LLM_CORE_ENABLED off -> still the
-    legacy chain (the config-driven chain carries P0 factory handles)."""
-    import asyncio
-    from app.services import fallback as fb
-
-    monkeypatch.setattr(fb.settings, "fallback_enabled", True)
-    monkeypatch.setattr(fb.settings, "profiles_enabled", True)
-    monkeypatch.setattr(fb.settings, "llm_core_enabled", False)
-    monkeypatch.setattr(fb, "oss_model_available", lambda: True)
-    monkeypatch.setattr(fb, "OSS_LLM_MODEL", object())
-    monkeypatch.setattr(fb, "OSS_LLM_MODEL_NAME", "gemma-test")
-    monkeypatch.setattr(fb, "OSS_INFERENCE_ENDPOINT_URL", "http://oss:8020/v1")
-
-    called = {"n": 0}
-
-    async def _spy(session_id, step, *, variant=None):
-        called["n"] += 1
-        return []
-
-    monkeypatch.setattr(split, "resolve_chain", _spy)
-    chain = asyncio.run(fb._resolve_chain(pipeline="moderation", session_id="s", variant="oss"))
-    assert called["n"] == 0                       # split not consulted
-    assert [a.kind for a in chain] == ["oss", "managed"]
-
-
-def test_fallback_chain_uses_split_when_both_flags_on(monkeypatch):
-    """Both flags on -> the walkers receive the config-driven materialized chain."""
-    import asyncio
-    from app.services import fallback as fb
-
-    monkeypatch.setattr(fb.settings, "profiles_enabled", True)
-    monkeypatch.setattr(fb.settings, "llm_core_enabled", True)
 
     sentinel = ["MATERIALIZED_TIER"]
 
@@ -396,22 +272,19 @@ def test_fallback_chain_uses_split_when_both_flags_on(monkeypatch):
     assert chain is sentinel
 
 
-def test_fallback_chain_degrades_to_legacy_on_split_error(monkeypatch):
-    """A config/Redis edge case in split must never break the fallback path."""
+def test_fallback_chain_degrades_to_managed_on_split_error(monkeypatch):
+    """A config/Redis edge case in split must never break the fallback path: it
+    degrades to the resolver's managed-tier chain (non-empty)."""
     import asyncio
     from app.services import fallback as fb
+    from app.llm_core import runtime
 
-    monkeypatch.setattr(fb.settings, "fallback_enabled", True)
-    monkeypatch.setattr(fb.settings, "profiles_enabled", True)
-    monkeypatch.setattr(fb.settings, "llm_core_enabled", True)
-    monkeypatch.setattr(fb, "oss_model_available", lambda: True)
-    monkeypatch.setattr(fb, "OSS_LLM_MODEL", object())
-    monkeypatch.setattr(fb, "OSS_LLM_MODEL_NAME", "gemma-test")
-    monkeypatch.setattr(fb, "OSS_INFERENCE_ENDPOINT_URL", "http://oss:8020/v1")
+    runtime.configure(run_self_check=False)   # synthesized (managed-only) config
 
     async def _boom(session_id, step, *, variant=None):
         raise RuntimeError("config blew up")
 
     monkeypatch.setattr(split, "resolve_chain", _boom)
     chain = asyncio.run(fb._resolve_chain(pipeline="moderation", session_id="s", variant="oss"))
-    assert [a.kind for a in chain] == ["oss", "managed"]   # fell back to attempt_chain
+    assert len(chain) >= 1                       # degrade chain is never empty
+    assert chain[-1].kind == "managed"

@@ -265,8 +265,10 @@ def build_handle(tier: Tier, kind: StepClientKind) -> Any:
 
 @dataclass(frozen=True)
 class MaterializedTier:
-    """Drop-in successor to ``fallback.Attempt`` (fallback.py:133). Carries the
-    live handle plus telemetry labels + per-attempt timeout (seconds)."""
+    """The per-tier unit the fallback walkers consume. Carries the live handle
+    plus telemetry labels + per-attempt timeout (seconds). The walkers read only
+    ``.kind`` / ``.model`` / ``.model_name`` / ``.provider`` / ``.endpoint`` /
+    ``.timeout``."""
 
     kind: str
     handle: Any
@@ -281,17 +283,35 @@ class MaterializedTier:
         return self.handle
 
 
+def _tier_client_kind(step_client_kind: StepClientKind, tier: Tier) -> StepClientKind:
+    """Per-tier client kind for a step.
+
+    Every step uses its single fixed kind EXCEPT POST_TRANSLATION, whose chain is
+    mixed-provider: the TranslateGemma primary materializes as an aiohttp
+    text-completion :class:`TGDescriptor`, while a cross-provider LLM overflow tier
+    (openai/vllm/azure) materializes as a raw :class:`AsyncOpenAI` client. The step
+    client kind for POST_TRANSLATION is ``TRANSLATEGEMMA`` (the primary's kind), so
+    only a NON-TranslateGemma tier under that step is redirected to ``RAW_OPENAI``."""
+    if step_client_kind is StepClientKind.TRANSLATEGEMMA and tier.provider is not Provider.TRANSLATEGEMMA:
+        return StepClientKind.RAW_OPENAI
+    return step_client_kind
+
+
 def materialize(step_client_kind: StepClientKind, tiers: list[Tier]) -> list[MaterializedTier]:
     """Build a live handle per tier, preserving order (primary first). Never
-    empty when ``tiers`` is non-empty (StepConfig guarantees ``min_length=1``)."""
+    empty when ``tiers`` is non-empty (StepConfig guarantees ``min_length=1``).
+
+    The client kind is per-tier (see :func:`_tier_client_kind`) so POST_TRANSLATION's
+    ``[TranslateGemma, LLM-overflow]`` chain builds a TG descriptor for the primary
+    and an AsyncOpenAI client for the overflow tier from ONE call."""
     out: list[MaterializedTier] = []
     for tier in tiers:
-        handle = build_handle(tier, step_client_kind)
-        # kind label mirrors fallback.Attempt exactly: a vLLM (self-hosted) tier is
-        # "oss"; every other provider is "managed". The run/stream closures branch
-        # only on ``kind == "oss"`` and moderation maps non-"oss" -> managed OpenAI,
-        # so this reproduces attempt_chain's [oss, managed] / [managed] labels and
-        # keeps ``emit`` telemetry (from_variant/to_variant) byte-identical.
+        handle = build_handle(tier, _tier_client_kind(step_client_kind, tier))
+        # kind label: a vLLM (self-hosted) tier is "oss"; every other provider is
+        # "managed". The run/stream closures branch only on ``kind == "oss"`` and
+        # moderation maps non-"oss" -> managed OpenAI, so a config-driven
+        # [oss, managed] / [managed] chain keeps ``emit`` telemetry
+        # (from_variant/to_variant) byte-identical to the old hardwired chain.
         out.append(
             MaterializedTier(
                 kind="oss" if tier.provider is Provider.VLLM else "managed",

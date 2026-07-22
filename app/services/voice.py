@@ -56,7 +56,7 @@ from app.services.stt_signals import (
 )
 from app.services.non_meaningful import NonMeaningfulVerdict, check_non_meaningful_streak
 from app.services.moderation import ModerationVerdict, check_moderation
-from app.services.fallback import execute_with_fallback, stream_with_fallback, with_first_token_deadline
+from app.services.fallback import AGENT_ACTIVITY, execute_with_fallback, stream_with_fallback, with_first_token_deadline
 from app.services.translation import (
     INDIAN_LANGUAGES,
     OPENAI_PRETRANSLATION_MODEL,
@@ -72,12 +72,8 @@ from app.services.voice_trace import VoiceTrace, create_voice_trace
 # NOTE: Removing telemetry for now.
 # from app.tasks.telemetry import send_telemetry
 from agents.deps import FarmerAccount, FarmerContext
-from agents.models import (
-    LLM_MODEL_NAME,
-    OSS_LLM_MODEL_NAME,
-    get_model_for_variant,
-    provider_for_variant,
-)
+from app.llm_core import resolver as _llm_resolver
+from app.llm_core.config_model import Step as _LlmStep
 from agents.models.farmer import FarmerDataEnvelope, FarmerRecord
 try:  # Langfuse is optional at import time
     from langfuse import get_client as _get_langfuse_client
@@ -990,9 +986,14 @@ async def stream_voice_message(
     # gemma pretranslation). 'legacy' keeps current prod behaviour byte-for-byte;
     # with OSS_PIPELINE_PCT=0 (or OSS endpoint unset) every session is 'legacy'.
     is_oss = pipeline_variant == "oss"
-    request_model = get_model_for_variant(pipeline_variant)
-    request_provider = provider_for_variant(pipeline_variant)
-    request_model_name = OSS_LLM_MODEL_NAME if is_oss else LLM_MODEL_NAME
+    # Model selection resolved by the unified pipeline (the only path); identity
+    # with the removed get_model_for_variant/provider_for_variant for the current
+    # env. (Voice's streaming / moderation / pre-translation twins remain on their
+    # own code paths — folded in from the voice repo, out of scope for chat P4.)
+    _agent_tier = _llm_resolver.primary_tier(_LlmStep.AGENT, pipeline_variant)
+    request_model = _agent_tier.handle
+    request_provider = _agent_tier.provider
+    request_model_name = _agent_tier.model_name
     last_owner_refresh_at = 0.0
     last_emitted_sig_char: str | None = None
     trace = trace or create_voice_trace(
@@ -2149,16 +2150,43 @@ async def stream_voice_message(
                     _fb_holder: dict = {}
 
                     async def _raw_stream(attempt):
-                        async with active_agent.run_stream(
+                        # (D) COMMIT-ON-FIRST-ACTIVITY. Iterate via agent.iter()+node.stream()
+                        # so the FIRST pydantic-ai model event (a tool-call part, emitted
+                        # BEFORE the tools run and long before the first TEXT delta) is
+                        # surfaced once as the AGENT_ACTIVITY sentinel.
+                        # with_first_token_deadline treats that as the first-token commit,
+                        # so the slow 20s milk-collection tool can no longer trip the TTFT
+                        # deadline and force a cross-tier re-run of side-effecting tools
+                        # (CreateAICall booking / SMS -> duplicate bookings). The sentinel
+                        # is swallowed by the deadline wrapper and never heard by the
+                        # caller; TEXT extraction is unchanged. Liveness is preserved: a
+                        # hung endpoint emits no event, so the deadline still fires -> swap.
+                        _activity_signaled = False
+                        async with active_agent.iter(
                             user_prompt=user_message,
                             message_history=model_input_history,
                             deps=deps,
                             usage_limits=usage_limits,
                             model=attempt.model,
-                        ) as rs:
-                            async for _c in rs.stream_text(delta=True, debounce_by=0):
-                                yield _c
-                            _fb_holder["new_messages"] = rs.new_messages()
+                        ) as agent_run:
+                            async for node in agent_run:
+                                if type(node).__name__ == 'ModelRequestNode':
+                                    async with node.stream(agent_run.ctx) as request_stream:
+                                        async for event in request_stream:
+                                            if not _activity_signaled:
+                                                _activity_signaled = True
+                                                yield AGENT_ACTIVITY
+                                            event_type = type(event).__name__
+                                            _c = None
+                                            if event_type == 'PartStartEvent' and hasattr(event, 'part'):
+                                                if type(event.part).__name__ == 'TextPart' and hasattr(event.part, 'content'):
+                                                    _c = event.part.content
+                                            elif event_type == 'PartDeltaEvent' and hasattr(event, 'delta'):
+                                                if type(event.delta).__name__ == 'TextPartDelta':
+                                                    _c = event.delta.content_delta
+                                            if _c:
+                                                yield _c
+                            _fb_holder["new_messages"] = agent_run.result.new_messages()
 
                     async def _make_stream(attempt):
                         # Bound time-to-first-token (attempt.timeout) so a silent OSS

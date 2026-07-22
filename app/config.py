@@ -141,6 +141,11 @@ class Settings(BaseSettings):
     # observability reconciliation (bucket C).
     nudge_api_url: str = os.getenv("NUDGE_API_URL", "https://vistaar.getraya.app/api/nudge-user")
     nudge_timeout_seconds: float = float(os.getenv("NUDGE_TIMEOUT_SECONDS", "3.0"))
+    # Master switch for the voice pipeline. When false, main.py never imports or
+    # mounts the voice router — no voice Agent is constructed, no /voice route is
+    # registered — so a chat-only deployment carries zero voice cost. Set false on
+    # the chat-prod service (voice is served by the separate voice-oan-api).
+    enable_voice: bool = _get_bool_env("ENABLE_VOICE", default=True)
     enable_voice_nudges: bool = _get_bool_env("ENABLE_VOICE_NUDGES", default=True)
     stt_signal_retry_ceiling: int = int(os.getenv("STT_SIGNAL_RETRY_CEILING", "3"))
     openai_pretranslation_timeout_seconds: float = float(os.getenv("OPENAI_PRETRANSLATION_TIMEOUT_SECONDS", "10.0"))
@@ -180,17 +185,19 @@ class Settings(BaseSettings):
     llm_model_name: Optional[str] = None
     marqo_index_name: Optional[str] = None
 
-    # OSS pipeline sticky %-split (0 = disabled; prod behaviour unchanged).
-    # A session is bucketed deterministically by session_id; OSS_PIPELINE_PCT
-    # percent of sessions route to the OSS pipeline (vLLM translation path).
-    oss_pipeline_pct: int = int(os.getenv("OSS_PIPELINE_PCT", "0"))
-    oss_inference_endpoint_url: Optional[str] = os.getenv("OSS_INFERENCE_ENDPOINT_URL")
-    oss_llm_model_name: Optional[str] = os.getenv("OSS_LLM_MODEL_NAME")
-    oss_variant_ttl: int = int(os.getenv("OSS_VARIANT_TTL", str(60 * 60 * 24 * 7)))  # 7d sticky
+    # OSS pipeline %-split, sticky TTL and OSS model/endpoint are no longer read
+    # via `settings`: they map to llm_core's weighted-profile config, synthesized
+    # from the raw env (OSS_PIPELINE_PCT / OSS_VARIANT_TTL / OSS_INFERENCE_* /
+    # OSS_LLM_MODEL_NAME) by app/llm_core/legacy_shim.py. The env vars stay; the
+    # duplicate settings attributes + the pipeline_router that read them are gone.
 
-    # Standard OSS -> managed fallback (see docs/oss-fallback-design.md).
-    # Kill-switch defaults OFF: when false, pipelines keep today's behaviour.
-    fallback_enabled: bool = os.getenv("FALLBACK_ENABLED", "false").strip().lower() in {
+    # Standard OSS -> managed overflow/fallback (see docs/oss-fallback-design.md).
+    # ARMS the whole overflow system: the OSS->managed attempt chain AND the health
+    # + concurrency guards (which fire ONLY via the fallback walkers) are inert
+    # while this is off. Post-P4 the unified pipeline is the ONLY path (legacy
+    # deleted), so shipping with overflow off makes no sense — DEFAULTS TRUE. Envs
+    # that deliberately want it off can still set FALLBACK_ENABLED=false.
+    fallback_enabled: bool = os.getenv("FALLBACK_ENABLED", "true").strip().lower() in {
         "1", "true", "yes", "on"
     }
     # Per-pipeline OSS time-to-respond budgets before falling back to managed.
@@ -201,28 +208,11 @@ class Settings(BaseSettings):
     # Deadline for the managed (fallback) tier.
     fallback_managed_timeout_ms: int = int(os.getenv("FALLBACK_MANAGED_TIMEOUT_MS", "20000"))
 
-    # Unified LLM pipeline core (app/llm_core). Kill-switch defaults OFF: when
-    # on, the chat agent/moderation/suggestions/pretranslation call sites obtain
-    # the model handle from the llm_core resolver instead of the legacy singletons
-    # (identity for the current env, verified at startup by
-    # app.llm_core.runtime.self_check). When off, every path is byte-identical to
-    # today's behaviour.
-    llm_core_enabled: bool = os.getenv("LLM_CORE_ENABLED", "true").strip().lower() in {
-        "1", "true", "yes", "on"
-    }
-    # Weighted named-profile split + config-driven attempt chain (llm_core P1).
-    # Kill-switch defaults OFF: when off, the sticky OSS/legacy variant comes from
-    # `pipeline_router` and the fallback chain from `fallback.attempt_chain`
-    # (byte-identical to today). When on, the session is bucketed into an
-    # llm_core NamedProfile (cumulative sha256 buckets, bit-compatible with
-    # pipeline_router) and the fallback walkers materialize the profile's tiers.
-    # Composes with LLM_CORE_ENABLED: PROFILES_ENABLED gates the split (which
-    # profile a session lands in, driving the downstream variant string); the
-    # config-driven chain of factory handles is only materialized when BOTH this
-    # and LLM_CORE_ENABLED are on (the chain's handles are P0-factory-built).
-    profiles_enabled: bool = os.getenv("PROFILES_ENABLED", "true").strip().lower() in {
-        "1", "true", "yes", "on"
-    }
+    # The unified LLM pipeline (app/llm_core) is now the ONLY model-selection path
+    # — the LLM_CORE_ENABLED / PROFILES_ENABLED kill-switches (P0/P1 identity gates)
+    # were removed at P4. The weighted-profile split + config-driven fallback chain
+    # are always live. Operational trigger flags (HEALTH_* / CONCURRENCY_GAUGE_*)
+    # below remain as real toggles.
     # Health filter — pre-flight chain FILTER (llm_core P2). Two independent
     # kill-switches, both default OFF (zero behaviour change when off):
     #   * HEALTH_BREAKER_ENABLED — the passive circuit-breaker, fed by the

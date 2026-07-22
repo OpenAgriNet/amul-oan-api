@@ -60,45 +60,20 @@ def test_bad_output_and_cancelled_not_fallbackable():
     assert FallbackReason.TIMEOUT in fb.FALLBACKABLE
 
 
-# ── attempt_chain() + execute_with_fallback() ────────────────────────────────
+# ── execute_with_fallback() over the config-driven chain ─────────────────────
+# The chain now comes from the weighted-profile resolver (tested in test_split);
+# these walker tests stub ``_resolve_chain`` with a controlled variant-keyed chain
+# (via the shared ``install_chain`` fixture) so they isolate the classify /
+# first-token-commit logic. variant 'oss' -> [oss, managed]; else -> [managed].
 
 @pytest.fixture
-def oss_enabled(monkeypatch):
-    """Fallback ON, OSS available; capture emitted events instead of logging.
-
-    These tests exercise the legacy ``attempt_chain`` walker mechanics, so the
-    weighted-profile split is pinned OFF here (its defaults are now ON at boot) to
-    keep the chain a deterministic [oss, managed] independent of the synthesized
-    env config. The split path has its own coverage in test_split.py."""
+def oss_enabled(monkeypatch, install_chain):
+    """Fallback ON, controlled [oss, managed] chain; capture emitted events."""
     monkeypatch.setattr(fb.settings, "fallback_enabled", True)
-    monkeypatch.setattr(fb.settings, "profiles_enabled", False)
-    monkeypatch.setattr(fb.settings, "llm_core_enabled", False)
-    monkeypatch.setattr(fb, "oss_model_available", lambda: True)
-    monkeypatch.setattr(fb, "OSS_LLM_MODEL", object())
-    monkeypatch.setattr(fb, "OSS_LLM_MODEL_NAME", "gemma-test")
-    monkeypatch.setattr(fb, "OSS_INFERENCE_ENDPOINT_URL", "http://oss:8020/v1")
+    install_chain()
     events = []
     monkeypatch.setattr(fb, "emit", events.append)
     return events
-
-
-def test_chain_oss_two_tiers(oss_enabled):
-    chain = fb.attempt_chain("oss", "moderation")
-    assert [a.kind for a in chain] == ["oss", "managed"]
-    assert chain[0].endpoint == "http://oss:8020/v1"
-    assert chain[0].timeout is not None
-
-
-def test_chain_legacy_single_tier(oss_enabled):
-    chain = fb.attempt_chain("legacy", "moderation")
-    assert [a.kind for a in chain] == ["managed"]
-
-
-def test_chain_disabled_single_tier_no_deadline(monkeypatch):
-    monkeypatch.setattr(fb.settings, "fallback_enabled", False)
-    chain = fb.attempt_chain("oss", "moderation")
-    assert len(chain) == 1
-    assert chain[0].timeout is None
 
 
 def test_falls_back_to_managed_on_connection_error(oss_enabled):
@@ -249,8 +224,9 @@ def test_stream_precommit_bad_output_does_not_swap(oss_enabled):
 # ── with_first_token_deadline() (time-to-first-token bound) ──────────────────
 
 def _attempt(timeout):
-    return fb.Attempt(kind="oss", model=object(), model_name="gemma-test",
-                      provider="vllm", endpoint="http://oss:8020/v1", timeout=timeout)
+    from app.llm_core.factory import MaterializedTier
+    return MaterializedTier(kind="oss", handle=object(), model_name="gemma-test",
+                            provider="vllm", endpoint="http://oss:8020/v1", timeout=timeout)
 
 
 def test_ttft_slow_first_token_raises_timeout():
@@ -289,7 +265,7 @@ def test_ttft_none_is_noop():
     assert out == ["ok"]
 
 
-def test_ttft_timeout_triggers_fallback_to_managed(oss_enabled):
+def test_ttft_timeout_triggers_fallback_to_managed(oss_enabled, install_chain):
     """End to end: a silent OSS first-token hang swaps to managed before commit."""
     async def make_stream(attempt):
         async for c in fb.with_first_token_deadline(attempt, _raw(attempt)):
@@ -302,10 +278,8 @@ def test_ttft_timeout_triggers_fallback_to_managed(oss_enabled):
         else:
             yield "managed:ok"
 
-    # Tight oss timeout so the test is fast; managed has its own (longer) budget.
-    oss_enabled  # fixture active
-    import app.config as _cfg
-    _cfg.settings.fallback_chat_oss_timeout_ms = 50
+    # Tight oss first-token timeout so the test is fast; managed has no deadline.
+    install_chain(oss_timeout=0.05)
     chunks = asyncio.run(_collect(fb.stream_with_fallback(
         pipeline="chat", session_id="s", variant="oss", make_stream=make_stream)))
     assert chunks == ["managed:ok"]

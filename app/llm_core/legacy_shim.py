@@ -21,6 +21,7 @@ so the core stays import-clean.
 
 from __future__ import annotations
 
+import logging
 import os
 
 from app.llm_core.config_model import (
@@ -34,6 +35,9 @@ from app.llm_core.config_model import (
     Tier,
     Triggers,
 )
+
+
+logger = logging.getLogger(__name__)
 
 
 def _env(name: str, default: str | None = None) -> str | None:
@@ -119,19 +123,44 @@ def _oss_pretranslation_tier(timeout_ms: int) -> Tier:
     )
 
 
-# ── post-translation (TranslateGemma) — profile-invariant → defaults ──────────
+# ── post-translation — profile-invariant → defaults ──────────────────────────
+# Chain: [TranslateGemma(LB), managed-LLM overflow]. TranslateGemma is deployed
+# BEHIND AN NGINX LB, so the SINGULAR ``TRANSLATEGEMMA_27B_BASE_ENDPOINT`` IS that
+# LB (it fans out to replicas server-side) — there is exactly one client-facing
+# endpoint, never a client-side list. The overflow tier is the managed LLM doing
+# en→target translation via chat.completions with the SAME glossary/rules prompt;
+# it serves only when TranslateGemma fails before the first streamed token.
 def _post_translation_tiers() -> list[Tier]:
-    raw = (_env("TRANSLATEGEMMA_27B_BASE_ENDPOINTS", "") or "").strip()
-    if raw:
-        endpoints = [e.strip() for e in raw.split(",") if e.strip()]
-    else:
-        endpoints = [_env("TRANSLATEGEMMA_27B_BASE_ENDPOINT", "http://localhost:18002/v1") or "http://localhost:18002/v1"]
+    # TranslateGemma is fronted by an nginx LB, so post-translation reads the
+    # SINGULAR endpoint. The old client-side plural list (+random.choice) is gone;
+    # warn loudly if a stale env still sets only the plural var, which would
+    # otherwise be silently ignored and drop TG to the localhost default.
+    if _env("TRANSLATEGEMMA_27B_BASE_ENDPOINTS") and not _env("TRANSLATEGEMMA_27B_BASE_ENDPOINT"):
+        logger.warning(
+            "TRANSLATEGEMMA_27B_BASE_ENDPOINTS (plural) is set but the singular "
+            "TRANSLATEGEMMA_27B_BASE_ENDPOINT is not — the plural var is DEPRECATED "
+            "and ignored; TranslateGemma will fall back to the localhost default. "
+            "Set TRANSLATEGEMMA_27B_BASE_ENDPOINT to the nginx LB URL."
+        )
+    endpoint = _env("TRANSLATEGEMMA_27B_BASE_ENDPOINT", "http://localhost:18002/v1") or "http://localhost:18002/v1"
     model_id = _env("TRANSLATEGEMMA_27B_BASE_MODEL", "translategemma-27b-base") or "translategemma-27b-base"
-    return [
-        Tier(provider=Provider.TRANSLATEGEMMA, model=model_id, endpoint=ep,
-             api_style=ApiStyle.TEXT_COMPLETION, timeout_ms=60000, label="translategemma-27b-base")
-        for ep in endpoints
-    ]
+    # ``timeout_ms`` is the 60s overall/total per-attempt cap; ``ttft_ms`` is the
+    # distinct, SHORT first-token deadline (single-digit seconds) so a saturated-
+    # but-alive TG overflows fast instead of blocking a voice turn for the full 60s.
+    tg = Tier(
+        provider=Provider.TRANSLATEGEMMA, model=model_id, endpoint=endpoint,
+        api_style=ApiStyle.TEXT_COMPLETION, timeout_ms=60000,
+        ttft_ms=_int_env("FALLBACK_POST_TRANSLATION_TG_TTFT_MS", 5000),
+        label="translategemma",
+    )
+    # Cross-provider overflow = the managed agent tier, but forced to CHAT api_style
+    # and given its own (shorter) first-token deadline. Reuses the managed builder so
+    # provider/model/key/endpoint track LLM_PROVIDER exactly.
+    llm_ms = _int_env("FALLBACK_POST_TRANSLATION_LLM_TIMEOUT_MS", 30000)
+    llm_fallback = _managed_agent_tier(llm_ms, "llm-fallback").model_copy(
+        update={"api_style": ApiStyle.CHAT}
+    )
+    return [tg, llm_fallback]
 
 
 def _oss_configured() -> bool:
