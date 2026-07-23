@@ -719,7 +719,7 @@ def _post_translation_chain():
     is ``open`` and is contractually never-empty (all-open -> chain returned
     unchanged), and it is a settings-gated identity no-op when the health flags are
     off, so the flags-off path is byte-identical."""
-    tiers = _llm_resolver.post_translation_tiers("legacy")
+    tiers = _llm_resolver.post_translation_tiers()  # profile-invariant (lives in defaults)
     tiers = _llm_health.prune_unhealthy(_Step.POST_TRANSLATION, tiers)
     chain = [_PostTranslationTier(t) for t in tiers]
     _llm_trace.record_step_chain(_Step.POST_TRANSLATION, chain)
@@ -1814,7 +1814,7 @@ async def translate_to_english_with_oss_vllm(
             metadata={
                 "translation_provider": "vllm",
                 "pipeline_stage": "query_pretranslation",
-                "pipeline_variant": "oss",
+                "pipeline_profile": "oss",
             },
         ) as observation:
             response = await _create_oss_pretranslation_response(

@@ -976,21 +976,23 @@ async def stream_voice_message(
     owner: Optional[SessionRequestOwner] = None,
     http_request: Optional[Request] = None,
     trace: Optional[VoiceTrace] = None,
-    pipeline_variant: str = "legacy",
+    pipeline_profile: str = "managed",
 #    background_tasks: BackgroundTasks,
 
 ) -> AsyncGenerator[str, None]:
     """Async generator for streaming chat messages."""
     request_started_at = time.monotonic()
-    # OSS sticky variant => run the dev OSS path (vLLM gemma agent + vLLM
-    # gemma pretranslation). 'legacy' keeps current prod behaviour byte-for-byte;
-    # with OSS_PIPELINE_PCT=0 (or OSS endpoint unset) every session is 'legacy'.
-    is_oss = pipeline_variant == "oss"
     # Model selection resolved by the unified pipeline (the only path); identity
     # with the removed get_model_for_variant/provider_for_variant for the current
     # env. (Voice's streaming / moderation / pre-translation twins remain on their
     # own code paths — folded in from the voice repo, out of scope for chat P4.)
-    _agent_tier = _llm_resolver.primary_tier(_LlmStep.AGENT, pipeline_variant)
+    _agent_tier = _llm_resolver.primary_tier(_LlmStep.AGENT, pipeline_profile)
+    # oss-vs-managed behavioural split from the resolved AGENT primary tier KIND, not
+    # a variant string: a vllm/self-hosted primary (gemma, qwen, ...) -> kind "oss";
+    # a managed provider (openai/anthropic/gemini) -> "managed". With the 2-way
+    # env-shim (profile named oss/managed) this equals the old
+    # ``pipeline_variant == "oss"`` bit exactly.
+    is_oss = _agent_tier.kind == "oss"
     request_model = _agent_tier.handle
     request_provider = _agent_tier.provider
     request_model_name = _agent_tier.model_name
@@ -1012,7 +1014,7 @@ async def stream_voice_message(
     # (Langfuse v4: "Operations that depend on an active span will be
     # skipped"; mirror of amul-oan-api#70).
     try:
-        trace.metadata["pipeline_variant"] = pipeline_variant
+        trace.metadata["pipeline_profile"] = pipeline_profile
         trace.metadata["request_model"] = request_model_name
         trace.metadata["request_provider"] = request_provider
     except Exception:  # pragma: no cover - never break the call
@@ -1020,7 +1022,7 @@ async def stream_voice_message(
     logger.info(
         "voice request_variant session_id=%s variant=%s model=%s provider=%s",
         session_id,
-        pipeline_variant,
+        pipeline_profile,
         request_model_name,
         request_provider,
     )
@@ -1108,7 +1110,7 @@ async def stream_voice_message(
         # generator so downstream model calls and pydantic-ai spans nest under
         # this voice_request.
         with trace.request_context():
-            # Emit the per-session pipeline_variant categorical score from
+            # Emit the per-session pipeline_profile categorical score from
             # *inside* the trace context (chat #70 fix). score_id is
             # deterministic per session so subsequent voice turns in the
             # same session upsert the same score (no duplicates).
@@ -1116,14 +1118,14 @@ async def stream_voice_message(
                 try:
                     _lf = _get_langfuse_client()
                     _lf.score_current_trace(
-                        name="pipeline_variant",
-                        value=pipeline_variant,
+                        name="pipeline_profile",
+                        value=pipeline_profile,
                         data_type="CATEGORICAL",
                         score_id=f"voice-variant-{(session_id or '')[:180]}",
                         comment="Sticky pipeline variant for this voice session",
                     )
                 except Exception as e:  # pragma: no cover
-                    logger.debug("Langfuse: voice pipeline_variant score failed: %s", e)
+                    logger.debug("Langfuse: voice pipeline_profile score failed: %s", e)
             requested_source_lang = (source_lang or "gu").strip().lower()
             requested_target_lang = (target_lang or "gu").strip().lower()
             trace.set_language(requested_source_lang, requested_target_lang)
@@ -1366,7 +1368,7 @@ async def stream_voice_message(
                     text=query,
                     source_lang=requested_source_lang,
                     recent_history_text=moderation_recent_history,
-                    variant=pipeline_variant,
+                    profile_name=pipeline_profile,
                     session_id=session_id,
                 )
             )
@@ -1392,7 +1394,7 @@ async def stream_voice_message(
                     "Translation pipeline enabled; pretranslating %s -> en with %s (variant=%s)",
                     requested_source_lang,
                     _pretrans_model,
-                    pipeline_variant,
+                    pipeline_profile,
                 )
                 if await _request_is_stale("before_query_pretranslation"):
                     moderation_task.cancel()
@@ -1412,14 +1414,14 @@ async def stream_voice_message(
                             metadata={
                                 "provider": _pretrans_provider_label,
                                 "source_lang": requested_source_lang,
-                                "pipeline_variant": pipeline_variant,
+                                "pipeline_profile": pipeline_profile,
                             },
                             model=_pretrans_model,
                         ):
                             processing_query = await execute_with_fallback(
                                 pipeline="pretranslation",
                                 session_id=session_id,
-                                variant=pipeline_variant,
+                                profile_name=pipeline_profile,
                                 run=lambda a: (
                                     translate_to_english_with_oss_vllm(
                                         text=query, source_lang=requested_source_lang
@@ -1459,7 +1461,7 @@ async def stream_voice_message(
                             metadata={
                                 "provider": _pretrans_provider_label,
                                 "source_lang": requested_source_lang,
-                                "pipeline_variant": pipeline_variant,
+                                "pipeline_profile": pipeline_profile,
                             },
                             model=_pretrans_model,
                         ):
@@ -2199,7 +2201,7 @@ async def stream_voice_message(
                     _src = stream_with_fallback(
                         pipeline="chat",
                         session_id=session_id,
-                        variant=pipeline_variant,
+                        profile_name=pipeline_profile,
                         make_stream=_make_stream,
                     ).__aiter__()
 
@@ -2319,7 +2321,7 @@ async def stream_voice_message(
                     (time.monotonic() - agent_started_at) * 1000.0,
                     signed_in=bool(signed_in and mobile),
                     request_limit=usage_limits.request_limit,
-                    pipeline_variant=pipeline_variant,
+                    pipeline_profile=pipeline_profile,
                     model=request_model_name,
                     provider=request_provider,
                 )

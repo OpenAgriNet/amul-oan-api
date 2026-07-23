@@ -1,0 +1,89 @@
+# Example N-way ("nxn") pipeline config for the CHAT repo.
+#
+# OPT-IN ONLY: this file is loaded ONLY when PIPELINE_CONFIG_PATH points at it.
+# Leave that env var UNSET to keep the env-shim default (OSS_PIPELINE_PCT ->
+# [oss, managed]) so prod/dev stay 2-way and byte-unchanged.
+#
+# It defines THREE weighted profiles, each served DIRECTLY by NAME (there is no
+# oss/managed 2-way collapse — a 3rd profile gets ITS own model):
+#   gemma (5%)  -> self-hosted vLLM gemma-4-31b-it   (agent tier kind = "oss")
+#   qwen  (10%) -> self-hosted vLLM qwen2.5-32b       (agent tier kind = "oss")
+#   gpt   (85%) -> managed OpenAI gpt-4.1             (agent tier kind = "managed")
+#
+# Weights MUST sum to 100 (enforced by PipelineConfig). Each vLLM profile's chain
+# is [its vLLM primary, managed OpenAI fallback]; the gpt profile is a single
+# managed tier. Post-translation (TranslateGemma) is profile-invariant and lives in
+# `defaults`. api_key_env NAMES the secret env var — the value is read at
+# materialize time and never stored here.
+#
+# Chat steps: agent / moderation / suggestions / pre_translation (+ post_translation
+# in defaults). The voice repo swaps `suggestions` for `non_meaningful`.
+
+sticky_ttl_s: 604800
+fallback_enabled: true
+
+profiles:
+  - name: gemma
+    weight: 5
+    steps:
+      agent:
+        tiers:
+          - {provider: vllm,   model: gemma-4-31b-it, endpoint: http://gemma:8020/v1, api_key_env: OSS_INFERENCE_API_KEY, timeout_ms: 8000,  label: gemma-agent}
+          - {provider: openai, model: gpt-4.1,        api_key_env: OPENAI_API_KEY,     timeout_ms: 20000, label: managed-fallback}
+        triggers: {ttft_deadline_ms: 8000}
+      moderation:
+        tiers:
+          - {provider: vllm,   model: gemma-4-31b-it, endpoint: http://gemma:8020/v1, api_key_env: OSS_INFERENCE_API_KEY, timeout_ms: 5000,  label: gemma-moderation}
+          - {provider: openai, model: gpt-4.1,        api_key_env: OPENAI_API_KEY,     timeout_ms: 20000, label: managed-fallback}
+      suggestions:
+        tiers:
+          - {provider: vllm,   model: gemma-4-31b-it, endpoint: http://gemma:8020/v1, api_key_env: OSS_INFERENCE_API_KEY, timeout_ms: 6000,  label: gemma-suggestions}
+          - {provider: openai, model: gpt-4.1,        api_key_env: OPENAI_API_KEY,     timeout_ms: 20000, label: managed-fallback}
+      pre_translation:
+        tiers:
+          - {provider: vllm,   model: gemma-4-31b-it, endpoint: http://gemma:8020/v1, api_key_env: OSS_INFERENCE_API_KEY, timeout_ms: 10000, label: gemma-pretranslation}
+          - {provider: openai, model: gpt-4.1-mini,   api_key_env: OPENAI_API_KEY,     timeout_ms: 20000, label: managed-pretranslation}
+
+  - name: qwen
+    weight: 10
+    steps:
+      agent:
+        tiers:
+          - {provider: vllm,   model: qwen2.5-32b-instruct, endpoint: http://qwen:8020/v1, api_key_env: OSS_INFERENCE_API_KEY, timeout_ms: 8000,  label: qwen-agent}
+          - {provider: openai, model: gpt-4.1,              api_key_env: OPENAI_API_KEY,     timeout_ms: 20000, label: managed-fallback}
+        triggers: {ttft_deadline_ms: 8000}
+      moderation:
+        tiers:
+          - {provider: vllm,   model: qwen2.5-32b-instruct, endpoint: http://qwen:8020/v1, api_key_env: OSS_INFERENCE_API_KEY, timeout_ms: 5000,  label: qwen-moderation}
+          - {provider: openai, model: gpt-4.1,              api_key_env: OPENAI_API_KEY,     timeout_ms: 20000, label: managed-fallback}
+      suggestions:
+        tiers:
+          - {provider: vllm,   model: qwen2.5-32b-instruct, endpoint: http://qwen:8020/v1, api_key_env: OSS_INFERENCE_API_KEY, timeout_ms: 6000,  label: qwen-suggestions}
+          - {provider: openai, model: gpt-4.1,              api_key_env: OPENAI_API_KEY,     timeout_ms: 20000, label: managed-fallback}
+      pre_translation:
+        tiers:
+          - {provider: vllm,   model: qwen2.5-32b-instruct, endpoint: http://qwen:8020/v1, api_key_env: OSS_INFERENCE_API_KEY, timeout_ms: 10000, label: qwen-pretranslation}
+          - {provider: openai, model: gpt-4.1-mini,         api_key_env: OPENAI_API_KEY,     timeout_ms: 20000, label: managed-pretranslation}
+
+  - name: gpt
+    weight: 85
+    steps:
+      agent:
+        tiers:
+          - {provider: openai, model: gpt-4.1, api_key_env: OPENAI_API_KEY, timeout_ms: 20000, label: gpt-agent}
+        triggers: {ttft_deadline_ms: 20000}
+      moderation:
+        tiers:
+          - {provider: openai, model: gpt-4.1, api_key_env: OPENAI_API_KEY, timeout_ms: 20000, label: gpt-moderation}
+      suggestions:
+        tiers:
+          - {provider: openai, model: gpt-4.1, api_key_env: OPENAI_API_KEY, timeout_ms: 20000, label: gpt-suggestions}
+      pre_translation:
+        tiers:
+          - {provider: openai, model: gpt-4.1-mini, api_key_env: OPENAI_API_KEY, timeout_ms: 20000, label: gpt-pretranslation}
+
+defaults:
+  post_translation:
+    tiers:
+      - {provider: translategemma, model: translategemma-27b-base, endpoint: http://translategemma:18002/v1, api_style: text_completion, timeout_ms: 60000, ttft_ms: 5000, label: translategemma}
+      - {provider: openai,         model: gpt-4.1,                 api_key_env: OPENAI_API_KEY, api_style: chat, timeout_ms: 30000, label: llm-fallback}

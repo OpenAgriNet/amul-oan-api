@@ -23,7 +23,7 @@ except ImportError:
     propagate_attributes = None
     get_langfuse_client = None
 
-async def create_suggestions(session_id: str, target_lang: str = 'mr', variant: str = "legacy"):
+async def create_suggestions(session_id: str, target_lang: str = 'mr', profile_name: str = "managed"):
     """
     Create and save suggestions for a session
     """
@@ -35,7 +35,7 @@ async def create_suggestions(session_id: str, target_lang: str = 'mr', variant: 
     # name come from the resolved primary SUGGESTIONS tier (the only path); when
     # the session's variant has no OSS profile the resolver falls back to the
     # managed tier, matching the old oss_model_available() guard.
-    sug_tier = _llm_resolver.primary_tier(_LlmStep.SUGGESTIONS, variant)
+    sug_tier = _llm_resolver.primary_tier(_LlmStep.SUGGESTIONS, profile_name)
     sug_model = sug_tier.handle
     sug_model_name = sug_tier.model_name
 
@@ -90,7 +90,7 @@ async def create_suggestions(session_id: str, target_lang: str = 'mr', variant: 
                     agent_run = await execute_with_fallback(
                         pipeline="suggestions",
                         session_id=session_id_safe,
-                        variant=variant,
+                        profile_name=profile_name,
                         run=lambda a: suggestions_agent.run(message, model=a.model),
                     )
                 else:

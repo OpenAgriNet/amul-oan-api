@@ -156,7 +156,7 @@ _PIPELINE_TO_STEP = {
 }
 
 
-async def _resolve_chain(*, pipeline: str, session_id: str, variant: str) -> list:
+async def _resolve_chain(*, pipeline: str, session_id: str, profile_name: str) -> list:
     """How the walkers receive their chain — always the config-driven pipeline.
 
     Resolves the session's sticky weighted profile, looks up the step's tiers, and
@@ -164,8 +164,8 @@ async def _resolve_chain(*, pipeline: str, session_id: str, variant: str) -> lis
     FILTER) and concurrency reordering happen inside ``split.resolve_chain`` — a
     no-op unless a HEALTH_* / CONCURRENCY_GAUGE flag is on.
 
-    ``variant`` is kept in the signature (walker call sites + telemetry) but the
-    chain is driven by the session's sticky profile, not the variant string.
+    ``profile_name`` is the routing token (the actual profile NAME) already resolved
+    at the router seam; the chain selects THAT profile directly.
 
     A config/Redis edge case must never break the fallback path: on any failure
     (or an unmapped pipeline) it degrades to the resolver's managed-tier chain for
@@ -176,13 +176,13 @@ async def _resolve_chain(*, pipeline: str, session_id: str, variant: str) -> lis
     if step is not None:
         try:
             from app.llm_core import split
-            # (C) Honor the variant the router already resolved from the FULL
+            # (C) Honor the profile NAME the router already resolved from the FULL
             # session id. The walkers receive a 200-char-capped session id, so
             # re-bucketing here on that capped id could pick a different profile
-            # than the primary path — threading the variant selects the same
-            # profile without a second (divergent) bucket.
+            # than the primary path — threading the name selects the same profile
+            # without a second (divergent) bucket.
             return await split.resolve_chain(
-                session_id, step, variant=variant
+                session_id, step, profile_name=profile_name
             )  # health-pruned inside
         except Exception as exc:  # never break the fallback path on a config edge
             logger.warning(
@@ -192,7 +192,7 @@ async def _resolve_chain(*, pipeline: str, session_id: str, variant: str) -> lis
 
     from app.llm_core import resolver as _resolver
     degrade_step = step or Step.AGENT
-    return _resolver.resolve_chain(degrade_step, "legacy")
+    return _resolver.resolve_chain(degrade_step)
 
 
 @dataclass
@@ -372,7 +372,7 @@ async def execute_with_fallback(
     *,
     pipeline: str,
     session_id: str,
-    variant: str,
+    profile_name: str,
     run: Callable[[MaterializedTier], Awaitable[Any]],
 ) -> Any:
     """Run ``run(attempt)`` against each tier of the chain, falling back on a
@@ -384,7 +384,7 @@ async def execute_with_fallback(
     exhausted, so the caller's existing degrade path (moderation fail-closed,
     pretranslation safe-default, suggestions ``[]``) stays the terminal net.
     """
-    chain = await _resolve_chain(pipeline=pipeline, session_id=session_id, variant=variant)
+    chain = await _resolve_chain(pipeline=pipeline, session_id=session_id, profile_name=profile_name)
     for i, attempt in enumerate(chain):
         is_last = i == len(chain) - 1
         # (F) Cap concurrent MANAGED-tier admission; OSS tiers stay uncapped.
@@ -536,7 +536,7 @@ async def stream_with_fallback(
     *,
     pipeline: str,
     session_id: str,
-    variant: str,
+    profile_name: str,
     make_stream: Callable[[MaterializedTier], AsyncIterator[Any]],
 ) -> AsyncIterator[Any]:
     """Stream a chain tier with *first-token commit* semantics.
@@ -556,7 +556,7 @@ async def stream_with_fallback(
     Every classified failure is recorded via ``emit`` (``committed`` distinguishes
     pre- from post-commit).
     """
-    chain = await _resolve_chain(pipeline=pipeline, session_id=session_id, variant=variant)
+    chain = await _resolve_chain(pipeline=pipeline, session_id=session_id, profile_name=profile_name)
     last_exc: Optional[BaseException] = None
     for i, attempt in enumerate(chain):
         is_last = i == len(chain) - 1

@@ -211,13 +211,14 @@ def self_check() -> None:
     failures: list[str] = []
 
     for profile in pipeline.profiles:
-        variant = "oss" if profile.name == "oss" else "legacy"
         for step in Step:
             step_cfg = pipeline.step_config(profile, step)
             if step_cfg is None:
                 continue  # a profile need not configure every step (post-trans lives in defaults)
             try:
-                mt = resolver.primary_tier(step, variant)
+                # Resolve BY PROFILE NAME (N-way): a broken 3rd-profile tier (bad
+                # provider/endpoint/key) is caught here at boot, not just oss/managed.
+                mt = resolver.primary_tier(step, profile.name)
                 logger.info(
                     "llm_core self-check profile=%s step=%s -> provider=%s base_url=%s model=%s timeout=%s",
                     profile.name, step.value, mt.provider, _base_url(mt.handle), mt.model_name, mt.timeout,

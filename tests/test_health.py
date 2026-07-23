@@ -373,7 +373,7 @@ def test_fallback_resolve_chain_prunes_when_breaker_on(monkeypatch):
     health._registry.record_failure("http://oss:8020/v1")            # OSS endpoint down
 
     # session_id="" -> deterministic profile (no Redis); oss weight 100 -> [oss, managed]
-    chain = asyncio.run(fb._resolve_chain(pipeline="moderation", session_id="", variant="oss"))
+    chain = asyncio.run(fb._resolve_chain(pipeline="moderation", session_id="", profile_name="oss"))
     assert [a.kind for a in chain] == ["managed"]                    # oss pruned
     health.reset()
 
@@ -392,6 +392,6 @@ def test_fallback_resolve_chain_untouched_when_health_off(monkeypatch):
     health.reset(_cfg(n=1))
     health._registry.record_failure("http://oss:8020/v1", now=0.0)
 
-    chain = asyncio.run(fb._resolve_chain(pipeline="moderation", session_id="", variant="oss"))
+    chain = asyncio.run(fb._resolve_chain(pipeline="moderation", session_id="", profile_name="oss"))
     assert [a.kind for a in chain] == ["oss", "managed"]
     health.reset()

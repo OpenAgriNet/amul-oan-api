@@ -178,13 +178,18 @@ async def stream_chat_messages(
     user_info: dict,
     background_tasks: BackgroundTasks,
     use_translation_pipeline: bool = True,
-    pipeline_variant: str = "legacy",
+    pipeline_profile: str = "managed",
 ) -> AsyncGenerator[str, None]:
     """Async generator for streaming chat messages."""
-    # OSS sticky variant => run the dev OSS path (translation pipeline + vLLM
-    # agent model). 'legacy' keeps the current prod behaviour byte-for-byte;
-    # with the OSS profile at weight 0 every session is 'legacy'.
-    is_oss = pipeline_variant == "oss"
+    # The oss-vs-managed behavioural split is derived from the resolved AGENT primary
+    # tier KIND (not a variant string): a vllm/self-hosted primary (gemma, qwen, ...)
+    # materializes kind "oss"; a managed provider (openai/anthropic/gemini) -> "managed".
+    # So a qwen-on-vLLM profile correctly takes the OSS path and a gpt profile the
+    # managed path. With the 2-way env-shim (profile named oss/managed) this equals
+    # the old ``pipeline_variant == "oss"`` bit exactly (oss profile's agent tier is
+    # vllm -> kind "oss"; managed profile's is the managed provider -> "managed").
+    agent_tier = _llm_resolver.primary_tier(_LlmStep.AGENT, pipeline_profile)
+    is_oss = agent_tier.kind == "oss"
     use_translation_pipeline = bool(use_translation_pipeline) or is_oss
     # Open the per-turn pipeline-config tracer and hold the EXPLICIT instance.
     # The ContextVar does NOT survive Starlette's StreamingResponse async-generator
@@ -192,26 +197,25 @@ async def stream_chat_messages(
     # flags, per-step PRIMARY tier) directly onto `pt` here and pass `pt` to every
     # emit site — never relying on a contextvar read at emit time. Deep trigger /
     # served-tier recording stays best-effort on top (via the contextvar).
-    pt = _pipeline_trace.begin(pipeline_variant)
+    pt = _pipeline_trace.begin(pipeline_profile)
     try:
         from app.llm_core import resolver as _lr, runtime as _lrt
         from app.llm_core.config_model import Step as _LS
         _pipeline_trace.populate(
-            pt, _lrt.get_pipeline(), _lr.primary_tier, pipeline_variant,
+            pt, _lrt.get_pipeline(), _lr.primary_tier, pipeline_profile,
             (_LS.PRE_TRANSLATION, _LS.MODERATION, _LS.AGENT, _LS.SUGGESTIONS, _LS.POST_TRANSLATION),
         )
     except Exception as _pt_exc:  # pragma: no cover - tracing must never break the turn
         logger.debug("pipeline_config populate skipped: %s", _pt_exc)
     # Model selection is resolved by the unified pipeline (the only path): the
     # agent + moderation handles, the provider, and the display model name all
-    # come from the resolved primary tier for this session's variant. For the
-    # current env this is the same provider/base_url/model the removed
-    # get_model_for_variant returned, generalized to the weighted-profile split.
-    agent_tier = _llm_resolver.primary_tier(_LlmStep.AGENT, pipeline_variant)
+    # come from the resolved primary tier for this session's profile (agent_tier
+    # resolved above). For the current env this is the same provider/base_url/model
+    # the removed get_model_for_variant returned, generalized to the weighted split.
     request_model = agent_tier.handle
     request_provider = agent_tier.provider
     request_model_name = agent_tier.model_name
-    moderation_model = _llm_resolver.primary_handle(_LlmStep.MODERATION, pipeline_variant)
+    moderation_model = _llm_resolver.primary_handle(_LlmStep.MODERATION, pipeline_profile)
     # Langfuse: propagate session_id, metadata, and tags for dashboard filtering (max 200 chars per value)
     session_id_safe = (session_id or "")[:200]
     pipeline_name = "translation" if use_translation_pipeline else "default"
@@ -226,9 +230,9 @@ async def stream_chat_messages(
         "source_lang": (source_lang or "unknown").lower()[:200],
         "target_lang": (target_lang or "unknown").lower()[:200],
         "user_id": effective_user_id,
-        "variant": pipeline_variant,
+        "pipeline_profile": pipeline_profile,
     }
-    langfuse_tags = [f"pipeline:{pipeline_name}", f"variant:{pipeline_variant}"]
+    langfuse_tags = [f"pipeline:{pipeline_name}", f"pipeline_profile:{pipeline_profile}"]
     # Serialize the resolved pipeline config into COMPACT flat keys and merge them
     # into the same langfuse_metadata dict propagate_attributes lands on OTEL span
     # attributes (a big nested blob is size-capped/dropped; this SDK has no
@@ -266,21 +270,21 @@ async def stream_chat_messages(
                 #this is the same as the update_current_trace method,
                 #but it is more explicit about the type of the output
                 # and is supported by the latest version of the langfuse SDK.
-                # Emit a categorical pipeline_variant score attached to the
+                # Emit a categorical pipeline_profile score attached to the
                 # *current trace*. Langfuse rolls this up to the session view,
-                # so a Sessions filter "pipeline_variant = oss" works directly.
+                # so a Sessions filter "pipeline_profile = oss" works directly.
                 # `score_id` is deterministic per session so subsequent traces
                 # in the same session upsert the same score (no duplicates).
                 try:
                     langfuse.score_current_trace(
-                        name="pipeline_variant",
-                        value=pipeline_variant,
+                        name="pipeline_profile",
+                        value=pipeline_profile,
                         data_type="CATEGORICAL",
                         score_id=f"variant-{session_id_safe}",
                         comment="Sticky pipeline variant for this session",
                     )
                 except Exception as e:
-                    logger.warning("Langfuse: pipeline_variant score failed: %s", e)
+                    logger.warning("Langfuse: pipeline_profile score failed: %s", e)
             except Exception as e:
                 logger.warning("Langfuse: failed to set trace input: %s", e)
 
@@ -347,7 +351,7 @@ async def stream_chat_messages(
             logger.info(
                 "request_id=%s translation_pipeline=True variant=%s pretranslating gu->en with %s/%s",
                 request_id,
-                pipeline_variant,
+                pipeline_profile,
                 pretrans_provider or PRETRANSLATION_PROVIDER,
                 request_model_name if is_oss else PRETRANSLATION_MODEL,
             )
@@ -359,7 +363,7 @@ async def stream_chat_messages(
                     processing_query = await execute_with_fallback(
                         pipeline="pretranslation",
                         session_id=session_id_safe,
-                        variant=pipeline_variant,
+                        profile_name=pipeline_profile,
                         run=lambda a: translate_to_english_pretranslation(
                             text=query,
                             source_lang=source_lang,
@@ -478,7 +482,7 @@ async def stream_chat_messages(
                     moderation_run = await execute_with_fallback(
                         pipeline="moderation",
                         session_id=session_id_safe,
-                        variant=pipeline_variant,
+                        profile_name=pipeline_profile,
                         run=lambda a: moderation_agent.run(user_message, model=a.model),
                     )
                 else:
@@ -506,7 +510,7 @@ async def stream_chat_messages(
                         # Mark pending and clear stale suggestions so callers wait for fresh output.
                         await set_cache(status_key, True, ttl=SUGGESTIONS_PENDING_TTL)
                         await cache.delete(suggestions_cache_key)
-                        background_tasks.add_task(create_suggestions, session_id, target_lang, pipeline_variant)
+                        background_tasks.add_task(create_suggestions, session_id, target_lang, pipeline_profile)
                         logger.info("Successfully added suggestions task")
                     except Exception as e:
                         logger.error(f"Error adding suggestions task: {str(e)}")
@@ -569,7 +573,7 @@ async def stream_chat_messages(
                     "model_name": request_model_name,
                 },
                 model=request_model_name,
-                metadata={"pipeline": pipeline_name, "variant": pipeline_variant},
+                metadata={"pipeline": pipeline_name, "pipeline_profile": pipeline_profile},
             )
             if _lf_ag
             else nullcontext()
@@ -712,7 +716,7 @@ async def stream_chat_messages(
                 english_src = stream_with_fallback(
                     pipeline="chat",
                     session_id=session_id_safe,
-                    variant=pipeline_variant,
+                    profile_name=pipeline_profile,
                     make_stream=_make_agent_text_stream,
                 )
             else:

@@ -130,11 +130,13 @@ def snapshot_flags() -> dict:
     }
 
 
-def begin(variant: Optional[str] = None) -> PipelineTrace:
+def begin(profile_name: Optional[str] = None) -> PipelineTrace:
     """Open a fresh per-turn recorder and install it in the context. Idempotent
     per turn: the chat/voice request path calls this once, near the top, as soon
-    as the resolved variant is known."""
-    pt = PipelineTrace(variant=variant, flags=snapshot_flags())
+    as the resolved profile NAME is known. ``profile_name`` seeds the profile so
+    ``pipeline_profile`` lands even before ``populate``/``record_profile`` refine it
+    (with the authoritative weight)."""
+    pt = PipelineTrace(profile_name=profile_name, flags=snapshot_flags())
     _CTX.set(pt)
     return pt
 
@@ -195,27 +197,29 @@ def populate(
     pt: Optional[PipelineTrace],
     pipeline: Any,
     primary_tier_fn: Any,
-    variant: Optional[str],
+    profile_name: Optional[str],
     steps: Any,
 ) -> None:
     """Explicitly (contextvar-independent) populate the fields the emit MUST carry:
-    the resolved profile (from the pipeline + variant) and each step's PRIMARY tier
-    (resolved via ``primary_tier_fn(step, variant)``). Best-effort per step; a
-    resolve failure for one step is skipped, never raised into the request path.
+    the resolved profile (selected by NAME from the pipeline) and each step's PRIMARY
+    tier (resolved via ``primary_tier_fn(step, profile_name)``). Best-effort per step;
+    a resolve failure for one step is skipped, never raised into the request path.
 
-    ``pipeline`` and ``primary_tier_fn`` are passed in (duck-typed) so this module
-    stays import-clean — it never imports resolver/runtime itself."""
+    ``profile_name`` is the routing token (the actual profile name); the profile is
+    selected DIRECTLY (fail-safe to managed), so a 3rd profile records its own name +
+    weight instead of collapsing to oss/managed. ``pipeline`` and ``primary_tier_fn``
+    are passed in (duck-typed) so this module stays import-clean — it never imports
+    resolver/runtime itself."""
     if pt is None:
         return
     try:
-        name = "oss" if variant == "oss" else "managed"
-        prof = pipeline.by_name(name) or pipeline.by_name("managed") or pipeline.profiles[0]
+        prof = pipeline.by_name(profile_name) or pipeline.by_name("managed") or pipeline.profiles[0]
         set_profile(pt, prof.name, prof.weight)
     except Exception as e:  # pragma: no cover - defensive
         logger.debug("llm_core.trace: profile populate skipped: %s", e)
     for step in steps:
         try:
-            set_step_primary(pt, step, primary_tier_fn(step, variant))
+            set_step_primary(pt, step, primary_tier_fn(step, profile_name))
         except Exception:
             continue
 
