@@ -81,6 +81,10 @@ class Settings(BaseSettings):
     # non-load-bearing (2h is generous slack; voice's old 24h was incidental).
     history_cache_ttl_seconds: int = int(os.getenv("HISTORY_CACHE_TTL_SECONDS", str(60 * 60 * 2)))
     suggestions_cache_ttl: int = 60 * 30    # 30 minutes
+    # Suggestions rollout flag: when false, suggestions stay conversation-only.
+    suggestions_hybrid_enabled: bool = os.getenv("SUGGESTIONS_HYBRID_ENABLED", "false").strip().lower() in {
+        "1", "true", "yes", "on"
+    }
     farmer_animal_api_cache_ttl: int = 60 * 60 * 24 * 17  # 17 days
     # Session-ownership locking (voice call concurrency) — consumed by app/utils.py
     # once the voice surface folds in; inert on the chat path.

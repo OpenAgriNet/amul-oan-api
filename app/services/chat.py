@@ -2,8 +2,10 @@ from contextlib import nullcontext
 from typing import AsyncGenerator
 from functools import lru_cache
 import os
+import time
 import regex
 import re
+from collections import defaultdict
 from fastapi import BackgroundTasks
 from agents.agrinet import agrinet_agent
 from agents.moderation import moderation_agent
@@ -145,6 +147,10 @@ def should_translate_batch(batch_text: str, word_count: int) -> bool:
 logger = get_logger(__name__)
 WHATSAPP_RESPONSE_MAX_CHARS = 1600
 SUGGESTIONS_PENDING_TTL = 30
+SUGGESTIONS_SHADOW_CONTEXT_TTL = 60 * 10  # 10 minutes
+SUGGESTIONS_SHADOW_MAX_CALLS = 2
+SUGGESTIONS_SHADOW_MAX_SNIPPETS_PER_CALL = 2
+SUGGESTIONS_SHADOW_MAX_SNIPPET_CHARS = 600
 GENERIC_UNAVAILABLE_MESSAGE_EN = (
     "I am unable to process your request right now. Please try again later."
 )
@@ -167,6 +173,107 @@ def _response_max_chars_for_channel(channel: str | None) -> int | None:
         return WHATSAPP_RESPONSE_MAX_CHARS
     return None
 
+
+def _normalize_ws(value: str) -> str:
+    return re.sub(r"\s+", " ", (value or "").strip())
+
+
+def _extract_query_from_search_header(text: str) -> str:
+    match = re.search(r"> Search Results for `([^`]+)`", text or "")
+    return (match.group(1) if match else "").strip()
+
+
+def _extract_snippets_from_search_return(content: str) -> tuple[list[str], bool]:
+    no_results = "No results found for" in (content or "")
+    fenced_blocks = re.findall(r"```(.*?)```", content or "", flags=re.DOTALL)
+    snippets: list[str] = []
+    for block in fenced_blocks:
+        cleaned = _normalize_ws(block)
+        if not cleaned:
+            continue
+        snippets.append(cleaned[:SUGGESTIONS_SHADOW_MAX_SNIPPET_CHARS])
+    return snippets, no_results
+
+
+def _extract_shadow_search_evidence(new_messages: list) -> dict:
+    """Extract/distill current-turn search_documents evidence for shadow logging.
+
+    This function is intentionally read-only and side-effect free; Phase 1 only
+    observes retrieval evidence and does not alter suggestion generation.
+    """
+    search_call_ids: set[str] = set()
+    search_call_queries: dict[str, str] = {}
+    returns_by_call_id: dict[str, list[str]] = defaultdict(list)
+
+    for message in new_messages or []:
+        for part in getattr(message, "parts", []) or []:
+            kind = getattr(part, "part_kind", "")
+            if kind == "tool-call" and getattr(part, "tool_name", "") == "search_documents":
+                tool_call_id = getattr(part, "tool_call_id", "")
+                if not tool_call_id:
+                    continue
+                search_call_ids.add(tool_call_id)
+                args = getattr(part, "args", {}) or {}
+                query = ""
+                if isinstance(args, dict):
+                    query = str(args.get("query", "")).strip()
+                search_call_queries[tool_call_id] = query
+            elif kind == "tool-return":
+                tool_call_id = getattr(part, "tool_call_id", "")
+                if tool_call_id:
+                    returns_by_call_id[tool_call_id].append(str(getattr(part, "content", "") or ""))
+
+    ordered_ids = [x for x in list(returns_by_call_id.keys()) if x in search_call_ids]
+    ordered_ids = ordered_ids[-SUGGESTIONS_SHADOW_MAX_CALLS:]  # most recent calls only
+
+    distilled_calls = []
+    total_snippets = 0
+    no_result_calls = 0
+    seen_snippets: set[str] = set()
+
+    for tool_call_id in ordered_ids:
+        query = search_call_queries.get(tool_call_id, "")
+        snippets_for_call: list[str] = []
+        call_no_results = False
+        for content in returns_by_call_id.get(tool_call_id, []):
+            if not query:
+                query = _extract_query_from_search_header(content)
+            snippets, no_results = _extract_snippets_from_search_return(content)
+            if no_results:
+                call_no_results = True
+            for snippet in snippets:
+                key = _normalize_ws(snippet).lower()
+                if not key or key in seen_snippets:
+                    continue
+                seen_snippets.add(key)
+                snippets_for_call.append(snippet)
+                if len(snippets_for_call) >= SUGGESTIONS_SHADOW_MAX_SNIPPETS_PER_CALL:
+                    break
+            if len(snippets_for_call) >= SUGGESTIONS_SHADOW_MAX_SNIPPETS_PER_CALL:
+                break
+
+        if call_no_results:
+            no_result_calls += 1
+        total_snippets += len(snippets_for_call)
+        distilled_calls.append(
+            {
+                "tool_call_id": tool_call_id,
+                "query": query,
+                "no_results": call_no_results,
+                "snippet_count": len(snippets_for_call),
+                "snippets": snippets_for_call,
+            }
+        )
+
+    return {
+        "search_call_count": len(search_call_ids),
+        "search_return_count": sum(len(v) for k, v in returns_by_call_id.items() if k in search_call_ids),
+        "distilled_call_count": len(distilled_calls),
+        "total_snippets": total_snippets,
+        "no_result_calls": no_result_calls,
+        "distilled_calls": distilled_calls,
+    }
+
 async def stream_chat_messages(
     query: str,
     session_id: str,
@@ -181,6 +288,7 @@ async def stream_chat_messages(
     pipeline_variant: str = "legacy",
 ) -> AsyncGenerator[str, None]:
     """Async generator for streaming chat messages."""
+    request_start_monotonic_s = time.monotonic()
     # OSS sticky variant => run the dev OSS path (translation pipeline + vLLM
     # agent model). 'legacy' keeps the current prod behaviour byte-for-byte;
     # with the OSS profile at weight 0 every session is 'legacy'.
@@ -503,11 +611,26 @@ async def stream_chat_messages(
                     try:
                         suggestions_cache_key = f"suggestions_{session_id}_{target_lang}"
                         status_key = f"{suggestions_cache_key}:pending"
+                        suggestions_queued_wall_ms = int(time.time() * 1000)
+                        suggestions_queued_monotonic_s = time.monotonic()
                         # Mark pending and clear stale suggestions so callers wait for fresh output.
                         await set_cache(status_key, True, ttl=SUGGESTIONS_PENDING_TTL)
                         await cache.delete(suggestions_cache_key)
-                        background_tasks.add_task(create_suggestions, session_id, target_lang, pipeline_variant)
-                        logger.info("Successfully added suggestions task")
+                        background_tasks.add_task(
+                            create_suggestions,
+                            session_id,
+                            target_lang,
+                            pipeline_variant,
+                            queued_wall_ms=suggestions_queued_wall_ms,
+                            queued_monotonic_s=suggestions_queued_monotonic_s,
+                        )
+                        logger.info(
+                            "suggestions_task_queued session_id=%s target_lang=%s variant=%s queued_wall_ms=%s",
+                            session_id,
+                            target_lang,
+                            pipeline_variant,
+                            suggestions_queued_wall_ms,
+                        )
                     except Exception as e:
                         logger.error(f"Error adding suggestions task: {str(e)}")
                 else:
@@ -763,3 +886,35 @@ async def stream_chat_messages(
 
         logger.info(f"Updating message history for session {session_id} with {len(messages)} messages")
         await update_message_history(session_id, messages)
+        try:
+            shadow_evidence = _extract_shadow_search_evidence(new_messages)
+            shadow_payload = {
+                "session_id": session_id,
+                "target_lang": target_lang,
+                "variant": pipeline_variant,
+                "captured_from": "new_messages",
+                "captured_wall_ms": int(time.time() * 1000),
+                **shadow_evidence,
+            }
+            shadow_cache_key = f"suggestions_shadow_{session_id}_{target_lang}"
+            await set_cache(shadow_cache_key, shadow_payload, ttl=SUGGESTIONS_SHADOW_CONTEXT_TTL)
+            logger.info(
+                "suggestions_shadow_evidence session_id=%s variant=%s calls=%s returns=%s distilled_calls=%s snippets=%s no_result_calls=%s",
+                session_id,
+                pipeline_variant,
+                shadow_evidence["search_call_count"],
+                shadow_evidence["search_return_count"],
+                shadow_evidence["distilled_call_count"],
+                shadow_evidence["total_snippets"],
+                shadow_evidence["no_result_calls"],
+            )
+        except Exception as e:
+            logger.warning("suggestions_shadow_evidence_failed session_id=%s error=%s", session_id, e)
+        stream_complete_wall_ms = int(time.time() * 1000)
+        logger.info(
+            "chat_stream_complete session_id=%s variant=%s stream_complete_wall_ms=%s stream_elapsed_ms=%s",
+            session_id,
+            pipeline_variant,
+            stream_complete_wall_ms,
+            int((time.monotonic() - request_start_monotonic_s) * 1000),
+        )
