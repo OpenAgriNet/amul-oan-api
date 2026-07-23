@@ -109,3 +109,13 @@ def test_voice_enforces_feminine_self_reference_for_shakto():
     out = _norm("હું કોઈ ચોક્કસ દવાના નામ અથવા ડોઝ જણાવી શકતો નથી.", "voice")
     assert "શકતી નથી" in out
     assert "શકતો નથી" not in out
+
+
+def test_shakto_guard_does_not_feminize_third_person_across_comma():
+    # A first-person "હું" clause followed by a comma and a genuine THIRD-person
+    # masculine clause ("આ બળદ ... શકતો નથી" = "this ox cannot run") must NOT be
+    # feminized — the body class excludes clause separators so "હું" cannot
+    # govern the verb across the comma.
+    out = _norm("હું સંમત છું, પણ આ બળદ દોડી શકતો નથી.", "chat")
+    assert "બળદ દોડી શકતો નથી" in out
+    assert "શકતી નથી" not in out
