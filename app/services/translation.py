@@ -299,6 +299,59 @@ GU_POLICY_REPLACEMENTS = _build_gu_policy_replacements(GU_TERM_POLICY)
 GU_POST_REPLACEMENTS = GU_POST_REPLACEMENTS_BASE + GU_POLICY_REPLACEMENTS
 
 
+# ── Protected proper nouns: pin a fixed Gujarati rendering ──────────────────────
+# A long named entity (e.g. a full bank name) can't be pinned by pre-substitution
+# (the translator RE-TRANSLATES target-language text) nor by a sentinel (dropped in
+# streaming). So we let it translate naturally and REPLACE the model's rendering with
+# the pinned form via a regex covering the model's variants. Applied on the full text
+# (unary) or through a lookback buffer (streaming) so a multi-token name is matched
+# before it is flushed. Gated on the English source containing the term, so ordinary
+# traffic is never buffered or altered.
+_PROTECTED_OUTPUT = [
+    (
+        "Kheda District Central Co-Operative Bank Limited - Nadiad",
+        re.compile(
+            r"ખેડા\s+(?:જિલ્લા|ડિસ્ટ્રિક્ટ)\s+"
+            r"(?:કેન્દ્રીય\s+|મધ્યસ્થ\s+|સેન્ટ્રલ\s+)?"
+            r"(?:સહકારી|કો-?ઓપરેટિવ)\s+બેંક\s+લિમિટેડ\s*-?\s*નડિયાદ"
+        ),
+        "ખેડા ડિસ્ટ્રિક્ટ સેન્ટ્રલ કો-ઓપરેટિવ બેંક લિમિટેડ - નડિયાદ",
+    ),
+]
+# Chars to hold back in streaming so a forming match completes before flushing
+# (> the longest model rendering of any protected term).
+_PROTECTED_STREAM_HOLDBACK = 80
+
+
+def _protected_output_triggers(source_text: str, target_lang: str):
+    """Regex/pinned pairs whose English trigger appears in the source (gu target only)."""
+    if not source_text or target_lang.lower() not in ("gujarati", "gu"):
+        return []
+    return [(rx, pinned) for en, rx, pinned in _PROTECTED_OUTPUT if en in source_text]
+
+
+def _apply_protected_output(text: str, triggers) -> str:
+    for rx, pinned in triggers:
+        text = rx.sub(pinned, text)
+    return text
+
+
+async def _buffered_protected_stream(stream, triggers):
+    """Yield chunks while replacing protected renderings across chunk boundaries:
+    hold back a tail long enough to contain a forming match, replace on the buffer,
+    emit the safe prefix, and flush the remainder at the end."""
+    buf = ""
+    async for chunk in stream:
+        buf += chunk
+        buf = _apply_protected_output(buf, triggers)
+        if len(buf) > _PROTECTED_STREAM_HOLDBACK:
+            yield buf[:-_PROTECTED_STREAM_HOLDBACK]
+            buf = buf[-_PROTECTED_STREAM_HOLDBACK:]
+    buf = _apply_protected_output(buf, triggers)
+    if buf:
+        yield buf
+
+
 # ── Voice-only context-aware body-slang normalization (§14 channel-aware) ──────
 # Chat maps all body slang -> શરીર uniformly via the shared gu_term_policy.json.
 # Voice additionally distinguishes back/flank context (-> પીઠ) from general body
@@ -1137,6 +1190,8 @@ async def translate_text(
         logger.info("Source and target languages are the same, skipping translation")
         return text
 
+    _prot = _protected_output_triggers(text, target_lang)
+
     instruction, tg_prompt = _prepare_translation_inputs(
         text, source_lang, target_lang, max_output_chars
     )
@@ -1153,7 +1208,8 @@ async def translate_text(
             tier.handle, tier.model_name, instruction, source_lang, target_lang, text, temperature, max_tokens
         )
 
-    return await _run_post_translation_chain(chain, _run)
+    result = await _run_post_translation_chain(chain, _run)
+    return _apply_protected_output(result, _prot)
 
 
 def _get_openai_client() -> AsyncOpenAI:
@@ -1340,6 +1396,8 @@ async def translate_text_stream_fast(
         yield text
         return
 
+    _prot = _protected_output_triggers(text, target_lang)
+
     instruction, tg_prompt = _prepare_translation_inputs(
         text, source_lang, target_lang, max_output_chars
     )
@@ -1357,9 +1415,11 @@ async def translate_text_stream_fast(
         )
 
     try:
-        async for chunk in _stream_post_translation_chain(
+        base_stream = _stream_post_translation_chain(
             chain, _make_stream, source_lang=source_lang, target_lang=target_lang
-        ):
+        )
+        stream = _buffered_protected_stream(base_stream, _prot) if _prot else base_stream
+        async for chunk in stream:
             yield chunk
     except Exception as e:
         logger.error(f"Translation streaming error: {str(e)}")
