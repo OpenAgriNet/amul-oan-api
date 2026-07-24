@@ -30,7 +30,19 @@ profiles:
         tiers:
           - {provider: vllm,   model: gemma-4-31b-it, endpoint: http://gemma:8020/v1, api_key_env: OSS_INFERENCE_API_KEY, timeout_ms: 8000,  label: gemma-agent}
           - {provider: openai, model: gpt-4.1,        api_key_env: OPENAI_API_KEY,     timeout_ms: 20000, label: managed-fallback}
-        triggers: {ttft_deadline_ms: 8000}
+        # M3: the concurrency-overflow model is set SEPARATELY from the session-%
+        # selection ("no mixing of variables"). When the gemma vLLM box saturates
+        # (in-flight >= max_concurrency) and the probabilistic shed fires, the shed
+        # request is routed to THIS explicitly chosen overflow model — moved to the
+        # FRONT of the chain — NOT the profile's own managed fallback. It then falls
+        # back to the profile's chain. Independent of which profile the session %
+        # picked. Omit `overflow_tier` to keep the reorder-behind-managed default.
+        triggers:
+          ttft_deadline_ms: 8000
+          concurrency_gate:
+            metrics_url: http://gemma:8020/metrics
+            max_concurrency: 10
+            overflow_tier: {provider: openai, model: gpt-4o-mini, api_key_env: OPENAI_API_KEY, timeout_ms: 20000, label: concurrency-overflow}
       moderation:
         tiers:
           - {provider: vllm,   model: gemma-4-31b-it, endpoint: http://gemma:8020/v1, api_key_env: OSS_INFERENCE_API_KEY, timeout_ms: 5000,  label: gemma-moderation}

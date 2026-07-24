@@ -63,6 +63,18 @@ def _gate(max_concurrency=10):
     return ConcurrencyGate(metrics_url=METRICS_URL, max_concurrency=max_concurrency)
 
 
+def _overflow_tier():
+    """The separately-configured M3 overflow model (a managed openai tier), chosen
+    independently of the session-% profile's own chain."""
+    return Tier(provider=Provider.OPENAI, model="gpt-4o-mini", api_key_env="OPENAI_API_KEY",
+                timeout_ms=20000, label="concurrency-overflow")
+
+
+def _gate_with_overflow(max_concurrency=10, overflow=None):
+    return ConcurrencyGate(metrics_url=METRICS_URL, max_concurrency=max_concurrency,
+                           overflow_tier=overflow or _overflow_tier())
+
+
 @pytest.fixture
 def gauge_on(monkeypatch):
     monkeypatch.setattr(concurrency.settings, "concurrency_gauge_enabled", True)
@@ -301,3 +313,106 @@ def test_resolve_chain_untouched_when_gauge_off(monkeypatch):
     chain = asyncio.run(split.resolve_chain("", Step.AGENT, _gated_config()))
     assert [c.provider for c in chain] == ["vllm", "openai"]       # primary stays primary
     assert [c.kind for c in chain] == ["oss", "managed"]
+
+
+# ── (M3) separately-configurable concurrency-overflow model ───────────────────
+# The overflow target is set SEPARATELY from the session-% selection (req #3 "no
+# mixing of variables"): when the shed roll fires AND gate.overflow_tier is set,
+# the shed request is routed to THAT tier at the FRONT, original chain following.
+# overflow_tier defaults None -> behaviour byte-identical to the reorder-behind-
+# managed shed (pinned by test_no_overflow_falls_back_to_reorder_behind_managed).
+
+def test_saturated_overflow_tier_routed_to_front(gauge_on):
+    """Gauge tripped + overflow_tier set -> the CONFIGURED overflow tier is at index
+    0 (tried first), the original tiers follow as fallback, record_deprioritized
+    fires."""
+    fired = []
+    gauge_on.setattr(concurrency.metrics, "record_deprioritized",
+                     lambda step: fired.append(step))
+    _inject_gauge(gauge_on, 12)                                     # >= 10 -> saturated
+    overflow = _overflow_tier()
+    tiers = [_oss_tier(), _managed_tier()]
+    out = asyncio.run(concurrency.reprioritize_by_load(
+        Step.AGENT, tiers, _gate_with_overflow(10, overflow)))
+    assert out[0] == overflow                                      # overflow tried first
+    assert out[1:] == tiers                                        # original chain follows as fallback
+    assert len(out) == 3                                           # nothing dropped
+    assert fired == [Step.AGENT]                                   # record_deprioritized fired
+
+
+def test_no_overflow_falls_back_to_reorder_behind_managed(gauge_on):
+    """Gauge tripped + overflow_tier NOT set -> byte-identical to today's reorder:
+    the vLLM tier is deprioritized behind the managed tier, no tier prepended."""
+    _inject_gauge(gauge_on, 12)                                    # saturated
+    tiers = [_oss_tier(), _managed_tier()]
+    out = asyncio.run(concurrency.reprioritize_by_load(Step.AGENT, tiers, _gate(10)))
+    assert [t.provider for t in out] == [Provider.OPENAI, Provider.VLLM]  # reorder, not overflow
+    assert len(out) == 2                                           # no overflow tier prepended
+
+
+def test_overflow_not_used_when_gauge_not_tripped(gauge_on):
+    """Gauge below the ramp + overflow_tier set -> tiers unchanged (identity); the
+    overflow only engages when the shed roll actually fires."""
+    _inject_gauge(gauge_on, 3)                                     # < 10 -> not saturated
+    tiers = [_oss_tier(), _managed_tier()]
+    out = asyncio.run(concurrency.reprioritize_by_load(
+        Step.AGENT, tiers, _gate_with_overflow(10)))
+    assert out is tiers                                            # unchanged, overflow untouched
+
+
+def test_overflow_tier_already_in_chain_no_duplicate(gauge_on):
+    """Overflow tier already present in the chain -> it is lifted to the FRONT and
+    removed from its old position; it never appears twice."""
+    _inject_gauge(gauge_on, 12)                                    # saturated
+    overflow = _overflow_tier()
+    tiers = [_oss_tier(), overflow, _managed_tier()]
+    out = asyncio.run(concurrency.reprioritize_by_load(
+        Step.AGENT, tiers, _gate_with_overflow(10, overflow)))
+    assert out[0] == overflow
+    assert out.count(overflow) == 1                               # no duplicate
+    assert out == [overflow, tiers[0], tiers[2]]                  # lifted to front, rest in order
+
+
+def test_concurrency_gate_overflow_parses_from_dict():
+    """ConcurrencyGate(overflow_tier=...) parses from a YAML/dict payload (pydantic),
+    materializing a full nested Tier; omitting it defaults to None (pre-M3)."""
+    gate = ConcurrencyGate.model_validate({
+        "metrics_url": METRICS_URL,
+        "max_concurrency": 10,
+        "overflow_tier": {
+            "provider": "openai", "model": "gpt-4o-mini",
+            "api_key_env": "OPENAI_API_KEY", "timeout_ms": 20000,
+            "label": "concurrency-overflow",
+        },
+    })
+    assert isinstance(gate.overflow_tier, Tier)
+    assert gate.overflow_tier.provider is Provider.OPENAI
+    assert gate.overflow_tier.model == "gpt-4o-mini"
+    # default: omitted -> None (byte-identical to pre-M3 config)
+    assert ConcurrencyGate(metrics_url=METRICS_URL).overflow_tier is None
+
+
+def _overflow_gated_config():
+    """OSS profile whose AGENT step carries a gate with a SEPARATE overflow tier."""
+    oss_steps = {
+        Step.AGENT: StepConfig(
+            tiers=[_oss_tier(), _managed_tier()],
+            triggers=Triggers(concurrency_gate=_gate_with_overflow(10)),
+        ),
+    }
+    return PipelineConfig(profiles=[NamedProfile(name="oss", weight=100, steps=oss_steps)])
+
+
+def test_resolve_chain_overflow_tier_materializes_at_front(monkeypatch):
+    """End-to-end: saturated box + configured overflow_tier -> resolve_chain
+    materializes the overflow tier as a managed AGENT model at the FRONT, original
+    tiers following (proves the prepended tier flows through materialize cleanly)."""
+    monkeypatch.setattr(concurrency.settings, "concurrency_gauge_enabled", True)
+    monkeypatch.setattr(health.settings, "health_breaker_enabled", False)
+    monkeypatch.setattr(health.settings, "health_poller_enabled", False)
+    _inject_gauge(monkeypatch, 20)                                 # saturated
+
+    chain = asyncio.run(split.resolve_chain("", Step.AGENT, _overflow_gated_config()))
+    assert [c.model_name for c in chain] == ["gpt-4o-mini", "gemma", "gpt-4.1"]
+    assert [c.provider for c in chain] == ["openai", "vllm", "openai"]
+    assert [c.kind for c in chain] == ["managed", "oss", "managed"]  # overflow is a managed AGENT model

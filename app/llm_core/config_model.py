@@ -87,10 +87,22 @@ class ConcurrencyGate(BaseModel):
     at/above which this step's vLLM tier is DEPRIORITIZED (reordered toward the
     back) so the managed tier is tried first under load. The gauge only reorders;
     it never drops a tier.
+
+    ``overflow_tier`` (M3) makes the concurrency-overflow target SEPARATELY
+    configurable — a specifically chosen overflow model, independent of the
+    session-% profile's own chain (req #3: "the overflow model is set separately —
+    no mixing of variables from the session-% selection"). It is a full ``Tier``
+    (provider/model/endpoint/api_key_env/timeout). When set AND the shed roll
+    fires, the shed request is routed to THAT tier (moved to the FRONT of the
+    chain, original tiers following as further fallback) rather than merely
+    deprioritizing the saturated vLLM tier behind the profile's managed fallback.
+    Left ``None`` (the default), behaviour is byte-identical to the reorder-behind-
+    managed shed — the overflow is the profile's own fallback, unchanged.
     """
 
     metrics_url: str
     max_concurrency: int = 10
+    overflow_tier: Optional[Tier] = None
 
     model_config = {"frozen": True}
 

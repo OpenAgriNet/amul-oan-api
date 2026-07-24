@@ -168,6 +168,21 @@ def configure(*, run_self_check: bool = True) -> PipelineConfig:
     # REQUIRE_OVERFLOW_ARMED). Placed after config load so a hard-gate raise fires
     # before the (non-fatal) self-check.
     _assert_boot_posture()
+    # M2: note whether the live redis-backed config source is enabled (default OFF).
+    # When on, weight changes PUT to the channel key take effect within the TTL with
+    # no redeploy; when off, get_pipeline() serves the boot config only.
+    from app.llm_core import config_source
+    if config_source.enabled():
+        logger.info(
+            "llm_core: live redis config source ENABLED (channel=%s key=%s refresh=%ss) "
+            "— weight changes PUT to that key take effect within the TTL, no redeploy",
+            config_source.channel(), config_source.key(), config_source.refresh_interval_s(),
+        )
+    else:
+        logger.info(
+            "llm_core: live redis config source disabled (%s unset) — serving boot config only",
+            config_source.ENABLED_ENV,
+        )
     if run_self_check:
         try:
             self_check()
@@ -179,9 +194,17 @@ def configure(*, run_self_check: bool = True) -> PipelineConfig:
 
 
 def get_pipeline() -> PipelineConfig:
+    global PIPELINE
     if PIPELINE is None:
         configure(run_self_check=False)
     assert PIPELINE is not None
+    # M2 (live config): consult the redis-backed source. TTL-gated (hits redis at
+    # most once per PIPELINE_CONFIG_REFRESH_S window) and fail-safe (any error ->
+    # returns the last-good PIPELINE unchanged, never raises). When
+    # PIPELINE_CONFIG_REDIS_ENABLED is unset/false this is an immediate identity
+    # no-op, so behaviour is byte-identical to boot-config-only.
+    from app.llm_core import config_source
+    PIPELINE = config_source.maybe_refresh(PIPELINE)
     return PIPELINE
 
 

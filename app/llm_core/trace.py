@@ -83,7 +83,6 @@ class PipelineTrace:
     """Accumulates one turn's resolved profile, per-step tiers and trigger
     outcomes. Built by :func:`begin`; drained by :meth:`to_metadata`."""
 
-    variant: Optional[str] = None
     profile_name: Optional[str] = None
     profile_weight: Optional[int] = None
     steps: dict[str, StepRecord] = field(default_factory=dict)
@@ -105,7 +104,6 @@ class PipelineTrace:
             profile = {"name": self.profile_name, "weight": self.profile_weight}
         return {
             "profile": profile,
-            "variant": self.variant,
             "flags": self.flags,
             "steps": {name: rec.to_dict() for name, rec in self.steps.items()},
         }
