@@ -300,6 +300,30 @@ GU_POLICY_REPLACEMENTS = _build_gu_policy_replacements(GU_TERM_POLICY)
 GU_POST_REPLACEMENTS = GU_POST_REPLACEMENTS_BASE + GU_POLICY_REPLACEMENTS
 
 
+# ── Protected proper nouns: pinned Gujarati rendering (not free-translated) ─────
+# Long named entities (e.g. a full bank name) can't be pinned via the glossary
+# (its selector only builds 1–4 word spans). Instead we substitute the English
+# term with its fixed Gujarati form in the SOURCE before translation: MT models
+# preserve text already in the target language, so the pinned rendering passes
+# through unchanged while the surrounding English is translated normally.
+# No-op for non-gu targets or when the term is absent.
+_PROTECTED_GU_TERMS = {
+    "Kheda District Central Co-Operative Bank Limited - Nadiad":
+        "ખેડા ડિસ્ટ્રિક્ટ સેન્ટ્રલ કો-ઓપરેટિવ બેંક લિમિટેડ - નડિયાદ",
+}
+
+
+def _apply_protected_gu_terms(text: str, target_lang: str) -> str:
+    """Swap protected English proper nouns for their pinned Gujarati form before
+    a gu translation, so the model never re-translates or mangles them."""
+    if not text or target_lang.lower() not in ("gujarati", "gu"):
+        return text
+    for en, gu in _PROTECTED_GU_TERMS.items():
+        if en in text:
+            text = text.replace(en, gu)
+    return text
+
+
 # ── Voice-only context-aware body-slang normalization (§14 channel-aware) ──────
 # Chat maps all body slang -> શરીર uniformly via the shared gu_term_policy.json.
 # Voice additionally distinguishes back/flank context (-> પીઠ) from general body
@@ -1147,6 +1171,8 @@ async def translate_text(
         logger.info("Source and target languages are the same, skipping translation")
         return text
 
+    text = _apply_protected_gu_terms(text, target_lang)
+
     instruction, tg_prompt = _prepare_translation_inputs(
         text, source_lang, target_lang, max_output_chars
     )
@@ -1349,6 +1375,8 @@ async def translate_text_stream_fast(
     if source_lang.lower() == target_lang.lower():
         yield text
         return
+
+    text = _apply_protected_gu_terms(text, target_lang)
 
     instruction, tg_prompt = _prepare_translation_inputs(
         text, source_lang, target_lang, max_output_chars

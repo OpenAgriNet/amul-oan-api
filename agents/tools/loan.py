@@ -53,7 +53,7 @@ def _message_for(result: "le.LoanResult") -> str:
     if result.outcome == le.ELIGIBLE_OFFER:
         return (
             f"ELIGIBLE — OFFER ONLY (do NOT issue or mention a code yet, do NOT say it is approved). "
-            f"Tell the farmer they are eligible for a KDCC Bank micro loan of ₹{amt:,}, which "
+            f"Tell the farmer they are eligible for a micro loan of ₹{amt:,} from Kheda District Central Co-Operative Bank Limited - Nadiad, which "
             f"carries {int(settings.loan_interest_rate_pct)}% annual interest that is waived if the loan is repaid "
             f"regularly. Ask whether they would like to avail "
             f"this loan. If the farmer agrees, call check_loan_eligibility again with confirmed=true. "
@@ -61,9 +61,9 @@ def _message_for(result: "le.LoanResult") -> str:
         )
     if result.outcome == le.ELIGIBLE:
         return (
-            f"APPROVED. Confirm to the farmer that their KDCC Bank micro loan of up to ₹{amt:,} has been "
+            f"APPROVED. Confirm to the farmer that their micro loan of up to ₹{amt:,} from Kheda District Central Co-Operative Bank Limited - Nadiad has been "
             f"approved/processed. Their loan reference code is {result.code}, and it has been sent to "
-            f"their registered mobile number by SMS. They should visit their KDCC cooperative bank branch "
+            f"their registered mobile number by SMS. They should visit their nearest branch of Kheda District Central Co-Operative Bank Limited - Nadiad "
             f"and present this code, and must carry only two documents: their Aadhaar card and their "
             f"proof of milk cooperative society membership."
         )
@@ -77,7 +77,7 @@ def _message_for(result: "le.LoanResult") -> str:
         return (
             "NOT ELIGIBLE. Tell the farmer they are not eligible for the micro loan on this platform. "
             "If they ask where to go for a loan, direct them to their NEAREST cooperative bank branch — "
-            "do NOT name KDCC Bank or any specific bank, and do NOT refer them to the KDCC micro-loan "
+            "do NOT name Kheda District Central Co-Operative Bank Limited - Nadiad or any specific bank, and do NOT refer them to the micro-loan "
             "facility. Do NOT disclose the specific reason for ineligibility."
         )
     if result.outcome == le.NO_PHONE:
