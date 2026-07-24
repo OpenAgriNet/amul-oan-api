@@ -86,10 +86,44 @@ _GUJARATI_QUOTE: Final[str] = (
 )
 
 
+# Connective/filler words that commonly bridge an identity phrase to unrelated
+# content ("who are you AND my cow has fever") or merely pad it ("hey ...",
+# "please ..."). Stripped before measuring residual content so they don't count
+# as a real second question.
+_IDENTITY_FILLER_WORDS: Final[frozenset[str]] = frozenset(
+    {
+        "and", "please", "also", "hey", "hi", "hello", "so", "just", "ok", "okay",
+        "tell", "me", "can", "you", "could", "would", "will", "the", "a", "an",
+        "અને", "કૃપા", "કરીને", "મને", "કહો", "જરા", "તો",
+    }
+)
+
+# Residual meaningful tokens allowed beyond the matched identity phrase before we
+# treat the query as a compound (identity + a real second question) and decline
+# to short-circuit. "who are you" -> 0 residual; "what service is this scheme" ->
+# 1 ("scheme"); "who are you and my cow has fever" -> 4 -> not an identity query.
+_IDENTITY_RESIDUAL_TOKEN_LIMIT: Final[int] = 3
+
+_IDENTITY_TOKEN_SPLIT: Final[re.Pattern[str]] = re.compile(r"[\s\.,!?;:\-–—\"'()।]+")
+
+
 def is_identity_query(query: str) -> bool:
     if not query:
         return False
-    return bool(_IDENTITY_QUERY_REGEX.search(query.strip()))
+    q = query.strip()
+    match = _IDENTITY_QUERY_REGEX.search(q)
+    if not match:
+        return False
+    # Require the identity intent to DOMINATE the query. A bare or lightly-padded
+    # identity phrase short-circuits; a compound query that also carries a real
+    # agricultural question must fall through to the agent so that question isn't
+    # silently dropped.
+    residual = f"{q[: match.start()]} {q[match.end():]}"
+    residual_tokens = [
+        tok for tok in _IDENTITY_TOKEN_SPLIT.split(residual)
+        if tok and tok.lower() not in _IDENTITY_FILLER_WORDS
+    ]
+    return len(residual_tokens) <= _IDENTITY_RESIDUAL_TOKEN_LIMIT
 
 
 def _select_identity_language(source_lang: str, target_lang: str, query: str) -> str:

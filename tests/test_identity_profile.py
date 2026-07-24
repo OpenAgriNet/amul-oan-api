@@ -23,6 +23,16 @@ os.environ.setdefault("OPENAI_API_KEY", "test-key")
         ("તમારું પરિચય આપો", True),
         ("સરલાબેન કોણ છે", True),
         ("my cow has fever", False),
+        # Lightly-padded identity phrases still short-circuit.
+        ("hey, who are you?", True),
+        ("introduce yourself please", True),
+        ("તમે કોણ છો?", True),
+        # Compound queries carrying a real agricultural question must NOT be
+        # hijacked by the identity short-circuit — the second question would be
+        # silently dropped otherwise.
+        ("who are you and my cow has fever", False),
+        ("tell me who are you and what medicine for mastitis", False),
+        ("તમે કોણ છો અને મારી ગાય ને તાવ છે", False),
     ],
 )
 def test_identity_query_detection(query: str, expected: bool):
