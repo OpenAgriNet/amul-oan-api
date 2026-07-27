@@ -405,8 +405,16 @@ GU_FEMININE_SELF_REFERENCE_REPLACEMENTS: list[tuple[re.Pattern, str]] = [
 ]
 
 
-def _fix_dandas(text: str) -> str:
-    """Replace Devanagari dandas (।) with periods in TranslateGemma output."""
+def _fix_dandas(text: str, target_lang: str = "gu") -> str:
+    """Replace Devanagari dandas (।) with periods in TranslateGemma Gujarati output.
+
+    Gujarati-only: the danda ``।`` is a spurious artifact of TranslateGemma's
+    Gujarati rendering, but it is the *correct* sentence terminator in Hindi, so
+    this must never run on Hindi (or any Devanagari-script) output. Defaults to
+    Gujarati behavior for any caller that does not pass a language.
+    """
+    if (target_lang or "").strip().lower() not in ("gu", "gujarati"):
+        return text
     return text.replace("।", ".")
 
 
@@ -770,7 +778,7 @@ async def _translategemma_stream(descriptor, prompt, source_lang, target_lang, t
                                 chunk_data = json.loads(data)
                                 content = chunk_data['choices'][0].get('text', '')
                                 if content:
-                                    content = _fix_dandas(content)
+                                    content = _fix_dandas(content, target_lang)
                                     content = _post_normalize_gu_translation(
                                         content, target_lang, strip_outer=False,
                                     )
@@ -827,7 +835,7 @@ async def _translategemma_stream(descriptor, prompt, source_lang, target_lang, t
                                 chunk_data = json.loads(data)
                                 content = chunk_data['choices'][0].get('text', '')
                                 if content:
-                                    content = _fix_dandas(content)
+                                    content = _fix_dandas(content, target_lang)
                                     content = _post_normalize_gu_translation(
                                         content, target_lang, strip_outer=False,
                                     )
@@ -857,7 +865,7 @@ async def _llm_translation_stream(client, model_name, instruction, source_lang, 
                 continue
             content = getattr(chunk.choices[0].delta, "content", None) or ""
             if content:
-                content = _fix_dandas(content)
+                content = _fix_dandas(content, target_lang)
                 content = _post_normalize_gu_translation(content, target_lang, strip_outer=False)
                 yield content
         return
@@ -890,7 +898,7 @@ async def _llm_translation_stream(client, model_name, instruction, source_lang, 
                 continue
             content = getattr(chunk.choices[0].delta, "content", None) or ""
             if content:
-                content = _fix_dandas(content)
+                content = _fix_dandas(content, target_lang)
                 content = _post_normalize_gu_translation(content, target_lang, strip_outer=False)
                 translated_parts.append(content)
                 yield content
@@ -922,7 +930,7 @@ async def _translategemma_unary(descriptor, prompt, source_lang, target_lang, te
 
                 result = await response.json()
                 translated_text = result["choices"][0]["text"].strip()
-                translated_text = _fix_dandas(translated_text)
+                translated_text = _fix_dandas(translated_text, target_lang)
                 translated_text = _post_normalize_gu_translation(translated_text, target_lang)
                 logger.info(f"Translation successful ({len(text)} -> {len(translated_text)} chars)")
                 return translated_text
@@ -960,7 +968,7 @@ async def _translategemma_unary(descriptor, prompt, source_lang, target_lang, te
 
                 result = await response.json()
                 translated_text = result["choices"][0]["text"].strip()
-                translated_text = _fix_dandas(translated_text)
+                translated_text = _fix_dandas(translated_text, target_lang)
                 translated_text = _post_normalize_gu_translation(translated_text, target_lang)
                 observation.update(output=translated_text)
                 logger.info(f"Translation successful ({len(text)} -> {len(translated_text)} chars)")
@@ -981,7 +989,7 @@ async def _llm_translation_unary(client, model_name, instruction, source_lang, t
             max_completion_tokens=max_tokens,
         )
         translated_text = (response.choices[0].message.content or "").strip()
-        translated_text = _fix_dandas(translated_text)
+        translated_text = _fix_dandas(translated_text, target_lang)
         translated_text = _post_normalize_gu_translation(translated_text, target_lang)
         logger.info(f"Translation successful ({len(text)} -> {len(translated_text)} chars)")
         return translated_text
@@ -1007,7 +1015,7 @@ async def _llm_translation_unary(client, model_name, instruction, source_lang, t
             max_completion_tokens=max_tokens,
         )
         translated_text = (response.choices[0].message.content or "").strip()
-        translated_text = _fix_dandas(translated_text)
+        translated_text = _fix_dandas(translated_text, target_lang)
         translated_text = _post_normalize_gu_translation(translated_text, target_lang)
         observation.update(output=translated_text)
         logger.info(f"Translation successful ({len(text)} -> {len(translated_text)} chars)")
