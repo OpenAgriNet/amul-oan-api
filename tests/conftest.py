@@ -27,13 +27,13 @@ def install_variant_chain(monkeypatch, fb, *, oss_handle=None, managed_handle=No
                           oss_timeout=None, managed_timeout=None,
                           oss_endpoint="http://oss:8020/v1"):
     """Replace ``fallback._resolve_chain`` (the seam the walkers read) with a
-    controlled, variant-keyed MaterializedTier chain: variant 'oss' -> [oss,
+    controlled, profile-name-keyed MaterializedTier chain: profile 'oss' -> [oss,
     managed], anything else -> [managed]. Post-P4 the real chain comes from the
     config-driven weighted-profile resolver (exercised in test_split); the walker
     tests only need a deterministic chain to drive the classify/first-token-commit
     logic, so they stub this seam."""
-    def _chain(variant):
-        if variant == "oss":
+    def _chain(profile_name):
+        if profile_name == "oss":
             return [
                 make_materialized_tier("oss", oss_handle, timeout=oss_timeout,
                                        endpoint=oss_endpoint),
@@ -41,8 +41,8 @@ def install_variant_chain(monkeypatch, fb, *, oss_handle=None, managed_handle=No
             ]
         return [make_materialized_tier("managed", managed_handle, timeout=managed_timeout)]
 
-    async def _resolve_chain(*, pipeline, session_id, variant):
-        return _chain(variant)
+    async def _resolve_chain(*, pipeline, session_id, profile_name):
+        return _chain(profile_name)
 
     monkeypatch.setattr(fb, "_resolve_chain", _resolve_chain)
     return _chain

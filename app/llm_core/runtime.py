@@ -25,6 +25,11 @@ from app.llm_core.legacy_shim import synthesize_from_env
 logger = get_logger(__name__)
 
 PIPELINE: Optional[PipelineConfig] = None
+# The config captured at ``configure()`` BEFORE any live (redis) refresh can
+# override it — the deploy's permanent boot fallback. ``config_source`` reverts to
+# THIS (not the last live config) when the live key is cleared/absent, so `clear`
+# is a true emergency rollback to the boot config.
+BOOT_PIPELINE: Optional[PipelineConfig] = None
 
 
 def _load_from_yaml(path: str) -> PipelineConfig:
@@ -88,6 +93,47 @@ def validate_config(pipeline: PipelineConfig, *, enforce: bool) -> None:
     logger.warning("%s\n(LLM_CORE_ENABLED is off; not raising)", msg)
 
 
+def validate_content(cfg: PipelineConfig) -> None:
+    """Run the SAME content gates the boot path applies against a CANDIDATE config
+    (a live redis config, or an ops-script payload) BEFORE it goes live — raising on
+    any unbuildable content. This is the single validator both ``config_source``
+    (fail-CLOSED live load) and ``scripts/set_pipeline_config.py`` (refuse-to-write)
+    call, so a schema-valid but unbuildable config can never go live and break
+    requests.
+
+    Two checks, mirroring boot:
+      (a) ``validate_config(cfg, enforce=True)`` — provider/step legality (an
+          anthropic/gemini tier on a RAW_OPENAI step, etc.); and
+      (b) a resolvability probe — for every profile, for every CONFIGURED step, build
+          the primary tier handle via ``resolver.primary_tier``; the factory raises on
+          an unbuildable tier (vllm tier with no endpoint, azure tier missing
+          api_key_env/api_version, etc.), exactly as the boot self-check would.
+
+    The resolver reads ``runtime.get_pipeline()``, so the probe is run with ``cfg``
+    temporarily installed as ``PIPELINE`` and the live source suppressed (so the
+    nested ``get_pipeline`` neither re-reads redis nor recurses); both are restored
+    in a ``finally``. Raises (never swallows) so callers can fail closed."""
+    global PIPELINE
+    validate_config(cfg, enforce=True)
+
+    from app.llm_core import resolver, config_source
+
+    prev_pipeline = PIPELINE
+    prev_suppress = config_source._suppress_refresh
+    PIPELINE = cfg
+    config_source._suppress_refresh = True
+    try:
+        for profile in cfg.profiles:
+            for step in Step:
+                if cfg.step_config(profile, step) is None:
+                    continue  # a profile need not configure every step (probe only what's set)
+                # Builds the primary handle; raises on an unbuildable tier.
+                resolver.primary_tier(step, profile.name)
+    finally:
+        config_source._suppress_refresh = prev_suppress
+        PIPELINE = prev_pipeline
+
+
 def _truthy_env(name: str) -> bool:
     v = os.getenv(name)
     return v is not None and v.strip().lower() in {"1", "true", "yes", "on"}
@@ -144,7 +190,7 @@ def _assert_boot_posture() -> None:
 
 def configure(*, run_self_check: bool = True) -> PipelineConfig:
     """Load / synthesize the pipeline config, validate, store, self-check."""
-    global PIPELINE
+    global PIPELINE, BOOT_PIPELINE
     path = os.getenv("PIPELINE_CONFIG_PATH")
     if path and os.path.exists(path):
         logger.info("llm_core: loading pipeline config from %s", path)
@@ -159,6 +205,11 @@ def configure(*, run_self_check: bool = True) -> PipelineConfig:
     # only path after P4 (the LLM_CORE_ENABLED kill-switch was removed), so the
     # config binding is always the live one and must always be legal: enforce.
     validate_config(PIPELINE, enforce=True)
+    # Capture the boot config as the permanent fallback BEFORE any live redis
+    # refresh can override PIPELINE (get_pipeline -> config_source.maybe_refresh).
+    # config_source reverts to THIS on a cleared/absent live key (emergency
+    # rollback), never to a stale last-live config.
+    BOOT_PIPELINE = PIPELINE
     # Tracing-only: dump the COMPLETE loaded config (all profiles, step tiers,
     # triggers) as one structured boot log line so the full wiring is greppable
     # in logs even before any turn arrives (`grep llm_core.full_config`).
@@ -168,6 +219,21 @@ def configure(*, run_self_check: bool = True) -> PipelineConfig:
     # REQUIRE_OVERFLOW_ARMED). Placed after config load so a hard-gate raise fires
     # before the (non-fatal) self-check.
     _assert_boot_posture()
+    # M2: note whether the live redis-backed config source is enabled (default OFF).
+    # When on, weight changes PUT to the channel key take effect within the TTL with
+    # no redeploy; when off, get_pipeline() serves the boot config only.
+    from app.llm_core import config_source
+    if config_source.enabled():
+        logger.info(
+            "llm_core: live redis config source ENABLED (channel=%s key=%s refresh=%ss) "
+            "— weight changes PUT to that key take effect within the TTL, no redeploy",
+            config_source.channel(), config_source.key(), config_source.refresh_interval_s(),
+        )
+    else:
+        logger.info(
+            "llm_core: live redis config source disabled (%s unset) — serving boot config only",
+            config_source.ENABLED_ENV,
+        )
     if run_self_check:
         try:
             self_check()
@@ -179,9 +245,17 @@ def configure(*, run_self_check: bool = True) -> PipelineConfig:
 
 
 def get_pipeline() -> PipelineConfig:
+    global PIPELINE
     if PIPELINE is None:
         configure(run_self_check=False)
     assert PIPELINE is not None
+    # M2 (live config): consult the redis-backed source. TTL-gated (hits redis at
+    # most once per PIPELINE_CONFIG_REFRESH_S window) and fail-safe (any error ->
+    # returns the last-good PIPELINE unchanged, never raises). When
+    # PIPELINE_CONFIG_REDIS_ENABLED is unset/false this is an immediate identity
+    # no-op, so behaviour is byte-identical to boot-config-only.
+    from app.llm_core import config_source
+    PIPELINE = config_source.maybe_refresh(PIPELINE)
     return PIPELINE
 
 
@@ -211,13 +285,14 @@ def self_check() -> None:
     failures: list[str] = []
 
     for profile in pipeline.profiles:
-        variant = "oss" if profile.name == "oss" else "legacy"
         for step in Step:
             step_cfg = pipeline.step_config(profile, step)
             if step_cfg is None:
                 continue  # a profile need not configure every step (post-trans lives in defaults)
             try:
-                mt = resolver.primary_tier(step, variant)
+                # Resolve BY PROFILE NAME (N-way): a broken 3rd-profile tier (bad
+                # provider/endpoint/key) is caught here at boot, not just oss/managed.
+                mt = resolver.primary_tier(step, profile.name)
                 logger.info(
                     "llm_core self-check profile=%s step=%s -> provider=%s base_url=%s model=%s timeout=%s",
                     profile.name, step.value, mt.provider, _base_url(mt.handle), mt.model_name, mt.timeout,

@@ -237,7 +237,7 @@ async def check_moderation(
     text: str,
     source_lang: str,
     recent_history_text: str = "",
-    variant: str = "legacy",
+    profile_name: str = "managed",
     session_id: str = "",
 ) -> ModerationVerdict:
     """Classify a caller utterance. Returns a ModerationVerdict.
@@ -269,7 +269,7 @@ async def check_moderation(
         return await execute_with_fallback(
             pipeline="moderation",
             session_id=session_id or "",
-            variant=variant,
+            profile_name=profile_name,
             run=_run,
         )
     except Exception as e:

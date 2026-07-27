@@ -66,10 +66,10 @@ async def voice_endpoint(
     logger.debug(f"Retrieved message history for session {session_id} - length: {len(history)}")
 
     # Sticky per-session routing via the unified weighted named-profile split
-    # (the only path). Mapped back to the "oss"/"legacy" variant string the
-    # downstream voice pipeline branches on. Distribution-identical to the removed
-    # pipeline_router (same sha256 bucket + Redis-sticky assignment).
-    pipeline_variant = await _llm_split.resolve_variant(session_id)
+    # (the only path). The routing token is the actual profile NAME (N-way), threaded
+    # downstream and served DIRECTLY (no oss/legacy collapse). Distribution-identical
+    # to the removed pipeline_router (same sha256 bucket assignment).
+    pipeline_profile = await _llm_split.resolve_profile(session_id)
 
     return StreamingResponse(
         stream_voice_message(
@@ -85,7 +85,7 @@ async def voice_endpoint(
             owner=owner,
             http_request=http_request,
             trace=trace,
-            pipeline_variant=pipeline_variant,
+            pipeline_profile=pipeline_profile,
         ),
         media_type='text/event-stream'
     )

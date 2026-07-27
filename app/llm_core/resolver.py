@@ -1,15 +1,15 @@
 """Resolver — the single seam the engine consumes.
 
-``resolve_chain(step, variant)`` selects the profile for a session's resolved
-variant, looks up the step's tiers (profile override, else defaults), and
-materializes them into ``list[MaterializedTier]`` (primary first, never empty).
+``resolve_chain(step, profile_name)`` selects the named profile DIRECTLY, looks up
+the step's tiers (profile override, else defaults), and materializes them into
+``list[MaterializedTier]`` (primary first, never empty).
 
-P0 has **no weighted split yet**: the variant is resolved upstream exactly as
-today (``pipeline_router.resolve_pipeline_variant``) and passed in; here we just
-map ``variant -> profile`` ("oss" -> profile ``oss``, anything else -> ``managed``,
-fail-safe to managed when the OSS profile is absent). The chain shape ([oss,
-managed] for OSS, [managed] otherwise) matches ``fallback.attempt_chain`` so P1
-can drop the weighted split + config-driven tiers in behind this same API.
+The routing token is the actual profile NAME (the N-way split's output), selected
+via ``pipeline.by_name(profile_name)`` with a fail-safe to ``managed`` then
+``profiles[0]``. There is no longer a 2-way ``variant`` collapse: a 3rd profile
+(e.g. ``qwen``) is served with ITS tiers, not bucketed back to oss/managed. An
+absent/stale name resolves to ``managed`` — identical to the old variant mapping,
+so threading ``"oss"``/``"legacy"`` remains bit-identical (``"legacy"`` -> managed).
 """
 
 from __future__ import annotations
@@ -34,15 +34,21 @@ STEP_CLIENT_KIND: dict[Step, StepClientKind] = {
 }
 
 
-def _profile_name_for_variant(variant: str) -> str:
-    return "oss" if variant == "oss" else "managed"
+def _profile(pipeline, profile_name: str):
+    """The named profile, fail-safe to ``managed`` then ``profiles[0]``. An absent
+    name (e.g. the legacy ``"legacy"`` sentinel, or a stale/capped name) resolves to
+    ``managed`` — identical to the removed ``_profile_name_for_variant`` mapping."""
+    return pipeline.by_name(profile_name) or pipeline.by_name("managed") or pipeline.profiles[0]
 
 
-def resolve_chain(step: Step, variant: str = "legacy") -> list[MaterializedTier]:
-    """Materialized tier chain for a step under a session's resolved variant."""
+def resolve_chain(step: Step, profile_name: str = "managed") -> list[MaterializedTier]:
+    """Materialized tier chain for a step under a session's resolved profile NAME.
+
+    ``profile_name`` is the routing token (the actual configured profile name, e.g.
+    ``oss``/``managed``/``qwen``); the profile is selected DIRECTLY, so a 3rd profile
+    is served — not collapsed back to oss/managed via a variant string."""
     pipeline = runtime.get_pipeline()
-    name = _profile_name_for_variant(variant)
-    profile = pipeline.by_name(name) or pipeline.by_name("managed") or pipeline.profiles[0]
+    profile = _profile(pipeline, profile_name)
 
     step_cfg = pipeline.step_config(profile, step)
     if step_cfg is None:
@@ -58,7 +64,7 @@ def resolve_chain(step: Step, variant: str = "legacy") -> list[MaterializedTier]
     return chain
 
 
-def post_translation_tiers(variant: str = "legacy") -> list[Tier]:
+def post_translation_tiers(profile_name: str = "managed") -> list[Tier]:
     """The INERT POST_TRANSLATION tier chain — NOT materialized.
 
     Post-translation is unique: TranslateGemma serves ~every turn, and its cheap
@@ -77,30 +83,30 @@ def post_translation_tiers(variant: str = "legacy") -> list[Tier]:
     the agent-step ``resolve_chain``) to "managed". The step chain is still recorded
     by the translation adapter's ``_post_translation_chain`` via ``record_step_chain``."""
     pipeline = runtime.get_pipeline()
-    name = _profile_name_for_variant(variant)
-    profile = pipeline.by_name(name) or pipeline.by_name("managed") or pipeline.profiles[0]
+    profile = _profile(pipeline, profile_name)
     step_cfg = pipeline.step_config(profile, Step.POST_TRANSLATION)
     if step_cfg is None:
         raise ValueError("no config for step=post_translation")
     return list(step_cfg.tiers)
 
 
-def chain_for(step: Step, variant: str = "legacy") -> list[MaterializedTier]:
+def chain_for(step: Step, profile_name: str = "managed") -> list[MaterializedTier]:
     """Thin alias kept for the API shape P1 will generalize (weighted split)."""
-    return resolve_chain(step, variant)
+    return resolve_chain(step, profile_name)
 
 
-def primary_tier(step: Step, variant: str = "legacy") -> MaterializedTier:
-    """The primary (index-0) materialized tier — identity with today's
-    ``get_model_for_variant`` single-model selection at a non-fallback call site."""
-    return resolve_chain(step, variant)[0]
+def primary_tier(step: Step, profile_name: str = "managed") -> MaterializedTier:
+    """The primary (index-0) materialized tier for a session's resolved profile NAME
+    — identity with today's ``get_model_for_variant`` single-model selection at a
+    non-fallback call site, generalized to N profiles."""
+    return resolve_chain(step, profile_name)[0]
 
 
-def primary_handle(step: Step, variant: str = "legacy") -> Any:
+def primary_handle(step: Step, profile_name: str = "managed") -> Any:
     """Primary tier's live handle (pydantic-ai Model / AsyncOpenAI / TGDescriptor)."""
-    return primary_tier(step, variant).handle
+    return primary_tier(step, profile_name).handle
 
 
-def primary_provider(step: Step, variant: str = "legacy") -> str:
+def primary_provider(step: Step, profile_name: str = "managed") -> str:
     """Primary tier's provider string (identity with ``provider_for_variant``)."""
-    return primary_tier(step, variant).provider
+    return primary_tier(step, profile_name).provider

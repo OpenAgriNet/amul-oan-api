@@ -37,12 +37,11 @@ async def chat_endpoint(
     logger.debug(f"Retrieved message history for session {session_id} - length: {len(history)}")
 
     # Sticky per-session routing via the unified weighted named-profile split
-    # (the only path). The resolved profile is mapped back to the legacy
-    # "oss"/"legacy" variant string the downstream chat pipeline branches on. With
-    # the env-synthesized config (OSS_PIPELINE_PCT -> profile weights) this is the
-    # same bit-compatible sha256 bucket + Redis-sticky assignment as before, so it
-    # is distribution-identical to the removed pipeline_router.
-    pipeline_variant = await _llm_split.resolve_variant(session_id)
+    # (the only path). The routing token is the actual profile NAME (N-way), threaded
+    # downstream and served DIRECTLY (no oss/legacy collapse). With the env-synthesized
+    # config (OSS_PIPELINE_PCT -> profile weights) the profile is named oss/managed and
+    # this is the same bit-compatible sha256 bucket assignment as before.
+    pipeline_profile = await _llm_split.resolve_profile(session_id)
 
     message_stream = stream_chat_messages(
         query=request.query,
@@ -55,7 +54,7 @@ async def chat_endpoint(
         user_info=user_info,
         background_tasks=background_tasks,
         use_translation_pipeline=request.use_translation_pipeline if request.use_translation_pipeline is not None else True,
-        pipeline_variant=pipeline_variant,
+        pipeline_profile=pipeline_profile,
     )
 
     if request.stream is False:

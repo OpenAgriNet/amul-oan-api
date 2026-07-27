@@ -87,7 +87,6 @@ def test_resolve_chain_populates_profile_and_step(monkeypatch):
 
     md = trace.current().to_metadata()
     assert md["profile"] == {"name": "oss", "weight": 100}
-    assert md["variant"] == "oss"
     step = md["steps"]["agent"]
     assert step["provider"] == "vllm"
     assert step["model"] == "gemma"
@@ -170,7 +169,7 @@ def test_fallback_walker_records_served_index(monkeypatch):
         return "answer"
 
     out = asyncio.run(fb.execute_with_fallback(
-        pipeline="chat", session_id="s", variant="oss", run=_run))
+        pipeline="chat", session_id="s", profile_name="oss", run=_run))
     assert out == "answer"
     served = trace.current().to_metadata()["steps"]["agent"]["tier_served"]
     assert served == {"kind": "managed", "index": 1}

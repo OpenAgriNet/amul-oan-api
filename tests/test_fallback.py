@@ -83,7 +83,7 @@ def test_falls_back_to_managed_on_connection_error(oss_enabled):
         return "managed-result"
 
     result = asyncio.run(
-        execute_with_fallback(pipeline="moderation", session_id="s1", variant="oss", run=run)
+        execute_with_fallback(pipeline="moderation", session_id="s1", profile_name="oss", run=run)
     )
     assert result == "managed-result"
     assert len(oss_enabled) == 1
@@ -102,7 +102,7 @@ def test_does_not_fall_back_on_bad_output(oss_enabled):
 
     with pytest.raises(UnexpectedModelBehavior):
         asyncio.run(
-            execute_with_fallback(pipeline="moderation", session_id="s1", variant="oss", run=run)
+            execute_with_fallback(pipeline="moderation", session_id="s1", profile_name="oss", run=run)
         )
     # Recorded for visibility, but not a fallback.
     assert len(oss_enabled) == 1
@@ -115,7 +115,7 @@ def test_success_on_oss_emits_nothing(oss_enabled):
         return f"ok-{attempt.kind}"
 
     result = asyncio.run(
-        execute_with_fallback(pipeline="moderation", session_id="s1", variant="oss", run=run)
+        execute_with_fallback(pipeline="moderation", session_id="s1", profile_name="oss", run=run)
     )
     assert result == "ok-oss"
     assert oss_enabled == []
@@ -127,7 +127,7 @@ def test_both_tiers_fail_raises_and_records_both(oss_enabled):
 
     with pytest.raises(ConnectionError):
         asyncio.run(
-            execute_with_fallback(pipeline="moderation", session_id="s1", variant="oss", run=run)
+            execute_with_fallback(pipeline="moderation", session_id="s1", profile_name="oss", run=run)
         )
     assert len(oss_enabled) == 2
     assert oss_enabled[0].fell_back is True   # oss -> managed
@@ -143,7 +143,7 @@ def test_legacy_session_no_fallback_attempted(oss_enabled):
 
     with pytest.raises(ConnectionError):
         asyncio.run(
-            execute_with_fallback(pipeline="moderation", session_id="s1", variant="legacy", run=run)
+            execute_with_fallback(pipeline="moderation", session_id="s1", profile_name="legacy", run=run)
         )
     assert calls == ["managed"]  # only one tier for legacy sessions
     assert len(oss_enabled) == 1 and oss_enabled[0].fell_back is False
@@ -162,7 +162,7 @@ def test_stream_success_on_oss_no_fallback(oss_enabled):
 
     chunks = asyncio.run(
         _collect(fb.stream_with_fallback(
-            pipeline="chat", session_id="s", variant="oss", make_stream=make_stream))
+            pipeline="chat", session_id="s", profile_name="oss", make_stream=make_stream))
     )
     assert chunks == ["oss:a", "oss:b", "oss:c"]
     assert oss_enabled == []
@@ -178,7 +178,7 @@ def test_stream_precommit_failure_swaps_to_managed(oss_enabled):
 
     chunks = asyncio.run(
         _collect(fb.stream_with_fallback(
-            pipeline="chat", session_id="s", variant="oss", make_stream=make_stream))
+            pipeline="chat", session_id="s", profile_name="oss", make_stream=make_stream))
     )
     assert chunks == ["managed:x", "managed:y"]
     assert len(oss_enabled) == 1
@@ -195,7 +195,7 @@ def test_stream_postcommit_failure_propagates(oss_enabled):
 
     async def drive():
         async for c in fb.stream_with_fallback(
-            pipeline="chat", session_id="s", variant="oss", make_stream=make_stream
+            pipeline="chat", session_id="s", profile_name="oss", make_stream=make_stream
         ):
             got.append(c)
 
@@ -216,7 +216,7 @@ def test_stream_precommit_bad_output_does_not_swap(oss_enabled):
 
     with pytest.raises(UnexpectedModelBehavior):
         asyncio.run(_collect(fb.stream_with_fallback(
-            pipeline="chat", session_id="s", variant="oss", make_stream=make_stream)))
+            pipeline="chat", session_id="s", profile_name="oss", make_stream=make_stream)))
     assert len(oss_enabled) == 1
     assert oss_enabled[0].committed is False and oss_enabled[0].fell_back is False
 
@@ -281,7 +281,7 @@ def test_ttft_timeout_triggers_fallback_to_managed(oss_enabled, install_chain):
     # Tight oss first-token timeout so the test is fast; managed has no deadline.
     install_chain(oss_timeout=0.05)
     chunks = asyncio.run(_collect(fb.stream_with_fallback(
-        pipeline="chat", session_id="s", variant="oss", make_stream=make_stream)))
+        pipeline="chat", session_id="s", profile_name="oss", make_stream=make_stream)))
     assert chunks == ["managed:ok"]
     reasons = [e.reason for e in oss_enabled]
     assert FallbackReason.TIMEOUT in reasons

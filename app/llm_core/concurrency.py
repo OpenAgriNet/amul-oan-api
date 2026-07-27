@@ -250,12 +250,24 @@ async def reprioritize_by_load(
     * the probabilistic shed roll declines this call (below the ramp, or a losing
       draw inside the smooth band).
 
-    When the shed roll fires, the vLLM tiers are STABLY moved behind the non-vLLM
-    (managed) tiers, so the managed tier — already the next tier in the chain — is
-    tried first while the box is hot. In the single vLLM-primary + managed-fallback
-    config this is exactly "deprioritize the primary"; "primary" is only index 0,
-    and no primary/secondary inversion exists (see the module docstring). Shed
-    probability rises with load (``_shed_probability``): a self-proportioning
+    When the shed roll fires, WHERE the shed request is routed depends on the gate
+    (M3 — the overflow target is separately configurable, req #3 "set separately,
+    no mixing of variables from the session-% selection"):
+
+    * ``gate.overflow_tier`` is SET -> the shed request is routed to THAT
+      explicitly chosen model — independent of the session-% profile's own chain.
+      The overflow tier is moved to the FRONT (tried first), the original tiers
+      following as further fallback: ``[overflow_tier, *original]`` (deduped if the
+      overflow tier is already present, so it never appears twice).
+    * ``gate.overflow_tier`` is UNSET (``None``, the default) -> byte-identical to
+      the prior behaviour: the vLLM tiers are STABLY moved behind the non-vLLM
+      (managed) tiers, so the managed tier — already the next tier in the chain —
+      is tried first while the box is hot. In the single vLLM-primary +
+      managed-fallback config this is exactly "deprioritize the primary"; "primary"
+      is only index 0, and no primary/secondary inversion exists (see the module
+      docstring).
+
+    Shed probability rises with load (``_shed_probability``): a self-proportioning
     fraction near the cap, a hard 1.0 at/above it.
 
     Runs on the already-HEALTH-PRUNED inert ``Tier`` list, BEFORE materialize, so
@@ -300,6 +312,31 @@ async def reprioritize_by_load(
     if p <= 0.0 or random.random() >= p:
         _record(False)
         return tiers            # this call does not shed -> primary stays primary
+
+    # ── M3: separately-configurable overflow target ──────────────────────────
+    # The shed roll fired. WHERE the shed request goes depends on the gate:
+    #
+    #   * ``overflow_tier`` SET -> route the shed request to THAT explicitly chosen
+    #     model, independent of the session-% profile's own chain (req #3 "set
+    #     separately, no mixing"). Move the overflow tier to the FRONT (tried first)
+    #     with the original tiers following as further fallback -> [overflow, *orig].
+    #     Dedupe: if the overflow tier is already in the chain, it is lifted to the
+    #     front (removed from its old position) so it never appears twice.
+    #
+    #   * ``overflow_tier`` UNSET (None, the default) -> today's behaviour, byte-
+    #     identical: DEPRIORITIZE the saturated vLLM tier(s) behind the managed
+    #     tier(s) already sitting next in the profile's chain.
+    if gate.overflow_tier is not None:
+        overflow = gate.overflow_tier
+        reordered = [overflow] + [t for t in tiers if t != overflow]
+        logger.info(
+            "concurrency: step=%s vLLM gauge %d vs cap %d (p_shed=%.2f); routing shed request to configured overflow tier %s (front)",
+            getattr(step, "value", step), gauge, gate.max_concurrency, p,
+            getattr(overflow, "label", None) or getattr(overflow, "model", overflow),
+        )
+        _record(True)
+        metrics.record_deprioritized(step)  # no-op if prom lib absent; never raises
+        return reordered
 
     vllm = [t for t in tiers if _is_vllm(t)]
     others = [t for t in tiers if not _is_vllm(t)]
