@@ -15,9 +15,12 @@ from helpers.utils import get_logger
 
 logger = get_logger(__name__)
 
-# One booking per session per 30 min. Also makes this tool idempotent against an
-# agent re-run (e.g. the OSS->managed streaming fallback re-executes tool calls):
-# a second invocation in the same session short-circuits instead of double-booking.
+# One booking per (session, species, farmer, technician) per 30 min. Distinct
+# species (a cow AND a buffalo) can both be booked in one session, but a repeat
+# for the SAME species short-circuits — which also makes this tool idempotent
+# against an agent re-run (e.g. the OSS->managed streaming fallback re-executes
+# tool calls) and against concurrent duplicate submits (Redis SET NX, shared
+# across containers). The upstream CreateAICall API has no server-side dedup.
 AI_CALL_COOLDOWN_TTL = 60 * 30  # 30 minutes
 AI_CALL_CACHE_NAMESPACE = "ai_call_booked"
 
@@ -49,7 +52,8 @@ async def create_ai_call(
 
     Returns:
         str: Formatted result with assigned AIT details and ticket number,
-             or a message if booking fails or was already done this session.
+             or a message if booking fails or the same species was already
+             booked in this session.
     """
     logger.info(
         "Create AI call tool invoked for union=%s society=%s farmer=%s user_id=%s species=%s",
@@ -60,8 +64,6 @@ async def create_ai_call(
         species.value,
     )
 
-    # Per-session id for the atomic booking reservation (placed just before the
-    # write call below).
     session_id = ctx.deps.session_id if ctx and ctx.deps else None
 
     # A booking is IRREVERSIBLE, so block on the moderation verdict before writing.
@@ -109,24 +111,29 @@ async def create_ai_call(
             userId=user_id,
             species=species,
         )
-        # Atomic reservation immediately before the write: first caller wins; a
-        # concurrent/duplicate submit OR a fallback re-run for the same session
-        # short-circuits instead of double-booking (Redis SET NX, shared across
-        # containers). Released below if the booking API itself fails.
-        _reserved = False
+        # Atomic per-(session, species, farmer, technician) reservation immediately
+        # before the write: distinct species proceed independently, but a duplicate
+        # submit or a fallback re-run for the SAME species short-circuits instead of
+        # double-booking. Released below if the booking API itself fails.
+        reservation_key = None
         if session_id:
-            if not await try_reserve(session_id, AI_CALL_CACHE_NAMESPACE, AI_CALL_COOLDOWN_TTL):
-                logger.info("AI call already booked/in-flight for session %s, skipping", session_id)
-                return (
-                    "This session already has an active artificial insemination booking. "
-                    "Please try again later or contact your society for assistance."
+            reservation_key = f"{session_id}:{species.value}:{farmer_code}:{user_id}"
+            if not await try_reserve(reservation_key, AI_CALL_CACHE_NAMESPACE, AI_CALL_COOLDOWN_TTL):
+                logger.info(
+                    "AI call already booked/in-flight for session=%s species=%s farmer=%s, skipping",
+                    session_id,
+                    species.value,
+                    farmer_code,
                 )
-            _reserved = True
-
+                return (
+                    f"An artificial insemination booking for your {species.value} is already "
+                    "active in this session. Please try again later or contact your society "
+                    "for assistance."
+                )
         response = await create_ai_call_api(request, token)
         if response is None:
-            if _reserved:
-                await release_reservation(session_id, AI_CALL_CACHE_NAMESPACE)
+            if reservation_key:
+                await release_reservation(reservation_key, AI_CALL_CACHE_NAMESPACE)
             logger.info(
                 "Create AI call failed for union=%s society=%s farmer=%s species=%s",
                 union_code,
@@ -146,11 +153,12 @@ async def create_ai_call(
             )
             return failure_message
 
-        # Mark this session as booked so a re-run (or retry) does not double-book.
-        if session_id:
+        # Mark this (session, species, farmer, technician) as booked so a re-run or
+        # retry does not double-book. Distinct species remain independently bookable.
+        if reservation_key:
             try:
                 await cache.set(
-                    session_id,
+                    reservation_key,
                     {"ticket": response.ticket_number, "species": species.value},
                     ttl=AI_CALL_COOLDOWN_TTL,
                     namespace=AI_CALL_CACHE_NAMESPACE,

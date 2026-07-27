@@ -41,7 +41,7 @@ TOOLS = [
 
     Tool(
         create_ai_call,
-        takes_ctx=True,  # needs ctx.deps.session_id for the booking idempotency guard
+        takes_ctx=True,  # needs ctx.deps.session_id for the per-species booking guard + ensure_in_scope
         docstring_format='auto',
         require_parameter_descriptions=True,
     ),
