@@ -31,6 +31,8 @@ from app.services.translation import (
     PRETRANSLATION_PROVIDER,
     PRETRANSLATION_MODEL,
 )
+from pydantic_ai.messages import ModelRequest, ModelResponse, UserPromptPart, TextPart
+from app.services.identity_profile import is_identity_query, build_identity_profile_table
 
 
 class SentenceSegmenter:
@@ -326,6 +328,34 @@ async def stream_chat_messages(
         content_id = f"query_{session_id}_{len(history)//2 + 1}"
         logger.info("request_id=%s user_info=%s", request_id, user_info)
 
+        if is_identity_query(query):
+            identity_response = build_identity_profile_table(
+                source_lang=source_lang,
+                target_lang=target_lang,
+                query=query,
+            )
+            logger.info("request_id=%s identity_short_circuit=True", request_id)
+            if get_langfuse_client:
+                try:
+                    langfuse = get_langfuse_client()
+                    langfuse.set_current_trace_io(output=identity_response)
+                except Exception as e:
+                    logger.warning("Langfuse: failed to record identity output: %s", e)
+
+            messages = [
+                *history,
+                ModelRequest(parts=[UserPromptPart(content=query)]),
+                ModelResponse(parts=[TextPart(content=identity_response)]),
+            ]
+            logger.info(
+                "request_id=%s updating_history_identity_path=True total_messages=%s",
+                request_id,
+                len(messages),
+            )
+            await update_message_history(session_id, messages)
+            yield identity_response
+            return
+
         # Extract farmer context from phone in JWT via cache-first fetch
         farmer_data = ""
         farmer_unions: list[str] = []
@@ -337,11 +367,24 @@ async def stream_chat_messages(
             except Exception as e:
                 logger.warning(f"request_id={request_id} farmer_context_fetch_failed={e}")
 
+        # Hindi kill switch (HINDI_CHAT_ENABLED, default on). When disabled,
+        # hi/hindi drop out of both the pretranslation (src->en) and output
+        # (en->target) gates, so a Hindi request bypasses the pipeline entirely
+        # and is served like an unsupported language. Gujarati is unaffected.
+        hindi_enabled = getattr(settings, "hindi_chat_enabled", True)
+        output_translation_langs = (
+            INDIAN_LANGUAGES if hindi_enabled
+            else [lang for lang in INDIAN_LANGUAGES if lang not in {"hi", "hindi"}]
+        )
+
         processing_query = query
         processing_lang = target_lang
-        needs_output_translation = use_translation_pipeline and target_lang.lower() in INDIAN_LANGUAGES
+        needs_output_translation = use_translation_pipeline and target_lang.lower() in output_translation_langs
 
-        if use_translation_pipeline and source_lang.lower() in {"gu", "gujarati"}:
+        pretranslation_source_langs = {"gu", "gujarati"}
+        if hindi_enabled:
+            pretranslation_source_langs |= {"hi", "hindi"}
+        if use_translation_pipeline and source_lang.lower() in pretranslation_source_langs:
             # OSS sessions force pre-translation onto the self-hosted vLLM endpoint
             # (provider="vllm"); legacy keeps the configured PRETRANSLATION_PROVIDER
             # (None => default). Equivalent to the resolved PRE_TRANSLATION primary
@@ -349,9 +392,10 @@ async def stream_chat_messages(
             # otherwise.
             pretrans_provider = "vllm" if is_oss else None
             logger.info(
-                "request_id=%s translation_pipeline=True variant=%s pretranslating gu->en with %s/%s",
+                "request_id=%s translation_pipeline=True variant=%s pretranslating %s->en with %s/%s",
                 request_id,
                 pipeline_profile,
+                source_lang,
                 pretrans_provider or PRETRANSLATION_PROVIDER,
                 request_model_name if is_oss else PRETRANSLATION_MODEL,
             )

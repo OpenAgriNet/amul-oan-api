@@ -188,6 +188,7 @@ async def _pretranslate_oss(text: str, source_name: str, source_code: str, max_t
 
 GU_PREFERRED_TRANSLATION_RULES = [
     "Use farmer-preferred Gujarati livestock terms.",
+    "Sarlaben must always use feminine self-reference in Gujarati.",
     "Prefer 'બાવલું' over 'પાહો' for udder context.",
     "Prefer 'ધાર' over 'ટીપાં' for milk streams.",
     "Use 'ગાભણ' for pregnant livestock context.",
@@ -299,6 +300,59 @@ GU_POLICY_REPLACEMENTS = _build_gu_policy_replacements(GU_TERM_POLICY)
 GU_POST_REPLACEMENTS = GU_POST_REPLACEMENTS_BASE + GU_POLICY_REPLACEMENTS
 
 
+# ── Protected proper nouns: pin a fixed Gujarati rendering ──────────────────────
+# A long named entity (e.g. a full bank name) can't be pinned by pre-substitution
+# (the translator RE-TRANSLATES target-language text) nor by a sentinel (dropped in
+# streaming). So we let it translate naturally and REPLACE the model's rendering with
+# the pinned form via a regex covering the model's variants. Applied on the full text
+# (unary) or through a lookback buffer (streaming) so a multi-token name is matched
+# before it is flushed. Gated on the English source containing the term, so ordinary
+# traffic is never buffered or altered.
+_PROTECTED_OUTPUT = [
+    (
+        "Kheda District Central Co-Operative Bank Limited - Nadiad",
+        re.compile(
+            r"ખેડા\s+(?:જિલ્લા|ડિસ્ટ્રિક્ટ)\s+"
+            r"(?:કેન્દ્રીય\s+|મધ્યસ્થ\s+|સેન્ટ્રલ\s+)?"
+            r"(?:સહકારી|કો-?ઓપરેટિવ)\s+બેંક\s+લિમિટેડ\s*-?\s*નડિયાદ"
+        ),
+        "ખેડા ડિસ્ટ્રિક્ટ સેન્ટ્રલ કો-ઓપરેટિવ બેંક લિમિટેડ - નડિયાદ",
+    ),
+]
+# Chars to hold back in streaming so a forming match completes before flushing
+# (> the longest model rendering of any protected term).
+_PROTECTED_STREAM_HOLDBACK = 80
+
+
+def _protected_output_triggers(source_text: str, target_lang: str):
+    """Regex/pinned pairs whose English trigger appears in the source (gu target only)."""
+    if not source_text or target_lang.lower() not in ("gujarati", "gu"):
+        return []
+    return [(rx, pinned) for en, rx, pinned in _PROTECTED_OUTPUT if en in source_text]
+
+
+def _apply_protected_output(text: str, triggers) -> str:
+    for rx, pinned in triggers:
+        text = rx.sub(pinned, text)
+    return text
+
+
+async def _buffered_protected_stream(stream, triggers):
+    """Yield chunks while replacing protected renderings across chunk boundaries:
+    hold back a tail long enough to contain a forming match, replace on the buffer,
+    emit the safe prefix, and flush the remainder at the end."""
+    buf = ""
+    async for chunk in stream:
+        buf += chunk
+        buf = _apply_protected_output(buf, triggers)
+        if len(buf) > _PROTECTED_STREAM_HOLDBACK:
+            yield buf[:-_PROTECTED_STREAM_HOLDBACK]
+            buf = buf[-_PROTECTED_STREAM_HOLDBACK:]
+    buf = _apply_protected_output(buf, triggers)
+    if buf:
+        yield buf
+
+
 # ── Voice-only context-aware body-slang normalization (§14 channel-aware) ──────
 # Chat maps all body slang -> શરીર uniformly via the shared gu_term_policy.json.
 # Voice additionally distinguishes back/flank context (-> પીઠ) from general body
@@ -373,10 +427,10 @@ GU_GENDER_NEUTRAL_POST: list[tuple[re.Pattern, str]] = [
 ]
 
 
-# Feminine self-reference guard (voice only, §14). The assistant persona is female,
+# Feminine self-reference guard (§14). The assistant persona is female,
 # so first-person verb forms must use the feminine conjugation. Deterministic safety
-# net BEYOND the prompt rule, ported verbatim from voice-prod (restored after the #90
-# merge dropped it). Boundary-aware; only rewrites the verb ending after "હું".
+# net BEYOND the prompt rule. Boundary-aware; only rewrites the verb ending
+# after "હું" so it applies to assistant self-reference.
 GU_FEMININE_SELF_REFERENCE_REPLACEMENTS: list[tuple[re.Pattern, str]] = [
     (
         re.compile(
@@ -387,6 +441,18 @@ GU_FEMININE_SELF_REFERENCE_REPLACEMENTS: list[tuple[re.Pattern, str]] = [
     (
         re.compile(
             r"(^|[,।.!?]\s+)\s*હું(?P<body>[^.!?\n]{0,80}?)શકું\s+છું(?=\s|[,।.!?]|$)"
+        ),
+        r"\1હું\g<body>શકતી છું",
+    ),
+    (
+        re.compile(
+            r"(^|[,।.!?]\s+)\s*હું(?P<body>[^,।.!?\n]{0,80}?)શકતો\s+ન(?:થી|હીં|હિ)(?=\s|[,।.!?]|$)"
+        ),
+        r"\1હું\g<body>શકતી નથી",
+    ),
+    (
+        re.compile(
+            r"(^|[,।.!?]\s+)\s*હું(?P<body>[^,।.!?\n]{0,80}?)શકતો\s+છું(?=\s|[,।.!?]|$)"
         ),
         r"\1હું\g<body>શકતી છું",
     ),
@@ -405,8 +471,16 @@ GU_FEMININE_SELF_REFERENCE_REPLACEMENTS: list[tuple[re.Pattern, str]] = [
 ]
 
 
-def _fix_dandas(text: str) -> str:
-    """Replace Devanagari dandas (।) with periods in TranslateGemma output."""
+def _fix_dandas(text: str, target_lang: str = "gu") -> str:
+    """Replace Devanagari dandas (।) with periods in TranslateGemma Gujarati output.
+
+    Gujarati-only: the danda ``।`` is a spurious artifact of TranslateGemma's
+    Gujarati rendering, but it is the *correct* sentence terminator in Hindi, so
+    this must never run on Hindi (or any Devanagari-script) output. Defaults to
+    Gujarati behavior for any caller that does not pass a language.
+    """
+    if (target_lang or "").strip().lower() not in ("gu", "gujarati"):
+        return text
     return text.replace("।", ".")
 
 
@@ -425,6 +499,9 @@ def _post_normalize_gu_translation(
         out = _normalize_gu_body_terms(out)
     for pat, repl in GU_POST_REPLACEMENTS:
         out = re.sub(pat, repl, out)
+    # Keep assistant first-person Gujarati conjugation feminine on all channels.
+    for pat, repl in GU_FEMININE_SELF_REFERENCE_REPLACEMENTS:
+        out = pat.sub(repl, out)
     if _is_voice_channel():
         # Remove placeholder dashes without inventing a quantity (voice parity).
         out = re.sub(rf"([:：]\s*){_GU_PLACEHOLDER_RE}(?=\s|$)", r"\1", out)
@@ -432,12 +509,6 @@ def _post_normalize_gu_translation(
         # G2: deterministic gendered caller-address stripping before TTS (voice only).
         for pat, repl in GU_GENDER_NEUTRAL_POST:
             out = pat.sub(repl, out)
-        # Feminine self-reference guard (voice only): keep the female persona's
-        # first-person verb forms feminine. Runs after the address strip, matching
-        # voice-prod ordering.
-        for pat, repl in GU_FEMININE_SELF_REFERENCE_REPLACEMENTS:
-            out = pat.sub(repl, out)
-
         # Voice-only scaffold collapse: "Label: value" line prefixes become spoken flow.
         out = re.sub(r"(?m)^\s*[^\s:।.!?\n]{1,20}\s*:\s*", ", ", out)
         out = re.sub(r"^\s*,\s*", "", out)
@@ -526,8 +597,8 @@ def _build_translation_instruction(
         rules = []
         for line in lines:
             if " -> " in line:
-                en_term, gu_term = line.split(" -> ", 1)
-                rules.append(f"Rule: '{en_term.strip()}' must be translated as '{gu_term.strip()}'.")
+                en_term, target_term = line.split(" -> ", 1)
+                rules.append(f"Rule: '{en_term.strip()}' must be translated as '{target_term.strip()}'.")
         if rules:
             instruction += "\n\n**Terminology Rules (mandatory):**\n" + "\n".join(rules) + "\n"
     if target_code == "gu":
@@ -615,10 +686,15 @@ _POST_TRANSLATION_PIPELINE = "posttranslation"
 def _prepare_translation_inputs(text, source_lang, target_lang, max_output_chars):
     """Mini-glossary fetch + build the translation instruction ONCE (shared by both
     tiers) + the Gemma-wrapped TranslateGemma prompt. Verbatim to the prior inline
-    logic (mini glossary for gu at threshold 0.90 / max 40)."""
+    logic (mini glossary for gu/hi at threshold 0.90 / max 40)."""
     mini_glossary = ""
-    if target_lang.lower() in ("gujarati", "gu"):
-        mini_glossary = get_mini_glossary_for_text(text, threshold=0.90, max_terms=40)
+    if target_lang.lower() in ("gujarati", "gu", "hindi", "hi"):
+        mini_glossary = get_mini_glossary_for_text(
+            text,
+            threshold=0.90,
+            max_terms=40,
+            target_lang=target_lang,
+        )
         if mini_glossary:
             logger.info(f"Translation prompt: injected mini glossary ({len(mini_glossary.splitlines())} terms)")
     instruction = _build_translation_instruction(
@@ -765,7 +841,7 @@ async def _translategemma_stream(descriptor, prompt, source_lang, target_lang, t
                                 chunk_data = json.loads(data)
                                 content = chunk_data['choices'][0].get('text', '')
                                 if content:
-                                    content = _fix_dandas(content)
+                                    content = _fix_dandas(content, target_lang)
                                     content = _post_normalize_gu_translation(
                                         content, target_lang, strip_outer=False,
                                     )
@@ -822,7 +898,7 @@ async def _translategemma_stream(descriptor, prompt, source_lang, target_lang, t
                                 chunk_data = json.loads(data)
                                 content = chunk_data['choices'][0].get('text', '')
                                 if content:
-                                    content = _fix_dandas(content)
+                                    content = _fix_dandas(content, target_lang)
                                     content = _post_normalize_gu_translation(
                                         content, target_lang, strip_outer=False,
                                     )
@@ -852,7 +928,7 @@ async def _llm_translation_stream(client, model_name, instruction, source_lang, 
                 continue
             content = getattr(chunk.choices[0].delta, "content", None) or ""
             if content:
-                content = _fix_dandas(content)
+                content = _fix_dandas(content, target_lang)
                 content = _post_normalize_gu_translation(content, target_lang, strip_outer=False)
                 yield content
         return
@@ -885,7 +961,7 @@ async def _llm_translation_stream(client, model_name, instruction, source_lang, 
                 continue
             content = getattr(chunk.choices[0].delta, "content", None) or ""
             if content:
-                content = _fix_dandas(content)
+                content = _fix_dandas(content, target_lang)
                 content = _post_normalize_gu_translation(content, target_lang, strip_outer=False)
                 translated_parts.append(content)
                 yield content
@@ -917,7 +993,7 @@ async def _translategemma_unary(descriptor, prompt, source_lang, target_lang, te
 
                 result = await response.json()
                 translated_text = result["choices"][0]["text"].strip()
-                translated_text = _fix_dandas(translated_text)
+                translated_text = _fix_dandas(translated_text, target_lang)
                 translated_text = _post_normalize_gu_translation(translated_text, target_lang)
                 logger.info(f"Translation successful ({len(text)} -> {len(translated_text)} chars)")
                 return translated_text
@@ -955,7 +1031,7 @@ async def _translategemma_unary(descriptor, prompt, source_lang, target_lang, te
 
                 result = await response.json()
                 translated_text = result["choices"][0]["text"].strip()
-                translated_text = _fix_dandas(translated_text)
+                translated_text = _fix_dandas(translated_text, target_lang)
                 translated_text = _post_normalize_gu_translation(translated_text, target_lang)
                 observation.update(output=translated_text)
                 logger.info(f"Translation successful ({len(text)} -> {len(translated_text)} chars)")
@@ -976,7 +1052,7 @@ async def _llm_translation_unary(client, model_name, instruction, source_lang, t
             max_completion_tokens=max_tokens,
         )
         translated_text = (response.choices[0].message.content or "").strip()
-        translated_text = _fix_dandas(translated_text)
+        translated_text = _fix_dandas(translated_text, target_lang)
         translated_text = _post_normalize_gu_translation(translated_text, target_lang)
         logger.info(f"Translation successful ({len(text)} -> {len(translated_text)} chars)")
         return translated_text
@@ -1002,7 +1078,7 @@ async def _llm_translation_unary(client, model_name, instruction, source_lang, t
             max_completion_tokens=max_tokens,
         )
         translated_text = (response.choices[0].message.content or "").strip()
-        translated_text = _fix_dandas(translated_text)
+        translated_text = _fix_dandas(translated_text, target_lang)
         translated_text = _post_normalize_gu_translation(translated_text, target_lang)
         observation.update(output=translated_text)
         logger.info(f"Translation successful ({len(text)} -> {len(translated_text)} chars)")
@@ -1137,6 +1213,8 @@ async def translate_text(
         logger.info("Source and target languages are the same, skipping translation")
         return text
 
+    _prot = _protected_output_triggers(text, target_lang)
+
     instruction, tg_prompt = _prepare_translation_inputs(
         text, source_lang, target_lang, max_output_chars
     )
@@ -1153,7 +1231,8 @@ async def translate_text(
             tier.handle, tier.model_name, instruction, source_lang, target_lang, text, temperature, max_tokens
         )
 
-    return await _run_post_translation_chain(chain, _run)
+    result = await _run_post_translation_chain(chain, _run)
+    return _apply_protected_output(result, _prot)
 
 
 def _get_openai_client() -> AsyncOpenAI:
@@ -1340,6 +1419,8 @@ async def translate_text_stream_fast(
         yield text
         return
 
+    _prot = _protected_output_triggers(text, target_lang)
+
     instruction, tg_prompt = _prepare_translation_inputs(
         text, source_lang, target_lang, max_output_chars
     )
@@ -1357,9 +1438,11 @@ async def translate_text_stream_fast(
         )
 
     try:
-        async for chunk in _stream_post_translation_chain(
+        base_stream = _stream_post_translation_chain(
             chain, _make_stream, source_lang=source_lang, target_lang=target_lang
-        ):
+        )
+        stream = _buffered_protected_stream(base_stream, _prot) if _prot else base_stream
+        async for chunk in stream:
             yield chunk
     except Exception as e:
         logger.error(f"Translation streaming error: {str(e)}")

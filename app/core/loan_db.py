@@ -42,6 +42,16 @@ def _get_sessionmaker() -> async_sessionmaker:
         settings.loan_db_url,
         pool_size=settings.loan_db_pool_size,
         pool_pre_ping=True,
+        # Bound every part of the connection path so a stale pooled connection
+        # (TCP flow silently dropped by NAT after hours idle) can never hang the
+        # request until nginx's 60s proxy-read-timeout kills the voice call:
+        #  - pool_recycle: drop+rebuild connections older than 5 min (< NAT idle window)
+        #  - pool_timeout: cap the wait for a free pooled slot
+        #  - connect_args (asyncpg): cap connect AND every statement (incl. the
+        #    pre_ping SELECT 1) so a dead socket errors fast and pre_ping reconnects.
+        pool_recycle=300,
+        pool_timeout=10,
+        connect_args={"timeout": 10, "command_timeout": 10},
         future=True,
     )
     _sessionmaker = async_sessionmaker(_engine, expire_on_commit=False, class_=AsyncSession)
