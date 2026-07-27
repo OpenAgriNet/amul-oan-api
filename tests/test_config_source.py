@@ -63,6 +63,21 @@ def _two_profile(pct: int) -> PipelineConfig:
     ])
 
 
+def _content_invalid() -> PipelineConfig:
+    """SCHEMA-valid (weight sums to 100, unique names) but UNBUILDABLE: a vllm AGENT
+    tier with NO endpoint. ``PipelineConfig(**data)`` accepts it, but the factory
+    raises at materialize time (``resolver.primary_tier`` -> build_handle), so the
+    boot-parity content probe in ``runtime.validate_content`` rejects it. AGENT is a
+    RAW-independent step configured identically in chat and voice, so this fixture is
+    byte-identical across the two repos."""
+    return PipelineConfig(profiles=[
+        NamedProfile(name="oss", weight=100,
+                     steps={Step.AGENT: StepConfig(tiers=[
+                         Tier(provider=Provider.VLLM, model="gemma", endpoint=None,
+                              api_key_env="OSS_INFERENCE_API_KEY", timeout_ms=8000)])}),
+    ])
+
+
 def _json_of(cfg: PipelineConfig) -> str:
     """Exactly what the ops script / config_source round-trip through redis."""
     return json.dumps(cfg.model_dump(mode="json"))
@@ -145,13 +160,75 @@ def test_refresh_interval_default_and_bad_value(monkeypatch):
     assert config_source.refresh_interval_s() == 10.0   # degrades, never raises
 
 
+def test_refresh_interval_clamps_nonpositive_to_default(monkeypatch):
+    # A 0/negative window would GET redis on EVERY request (blocking hot-path read);
+    # clamp non-positive values to the default instead.
+    monkeypatch.setenv(config_source.REFRESH_ENV, "0")
+    assert config_source.refresh_interval_s() == 10.0
+    monkeypatch.setenv(config_source.REFRESH_ENV, "-5")
+    assert config_source.refresh_interval_s() == 10.0
+
+
+def test_redis_client_uses_short_dedicated_socket_timeout(monkeypatch):
+    # The config-source client gets a short dedicated connect+socket timeout
+    # (default 0.5s), NOT the app-wide redis_socket_timeout (up to 10s), so a
+    # slow/down redis on the hot path costs <=0.5s.
+    import sys
+
+    captured: dict = {}
+
+    class _FakeRedisModule:
+        class Redis:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+    monkeypatch.setitem(sys.modules, "redis", _FakeRedisModule)
+    assert config_source.redis_timeout_s() == 0.5             # default
+    client = config_source.build_redis_client()
+    assert client is not None
+    assert captured["socket_timeout"] == 0.5
+    assert captured["socket_connect_timeout"] == 0.5
+    # env override is honored
+    captured.clear()
+    monkeypatch.setenv(config_source.TIMEOUT_ENV, "2")
+    assert config_source.redis_timeout_s() == 2.0
+    config_source.build_redis_client()
+    assert captured["socket_timeout"] == 2.0
+    assert captured["socket_connect_timeout"] == 2.0
+
+
 # ── enabled + key absent -> current unchanged ─────────────────────────────────
 
-def test_enabled_key_absent_returns_current(monkeypatch, fake):
+def test_enabled_key_absent_reverts_to_boot(monkeypatch, fake):
+    from app.llm_core import runtime
     _enable(monkeypatch)
     boot = _two_profile(30)
-    assert config_source.maybe_refresh(boot) is boot
+    monkeypatch.setattr(runtime, "BOOT_PIPELINE", boot)  # captured at configure()
+    assert config_source.maybe_refresh(boot) is boot   # key absent -> BOOT config
     assert fake.get_calls == 1   # it DID consult redis (past TTL), found nothing
+
+
+def test_clear_or_absent_reverts_to_boot_not_last_live(monkeypatch, fake):
+    """`clear` (and a never-set key) reverts to the BOOT config captured at
+    configure() — NOT the last LIVE config that was serving. Emergency rollback."""
+    from app.llm_core import runtime
+    _enable(monkeypatch)
+    boot = _two_profile(30)
+    live = _two_profile(70)
+    monkeypatch.setattr(runtime, "BOOT_PIPELINE", boot)  # boot captured at configure()
+
+    # 1) a live config is present and loads (distinct from boot)
+    fake.store[config_source.key()] = _json_of(live)
+    loaded = config_source.maybe_refresh(boot)
+    assert loaded is not boot
+    assert loaded.by_name("oss").weight == 70            # last-LIVE is serving
+
+    # 2) operator clears the key -> next refresh reverts to BOOT, not last-live
+    del fake.store[config_source.key()]
+    monkeypatch.setattr(config_source, "_last_refresh_monotonic", 0.0)  # force TTL elapse
+    reverted = config_source.maybe_refresh(loaded)       # current is the last-LIVE cfg
+    assert reverted is boot                              # BOOT, not last-live
+    assert reverted.by_name("oss").weight == 30
 
 
 # ── (b) hot reload + re-bucket ────────────────────────────────────────────────
@@ -235,6 +312,20 @@ def test_no_redis_client_keeps_last_good(monkeypatch):
     assert config_source.maybe_refresh(boot) is boot
 
 
+def test_content_invalid_live_config_kept_last_good_and_warns(monkeypatch, fake, caplog):
+    """FAIL-CLOSED on bad CONTENT: a schema-valid but UNBUILDABLE live config
+    (validate_content raises via the resolvability probe) is treated like a read
+    failure — last-good kept, WARNING logged, never applied, never raised."""
+    import logging
+    _enable(monkeypatch, refresh="0")
+    boot = _two_profile(30)
+    fake.store[config_source.key()] = _json_of(_content_invalid())
+    with caplog.at_level(logging.WARNING):
+        out = config_source.maybe_refresh(boot)   # must NOT raise; must NOT apply
+    assert out is boot                             # kept last-good (fail-closed)
+    assert "content-invalid" in caplog.text
+
+
 # ── (d) TTL: two calls within one window hit redis at most once ────────────────
 
 def test_ttl_hits_redis_at_most_once_per_window(monkeypatch, fake):
@@ -288,4 +379,15 @@ def test_ops_script_refuses_invalid_config(monkeypatch, tmp_path, fake):
     p = tmp_path / "bad.json"
     p.write_text(json.dumps(bad), encoding="utf-8")
     assert ops.cmd_set("chat", str(p)) == 1     # refused
+    assert "llm_pipeline_config:chat" not in fake.store   # nothing written
+
+
+def test_ops_script_refuses_content_invalid_config(monkeypatch, tmp_path, fake):
+    """The ops script applies the SAME content gate as the app: a schema-valid but
+    UNBUILDABLE config is refused (content probe raises) and nothing is written."""
+    ops = _load_ops_module()
+    monkeypatch.setattr(config_source, "build_redis_client", lambda: fake)
+    p = tmp_path / "content_bad.json"
+    p.write_text(_json_of(_content_invalid()), encoding="utf-8")
+    assert ops.cmd_set("chat", str(p)) == 1     # refused on the content probe
     assert "llm_pipeline_config:chat" not in fake.store   # nothing written

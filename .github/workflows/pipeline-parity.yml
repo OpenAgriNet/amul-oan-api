@@ -1,0 +1,84 @@
+name: LLM Pipeline Parity
+
+# Guards the unified LLM pipeline core that the chat (amul-oan-api) and voice
+# (voice-oan-api) repos each carry a copy of (app/llm_core/* + the shared fallback
+# walker app/services/fallback.py). Two gates:
+#   1. tests  — runs the llm_core pytest subset (breaker / concurrency / fallback /
+#               split / config); this runs from THIS repo alone.
+#   2. parity — runs scripts/check_pipeline_parity.py, which byte-compares the
+#               MUST-MATCH files and region-checks the tolerated ones across the two
+#               repos. It therefore needs BOTH repos checked out side by side; see the
+#               "Checkout sibling repo" step below.
+
+on:
+  push:
+    paths: &pipeline_paths
+      - "app/llm_core/**"
+      - "app/services/fallback.py"
+      - "scripts/check_pipeline_parity.py"
+      - "scripts/set_pipeline_config.py"
+      - "tests/test_health.py"
+      - "tests/test_concurrency.py"
+      - "tests/test_fallback.py"
+      - "tests/test_split.py"
+      - "tests/test_llm_core.py"
+      - "tests/test_pipeline_trace.py"
+      - "tests/test_config_source.py"
+      - ".github/workflows/pipeline-parity.yml"
+  pull_request:
+    paths: *pipeline_paths
+  workflow_dispatch:
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Run the llm_core pytest subset
+        env:
+          # Dummy keys: the factory reads these at import; no real client is built.
+          OPENAI_API_KEY: test-key
+          OSS_INFERENCE_API_KEY: test-oss-key
+        run: |
+          python -m pytest -q \
+            tests/test_health.py \
+            tests/test_concurrency.py \
+            tests/test_fallback.py \
+            tests/test_split.py \
+            tests/test_llm_core.py \
+            tests/test_pipeline_trace.py \
+            tests/test_config_source.py
+
+  parity:
+    runs-on: ubuntu-latest
+    steps:
+      # This repo (chat / amul-oan-api) -> ./amul-oan-api
+      - name: Checkout this repo
+        uses: actions/checkout@v4
+        with:
+          path: amul-oan-api
+
+      # The parity script compares the two repos, so it needs the SIBLING (voice)
+      # repo checked out beside this one. The script takes the two roots as argv OR
+      # via PARITY_CHAT_ROOT / PARITY_VOICE_ROOT (used below). If the sibling repo is
+      # private, PARITY_SIBLING_TOKEN must be a PAT/token with read access to it.
+      - name: Checkout sibling repo (voice / voice-oan-api)
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/voice-oan-api
+          ref: feat/nway-routing
+          path: voice-oan-api
+          token: ${{ secrets.PARITY_SIBLING_TOKEN }}
+
+      - name: Cross-repo parity check (needs both repos checked out)
+        env:
+          PARITY_CHAT_ROOT: ${{ github.workspace }}/amul-oan-api
+          PARITY_VOICE_ROOT: ${{ github.workspace }}/voice-oan-api
+        run: python amul-oan-api/scripts/check_pipeline_parity.py

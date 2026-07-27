@@ -10,9 +10,11 @@ the new % automatically (e.g. an OSS profile 0 -> 50% moves ~half of them).
 
 This script uses the SAME redis connection env the app uses (via
 ``config_source.build_redis_client()`` -> ``app.config.settings``) and validates
-with the SAME ``PipelineConfig`` model before writing, so an invalid config can
-never reach the key. Secrets are never in the config (tiers name ``api_key_env``
-only) — do not put key VALUES in the JSON.
+with the SAME gates the APP applies before writing — schema (``PipelineConfig``)
+AND content (``runtime.validate_content``: provider/step legality + a resolvability
+probe that builds every profile/step primary handle) — so neither an invalid nor a
+schema-valid-but-UNBUILDABLE config can ever reach the key. Secrets are never in
+the config (tiers name ``api_key_env`` only) — do not put key VALUES in the JSON.
 
 Usage
 -----
@@ -32,12 +34,14 @@ Exact ops flow (hot % change, no redeploy)
      or hand-author a PipelineConfig JSON (profiles + weights + per-step tiers).
   3. Edit the weights (they MUST sum to 100; names unique) and save to a .json.
   4. ``python scripts/set_pipeline_config.py set <channel> ./new.json``
-     -> validates via PipelineConfig(**data); refuses to write if invalid.
+     -> validates schema (PipelineConfig(**data)) AND content
+     (runtime.validate_content); refuses to write if either fails.
   5. Within ``PIPELINE_CONFIG_REFRESH_S`` (~10s) the app's get_pipeline() reloads
      it; the split re-buckets continuing sessions onto the new %. Verify with
      ``get <channel>`` and the app's ``pipeline config: loaded LIVE ...`` log.
   6. To REVERT to the boot (env/YAML) config: ``clear <channel>`` deletes the key;
-     within the TTL the app falls back to its boot config (last-good until then).
+     within the TTL the app falls back to its BOOT config (the config captured at
+     startup — an emergency rollback, NOT the last live config it was serving).
 
 No real network is required to import this module; the redis client is built only
 when a subcommand runs.
@@ -54,7 +58,7 @@ _ROOT = Path(__file__).resolve().parents[1]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-from app.llm_core import config_source
+from app.llm_core import config_source, runtime
 from app.llm_core.config_model import PipelineConfig
 
 
@@ -72,6 +76,14 @@ def cmd_set(channel: str, path: str) -> int:
         cfg = PipelineConfig(**data)  # validates weights==100 + unique profile names
     except Exception as e:
         print(f"REFUSED: invalid PipelineConfig in {path}: {e}", file=sys.stderr)
+        return 1
+    # Content gate (SAME as the app's live-load path): reject a schema-valid but
+    # UNBUILDABLE config (bad provider/step, unresolvable tier) BEFORE writing, so a
+    # bad push can never reach the key and go live.
+    try:
+        runtime.validate_content(cfg)
+    except Exception as e:
+        print(f"REFUSED: config in {path} failed content validation: {e}", file=sys.stderr)
         return 1
     key = config_source.key(channel)
     payload = json.dumps(cfg.model_dump(mode="json"))

@@ -17,7 +17,14 @@ Two composable pieces feed one per-endpoint breaker, and one filter consumes it:
   A cooldown lets ONE half-open probe through (a single in-flight probe token —
   the FIRST caller after the cooldown probes; concurrent callers still see the
   endpoint open and are pruned, so the dead box is not re-flooded during the
-  probe window). A real success resets it ``closed`` immediately.
+  probe window). A real success resets it ``closed`` immediately. The probe token
+  is freed on ANY terminal outcome of the probed request: the fallback walkers
+  call ``release_probe`` in a ``finally`` for every chain tier, so a probe that
+  ended without a definitive success / ``BREAKER_EVIDENCE`` failure (a 4xx / caller
+  ``TypeError`` -> UNKNOWN, or BAD_OUTPUT) — or a probed tier a concurrency reorder
+  left unexecuted — cannot leak the token and pin the endpoint HALF_OPEN forever. A
+  ``HEALTH_PROBE_MAX_S`` time-box in ``is_open`` is the backstop that auto-releases
+  a lost token, so a recovered box can never be pruned forever.
 * **Active poller** (``app.tasks.health_poller``): periodically GETs the LB
   ``/health`` and reports ``record_healthy_poll`` / ``record_failed_poll``.
   Failback carries **hysteresis** — ``K`` consecutive healthy polls are required
@@ -82,6 +89,12 @@ class BreakerConfig:
     # this is purely the "40–60% flaky box that never trips consecutively" case.
     fail_rate_window: int = 20       # rolling outcome window size (0 disables the rate trip)
     fail_rate_threshold: float = 0.5  # failure share (>, strict) over a FULL window -> open
+    # Half-open probe time-box (backstop). A granted probe token is normally freed by
+    # the fallback walker's ``finally`` (``release_probe``) on ANY terminal outcome; if
+    # that release is ever missed (a lost token), ``is_open`` auto-releases the token
+    # after this many seconds so a recovered endpoint can be re-probed instead of
+    # staying HALF_OPEN (and thus pruned) forever.
+    probe_max_s: float = 30.0
 
 
 @dataclass
@@ -97,6 +110,10 @@ class _EndpointState:
     # probe after the cooldown elapsed. Concurrent callers see the endpoint as
     # still open (pruned) until the probe resolves (success->closed / failure->open).
     probe_in_flight: bool = False
+    # Monotonic timestamp when the current half-open probe token was granted; lets
+    # ``is_open`` time-box a lost probe (see BreakerConfig.probe_max_s). None whenever
+    # no probe is in flight.
+    probe_started_at: Optional[float] = None
 
 
 class HealthRegistry:
@@ -175,6 +192,7 @@ class HealthRegistry:
             st.state = BreakerState.OPEN
             st.opened_at = now
             st.probe_in_flight = False
+            st.probe_started_at = None
             self._emit(endpoint, BreakerState.OPEN)
             logger.warning("health: endpoint %s re-opened (half-open probe failed)", endpoint)
             return
@@ -217,12 +235,32 @@ class HealthRegistry:
         st.consecutive_failures = 0
         st.consecutive_healthy_polls = 0
         st.probe_in_flight = False
+        st.probe_started_at = None
         st.state = BreakerState.CLOSED
         st.opened_at = None
         self._push_outcome(st, ok=True)
         if was_open:
             self._emit(endpoint, BreakerState.CLOSED)
             logger.info("health: endpoint %s reset CLOSED on live success", endpoint)
+
+    def release_probe(self, endpoint: str) -> None:
+        """Idempotently free the single half-open probe token for ``endpoint``.
+
+        Called by the fallback walkers in a ``finally`` for every chain tier so a
+        probe granted by ``is_open`` (on the open->half_open transition) is released
+        no matter HOW the probed request ended — a clean success, ANY classified
+        failure, a caller cancellation, or a tier that never ran because a
+        concurrency reorder moved it and an earlier tier already returned/raised.
+        This ONLY clears the probe slot (and its time-box stamp); it deliberately
+        does NOT touch breaker state / counters / the rolling window, so it can never
+        perturb the ``record_success`` / ``record_failure`` transitions. No-op when no
+        probe is in flight (or the endpoint is unknown / untracked)."""
+        if not endpoint:
+            return
+        st = self._by_endpoint.get(endpoint)
+        if st is not None and st.probe_in_flight:
+            st.probe_in_flight = False
+            st.probe_started_at = None
 
     # ── active poller feed ───────────────────────────────────────────────────
     def record_healthy_poll(self, endpoint: str) -> None:
@@ -247,6 +285,7 @@ class HealthRegistry:
             st.consecutive_healthy_polls = 0
             st.opened_at = None
             st.probe_in_flight = False
+            st.probe_started_at = None
             self._emit(endpoint, BreakerState.CLOSED)
 
     def record_failed_poll(self, endpoint: str, *, now: Optional[float] = None) -> None:
@@ -276,16 +315,36 @@ class HealthRegistry:
             if st.opened_at is not None and (now - st.opened_at) >= self._config.cooldown_s:
                 st.state = BreakerState.HALF_OPEN
                 st.probe_in_flight = True          # grant the single probe to THIS caller
+                st.probe_started_at = now
                 self._emit(endpoint, BreakerState.HALF_OPEN)
                 logger.info("health: endpoint %s HALF_OPEN (cooldown elapsed, single probe allowed)", endpoint)
                 return False
             return True
         if st.state is BreakerState.HALF_OPEN:
+            now = time.monotonic() if now is None else now
+            # Time-box backstop: if the probe token has been held longer than
+            # ``probe_max_s`` the fallback walker's ``finally`` release was missed
+            # (a lost token). Auto-release it here so the endpoint is re-probed
+            # instead of staying HALF_OPEN — and thus pruned — forever (the exact
+            # failure this system prevents when the poller is off).
+            if (
+                st.probe_in_flight
+                and st.probe_started_at is not None
+                and (now - st.probe_started_at) >= self._config.probe_max_s
+            ):
+                st.probe_in_flight = False
+                st.probe_started_at = None
+                logger.warning(
+                    "health: endpoint %s half-open probe token timed out after %.0fs; "
+                    "auto-releasing (backstop)", endpoint, self._config.probe_max_s,
+                )
             if st.probe_in_flight:
                 return True                        # another caller holds the probe -> prune
-            # Probe token free (e.g. a prior probe resolved without a definitive
-            # success/failure) -> grant it to THIS caller.
+            # Probe token free (a prior probe resolved without a definitive
+            # success/failure, was released by the walker, or timed out above) ->
+            # grant it to THIS caller.
             st.probe_in_flight = True
+            st.probe_started_at = now
             return False
         return False
 
@@ -317,6 +376,7 @@ def _default_config() -> BreakerConfig:
         healthy_polls_required=settings.health_poller_healthy_polls,
         fail_rate_window=int(os.getenv("HEALTH_FAIL_RATE_WINDOW", "20")),
         fail_rate_threshold=float(os.getenv("HEALTH_FAIL_RATE_THRESHOLD", "0.5")),
+        probe_max_s=float(os.getenv("HEALTH_PROBE_MAX_S", "30")),
     )
 
 
@@ -347,6 +407,16 @@ def record_success(endpoint: str) -> None:
     if not settings.health_breaker_enabled:
         return
     _registry.record_success(endpoint)
+
+
+def release_probe(endpoint: str) -> None:
+    """Free any half-open probe token held for ``endpoint`` (idempotent).
+
+    Self-gated on the same flags that let ``prune_unhealthy`` grant a probe in the
+    first place, so the flags-off path stays byte-identical (no-op)."""
+    if not (settings.health_breaker_enabled or settings.health_poller_enabled):
+        return
+    _registry.release_probe(endpoint)
 
 
 def record_healthy_poll(endpoint: str) -> None:

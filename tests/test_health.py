@@ -97,6 +97,45 @@ def test_success_interrupts_failure_streak():
     assert r.state_of(AGENT_EP) is BreakerState.CLOSED     # 2 < 3 after reset
 
 
+# ── (a') half-open probe token: release + time-box (Finding #3) ───────────────
+
+def test_release_probe_frees_slot_idempotently():
+    """release_probe frees ONLY the probe slot (state/counters untouched) and is a
+    no-op when no probe is in flight or the endpoint is unknown; once freed, the
+    NEXT caller may probe again."""
+    r = HealthRegistry(_cfg(n=1, cooldown=10.0))
+    r.record_failure(AGENT_EP, now=0.0)                    # -> OPEN
+    assert r.is_open(AGENT_EP, now=20.0) is False          # -> HALF_OPEN + probe granted
+    assert r.snapshot()[AGENT_EP]["probe_in_flight"] is True
+
+    r.release_probe(AGENT_EP)                              # frees the slot
+    assert r.snapshot()[AGENT_EP]["probe_in_flight"] is False
+    assert r.state_of(AGENT_EP) is BreakerState.HALF_OPEN  # only the slot freed; state unchanged
+
+    r.release_probe(AGENT_EP)                              # idempotent no-op
+    r.release_probe("http://never-seen:9/v1")             # unknown endpoint -> no-op
+    assert r.state_of(AGENT_EP) is BreakerState.HALF_OPEN
+
+    # A freed slot -> the next caller re-probes instead of being pruned forever.
+    assert r.is_open(AGENT_EP, now=21.0) is False
+    assert r.snapshot()[AGENT_EP]["probe_in_flight"] is True
+
+
+def test_probe_time_box_auto_releases_lost_token():
+    """Backstop: a probe token never released by a walker finally (lost token) is
+    auto-released by ``is_open`` after ``probe_max_s`` so a recovered endpoint is
+    re-probed rather than pinned HALF_OPEN (pruned) forever."""
+    r = HealthRegistry(BreakerConfig(fail_threshold=1, cooldown_s=10.0, probe_max_s=30.0))
+    r.record_failure(AGENT_EP, now=0.0)                    # -> OPEN at t=0
+    assert r.is_open(AGENT_EP, now=20.0) is False          # -> HALF_OPEN + probe granted at t=20
+    assert r.is_open(AGENT_EP, now=25.0) is True           # 25-20 < 30 -> probe still held -> pruned
+    # Token leaked (no finally, no success/failure ever cleared it). Past probe_max_s
+    # the backstop auto-releases AND re-grants, so THIS caller probes again.
+    assert r.is_open(AGENT_EP, now=51.0) is False          # 51-20 >= 30 -> auto-release + re-grant
+    assert r.state_of(AGENT_EP) is BreakerState.HALF_OPEN
+    assert r.snapshot()[AGENT_EP]["probe_in_flight"] is True
+
+
 # ── (b) poller hysteresis ─────────────────────────────────────────────────────
 
 def test_poller_hysteresis_requires_k_healthy_polls():
@@ -394,4 +433,100 @@ def test_fallback_resolve_chain_untouched_when_health_off(monkeypatch):
 
     chain = asyncio.run(fb._resolve_chain(pipeline="moderation", session_id="", profile_name="oss"))
     assert [a.kind for a in chain] == ["oss", "managed"]
+    health.reset()
+
+
+# ── walker frees the half-open probe on ANY terminal outcome (Finding #3) ─────
+# A probe token is granted to a tier's endpoint during chain resolution
+# (prune_unhealthy -> is_open). It is released by record_success / a BREAKER_EVIDENCE
+# record_failure — but NOT by a non-evidence failure (UNKNOWN / BAD_OUTPUT) nor by a
+# tier a reorder left unexecuted. The walkers' finally sweep must free it regardless,
+# or a recovered endpoint stays pruned forever.
+
+OSS_EP = "http://oss:8020/v1"
+
+
+def _grant_probe(r, ep=OSS_EP):
+    """Trip ``ep`` then let the cooldown elapse so is_open grants it the probe."""
+    r.record_failure(ep, now=0.0)                          # -> OPEN (n=1)
+    assert r.is_open(ep, now=100.0) is False               # cooldown elapsed -> HALF_OPEN + probe
+    assert r.snapshot()[ep]["probe_in_flight"] is True
+
+
+def test_walker_releases_probe_on_non_evidence_failure(monkeypatch, install_chain):
+    """OSS probe fails on UNKNOWN (a caller bug / 4xx) -> fallbackable but NOT breaker
+    evidence, so record_failure never fires; only the finally can free the probe."""
+    from app.services import fallback as fb
+    monkeypatch.setattr(fb.settings, "fallback_enabled", True)
+    monkeypatch.setattr(fb.settings, "health_breaker_enabled", True)
+    monkeypatch.setattr(fb.settings, "health_poller_enabled", False)
+    monkeypatch.setattr(fb, "emit", lambda e: None)
+    r = health.reset(_cfg(n=1, cooldown=10.0))
+    install_chain()                                        # profile 'oss' -> [oss, managed]
+    _grant_probe(r)
+
+    async def run(attempt):
+        if attempt.kind == "oss":
+            raise ValueError("caller bug")                 # classify -> UNKNOWN
+        return "managed-ok"
+
+    result = asyncio.run(fb.execute_with_fallback(
+        pipeline="moderation", session_id="s", profile_name="oss", run=run))
+    assert result == "managed-ok"
+    assert r.snapshot()[OSS_EP]["probe_in_flight"] is False   # freed by the finally
+    assert r.state_of(OSS_EP) is BreakerState.HALF_OPEN       # only the slot freed
+    health.reset()
+
+
+def test_walker_releases_probe_on_bad_output_raise(monkeypatch, install_chain):
+    """BAD_OUTPUT is non-fallbackable, so the walker RAISES on the first tier; the
+    probe must still be freed on the way out."""
+    from app.services import fallback as fb
+    monkeypatch.setattr(fb.settings, "fallback_enabled", True)
+    monkeypatch.setattr(fb.settings, "health_breaker_enabled", True)
+    monkeypatch.setattr(fb.settings, "health_poller_enabled", False)
+    monkeypatch.setattr(fb, "emit", lambda e: None)
+    r = health.reset(_cfg(n=1, cooldown=10.0))
+    install_chain()
+    _grant_probe(r)
+
+    class UnexpectedModelBehavior(Exception):
+        pass
+
+    async def run(attempt):
+        raise UnexpectedModelBehavior("schema mismatch")   # classify -> BAD_OUTPUT
+
+    with pytest.raises(UnexpectedModelBehavior):
+        asyncio.run(fb.execute_with_fallback(
+            pipeline="moderation", session_id="s", profile_name="oss", run=run))
+    assert r.snapshot()[OSS_EP]["probe_in_flight"] is False   # freed despite the raise
+    health.reset()
+
+
+def test_walker_releases_probe_on_not_run_reordered_tier(monkeypatch, materialized_tier):
+    """The crux: a concurrency reorder moved the just-probed OSS tier off index 0,
+    so the managed tier returns first and the OSS tier NEVER executes — yet its probe
+    must STILL be freed (only the whole-chain finally sweep does this)."""
+    from app.services import fallback as fb
+    monkeypatch.setattr(fb.settings, "fallback_enabled", True)
+    monkeypatch.setattr(fb.settings, "health_breaker_enabled", True)
+    monkeypatch.setattr(fb.settings, "health_poller_enabled", False)
+    monkeypatch.setattr(fb, "emit", lambda e: None)
+    r = health.reset(_cfg(n=1, cooldown=10.0))
+
+    async def _reordered_chain(*, pipeline, session_id, profile_name):
+        return [
+            materialized_tier("managed", None),                       # index 0: runs first
+            materialized_tier("oss", None, endpoint=OSS_EP),          # index 1: never reached
+        ]
+    monkeypatch.setattr(fb, "_resolve_chain", _reordered_chain)
+    _grant_probe(r)                                        # OSS probed, then reorder shifted it
+
+    async def run(attempt):
+        return f"ok-{attempt.kind}"                        # managed (index 0) succeeds
+
+    result = asyncio.run(fb.execute_with_fallback(
+        pipeline="chat", session_id="s", profile_name="x", run=run))
+    assert result == "ok-managed"                          # OSS tier never ran
+    assert r.snapshot()[OSS_EP]["probe_in_flight"] is False   # ...yet its probe was freed
     health.reset()

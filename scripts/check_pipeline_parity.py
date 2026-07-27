@@ -22,9 +22,11 @@ It splits the pipeline files into two sets:
     a ``non_meaningful`` step and RAW_OPENAI moderation). For these we still want
     to catch *unexpected* drift, so each file declares a WHITELIST of the regions
     that are ALLOWED to differ:
-      - "region-whitelisted" files (``config_model.py``, ``resolver.py``): only the
-        named regions (the ``Step`` enum / ``StepClientKind`` block; the
-        ``STEP_CLIENT_KIND`` map) may differ. Each whitelisted region is collapsed
+      - "region-whitelisted" files (``config_model.py``, ``resolver.py``,
+        ``fallback.py``): only the named regions (the ``Step`` enum /
+        ``StepClientKind`` block; the ``STEP_CLIENT_KIND`` map; the fallback
+        ``_PIPELINE_TO_STEP`` map + its docstring mention) may differ. Each
+        whitelisted region is collapsed
         to a single sentinel line in BOTH files and the REMAINDER is compared; a
         difference outside every whitelisted region is un-whitelisted drift and
         fails CI. If a whitelist anchor no longer matches (file restructured) the
@@ -38,10 +40,14 @@ WHY THE SPLIT IS SAFE
 =====================
 The MUST-MATCH set is chosen so that a divergence there is always a bug: the
 circuit breaker (``health.py``), the concurrency gauge (``concurrency.py``), the
-boot-config tracer (``trace.py``) and the fallback walker (``fallback.py``) encode
-shared cross-cutting behavior. The TOLERATED set is exactly the files whose
-per-repo divergence is a deliberate, documented product difference — and even those
-are pinned down to the specific regions allowed to move.
+boot-config tracer (``trace.py``), the pipeline config source (``config_source.py``)
+and the config-writer CLI (``set_pipeline_config.py``) encode shared cross-cutting
+behavior. The fallback walker (``fallback.py``) is region-tolerated rather than
+MUST-MATCH: it is byte-identical apart from the two spans that carry voice's lack of
+a ``suggestions`` pipeline (the ``_PIPELINE_TO_STEP`` map + a docstring mention), so a
+byte-compare could never pass — but every OTHER line is still pinned. The TOLERATED
+set is exactly the files whose per-repo divergence is a deliberate, documented product
+difference — and even those are pinned down to the specific regions allowed to move.
 
 USAGE
 =====
@@ -65,10 +71,15 @@ from dataclasses import dataclass
 
 # ── files that MUST stay byte-identical across the two repos ──────────────────
 MUST_MATCH: list[str] = [
-    "app/llm_core/health.py",       # P2 passive circuit breaker
-    "app/llm_core/concurrency.py",  # P3 concurrency gauge / reorder
-    "app/llm_core/trace.py",        # boot full-config tracer
-    "app/services/fallback.py",     # OSS->managed fallback walker
+    "app/llm_core/health.py",         # P2 passive circuit breaker
+    "app/llm_core/concurrency.py",    # P3 concurrency gauge / reorder
+    "app/llm_core/trace.py",          # boot full-config tracer
+    "app/llm_core/config_source.py",  # pipeline config source (its docstring claims byte-identity)
+    "scripts/set_pipeline_config.py", # config-writer CLI (its docstring claims byte-identity)
+    # NOTE: ``app/services/fallback.py`` is NOT here — it is region-tolerated below.
+    # It is otherwise byte-identical but voice has no ``suggestions`` pipeline, so two
+    # small spans (the ``_PIPELINE_TO_STEP`` map + a docstring mention) legitimately
+    # differ and would make a byte-compare fail forever.
 ]
 
 
@@ -106,6 +117,29 @@ REGION_TOLERATED: dict[str, list[Region]] = {
         # NON_MEANINGFUL are RAW_OPENAI-kind. This map is the single seam that
         # encodes that product difference.
         Region("STEP_CLIENT_KIND map", "STEP_CLIENT_KIND: dict", "}", include_end=True),
+    ],
+    "app/services/fallback.py": [
+        # The OSS->managed fallback WALKER is byte-identical EXCEPT for the fact that
+        # voice has no ``suggestions`` pipeline / ``Step.SUGGESTIONS``. Exactly two
+        # spans carry that single product difference:
+        #  (1) the ``_PIPELINE_TO_STEP`` map — chat maps ``"suggestions": Step.SUGGESTIONS``;
+        #      voice omits it (and carries a 2-line comment saying why). Anchored on the
+        #      shared comment line above the map so voice's extra comment lines are
+        #      absorbed into the region too.
+        Region(
+            "_PIPELINE_TO_STEP map (voice omits the suggestions->SUGGESTIONS entry)",
+            "MaterializedTier (the drop-in successor to the removed",
+            "}",
+            include_end=True,
+        ),
+        #  (2) the ``_resolve_chain`` docstring's terminal-net list — chat names
+        #      ``suggestions ``[]```; voice omits it (and re-wraps the line).
+        Region(
+            "_resolve_chain docstring terminal-net list (voice omits the suggestions mention)",
+            "so callers still get a non-empty chain and their terminal net",
+            'defence."""',
+            include_end=True,
+        ),
     ],
 }
 
