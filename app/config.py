@@ -147,6 +147,12 @@ class Settings(BaseSettings):
     # the chat-prod service (voice is served by the separate voice-oan-api).
     enable_voice: bool = _get_bool_env("ENABLE_VOICE", default=True)
     enable_voice_nudges: bool = _get_bool_env("ENABLE_VOICE_NUDGES", default=True)
+    # Kill switch for Hindi chat. Default ON: hi/hindi requests use the full
+    # src->en->agent->hi translation pipeline. Set HINDI_CHAT_ENABLED=false to
+    # disable Hindi independently (hi/hindi then bypass the pipeline and are
+    # served like an unsupported language — English passthrough) without
+    # touching Gujarati.
+    hindi_chat_enabled: bool = _get_bool_env("HINDI_CHAT_ENABLED", default=True)
     stt_signal_retry_ceiling: int = int(os.getenv("STT_SIGNAL_RETRY_CEILING", "3"))
     openai_pretranslation_timeout_seconds: float = float(os.getenv("OPENAI_PRETRANSLATION_TIMEOUT_SECONDS", "10.0"))
     voice_non_meaningful_timeout_seconds: float = float(os.getenv("VOICE_NON_MEANINGFUL_TIMEOUT_SECONDS", "0.60"))

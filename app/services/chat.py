@@ -363,11 +363,24 @@ async def stream_chat_messages(
             except Exception as e:
                 logger.warning(f"request_id={request_id} farmer_context_fetch_failed={e}")
 
+        # Hindi kill switch (HINDI_CHAT_ENABLED, default on). When disabled,
+        # hi/hindi drop out of both the pretranslation (src->en) and output
+        # (en->target) gates, so a Hindi request bypasses the pipeline entirely
+        # and is served like an unsupported language. Gujarati is unaffected.
+        hindi_enabled = getattr(settings, "hindi_chat_enabled", True)
+        output_translation_langs = (
+            INDIAN_LANGUAGES if hindi_enabled
+            else [lang for lang in INDIAN_LANGUAGES if lang not in {"hi", "hindi"}]
+        )
+
         processing_query = query
         processing_lang = target_lang
-        needs_output_translation = use_translation_pipeline and target_lang.lower() in INDIAN_LANGUAGES
+        needs_output_translation = use_translation_pipeline and target_lang.lower() in output_translation_langs
 
-        if use_translation_pipeline and source_lang.lower() in {"gu", "gujarati"}:
+        pretranslation_source_langs = {"gu", "gujarati"}
+        if hindi_enabled:
+            pretranslation_source_langs |= {"hi", "hindi"}
+        if use_translation_pipeline and source_lang.lower() in pretranslation_source_langs:
             # OSS sessions force pre-translation onto the self-hosted vLLM endpoint
             # (provider="vllm"); legacy keeps the configured PRETRANSLATION_PROVIDER
             # (None => default). Equivalent to the resolved PRE_TRANSLATION primary
@@ -375,9 +388,10 @@ async def stream_chat_messages(
             # otherwise.
             pretrans_provider = "vllm" if is_oss else None
             logger.info(
-                "request_id=%s translation_pipeline=True variant=%s pretranslating gu->en with %s/%s",
+                "request_id=%s translation_pipeline=True variant=%s pretranslating %s->en with %s/%s",
                 request_id,
                 pipeline_variant,
+                source_lang,
                 pretrans_provider or PRETRANSLATION_PROVIDER,
                 request_model_name if is_oss else PRETRANSLATION_MODEL,
             )
