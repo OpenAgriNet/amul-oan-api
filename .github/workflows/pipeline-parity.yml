@@ -41,6 +41,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
+          pip install pytest pytest-asyncio
       - name: Run the llm_core pytest subset
         env:
           # Dummy keys: the factory reads these at import; no real client is built.
@@ -69,7 +70,10 @@ jobs:
       # repo checked out beside this one. The script takes the two roots as argv OR
       # via PARITY_CHAT_ROOT / PARITY_VOICE_ROOT (used below). If the sibling repo is
       # private, PARITY_SIBLING_TOKEN must be a PAT/token with read access to it.
+      # Non-fatal: without PARITY_SIBLING_TOKEN (private sibling) this can't check
+      # out, and the parity step below skips cleanly rather than failing the PR.
       - name: Checkout sibling repo (voice / voice-oan-api)
+        continue-on-error: true
         uses: actions/checkout@v4
         with:
           repository: ${{ github.repository_owner }}/voice-oan-api
@@ -77,8 +81,13 @@ jobs:
           path: voice-oan-api
           token: ${{ secrets.PARITY_SIBLING_TOKEN }}
 
-      - name: Cross-repo parity check (needs both repos checked out)
+      - name: Cross-repo parity check (skips if sibling unavailable)
         env:
           PARITY_CHAT_ROOT: ${{ github.workspace }}/amul-oan-api
           PARITY_VOICE_ROOT: ${{ github.workspace }}/voice-oan-api
-        run: python amul-oan-api/scripts/check_pipeline_parity.py
+        run: |
+          if [ -d "$PARITY_VOICE_ROOT/app/llm_core" ]; then
+            python amul-oan-api/scripts/check_pipeline_parity.py
+          else
+            echo "::warning::sibling repo not checked out (set PARITY_SIBLING_TOKEN to enable); skipping cross-repo parity check"
+          fi
