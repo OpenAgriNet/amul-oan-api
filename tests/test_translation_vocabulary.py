@@ -291,6 +291,20 @@ class TestForbiddenInContext:
         assert "ફેટ" in result
         assert "ધણમાં" in result
 
+    def test_sabar_place_name_is_normalized(self):
+        """District name should use સાબર spelling."""
+        text = "હું સબર જિલ્લામાં રહું છું."
+        result = normalize_gu(text)
+        assert "સાબર" in result
+        assert "સબર" not in result
+
+    def test_sabarkantha_place_name_is_normalized(self):
+        """District name should use સાબરકાંઠા spelling."""
+        text = "મારું ગામ સબરકાંઠા જિલ્લામાં છે."
+        result = normalize_gu(text)
+        assert "સાબરકાંઠા" in result
+        assert "સબરકાંઠા" not in result
+
 
 # ---------------------------------------------------------------------------
 # Gender agreement issues from feedback
@@ -501,6 +515,13 @@ class TestPolicyCompleteness:
     def test_replacements_list_built(self):
         """GU_POST_REPLACEMENTS should have base + policy entries."""
         assert len(GU_POST_REPLACEMENTS) >= 30, f"Expected 30+ replacements, got {len(GU_POST_REPLACEMENTS)}"
+
+    def test_glossary_has_sabar_entries(self):
+        """Chat glossary should include canonical Sabar district names."""
+        glossary = json.loads(GLOSSARY_PATH.read_text(encoding="utf-8"))
+        by_en = {str(entry.get("en", "")).strip().lower(): str(entry.get("gu", "")).strip() for entry in glossary}
+        assert by_en.get("sabar") == "સાબર"
+        assert by_en.get("sabarkantha") == "સાબરકાંઠા"
 
 
 class TestMissingQuantityRepair:
