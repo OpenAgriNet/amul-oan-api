@@ -333,8 +333,14 @@ _PROTECTED_OUTPUT = [
         # (રમેશભાઈ, and the technician રમેશ પટેલ in the booking matcher) does not
         # contain રામેશ and is left untouched, so this is still a self-replace
         # no-op whenever gemma-4 or the managed overflow tier served the text.
+        # ...but ONLY where the long vowel is actually wrong. રામેશ્વર (Rameshwar =
+        # રામ + ઈશ્વર) is legitimately long-aa, and "RAMESH" is a substring of
+        # "Rameshwar", so a bare રામેશ rule armed on it and shortened it to
+        # રમેશ્વર — confirmed live in prod before this fix. The lookahead skips a
+        # following વ, whether joined as the conjunct શ્વ (રામેશ્વર, રામેશ્વરમ) or
+        # written plain (રામેશવર); a real "Ramesh" is never followed by વ.
         "RAMESH",
-        re.compile(r"રામેશ"),
+        re.compile(r"રામેશ(?![્વ])"),
         "રમેશ",
     ),
 ]
