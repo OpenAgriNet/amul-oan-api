@@ -320,14 +320,22 @@ _PROTECTED_OUTPUT = [
     ),
     (
         # TranslateGemma transliterates this name letter-by-letter off the Latin
-        # spelling and lengthens the first vowel — રામેશભાઈ ("Raamesh"), verified
-        # against the live 27b-base on every phrasing tried. Standard Gujarati is
-        # રમેશભાઈ. The regex also matches the already-correct form so the pin is a
-        # harmless self-replace when a different tier (gemma-4 / managed overflow)
-        # served the text, and the output is identical whichever tier answered.
-        "RAMESHBHAI",
-        re.compile(r"રા?મેશભાઈ"),
-        "રમેશભાઈ",
+        # spelling and lengthens the first vowel: રામેશ ("Raamesh") for રમેશ.
+        #
+        # Pin the VOWEL, not the whole name. An earlier ભાઈ-anchored pattern
+        # (રા?મેશભાઈ) worked on the unary path but was a no-op on the streaming
+        # path — verified in a prod pod, the streaming tier renders the same
+        # English as "રામેશ કાનુભાઈ પરમાર", dropping ભાઈ off the first name, so
+        # the anchor never matched on the path voice actually delivers on.
+        #
+        # Rewriting રામેશ -> રમેશ is safe in a way the anchored form was not: it
+        # can only fire on the INCORRECT long-vowel spelling. Already-correct text
+        # (રમેશભાઈ, and the technician રમેશ પટેલ in the booking matcher) does not
+        # contain રામેશ and is left untouched, so this is still a self-replace
+        # no-op whenever gemma-4 or the managed overflow tier served the text.
+        "RAMESH",
+        re.compile(r"રામેશ"),
+        "રમેશ",
     ),
 ]
 # Chars to hold back in streaming so a forming match completes before flushing
