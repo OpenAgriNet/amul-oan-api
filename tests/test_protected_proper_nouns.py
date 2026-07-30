@@ -97,3 +97,35 @@ def test_technician_short_form_is_untouched():
     pin must not perturb it — it fires only on the long-vowel misspelling."""
     tech = "રમેશ પટેલ સાથે બુક કરો"
     assert _apply_protected_output(tech, _protected_output_triggers(EN_SRC, "gu")) == tech
+
+
+# ── The long 'aa' is not always wrong ──────────────────────────────────────────
+# રામેશ્વર (Rameshwar) = રામ + ઈશ્વર and is CORRECTLY long-aa. "RAMESH" is a
+# substring of "Rameshwar", so the trigger arms on it; the output pattern is what
+# has to know better. These pin the boundary.
+
+@pytest.mark.parametrize("gu", [
+    "રામેશ્વર મંદિર ગામની નજીક છે.",            # conjunct શ્વ
+    "રામેશ્વરમ ગયા વર્ષે ગયા હતા.",              # conjunct, longer word
+    "ટેકનિશિયન રામેશવર પટેલ કાલે આવશે.",        # same name written without the conjunct
+])
+def test_legitimate_long_aa_is_not_shortened(gu):
+    """Regression: this exact corruption was live in prod (રામેશ્વર -> રમેશ્વર)."""
+    triggers = _protected_output_triggers("Rameshwar temple visit", "gu")
+    assert _apply_protected_output(gu, triggers) == gu
+
+
+def test_mixed_sentence_fixes_the_name_and_spares_the_place():
+    """Both in one sentence: the farmer's name is corrected, Rameshwaram is not."""
+    src = "Rameshbhai went to Rameshwaram last year."
+    raw = "રામેશભાઈ ગયા વર્ષે રામેશ્વરમ ગયા હતા."
+    out = _apply_protected_output(raw, _protected_output_triggers(src, "gu"))
+    assert out == "રમેશભાઈ ગયા વર્ષે રામેશ્વરમ ગયા હતા."
+
+
+def test_name_followed_by_an_unrelated_va_word_still_fixed():
+    """The lookahead is one character wide — a separate word starting with વ must
+    not stop the pin firing on the name itself."""
+    raw = "રામેશ વગેરે લોકો આવ્યા."
+    out = _apply_protected_output(raw, _protected_output_triggers("Ramesh and others", "gu"))
+    assert out == "રમેશ વગેરે લોકો આવ્યા."
