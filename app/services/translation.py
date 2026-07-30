@@ -318,6 +318,17 @@ _PROTECTED_OUTPUT = [
         ),
         "ખેડા ડિસ્ટ્રિક્ટ સેન્ટ્રલ કો-ઓપરેટિવ બેંક લિમિટેડ - નડિયાદ",
     ),
+    (
+        # TranslateGemma transliterates this name letter-by-letter off the Latin
+        # spelling and lengthens the first vowel — રામેશભાઈ ("Raamesh"), verified
+        # against the live 27b-base on every phrasing tried. Standard Gujarati is
+        # રમેશભાઈ. The regex also matches the already-correct form so the pin is a
+        # harmless self-replace when a different tier (gemma-4 / managed overflow)
+        # served the text, and the output is identical whichever tier answered.
+        "RAMESHBHAI",
+        re.compile(r"રા?મેશભાઈ"),
+        "રમેશભાઈ",
+    ),
 ]
 # Chars to hold back in streaming so a forming match completes before flushing
 # (> the longest model rendering of any protected term).
@@ -325,10 +336,15 @@ _PROTECTED_STREAM_HOLDBACK = 80
 
 
 def _protected_output_triggers(source_text: str, target_lang: str):
-    """Regex/pinned pairs whose English trigger appears in the source (gu target only)."""
+    """Regex/pinned pairs whose English trigger appears in the source (gu target only).
+
+    The trigger match is case-insensitive: a personal name reaches the translator in
+    whatever case the upstream record or the agent's sentence used (RAMESHBHAI /
+    Rameshbhai), and a case-sensitive gate would silently skip the pin for most of them."""
     if not source_text or target_lang.lower() not in ("gujarati", "gu"):
         return []
-    return [(rx, pinned) for en, rx, pinned in _PROTECTED_OUTPUT if en in source_text]
+    lowered = source_text.lower()
+    return [(rx, pinned) for en, rx, pinned in _PROTECTED_OUTPUT if en.lower() in lowered]
 
 
 def _apply_protected_output(text: str, triggers) -> str:
