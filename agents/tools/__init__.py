@@ -12,7 +12,6 @@ from agents.tools.milk_collection import (
 from agents.tools.search import search_documents
 from agents.tools.union_schemes import get_union_scheme_data, prepare_get_union_scheme_data
 from agents.tools.loan import check_loan_eligibility, prepare_check_loan_eligibility
-from agents.tools.scheme_details import get_scheme_details
 from agents.tools.vistaar import (
     get_vistaar_weather,
     get_vistaar_mandi_prices,
@@ -68,16 +67,6 @@ TOOLS = [
         prepare=prepare_check_loan_eligibility,  # hidden unless feature on + caller phone resolved
     ),
 
-    # Scheme details via Amul Beckn BAP (Bharat Vistaar)
-    # DISABLED (2026-07-17): superseded by get_vistaar_scheme_info, which routes
-    # schemes through the canonical Beckn seeker (N-N). Re-enabling this would
-    # let the LLM pick the old direct-sandbox path (bap.dev.amulai.in) instead.
-    # Tool(
-    #     get_scheme_details,
-    #     takes_ctx=False,
-    #     docstring_format='auto',
-    #     require_parameter_descriptions=True,
-    # ),
 
     # Bharat Vistaar discovery — weather, mandi prices, scheme info (Beckn shortcut)
     Tool(
