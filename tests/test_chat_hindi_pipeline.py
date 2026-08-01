@@ -15,24 +15,6 @@ class _DummyModerationRun:
     output = _DummyModerationOutput()
 
 
-class _DummyResponseStream:
-    def __init__(self, chunks: list[str]):
-        self._chunks = chunks
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, exc_type, exc, tb):
-        return False
-
-    async def stream_text(self, delta: bool = True):
-        for chunk in self._chunks:
-            yield chunk
-
-    def new_messages(self):
-        return []
-
-
 class _DummyCache:
     async def delete(self, _key: str):
         return None
@@ -124,12 +106,6 @@ def test_hindi_source_uses_pretranslation_then_hindi_output(monkeypatch):
         moderation_messages.append(user_message)
         return _DummyModerationRun()
 
-    def _fake_run_stream(**kwargs):
-        agent_calls.append(kwargs)
-        return _DummyResponseStream(
-            ["Give 40 to 60 liters of clean water daily."]
-        )
-
     async def _fake_translate_text_stream_fast(
         text: str,
         source_lang: str,
@@ -151,13 +127,11 @@ def test_hindi_source_uses_pretranslation_then_hindi_output(monkeypatch):
     monkeypatch.setattr(chat_service, "update_message_history", _fake_update_message_history)
     monkeypatch.setattr(chat_service, "translate_to_english_pretranslation", _fake_pretranslation)
     monkeypatch.setattr(chat_service.moderation_agent, "run", _fake_moderation_run)
-    monkeypatch.setattr(chat_service.agrinet_agent, "run_stream", _fake_run_stream)
-    monkeypatch.setattr(
-        chat_service.agrinet_agent,
-        "iter",
-        lambda **kwargs: (agent_calls.append(kwargs), _FakeAgentRun(
-            ["Give 40 to 60 liters of clean water daily."]))[1],
-    )
+    def _fake_iter(**kwargs):
+        agent_calls.append(kwargs)
+        return _FakeAgentRun(["Give 40 to 60 liters of clean water daily."])
+
+    monkeypatch.setattr(chat_service.agrinet_agent, "iter", _fake_iter)
     monkeypatch.setattr(chat_service, "translate_text_stream_fast", _fake_translate_text_stream_fast)
 
     async def _drive():

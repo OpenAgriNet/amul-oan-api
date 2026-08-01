@@ -255,8 +255,7 @@ def _set_voice_monkeypatches(
 
     monkeypatch.setattr(voice_module, "check_moderation", _allow_moderation)
 
-    # Same for output translation. Tests asserting on Gujarati rendering stub
-    # _render_text_for_caller themselves.
+    # Same for output translation; _render_text_for_caller is stubbed below.
     async def _passthrough_translate_stream(text, *_args, **_kwargs):
         yield text
 
