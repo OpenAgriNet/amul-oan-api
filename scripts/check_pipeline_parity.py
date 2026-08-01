@@ -159,10 +159,14 @@ WHOLE_FILE_TOLERATED: dict[str, str] = {
     ),
     # ── REFACTOR WATCHLIST ────────────────────────────────────────────────────
     # Not yet reconciled, so these are report-only: the diff is printed on every
-    # run and never fails CI. They are the files that actually drifted while the
-    # guard was watching only llm_core (400-1,250 lines each). Each is promoted
-    # to REGION_TOLERATED or MUST_MATCH as its reconciliation lands, which is
-    # what turns this list into a ratchet rather than a report.
+    # run and never fails. They are the files that drifted while the guard
+    # watched only llm_core.
+    #
+    # Exit path is MUST_MATCH, not REGION_TOLERATED: the drift here is spread
+    # over 13-44 discrete hunks per file, and whitelisting that many regions
+    # would collide on anchors and over-mask silently — a weaker guard wearing a
+    # green badge. A file leaves this list only by being reconciled to
+    # byte-identity. Until then the honest report is the point.
     "app/services/voice.py": "WATCHLIST: two copies of the turn orchestrator",
     "app/services/translation.py": "WATCHLIST: chat is ahead",
     "app/services/moderation.py": "WATCHLIST: voice is ahead (fail-closed parsing)",
