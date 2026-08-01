@@ -10,6 +10,8 @@ import asyncio
 import os
 from types import SimpleNamespace
 
+import pytest
+
 os.environ.setdefault("OPENAI_API_KEY", "test-key")
 
 from fastapi import BackgroundTasks
@@ -80,7 +82,9 @@ class _Run:
         yield _Node(self._chunks)
 
 
-def _drive(monkeypatch, *, source_lang="gu", target_lang="gu"):
+def _drive(monkeypatch, *, source_lang="gu", target_lang="gu",
+           fallback_enabled=False, moderation_action="allow",
+           moderation_category="valid_agricultural"):
     """Run one turn with every stage instrumented, and return the stage order."""
     seen: list[str] = []
 
@@ -89,7 +93,7 @@ def _drive(monkeypatch, *, source_lang="gu", target_lang="gu"):
             seen.append(name)
         return _mark
 
-    monkeypatch.setattr(chat_service.settings, "fallback_enabled", False)
+    monkeypatch.setattr(chat_service.settings, "fallback_enabled", fallback_enabled)
     monkeypatch.setattr(chat_service, "propagate_attributes", None)
     monkeypatch.setattr(chat_service, "get_langfuse_client", None)
     monkeypatch.setattr(chat_service, "cache", _Cache())
@@ -102,7 +106,9 @@ def _drive(monkeypatch, *, source_lang="gu", target_lang="gu"):
 
     async def _moderate(user_message, model=None):
         seen.append("moderation")
-        return SimpleNamespace(output=SimpleNamespace(category="valid_agricultural", action="allow"))
+        return SimpleNamespace(
+            output=SimpleNamespace(category=moderation_category, action=moderation_action)
+        )
 
     def _agent_iter(**_kw):
         seen.append("agent")
@@ -147,17 +153,17 @@ def _drive(monkeypatch, *, source_lang="gu", target_lang="gu"):
     return asyncio.run(_go()), seen
 
 
-def test_gujarati_turn_stage_order(monkeypatch):
-    output, stages = _drive(monkeypatch)
+_TRACKED = ("pretranslation", "moderation", "agent", "output_translation")
+
+
+@pytest.mark.parametrize("fallback_enabled", [False, True])
+def test_gujarati_turn_stage_order(monkeypatch, fallback_enabled):
+    output, stages = _drive(monkeypatch, fallback_enabled=fallback_enabled)
 
     assert output, "the turn produced no output"
-    # Stages that must run, in this relative order. Asserted as a subsequence so
-    # incidental extra stages do not fail the lock, but reordering does.
-    expected = ["pretranslation", "moderation", "agent", "output_translation"]
-    positions = [stages.index(s) for s in expected if s in stages]
-    assert positions == sorted(positions), f"stage order changed: {stages}"
-    for s in expected:
-        assert s in stages, f"stage {s!r} did not run: {stages}"
+    # EXACT sequence, not a subsequence: a stage running twice is a duplicated
+    # model call, which a first-index check cannot see.
+    assert [s for s in stages if s in _TRACKED] == list(_TRACKED), f"stage order changed: {stages}"
 
 
 def test_moderation_runs_after_pretranslation_not_before(monkeypatch):
@@ -177,3 +183,22 @@ def test_english_turn_skips_translation_stages(monkeypatch):
     assert "pretranslation" not in stages
     assert "output_translation" not in stages
     assert "agent" in stages
+
+
+@pytest.mark.parametrize("fallback_enabled", [False, True])
+def test_blocked_moderation_never_reaches_the_agent(monkeypatch, fallback_enabled):
+    """The hard gate. A blocked query must decline without running the agent.
+
+    Without this case the lock pins only the happy path, and deleting the gate at
+    the yield-decline/return in stream_chat_messages leaves the suite green.
+    """
+    output, stages = _drive(
+        monkeypatch,
+        fallback_enabled=fallback_enabled,
+        moderation_action="block",
+        moderation_category="non_agricultural",
+    )
+
+    assert "moderation" in stages
+    assert "agent" not in stages, f"blocked query reached the agent: {stages}"
+    assert output, "a blocked turn must still say something to the farmer"
