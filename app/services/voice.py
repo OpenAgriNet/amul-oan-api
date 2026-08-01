@@ -14,6 +14,7 @@ from pydantic_ai.usage import UsageLimits
 
 from agents.voice import voice_agent, voice_agent_signed_in, STATIC_VOICE_SYSTEM_PROMPT
 from agents.tools.farmer import normalize_phone_to_mobile
+from agents.services.farmer_envelope import collect_farmer_accounts
 from agents.services.farmer_cache import (
     get_farmer_data_cached_only,
     refresh_farmer_data_bounded,
@@ -782,42 +783,6 @@ def _collect_farmer_unions(envelope: Optional[FarmerDataEnvelope]) -> list[str]:
         seen.add(normalized_union)
         unions.append(normalized_union)
     return unions
-
-
-def _collect_farmer_accounts(envelope: Optional[FarmerDataEnvelope]) -> list[FarmerAccount]:
-    """Extract every (union, society, farmer) account on the caller's mobile.
-
-    A mobile can map to multiple PashuGPT accounts (e.g. a cow account and a
-    buffalo account). The milk-collection tool fans out over all of these so
-    a farmer's data is never missed because the agent picked one account.
-    Deduplicated on (union_code, society_code, farmer_code).
-    """
-    if envelope is None:
-        return []
-
-    seen: set[tuple] = set()
-    accounts: list[FarmerAccount] = []
-    for farmer in envelope.farmers:
-        record = farmer.model_dump()
-        union_code = record.get("unionCode") or record.get("union_code")
-        society_code = record.get("societyCode") or record.get("society_code")
-        farmer_code = record.get("farmerCode") or record.get("farmer_code")
-        if not (union_code and society_code and farmer_code):
-            continue
-        key = (str(union_code), str(society_code), str(farmer_code))
-        if key in seen:
-            continue
-        seen.add(key)
-        accounts.append(
-            FarmerAccount(
-                union_code=str(union_code),
-                society_code=str(society_code),
-                farmer_code=str(farmer_code),
-                farmer_name=record.get("farmerName") or record.get("farmer_name"),
-                society_name=record.get("societyName") or record.get("society_name"),
-            )
-        )
-    return accounts
 
 
 async def _build_union_scheme_summary(farmer_unions: list[str]) -> str:
@@ -1813,7 +1778,7 @@ async def stream_voice_message(
                         envelope = await farmer_cache_task
                     farmer_info = _build_compact_farmer_summary(envelope)
                     farmer_unions = _collect_farmer_unions(envelope)
-                    farmer_accounts = _collect_farmer_accounts(envelope)
+                    farmer_accounts = collect_farmer_accounts(envelope)
                     with trace.stage("scheme_summary"):
                         scheme_summary = await _build_union_scheme_summary(farmer_unions)
                     if scheme_summary:
