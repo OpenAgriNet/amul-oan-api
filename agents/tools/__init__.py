@@ -3,6 +3,8 @@ import functools
 import inspect
 
 from pydantic_ai import Tool
+
+from app.config import settings
 from agents.tools.ai_call import create_ai_call
 from agents.tools.health_call import create_health_call
 from agents.tools.milk_collection import (
@@ -68,26 +70,6 @@ TOOLS = [
     ),
 
 
-    # Bharat Vistaar discovery — weather, mandi prices, scheme info (Beckn shortcut)
-    Tool(
-        get_vistaar_weather,
-        takes_ctx=False,
-        docstring_format='auto',
-        require_parameter_descriptions=True,
-    ),
-    Tool(
-        get_vistaar_mandi_prices,
-        takes_ctx=False,
-        docstring_format='auto',
-        require_parameter_descriptions=True,
-    ),
-    Tool(
-        get_vistaar_scheme_info,
-        takes_ctx=False,
-        docstring_format='auto',
-        require_parameter_descriptions=True,
-    ),
-
     # # Get Animal by Tag (temporarily disabled)
 
     # # Get CVCC Health Details (temporarily disabled)
@@ -120,6 +102,31 @@ TOOLS = [
     # # Agricultural Staff Contact
 
 ]
+
+# Bharat Vistaar discovery — weather, mandi prices, scheme info (Beckn shortcut).
+# Gated on the same flag as the re-routed tools: with ENABLE_NETWORK off the agent
+# must not see them, or an ungated Beckn call (35s timeout) can eat most of a turn.
+if settings.enable_network:
+    TOOLS.extend([
+        Tool(
+            get_vistaar_weather,
+            takes_ctx=False,
+            docstring_format='auto',
+            require_parameter_descriptions=True,
+        ),
+        Tool(
+            get_vistaar_mandi_prices,
+            takes_ctx=False,
+            docstring_format='auto',
+            require_parameter_descriptions=True,
+        ),
+        Tool(
+            get_vistaar_scheme_info,
+            takes_ctx=False,
+            docstring_format='auto',
+            require_parameter_descriptions=True,
+        ),
+    ])
 
 # ── Voice agent tool registries (Inc 7.2) ────────────────────────────────────
 # The voice agent uses its own tool set, kept SEPARATE from chat's TOOLS above
