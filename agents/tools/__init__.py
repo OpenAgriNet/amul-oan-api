@@ -3,6 +3,8 @@ import functools
 import inspect
 
 from pydantic_ai import Tool
+
+from app.config import settings
 from agents.tools.ai_call import create_ai_call
 from agents.tools.health_call import create_health_call
 from agents.tools.milk_collection import (
@@ -12,6 +14,11 @@ from agents.tools.milk_collection import (
 from agents.tools.search import search_documents
 from agents.tools.union_schemes import get_union_scheme_data, prepare_get_union_scheme_data
 from agents.tools.loan import check_loan_eligibility, prepare_check_loan_eligibility
+from agents.tools.vistaar import (
+    get_vistaar_weather,
+    get_vistaar_mandi_prices,
+    get_vistaar_scheme_info,
+)
 
 TOOLS = [
     # # Search Terms
@@ -62,6 +69,7 @@ TOOLS = [
         prepare=prepare_check_loan_eligibility,  # hidden unless feature on + caller phone resolved
     ),
 
+
     # # Get Animal by Tag (temporarily disabled)
 
     # # Get CVCC Health Details (temporarily disabled)
@@ -94,6 +102,31 @@ TOOLS = [
     # # Agricultural Staff Contact
 
 ]
+
+# Bharat Vistaar discovery — weather, mandi prices, scheme info (Beckn shortcut).
+# Gated on the same flag as the re-routed tools: with ENABLE_NETWORK off the agent
+# must not see them, or an ungated Beckn call (35s timeout) can eat most of a turn.
+if settings.enable_network:
+    TOOLS.extend([
+        Tool(
+            get_vistaar_weather,
+            takes_ctx=False,
+            docstring_format='auto',
+            require_parameter_descriptions=True,
+        ),
+        Tool(
+            get_vistaar_mandi_prices,
+            takes_ctx=False,
+            docstring_format='auto',
+            require_parameter_descriptions=True,
+        ),
+        Tool(
+            get_vistaar_scheme_info,
+            takes_ctx=False,
+            docstring_format='auto',
+            require_parameter_descriptions=True,
+        ),
+    ])
 
 # ── Voice agent tool registries (Inc 7.2) ────────────────────────────────────
 # The voice agent uses its own tool set, kept SEPARATE from chat's TOOLS above
