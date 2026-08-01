@@ -91,7 +91,7 @@ def test_chat_identity_short_circuit_bypasses_moderation_and_translation(monkeyp
                 user_info={},
                 background_tasks=background_tasks,
                 use_translation_pipeline=True,
-                pipeline_variant="legacy",
+                pipeline_profile="managed",
             )
         ]
 
