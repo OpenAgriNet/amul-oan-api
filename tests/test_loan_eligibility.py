@@ -236,7 +236,14 @@ class TestMessageMapping:
     def test_eligible_message_has_code_and_amount(self):
         r = le.LoanResult(outcome=le.ELIGIBLE, code="777888", loan_amount=5000)
         msg = loan_tool._message_for(r)
-        assert "777888" in msg and "5,000" in msg and "ELIGIBLE" in msg
+        # Since d366034 (two-step offer -> confirm) ELIGIBLE reads "APPROVED.";
+        # "ELIGIBLE" now belongs to ELIGIBLE_OFFER, which carries no code.
+        assert "777888" in msg and "5,000" in msg and "APPROVED" in msg
+
+    def test_offer_message_withholds_code(self):
+        r = le.LoanResult(outcome=le.ELIGIBLE_OFFER, code="777888", loan_amount=5000)
+        msg = loan_tool._message_for(r)
+        assert "ELIGIBLE" in msg and "777888" not in msg
 
     def test_failure_messages_direct_to_bank(self):
         for oc in (le.NOT_IN_BANK_LIST, le.MILK_BELOW_THRESHOLD):

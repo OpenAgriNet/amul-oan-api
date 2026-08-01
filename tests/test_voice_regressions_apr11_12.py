@@ -90,6 +90,88 @@ class _FakeResponseStream:
         return self._new_messages
 
 
+# voice.py and chat.py dispatch on ``type(x).__name__`` rather than isinstance, so
+# these stand-ins only need matching class NAMES — no pydantic-ai internals imported.
+_PartDeltaEvent = type("PartDeltaEvent", (), {})
+_TextPartDelta = type("TextPartDelta", (), {})
+
+
+def _text_delta_event(chunk: str):
+    delta = _TextPartDelta()
+    delta.content_delta = chunk
+    event = _PartDeltaEvent()
+    event.delta = delta
+    return event
+
+
+class _FakeModelRequestNode:
+    """Stands in for pydantic-ai's ModelRequestNode. The class name is load-bearing."""
+
+    def __init__(self, chunks, delay=0.0):
+        self._chunks = chunks
+        self._delay = delay
+
+    def stream(self, _ctx):
+        chunks, delay = self._chunks, self._delay
+
+        class _EventStream:
+            async def __aenter__(self_inner):
+                return self_inner
+
+            async def __aexit__(self_inner, *_exc):
+                return False
+
+            async def __aiter__(self_inner):
+                for chunk in chunks:
+                    if delay:
+                        await asyncio.sleep(delay)
+                    yield _text_delta_event(chunk)
+
+        return _EventStream()
+
+
+_FakeModelRequestNode.__name__ = "ModelRequestNode"
+
+
+class _FakeAgentRun:
+    """Async-iterable stand-in for the object returned by ``agent.iter()``."""
+
+    def __init__(self, chunks, new_messages, delay=0.0, on_enter=None):
+        self._chunks = chunks
+        self._delay = delay
+        self._on_enter = on_enter
+        self.ctx = SimpleNamespace()
+        self.result = SimpleNamespace(new_messages=lambda: new_messages)
+
+    async def __aenter__(self):
+        if self._on_enter is not None:
+            await self._on_enter()
+        return self
+
+    async def __aexit__(self, *_exc):
+        return False
+
+    async def __aiter__(self):
+        yield _FakeModelRequestNode(self._chunks, self._delay)
+
+
+def _iter_from_override(override):
+    """Adapt a ``run_stream``-style fake to the ``.iter()`` protocol.
+
+    The override is still called with the real kwargs, so assertions on
+    ``usage_limits`` / ``message_history`` keep working unchanged.
+    """
+    def _iter(**kwargs):
+        stream = override(**kwargs)
+        return _FakeAgentRun(
+            stream._chunks,
+            stream._new_messages,
+            delay=stream._delay,
+            on_enter=stream._on_enter,
+        )
+    return _iter
+
+
 def _make_agent_messages(user_text: str, assistant_text: str) -> list:
     return [
         ModelRequest(parts=[UserPromptPart(content=user_text)]),
@@ -116,12 +198,20 @@ def _set_voice_monkeypatches(
     from agents import voice as voice_agent_module
     from app.services import voice as voice_module
 
-    if run_stream_override is not None:
-        monkeypatch.setattr(voice_agent_module.voice_agent, "run_stream", run_stream_override)
-    else:
-        monkeypatch.setattr(voice_agent_module.voice_agent, "run_stream", lambda **kwargs: response_stream)
+    # With fallback_enabled true (the prod default) voice.py drives agent.iter();
+    # run_stream is the legacy else-branch. Patch both.
+    base_override = run_stream_override or (lambda **kwargs: response_stream)
+    monkeypatch.setattr(voice_agent_module.voice_agent, "run_stream", base_override)
+    monkeypatch.setattr(voice_agent_module.voice_agent, "iter", _iter_from_override(base_override))
     if signed_in_run_stream_override is not None:
-        monkeypatch.setattr(voice_agent_module.voice_agent_signed_in, "run_stream", signed_in_run_stream_override)
+        monkeypatch.setattr(
+            voice_agent_module.voice_agent_signed_in, "run_stream", signed_in_run_stream_override,
+        )
+        monkeypatch.setattr(
+            voice_agent_module.voice_agent_signed_in,
+            "iter",
+            _iter_from_override(signed_in_run_stream_override),
+        )
 
     async def _get_or_fetch_farmer_data(_mobile):
         return None
@@ -155,6 +245,22 @@ def _set_voice_monkeypatches(
         voice_module,
         "get_or_fetch_farmer_data",
         farmer_data_override if farmer_data_override is not None else _get_or_fetch_farmer_data,
+    )
+    # Unstubbed, moderation reaches the network and fails closed, so every
+    # assertion below would see the decline text instead of the answer.
+    from app.services.moderation import ModerationVerdict
+
+    async def _allow_moderation(*_args, **_kwargs):
+        return ModerationVerdict(category="in_scope", reason="test-stub")
+
+    monkeypatch.setattr(voice_module, "check_moderation", _allow_moderation)
+
+    # Same for output translation; _render_text_for_caller is stubbed below.
+    async def _passthrough_translate_stream(text, *_args, **_kwargs):
+        yield text
+
+    monkeypatch.setattr(
+        voice_module, "translate_text_stream_fast", _passthrough_translate_stream,
     )
     monkeypatch.setattr(voice_module, "clean_message_history_for_openai", lambda history: history)
     monkeypatch.setattr(voice_module, "trim_history", lambda history, **kwargs: history)
@@ -321,7 +427,8 @@ class TestHelperCoverage:
     def test_signed_in_agent_has_farmer_tools(self):
         base_tool_names = set(voice_agent._function_toolset.tools.keys())
         signed_in_tool_names = set(voice_agent_signed_in._function_toolset.tools.keys())
-        assert {"search_terms", "search_documents", "get_farmer_milk_collection_details", "create_ai_call", "create_health_call"}.issubset(base_tool_names)
+        # Voice registers the _voice variant (83f5d67); chat the unsuffixed one.
+        assert {"search_terms", "search_documents", "get_farmer_milk_collection_details_voice", "create_ai_call", "create_health_call"}.issubset(base_tool_names)
         # Merge reconciliation (Inc 7.2): get_union_scheme_data is the signed-in-only
         # farmer tool; get_farmer_profile/get_herd_summary/list_animal_tags are
         # intentionally DISABLED (redundant with the runtime farmer-context summary the
@@ -1020,9 +1127,6 @@ class TestMultiTurnFlows:
         async def _pretranslate(*args, **kwargs):
             return "My cow has fever."
         monkeypatch.setattr(voice_module, "translate_to_english_with_gpt5_mini", _pretranslate)
-        from agents import voice as voice_agent_module
-        monkeypatch.setattr(voice_agent_module.voice_agent, "run_stream", _unexpected_base_run_stream)
-        monkeypatch.setattr(voice_agent_module.voice_agent_signed_in, "run_stream", _signed_in_run_stream)
 
         output, _ = asyncio.run(
             _collect_stream(
@@ -1031,6 +1135,8 @@ class TestMultiTurnFlows:
                 history=[],
                 monkeypatch=monkeypatch,
                 response_stream=_FakeResponseStream(),
+                run_stream_override=_unexpected_base_run_stream,
+                signed_in_run_stream_override=_signed_in_run_stream,
                 source_lang="gu",
                 target_lang="gu",
                 user_id="9723293369",

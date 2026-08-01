@@ -64,7 +64,7 @@ def test_oss_failure_falls_back_to_managed(oss_on, monkeypatch):
         return _resp('{"category": "in_scope", "reason": "ok"}')
     monkeypatch.setattr(mod, "_create_moderation_response", fake_create)
 
-    v = asyncio.run(mod.check_moderation("hi", "gu", variant="oss", session_id="s"))
+    v = asyncio.run(mod.check_moderation("hi", "gu", profile_name="oss", session_id="s"))
     assert v.category == "in_scope" and not v.rejected
     assert len(oss_on) == 1 and oss_on[0].fell_back is True
 
@@ -74,7 +74,7 @@ def test_both_tiers_fail_fails_closed(oss_on, monkeypatch):
         raise ConnectionError("down")
     monkeypatch.setattr(mod, "_create_moderation_response", fake_create)
 
-    v = asyncio.run(mod.check_moderation("hi", "gu", variant="oss", session_id="s"))
+    v = asyncio.run(mod.check_moderation("hi", "gu", profile_name="oss", session_id="s"))
     assert v.category == "unavailable" and v.rejected and v.failed_closed
 
 
@@ -83,7 +83,7 @@ def test_valid_reject_on_oss_does_not_fall_back(oss_on, monkeypatch):
         return _resp('{"category": "offensive", "reason": "abuse"}')
     monkeypatch.setattr(mod, "_create_moderation_response", fake_create)
 
-    v = asyncio.run(mod.check_moderation("...", "gu", variant="oss", session_id="s"))
+    v = asyncio.run(mod.check_moderation("...", "gu", profile_name="oss", session_id="s"))
     assert v.category == "offensive" and v.rejected
     assert oss_on == []  # a valid verdict is success, no fallback
 
@@ -96,5 +96,5 @@ def test_legacy_path_used_when_disabled(monkeypatch):
         return sentinel
     monkeypatch.setattr(mod, "_check_moderation_legacy", fake_legacy)
 
-    v = asyncio.run(mod.check_moderation("hi", "gu", variant="oss", session_id="s"))
+    v = asyncio.run(mod.check_moderation("hi", "gu", profile_name="oss", session_id="s"))
     assert v is sentinel  # disabled -> today's fail-open legacy path, unchanged
