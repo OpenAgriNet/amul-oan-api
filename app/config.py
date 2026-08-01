@@ -134,17 +134,10 @@ class Settings(BaseSettings):
     marqo_endpoint_url: Optional[str] = None
     inference_endpoint_url: Optional[str] = None
 
-    # Voice service settings (nudge, STT signals, voice tracing, pretranslation
-    # timeout) — inert on the chat path; consumed by the voice surface once it
-    # folds in. langfuse_environment (voice's name for chat's
-    # langfuse_tracing_environment) is intentionally left out pending the
-    # observability reconciliation (bucket C).
+    # Nudge settings — inert on the chat path; consumed by the voice surface when
+    # it folds in (voice is served by voice-oan-api today).
     nudge_api_url: str = os.getenv("NUDGE_API_URL", "https://vistaar.getraya.app/api/nudge-user")
     nudge_timeout_seconds: float = float(os.getenv("NUDGE_TIMEOUT_SECONDS", "3.0"))
-    # Master switch for the voice pipeline. When false, main.py never imports or
-    # mounts the voice router — no voice Agent is constructed, no /voice route is
-    # registered — so a chat-only deployment carries zero voice cost. Set false on
-    # the chat-prod service (voice is served by the separate voice-oan-api).
     # Kill switch for Hindi chat. Default ON: hi/hindi requests use the full
     # src->en->agent->hi translation pipeline. Set HINDI_CHAT_ENABLED=false to
     # disable Hindi independently (hi/hindi then bypass the pipeline and are

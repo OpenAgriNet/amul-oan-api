@@ -20,8 +20,6 @@ import app.observability  # noqa: F401, E402
 
 # Import all routers
 from app.routers import chat, transcribe, suggestions, tts, health, auth, user, telemetry
-# NOTE: `voice` is intentionally NOT imported here — importing it constructs the
-# voice Agents at module load. It is imported lazily below, only when ENABLE_VOICE.
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
