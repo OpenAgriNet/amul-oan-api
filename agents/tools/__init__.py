@@ -12,7 +12,6 @@ from agents.tools.milk_collection import (
 from agents.tools.search import search_documents, search_videos
 from agents.tools.terms import search_terms
 from agents.tools.union_schemes import get_union_scheme_data, prepare_get_union_scheme_data
-from agents.tools.common import fire_tool_call_nudge
 from agents.tools.farmer_cached import get_farmer_profile, get_herd_summary, list_animal_tags
 from agents.tools.loan import check_loan_eligibility, prepare_check_loan_eligibility
 # from agents.tools.animal import get_animal_by_tag
@@ -214,20 +213,4 @@ TOOLS = [
 #   - get_union_scheme_data stays signed-in-only
 #   - the profile/herd/tags tools stay disabled (redundant with runtime context)
 
-def _with_nudge_signal(func):
-    """Wrap a tool so it fires the tool-call nudge event on invocation (voice
-    telephony 'working on it' UX). Harmless on chat — fire_tool_call_nudge is a
-    no-op when no nudge listener is attached to the request."""
-    if inspect.iscoroutinefunction(func):
-        @functools.wraps(func)
-        async def wrapper(*args, **kwargs):
-            fire_tool_call_nudge()
-            return await func(*args, **kwargs)
-        return wrapper
-
-    @functools.wraps(func)
-    def wrapper(*args, **kwargs):
-        fire_tool_call_nudge()
-        return func(*args, **kwargs)
-    return wrapper
 

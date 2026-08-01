@@ -9,7 +9,6 @@ from agents.tools.terms import get_mini_glossary_for_text
 from app.services.translation import (
     _format_translation_prompt,
     translation_channel,
-    _get_glossary_hints_for_gu_query,
     GU_PREFERRED_TRANSLATION_RULES,
     VOICE_GU_PREFERRED_TRANSLATION_RULES,
 )
@@ -46,12 +45,6 @@ def test_chat_rules_constant_unchanged():
     assert "feminine self-reference" in "\n".join(GU_PREFERRED_TRANSLATION_RULES)
     assert _VOICE_ONLY not in "\n".join(GU_PREFERRED_TRANSLATION_RULES)
     assert _VOICE_ONLY in "\n".join(VOICE_GU_PREFERRED_TRANSLATION_RULES)
-
-
-def test_voice_glossary_hint_for_asr_buffalo_variant():
-    # ભંચ is a voice-only ASR spelling variant of buffalo (chat's glossary lacks it)
-    hints = _get_glossary_hints_for_gu_query("ભંચ")
-    assert "Buffalo" in hints
 
 
 def test_standalone_society_in_mini_glossary_for_compact_profile_line():
