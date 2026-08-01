@@ -107,11 +107,6 @@ app.include_router(transcribe.router, prefix=settings.api_prefix)
 app.include_router(suggestions.router, prefix=settings.api_prefix)
 app.include_router(tts.router, prefix=settings.api_prefix)
 app.include_router(user.router, prefix=settings.api_prefix)
-# Voice pipeline is opt-in. Gated so a chat-only deployment never imports the voice
-# module (no Agent construction) nor registers /voice unless ENABLE_VOICE is set.
-if settings.enable_voice:
-    from app.routers import voice
-    app.include_router(voice.router, prefix=settings.api_prefix)
 app.include_router(health.router, prefix=settings.api_prefix)
 # Keep telemetry path compatible with existing frontend calls:
 # /observability-service/action/data/v3/telemetry
