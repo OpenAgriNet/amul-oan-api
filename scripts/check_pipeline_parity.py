@@ -157,6 +157,17 @@ WHOLE_FILE_TOLERATED: dict[str, str] = {
         "per-repo boot glue: docstrings, validate_config shape, Provider import — "
         "the shared boot-posture assertion is kept in sync by hand"
     ),
+    # ── REFACTOR WATCHLIST ────────────────────────────────────────────────────
+    # Not yet reconciled, so these are report-only: the diff is printed on every
+    # run and never fails CI. They are the files that actually drifted while the
+    # guard was watching only llm_core (400-1,250 lines each). Each is promoted
+    # to REGION_TOLERATED or MUST_MATCH as its reconciliation lands, which is
+    # what turns this list into a ratchet rather than a report.
+    "app/services/voice.py": "WATCHLIST: two copies of the turn orchestrator",
+    "app/services/translation.py": "WATCHLIST: chat is ahead",
+    "app/services/moderation.py": "WATCHLIST: voice is ahead (fail-closed parsing)",
+    "app/services/scheme_ingestion.py": "WATCHLIST: chat is ahead (mojibake fix)",
+    "agents/services/farmer_cache.py": "WATCHLIST: voice is ahead (AMUL-39 fixes)",
 }
 
 
@@ -268,7 +279,7 @@ def main(argv: list[str]) -> int:
             print(_diff(ma, mb, rel + " [whitelisted regions masked]"))
             failures += 1
 
-    print("\n== TOLERATED: whole-file divergence expected (informational only) ==")
+    print("\n== TOLERATED: whole-file divergence (informational only) ==")
     for rel, reason in WHOLE_FILE_TOLERATED.items():
         a = _read(os.path.join(chat_root, rel))
         b = _read(os.path.join(voice_root, rel))
@@ -279,7 +290,7 @@ def main(argv: list[str]) -> int:
             print(f"  SAME  {rel}: identical (reason for tolerance: {reason})")
         else:
             n = len(list(difflib.unified_diff(a, b)))
-            print(f"  DIFF  {rel}: ~{n} diff lines — expected ({reason})")
+            print(f"  DIFF  {rel}: ~{n} diff lines — {reason}")
 
     print()
     if failures:
