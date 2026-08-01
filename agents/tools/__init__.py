@@ -9,24 +9,12 @@ from agents.tools.milk_collection import (
     get_farmer_milk_collection_details,
     prepare_get_farmer_milk_collection_details,
 )
-from agents.tools.search import search_documents, search_videos
-from agents.tools.terms import search_terms
+from agents.tools.search import search_documents
 from agents.tools.union_schemes import get_union_scheme_data, prepare_get_union_scheme_data
-from agents.tools.farmer_cached import get_farmer_profile, get_herd_summary, list_animal_tags
 from agents.tools.loan import check_loan_eligibility, prepare_check_loan_eligibility
-# from agents.tools.animal import get_animal_by_tag
-# from agents.tools.cvcc import get_cvcc_health_details
-# from agents.tools.farmer import get_farmer_by_mobile
 
 TOOLS = [
     # # Search Terms
-    # Tool(
-    #     search_terms,
-    #     takes_ctx=False,
-    #     docstring_format='auto', 
-    #     require_parameter_descriptions=True,
-
-    # ),
 
     # Search Documents
     Tool(
@@ -75,131 +63,35 @@ TOOLS = [
     ),
 
     # # Get Animal by Tag (temporarily disabled)
-    # Tool(
-    #     get_animal_by_tag,
-    #     takes_ctx=False,
-    #     docstring_format='auto',
-    #     require_parameter_descriptions=True,
-    # ),
 
     # # Get CVCC Health Details (temporarily disabled)
-    # Tool(
-    #     get_cvcc_health_details,
-    #     takes_ctx=False,
-    #     docstring_format='auto',
-    #     require_parameter_descriptions=True,
-    # ),
 
     # # Get Farmer by Mobile Number (temporarily disabled)
-    # Tool(
-    #     get_farmer_by_mobile,
-    #     takes_ctx=False,
-    #     docstring_format='auto',
-    #     require_parameter_descriptions=True,
-    # ),
 
     # # Search Videos
-    # Tool(
-    #     search_videos,
-    #     takes_ctx=False,
-    #     docstring_format='auto', 
-    #     require_parameter_descriptions=True,
-    # ),
 
     # # Reverse Geocode - Do we need this?
-    # Tool(
-    #     reverse_geocode,
-    #     takes_ctx=False,
-    #     docstring_format='auto', 
-    #     require_parameter_descriptions=True,
-    # ),
 
     # # Weather Forecast
-    # Tool(
-    #     weather_forecast,
-    #     takes_ctx=False,
-    #     docstring_format='auto', 
-    #     require_parameter_descriptions=True,
-    # ),
 
     # # Weather Historical
-    # Tool(
-    #     weather_historical,
-    #     takes_ctx=False,
-    #     docstring_format='auto', 
-    #     require_parameter_descriptions=True,
-    # ),
 
     # # Mandi Prices
-    # Tool(
-    #     mandi_prices,
-    #     takes_ctx=False,
-    #     docstring_format='auto', 
-    #     require_parameter_descriptions=True,
-    # ),
 
     # # Agricultural Services (KVK, CHC, etc.)
-    # Tool(
-    #     agri_services,
-    #     takes_ctx=False,
-    #     docstring_format='auto', 
-    #     require_parameter_descriptions=True,
-    # ),
     
     # # Geocode
-    # Tool(
-    #     forward_geocode,
-    #     takes_ctx=False,
-    #     docstring_format='auto', 
-    #     require_parameter_descriptions=True,
-    # ),
 
     # # Agristack
-    # Tool(
-    #     fetch_agristack_data,
-    #     takes_ctx=True,
-    #     docstring_format='auto', 
-    #     require_parameter_descriptions=False, # No params are needed for this tool
-    # ),
     # # Scheme Codes
-    # Tool(
-    #     get_scheme_codes,
-    #     takes_ctx=False,
-    #     docstring_format='auto', 
-    #     require_parameter_descriptions=False, # No params are needed for this tool
-    # ),
 
     # # Scheme Info (single scheme)
-    # Tool(
-    #     get_scheme_info,
-    #     takes_ctx=False,
-    #     docstring_format='auto', 
-    #     require_parameter_descriptions=True,
-    #     ),
 
     # # Multiple Schemes Info (with automatic state-first prioritization)
-    # Tool(
-    #     get_multiple_schemes_info,
-    #     takes_ctx=False,
-    #     docstring_format='auto', 
-    #     require_parameter_descriptions=True,
-    #     ),
 
     # # MahaDBT
-    # Tool(
-    #     get_scheme_status,
-    #     takes_ctx=True,
-    #     docstring_format='auto', 
-    #     require_parameter_descriptions=False,
-    # ),
 
     # # Agricultural Staff Contact
-    # Tool(
-    #     contact_agricultural_staff,
-    #     takes_ctx=False,
-    #     docstring_format='auto',
-    #     require_parameter_descriptions=True,
-    # ),
 
 ]
 
@@ -212,5 +104,4 @@ TOOLS = [
 #   - the milk-collection AND union-scheme prepare-guards are applied to voice too
 #   - get_union_scheme_data stays signed-in-only
 #   - the profile/herd/tags tools stay disabled (redundant with runtime context)
-
 
