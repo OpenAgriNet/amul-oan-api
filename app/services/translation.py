@@ -280,6 +280,10 @@ GU_POST_REPLACEMENTS_BASE = [
     # Terminology ownership should live in the glossary/policy layers.
     (r"(?i)\bpaho\b", "બાવલું"),
     (r"ગર્ભવતી", "ગાભણ"),
+    # TranslateGemma confuses the digit ૫ with the letter પ. Adjacency to a
+    # Gujarati digit disambiguates: "૧પ" is 15, not "1p".
+    (r"(?<=[૦-૯])પ", "૫"),
+    (r"પ(?=[૦-૯])", "૫"),
 ]
 GU_TERM_POLICY = _load_gu_term_policy()
 GU_POLICY_REPLACEMENTS = _build_gu_policy_replacements(GU_TERM_POLICY)
