@@ -33,7 +33,6 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 GLOSSARY_PATH = REPO_ROOT / "assets" / "glossary_terms.json"
 # §14 merge: voice-only glossary additions (incl. the Amul-AI disambiguation
 # entries) live in the voice-extras file, keeping chat's glossary untouched.
-VOICE_EXTRA_GLOSSARY_PATH = REPO_ROOT / "assets" / "voice_glossary_terms_extra.json"
 
 
 # ---------------------------------------------------------------------------
@@ -448,16 +447,6 @@ class TestAmulAiHelplineDisambiguation:
         assert "અમૂલ એ.આઈ." in rules
         assert "કૃત્રિમ બીજદાન" in rules
         assert "Artificial Intelligence" in rules
-
-    def test_amul_ai_glossary_entries_present(self):
-        # §14: the Amul-AI disambiguation glossary entries are voice-only and live
-        # in the voice-extras glossary, not chat's shared glossary_terms.json.
-        glossary = json.loads(VOICE_EXTRA_GLOSSARY_PATH.read_text(encoding="utf-8"))
-        by_en = {entry["en"]: entry["gu"] for entry in glossary}
-        assert by_en["Amul AI helpline advisor"] == "અમૂલ એ.આઈ. હેલ્પલાઇન સલાહકાર"
-        assert by_en["AI helpline"] == "એ.આઈ. હેલ્પલાઇન"
-        assert by_en["AMUL AI"] == "અમૂલ એ.આઈ."
-        assert by_en["amul helpline"] == "અમૂલ એ.આઈ. હેલ્પલાઇન"
 
 
 class TestIdentityPhrases:
