@@ -14,6 +14,7 @@ from pydantic_ai.usage import UsageLimits
 
 from agents.voice import voice_agent, voice_agent_signed_in, STATIC_VOICE_SYSTEM_PROMPT
 from agents.tools.farmer import normalize_phone_to_mobile
+from agents.services.farmer_envelope import collect_farmer_accounts
 from agents.services.farmer_cache import (
     get_farmer_data_cached_only,
     refresh_farmer_data_bounded,
@@ -68,7 +69,6 @@ from app.services.translation import (
     translate_to_english_with_structured_fallback,
     translation_channel,
 )
-from agents.services.farmer_envelope import collect_farmer_accounts
 from app.services.voice_trace import VoiceTrace, create_voice_trace
 # NOTE: Removing telemetry for now.
 # from app.tasks.telemetry import send_telemetry
