@@ -114,30 +114,6 @@ class FarmerContext(BaseModel):
         """Get channel-specific final response character guidance (chat)."""
         return self.response_max_chars
 
-    def get_runtime_context_message(self) -> str:
-        """Compact runtime context that stays outside the static system prompt (voice)."""
-        lines = [
-            "Runtime context for this turn:",
-            f"- Signed-in session: {'yes' if self.signed_in else 'no'}",
-            f"- Normalized mobile available: {'yes' if self.mobile else 'no'}",
-        ]
-        if self.mobile:
-            lines.append(f"- Normalized mobile: {self.mobile}")
-        if self.farmer_unions:
-            lines.append(f"- Farmer unions: {', '.join(self.farmer_unions)}")
-        lines.append("- Core loop language: English")
-        if self.signed_in:
-            lines.append("- Farmer-data tools may be available for this turn.")
-        else:
-            lines.append("- Farmer-data tools should not be assumed available for this turn.")
-        if self.farmer_info:
-            lines.append("- Farmer context summary:")
-            lines.append(self.farmer_info)
-        if self.ai_technician_info:
-            lines.append("- Internal AI technician context for booking:")
-            lines.append("The caller does not know which AI technicians are available unless you tell them by name.")
-            lines.append(self.ai_technician_info)
-        return "\n".join(lines)
 
     def get_user_message(self):
         """Get the user message for the agrinet agent."""
