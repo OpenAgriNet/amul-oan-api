@@ -3,11 +3,10 @@ Tool for fetching farmer milk collection and deduction details.
 """
 import os
 
-from pydantic import ValidationError
 from pydantic_ai import RunContext
 from pydantic_ai.tools import ToolDefinition
 
-from agents.deps import FarmerAccount, FarmerContext
+from agents.deps import FarmerContext
 from agents.tools.farmer_animal_backends import get_farmer_milk_collection_details_api
 from app.models.milk_collection import FarmerMilkCollectionRequestModel
 from helpers.utils import get_logger
@@ -85,18 +84,6 @@ def _build_markdown_table(headers: list[str], rows: list[list[str]]) -> str:
         for row in rows
     ]
     return "\n".join([header_line, separator_line, *row_lines])
-
-
-def _num(value) -> str:
-    """Render a numeric field compactly, dropping a trailing .0 (e.g. 2.0 -> '2')."""
-    if value is None:
-        return "unknown"
-    if isinstance(value, float) and value.is_integer():
-        return str(int(value))
-    return str(value)
-
-
-_SHIFT_LABELS = {"M": "morning", "E": "evening"}
 
 
 def _format_milk_collection_markdown(response) -> str:

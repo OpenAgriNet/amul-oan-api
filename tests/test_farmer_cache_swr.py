@@ -4,7 +4,6 @@ downgrade / lock semantics.
 
 Self-contained: uses asyncio.run + mocks, so it needs neither a live Redis nor
 pytest-asyncio.
-Inc 7.6a once the voice runtime landed.
 """
 import os
 
