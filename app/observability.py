@@ -25,13 +25,13 @@ if langfuse_public_key and langfuse_secret_key:
         release = (
             os.getenv("LANGFUSE_RELEASE")
             or settings.langfuse_release
-            or "voice-oan-api"
+            or "amul-oan-api"
         )
         environment = (
             os.getenv("LANGFUSE_TRACING_ENVIRONMENT")
             or settings.langfuse_tracing_environment
             or settings.environment
-            or "voice-development"
+            or "chat-development"
         )
         # Langfuse SDK v4 reads LANGFUSE_BASE_URL. Keep LANGFUSE_HOST as a
         # backward-compatible input because older deployments may still set it.
