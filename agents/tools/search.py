@@ -566,7 +566,7 @@ async def search_videos(
         endpoint_url = os.getenv('MARQO_ENDPOINT_URL')
         if not endpoint_url:
             raise ValueError("Marqo endpoint URL is required")
-        index_name = os.getenv('MARQO_INDEX_NAME', 'sunbird-va-index')
+        index_name = os.getenv('MARQO_INDEX_NAME', 'amul-veterinary-index')
         if not index_name:
             raise ValueError("Marqo index name is required")
 
