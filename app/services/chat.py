@@ -800,6 +800,22 @@ async def stream_chat_messages(
                         agrinet_obs.update(
                             output={"response": trace_output or ""},
                         )
+                    # Which tier ACTUALLY answered. compact_metadata reports the
+                    # configured primary, and it is snapshotted before any step
+                    # runs, so a health-prune or failure fallback is invisible in
+                    # the trace without this. Emitted here because the walker only
+                    # knows the answer once the turn is over.
+                    served = _pipeline_trace.served_summary(pt)
+                    if served:
+                        try:
+                            langfuse.score_current_trace(
+                                name="served_tier",
+                                value=served,
+                                data_type="CATEGORICAL",
+                                comment="Tier that actually produced this turn, per step",
+                            )
+                        except Exception as e:
+                            logger.warning("Langfuse: served_tier score failed: %s", e)
                 except Exception as e:
                     logger.warning(f"Langfuse: failed to record trace output: {e}")
 
