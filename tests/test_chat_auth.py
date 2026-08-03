@@ -6,10 +6,7 @@ from starlette.requests import Request
 from app.auth.jwt_auth import get_chat_user
 from app.config import settings
 from app.models.requests import ChatRequest
-from app.services.chat import (
-    WHATSAPP_RESPONSE_MAX_CHARS,
-    _response_max_chars_for_channel,
-)
+from app.channels.chat import WHATSAPP_RESPONSE_MAX_CHARS, profile_for
 from app.services.translation import _format_translation_prompt
 from helpers.utils import get_prompt
 
@@ -76,10 +73,10 @@ def test_chat_request_defaults_channel_to_web():
 
 
 def test_response_max_chars_is_set_only_for_whatsapp_channel():
-    assert _response_max_chars_for_channel("whatsapp") == WHATSAPP_RESPONSE_MAX_CHARS
-    assert _response_max_chars_for_channel("WhatsApp") == WHATSAPP_RESPONSE_MAX_CHARS
-    assert _response_max_chars_for_channel("web") is None
-    assert _response_max_chars_for_channel(None) is None
+    assert profile_for("whatsapp").response_max_chars == WHATSAPP_RESPONSE_MAX_CHARS
+    assert profile_for("WhatsApp").response_max_chars == WHATSAPP_RESPONSE_MAX_CHARS
+    assert profile_for("web").response_max_chars is None
+    assert profile_for(None).response_max_chars is None
 
 
 def test_default_agrinet_prompt_includes_whatsapp_limit_when_provided():

@@ -145,7 +145,6 @@ def should_translate_batch(batch_text: str, word_count: int) -> bool:
 
 
 logger = get_logger(__name__)
-WHATSAPP_RESPONSE_MAX_CHARS = 1600
 SUGGESTIONS_PENDING_TTL = 30
 GENERIC_UNAVAILABLE_MESSAGE_EN = (
     "I am unable to process your request right now. Please try again later."
@@ -162,12 +161,9 @@ except ImportError:
 
 # Per-turn resolved-pipeline-config tracer (tracing-only; no behaviour change).
 from app.llm_core import trace as _pipeline_trace
+from app.channels.chat import profile_for as _profile_for
 
 
-def _response_max_chars_for_channel(channel: str | None) -> int | None:
-    if (channel or "").lower() == "whatsapp":
-        return WHATSAPP_RESPONSE_MAX_CHARS
-    return None
 
 async def stream_chat_messages(
     query: str,
@@ -183,6 +179,9 @@ async def stream_chat_messages(
     pipeline_profile: str = "managed",
 ) -> AsyncGenerator[str, None]:
     """Async generator for streaming chat messages."""
+    # The turn's channel profile: what differs between delivery channels, resolved
+    # once here rather than re-derived at each use site.
+    profile = _profile_for(channel)
     # The oss-vs-managed behavioural split is derived from the resolved AGENT primary
     # tier KIND (not a variant string): a vllm/self-hosted primary (gemma, qwen, ...)
     # materializes kind "oss"; a managed provider (openai/anthropic/gemini) -> "managed".
@@ -310,7 +309,7 @@ async def stream_chat_messages(
                         text=text_en,
                         source_lang="english",
                         target_lang=target_lang,
-                        max_output_chars=_response_max_chars_for_channel(channel),
+                        max_output_chars=profile.response_max_chars,
                     )
                 except Exception as e:
                     logger.warning(
@@ -487,7 +486,7 @@ async def stream_chat_messages(
             farmer_info=farmer_data,
             farmer_unions=farmer_unions,
             use_translation_pipeline=use_translation_pipeline,
-            response_max_chars=_response_max_chars_for_channel(channel),
+            response_max_chars=profile.response_max_chars,
             mobile=loan_mobile,
         )
 
