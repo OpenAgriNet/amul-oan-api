@@ -275,6 +275,22 @@ class Settings(BaseSettings):
     # Master switch. When false the loan tool is hidden and evaluate_and_issue
     # short-circuits, so the flow is fully inert unless explicitly enabled.
     loan_feature_enabled: bool = os.getenv("LOAN_FEATURE_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
+    # Per-session guard on AI-call booking (try_reserve / SET-NX).
+    #
+    # OFF (default) matches the product decision documented in agents/tools/ai_call.py:
+    # a farmer must be able to book multiple AI visits in one session — two cows in
+    # heat is a real case — so we do not dedupe on session/species/technician. The
+    # accepted cost is that an OSS->managed fallback re-run can re-fire the tool and
+    # create a duplicate booking, with the upstream CreateAICall API as the backstop.
+    #
+    # ON trades that the other way: no duplicate bookings (and no duplicate SMS to a
+    # farmer), at the cost of blocking a legitimate second booking within the TTL.
+    # amul-prod has historically run WITH the guard.
+    ai_call_booking_guard_enabled: bool = os.getenv("AI_CALL_BOOKING_GUARD_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
+    # How long a session stays reserved after a booking. Only consulted when the
+    # guard is on. Shorter = a farmer can legitimately re-book sooner; longer =
+    # wider protection against a delayed fallback re-fire.
+    ai_call_cooldown_ttl_seconds: int = int(os.getenv("AI_CALL_COOLDOWN_TTL_SECONDS", str(60 * 30)))
     # Per-check toggles. A disabled check is BYPASSED (treated as pass) so product
     # can test the end-to-end flow without real Amul submissions / bank-list rows.
     loan_check_bank_list_enabled: bool = os.getenv("LOAN_CHECK_BANK_LIST_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}

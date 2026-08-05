@@ -16,10 +16,9 @@ from helpers.utils import get_logger
 
 logger = get_logger(__name__)
 
-# One booking per session per 30 min. Also makes this tool idempotent against an
-# agent re-run (e.g. the OSS->managed streaming fallback re-executes tool calls):
-# a second invocation in the same session short-circuits instead of double-booking.
-AI_CALL_COOLDOWN_TTL = 60 * 30  # 30 minutes
+# Redis key namespace for booking reservations. Deliberately NOT config: changing
+# it at runtime orphans every in-flight reservation, so a redeploy mid-booking
+# would lose the protection it exists to give.
 AI_CALL_CACHE_NAMESPACE = "ai_call_booked"
 
 
@@ -50,7 +49,7 @@ async def create_ai_call(
 
     Returns:
         str: Formatted result with assigned AIT details and ticket number,
-             or a message if booking fails or was already done this session.
+             or a message if booking fails.
     """
     logger.info(
         "Create AI call tool invoked for union=%s society=%s farmer=%s user_id=%s species=%s",
@@ -63,17 +62,27 @@ async def create_ai_call(
 
     # Feature flag: route booking through the Amul Beckn network
     # (services:amul-vet-booking) instead of the direct PashuGPT call.
-    # NOTE: this path returns before the per-session reservation guard below, so
-    # it does NOT carry duplicate-booking protection. Inert while ENABLE_NETWORK
-    # is off (the prod default); must be addressed before the flag is flipped.
     if settings.enable_network:
         from agents.tools.beckn_network import network_create_ai_call
         logger.info("enable_network=on → AI call booking via Beckn network union=%s society=%s", union_code, society_code)
         return await network_create_ai_call(union_code, society_code, farmer_code, user_id, species.value)
 
-    # Per-session id for the atomic booking reservation (placed just before the
-    # write call below).
     session_id = ctx.deps.session_id if ctx and ctx.deps else None
+
+    # Booking idempotency is a PRODUCT TRADE-OFF, so it is a config flag rather
+    # than a code decision — the two branches disagreed about it and kept
+    # conflicting on every promote.
+    #
+    # OFF (default): a farmer can book multiple AI visits in one session, including
+    # the same species with the same technician (two cows in heat is a real case).
+    # Cost: an OSS->managed fallback re-run can re-fire this tool and duplicate the
+    # booking — accepted, with the upstream CreateAICall API as the backstop.
+    #
+    # ON: first caller wins per session (Redis SET NX, shared across containers),
+    # so no duplicate booking and no duplicate SMS. Cost: a legitimate second
+    # booking inside the TTL is refused. amul-prod has historically run this way.
+    #
+    # See health_call.py, which keeps an unconditional guard for a different contract.
 
     # A booking is IRREVERSIBLE, so block on the moderation verdict before writing.
     # On the voice path moderation runs concurrently with the agent; this refuses
@@ -121,12 +130,11 @@ async def create_ai_call(
             species=species,
         )
         # Atomic reservation immediately before the write: first caller wins; a
-        # concurrent/duplicate submit OR a fallback re-run for the same session
-        # short-circuits instead of double-booking (Redis SET NX, shared across
-        # containers). Released below if the booking API itself fails.
+        # concurrent submit OR a fallback re-run for the same session short-circuits
+        # instead of double-booking. Released below if the booking API itself fails.
         _reserved = False
-        if session_id:
-            if not await try_reserve(session_id, AI_CALL_CACHE_NAMESPACE, AI_CALL_COOLDOWN_TTL):
+        if settings.ai_call_booking_guard_enabled and session_id:
+            if not await try_reserve(session_id, AI_CALL_CACHE_NAMESPACE, settings.ai_call_cooldown_ttl_seconds):
                 logger.info("AI call already booked/in-flight for session %s, skipping", session_id)
                 return (
                     "This session already has an active artificial insemination booking. "
@@ -158,12 +166,12 @@ async def create_ai_call(
             return failure_message
 
         # Mark this session as booked so a re-run (or retry) does not double-book.
-        if session_id:
+        if settings.ai_call_booking_guard_enabled and session_id:
             try:
                 await cache.set(
                     session_id,
                     {"ticket": response.ticket_number, "species": species.value},
-                    ttl=AI_CALL_COOLDOWN_TTL,
+                    ttl=settings.ai_call_cooldown_ttl_seconds,
                     namespace=AI_CALL_CACHE_NAMESPACE,
                 )
             except Exception as e:
