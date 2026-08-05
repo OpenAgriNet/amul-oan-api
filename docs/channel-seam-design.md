@@ -147,3 +147,113 @@ Found while mapping the flows; each would be silently dropped by a naive merge.
   client then has 600s. With nginx cutting at 60s, that is the live drop-the-call shape.
 - **`_request_is_stale` is called at 21 sites in voice**, four inside inner rendering loops. It
   is a re-entrant abort predicate with Redis side effects, not a stage boundary.
+
+---
+
+## Two axes, not one
+
+The codebase already has a `ChannelProfile` (#193), and it is **not** this seam. That record
+models the *delivery medium* — web vs whatsapp, currently carrying one field,
+`response_max_chars`. `app/channels/base.py` says so explicitly and reserves the second axis:
+
+> `channel` is the delivery medium (web | whatsapp | telephony). The orthogonal axis — which
+> pipeline shape a turn runs — is a *surface*, and it gets introduced when there is a second one
+> to model, not before.
+
+Voice is that second one. So the seam adds `Surface` **above** `Channel`, and the two compose
+rather than nest: telephony is a delivery medium of the voice surface, but the axes stay
+independent so a future WhatsApp-voice-note surface does not require a new enum member in the
+wrong place.
+
+Concretely: `ChannelProfile` keeps answering "how is the rendered text delivered", and the new
+`SurfaceProfile` answers "what shape does the turn run". Nothing in the existing profile moves.
+
+## The seam interface
+
+Proposed, not built. This is the part #199 was missing, and it is what task 15 implements.
+
+```python
+async def run_turn(turn: Turn, surface: SurfaceProfile) -> AsyncGenerator[Emission, None]:
+    ...
+```
+
+`Turn` is the request-invariant input, ~the current `stream_chat_messages` parameter list
+(query, session_id, source/target lang, user_id, history, user_info, channel profile,
+pipeline_profile) as one frozen record. It is not a new concept, only a name for what is already
+passed positionally.
+
+`SurfaceProfile` is the four structures, one field each:
+
+```python
+@dataclass(frozen=True)
+class SurfaceProfile:
+    surface: Surface
+    classifiers: tuple[Classifier, ...]      # 1. pre-turn chain; chat has 1, voice 6
+    background: tuple[BackgroundSpec, ...]   # 2. {task, spawn_point, consumers, cancel_on}
+    liveness: LivenessSpec | None            # 3. None on chat
+    sink: Sink                               # 4. accumulator vs streaming batcher
+```
+
+### Why the return type is `Emission` and not `str`
+
+This is the one interface decision that is load-bearing rather than cosmetic, and getting it
+wrong is how telephony liveness dies quietly in the merge.
+
+Chat's orchestrator yields `str` and every consumer treats the stream as the whole output. But
+voice's nudge is an **HTTP POST to a separate endpoint** — it is caller-visible output that must
+not appear in the response stream. A generator typed `AsyncGenerator[str, None]` has nowhere to
+put it, so a merge built on that signature will either drop the nudge or smuggle it in-band,
+where the TTS batcher will happily speak it.
+
+So the orchestrator yields a small tagged union — response text, the `AGENT_ACTIVITY` sentinel,
+and side-channel emissions — and the transport adapter decides what each one means. Chat's
+adapter drops side-channel emissions (it has none) and unwraps text; voice's adapter POSTs them.
+
+The `raw` bit from the classifier chain rides on the text emission, because that is what
+decides whether the channel normalizer runs — the `"Goodbye."` → `"."` failure is exactly a
+normalizer applied to text that should have bypassed it.
+
+## Landing order
+
+The sequencing constraint is that **voice must not be ported until `run_turn` is proven inert on
+chat.** Otherwise a behaviour change and a port land together and neither can be bisected.
+
+1. **Task 15 — `run_turn` on chat only.** Introduce the four structures with voice's fields
+   degenerate: one classifier (identity), one background spec (moderation, one consumer, no
+   cancel sites), `liveness=None`, the accumulating sink. `stream_chat_messages` becomes a thin
+   adapter over it. **Success criterion: no test edits.** A refactor that forces one changed
+   behaviour — see the method note below.
+2. **Tasks 11/13/14** — the cheap merges, in measured-cost order: `fallback.py` (hours),
+   `llm_core` (days, gated on the settings-provider question below), `legacy_shim` (days–week).
+3. **Task 16 / moderation** — unify the engine, keep the taxonomies as data. Explicitly *not* a
+   taxonomy merge.
+4. **Voice port** — re-derived from deployed `voice-oan-api@origin/amul-dev`, never from the
+   fork deleted in #189/#190/#192. Populate the four structures; delete the legacy
+   gate-before-model branch per the decision above.
+5. **`translation.py`** last (weeks), rewritten around channels.
+
+Steps 1–3 are independently shippable and none of them requires voice to move.
+
+## Open decisions
+
+These need a human before task 15 starts; each changes the interface above.
+
+- **`llm_core` settings coupling — provider callable or frozen config?** `health.py` reads
+  settings per check *deliberately*, so a live config change applies without a restart. Freezing
+  the 15 attributes into a config object silently removes that. Keep the provider callable, or
+  accept the change consciously — the doc flags it, the decision is not made.
+- **Does `Turn` carry the telemetry root span, or does `run_turn` open it?** #200 established
+  that the turn needs exactly one root span. If `run_turn` opens it, the adapter cannot add
+  attributes before it exists; if `Turn` carries it, construction has a side effect. Leaning
+  toward `run_turn` opening it, since that is the actual turn boundary.
+- **Where does the total wall-clock bound live?** The loss-list notes there is none today, and
+  nginx cutting at 60s is the live call-drop shape. A deadline on `SurfaceProfile` is the natural
+  home, but adding one is a *behaviour change* and must not ride in on the refactor. Track it
+  separately.
+
+## Method
+
+Code first, tests last. A refactor that forces a test edit changed behaviour — that is the
+signal, not an inconvenience. And before claiming any test guards this seam, break the behaviour
+and watch it fail: this suite has passed vacuously three times, including on tests written for
+exactly this work.
