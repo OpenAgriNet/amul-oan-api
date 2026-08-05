@@ -9,11 +9,17 @@ from pydantic_ai import RunContext
 from agents.deps import FarmerContext
 from agents.tools.farmer_animal_backends import create_ai_call_api
 from app.config import settings
+from app.core.cache import cache, try_reserve, release_reservation
 from app.models.ai_call import AICallRequestModel, AISpecies
 from app.observability import start_observation, set_trace_io
 from helpers.utils import get_logger
 
 logger = get_logger(__name__)
+
+# Redis key namespace for booking reservations. Deliberately NOT config: changing
+# it at runtime orphans every in-flight reservation, so a redeploy mid-booking
+# would lose the protection it exists to give.
+AI_CALL_CACHE_NAMESPACE = "ai_call_booked"
 
 
 async def create_ai_call(
@@ -63,14 +69,20 @@ async def create_ai_call(
 
     session_id = ctx.deps.session_id if ctx and ctx.deps else None
 
-    # DELIBERATE: no client-side booking idempotency guard. A farmer must be able
-    # to book multiple AI visits in one session — including the same species with
-    # the same technician (e.g. two cows in heat). We therefore do NOT dedupe on
-    # session/species/technician. The trade-off: the OSS->managed streaming
-    # fallback re-run can re-fire this tool and create a duplicate booking; that
-    # is accepted, with the upstream CreateAICall API as the backstop. Do not
-    # re-add a try_reserve/session-key guard here without revisiting this product
-    # decision (see health_call.py, which keeps a guard for a different contract).
+    # Booking idempotency is a PRODUCT TRADE-OFF, so it is a config flag rather
+    # than a code decision — the two branches disagreed about it and kept
+    # conflicting on every promote.
+    #
+    # OFF (default): a farmer can book multiple AI visits in one session, including
+    # the same species with the same technician (two cows in heat is a real case).
+    # Cost: an OSS->managed fallback re-run can re-fire this tool and duplicate the
+    # booking — accepted, with the upstream CreateAICall API as the backstop.
+    #
+    # ON: first caller wins per session (Redis SET NX, shared across containers),
+    # so no duplicate booking and no duplicate SMS. Cost: a legitimate second
+    # booking inside the TTL is refused. amul-prod has historically run this way.
+    #
+    # See health_call.py, which keeps an unconditional guard for a different contract.
 
     # A booking is IRREVERSIBLE, so block on the moderation verdict before writing.
     # On the voice path moderation runs concurrently with the agent; this refuses
@@ -117,8 +129,23 @@ async def create_ai_call(
             userId=user_id,
             species=species,
         )
+        # Atomic reservation immediately before the write: first caller wins; a
+        # concurrent submit OR a fallback re-run for the same session short-circuits
+        # instead of double-booking. Released below if the booking API itself fails.
+        _reserved = False
+        if settings.ai_call_booking_guard_enabled and session_id:
+            if not await try_reserve(session_id, AI_CALL_CACHE_NAMESPACE, settings.ai_call_cooldown_ttl_seconds):
+                logger.info("AI call already booked/in-flight for session %s, skipping", session_id)
+                return (
+                    "This session already has an active artificial insemination booking. "
+                    "Please try again later or contact your society for assistance."
+                )
+            _reserved = True
+
         response = await create_ai_call_api(request, token)
         if response is None:
+            if _reserved:
+                await release_reservation(session_id, AI_CALL_CACHE_NAMESPACE)
             logger.info(
                 "Create AI call failed for union=%s society=%s farmer=%s species=%s",
                 union_code,
@@ -137,6 +164,18 @@ async def create_ai_call(
                 output={"success": False, "message": failure_message},
             )
             return failure_message
+
+        # Mark this session as booked so a re-run (or retry) does not double-book.
+        if settings.ai_call_booking_guard_enabled and session_id:
+            try:
+                await cache.set(
+                    session_id,
+                    {"ticket": response.ticket_number, "species": species.value},
+                    ttl=settings.ai_call_cooldown_ttl_seconds,
+                    namespace=AI_CALL_CACHE_NAMESPACE,
+                )
+            except Exception as e:
+                logger.warning("Failed to set AI call cooldown: %s", e)
 
         formatted = json.dumps(response.model_dump(), indent=2, ensure_ascii=False)
         logger.info(
