@@ -60,10 +60,17 @@ def _filter_scheme_records(records: list[dict[str, Any]], scheme_name: str) -> l
 
 async def get_union_scheme_data(ctx: RunContext[FarmerContext], scheme_name: str | None = None) -> str:
     """
-    Get cached milk producer scheme data for the union inferred from farmer context.
+    Get the farmer's Amul MILK-UNION / dairy-cooperative welfare schemes — the
+    scheme benefits their specific dairy union (e.g. Banas, Sarhad) offers, such
+    as accident insurance or cattle/producer welfare. ONLY for these dairy-union
+    schemes.
+
+    Do NOT use this for central / national government agriculture schemes such as
+    KCC (Kisan Credit Card), PM-KISAN, PMFBY, or Soil Health Card — for any
+    central government scheme use get_vistaar_scheme_info instead.
 
     Args:
-        scheme_name: Optional scheme title filter. Use this when the user asks about a specific scheme.
+        scheme_name: Optional union-scheme title filter, when the user names one.
 
     Returns:
         A JSON-formatted string of cached scheme records, or a clear no-data message.
@@ -99,6 +106,20 @@ async def get_union_scheme_data(ctx: RunContext[FarmerContext], scheme_name: str
                 "Union scheme tool bypassed union auth for testing; using supported unions=%s",
                 target_unions,
             )
+
+    # Feature flag: route through the Amul Beckn network (schemes:amul-union)
+    # instead of the direct Redis cache when enabled. `settings` is imported at
+    # module level — do NOT re-import it inside the function, or it becomes a
+    # function-local name and earlier settings.* uses raise UnboundLocalError.
+    if settings.enable_network:
+        from agents.tools.beckn_network import network_union_schemes
+        primary_union = target_unions[0] if len(target_unions) == 1 else None
+        logger.info(
+            "enable_network=on → union schemes via Beckn network union=%s scheme=%s",
+            primary_union,
+            normalized_scheme_name,
+        )
+        return await network_union_schemes(normalized_scheme_name or "", union=primary_union)
 
     records: list[dict[str, Any]] = []
     for union_name in target_unions:

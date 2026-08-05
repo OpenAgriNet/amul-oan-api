@@ -1,4 +1,5 @@
 import asyncio
+from types import SimpleNamespace
 
 from fastapi import BackgroundTasks
 
@@ -14,27 +15,62 @@ class _DummyModerationRun:
     output = _DummyModerationOutput()
 
 
-class _DummyResponseStream:
-    def __init__(self, chunks: list[str]):
+class _DummyCache:
+    async def delete(self, _key: str):
+        return None
+
+
+# chat.py dispatches on type(x).__name__, so these only need matching class names.
+_PartDeltaEvent = type("PartDeltaEvent", (), {})
+_TextPartDelta = type("TextPartDelta", (), {})
+
+
+def _text_delta_event(chunk: str):
+    delta = _TextPartDelta()
+    delta.content_delta = chunk
+    event = _PartDeltaEvent()
+    event.delta = delta
+    return event
+
+
+class _FakeModelRequestNode:
+    def __init__(self, chunks):
         self._chunks = chunks
+
+    def stream(self, _ctx):
+        chunks = self._chunks
+
+        class _EventStream:
+            async def __aenter__(self_inner):
+                return self_inner
+
+            async def __aexit__(self_inner, *_exc):
+                return False
+
+            async def __aiter__(self_inner):
+                for chunk in chunks:
+                    yield _text_delta_event(chunk)
+
+        return _EventStream()
+
+
+_FakeModelRequestNode.__name__ = "ModelRequestNode"
+
+
+class _FakeAgentRun:
+    def __init__(self, chunks):
+        self._chunks = chunks
+        self.ctx = object()
+        self.result = SimpleNamespace(new_messages=lambda: [])
 
     async def __aenter__(self):
         return self
 
-    async def __aexit__(self, exc_type, exc, tb):
+    async def __aexit__(self, *_exc):
         return False
 
-    async def stream_text(self, delta: bool = True):
-        for chunk in self._chunks:
-            yield chunk
-
-    def new_messages(self):
-        return []
-
-
-class _DummyCache:
-    async def delete(self, _key: str):
-        return None
+    async def __aiter__(self):
+        yield _FakeModelRequestNode(self._chunks)
 
 
 def test_hindi_source_uses_pretranslation_then_hindi_output(monkeypatch):
@@ -43,10 +79,7 @@ def test_hindi_source_uses_pretranslation_then_hindi_output(monkeypatch):
     agent_calls: list[dict] = []
     stream_translation_calls: list[dict] = []
 
-    monkeypatch.setattr(chat_service.settings, "llm_core_enabled", False)
     monkeypatch.setattr(chat_service.settings, "fallback_enabled", False)
-    monkeypatch.setattr(chat_service, "get_model_for_variant", lambda _variant: object())
-    monkeypatch.setattr(chat_service, "provider_for_variant", lambda _variant: "openai")
     monkeypatch.setattr(chat_service, "propagate_attributes", None)
     monkeypatch.setattr(chat_service, "get_langfuse_client", None)
     monkeypatch.setattr(chat_service, "cache", _DummyCache())
@@ -73,12 +106,6 @@ def test_hindi_source_uses_pretranslation_then_hindi_output(monkeypatch):
         moderation_messages.append(user_message)
         return _DummyModerationRun()
 
-    def _fake_run_stream(**kwargs):
-        agent_calls.append(kwargs)
-        return _DummyResponseStream(
-            ["Give 40 to 60 liters of clean water daily."]
-        )
-
     async def _fake_translate_text_stream_fast(
         text: str,
         source_lang: str,
@@ -100,7 +127,11 @@ def test_hindi_source_uses_pretranslation_then_hindi_output(monkeypatch):
     monkeypatch.setattr(chat_service, "update_message_history", _fake_update_message_history)
     monkeypatch.setattr(chat_service, "translate_to_english_pretranslation", _fake_pretranslation)
     monkeypatch.setattr(chat_service.moderation_agent, "run", _fake_moderation_run)
-    monkeypatch.setattr(chat_service.agrinet_agent, "run_stream", _fake_run_stream)
+    def _fake_iter(**kwargs):
+        agent_calls.append(kwargs)
+        return _FakeAgentRun(["Give 40 to 60 liters of clean water daily."])
+
+    monkeypatch.setattr(chat_service.agrinet_agent, "iter", _fake_iter)
     monkeypatch.setattr(chat_service, "translate_text_stream_fast", _fake_translate_text_stream_fast)
 
     async def _drive():
@@ -116,7 +147,7 @@ def test_hindi_source_uses_pretranslation_then_hindi_output(monkeypatch):
             user_info={},
             background_tasks=BackgroundTasks(),
             use_translation_pipeline=True,
-            pipeline_variant="legacy",
+            pipeline_profile="managed",
         ):
             chunks.append(chunk)
         return "".join(chunks)

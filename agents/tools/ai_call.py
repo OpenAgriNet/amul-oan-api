@@ -8,6 +8,7 @@ from pydantic_ai import RunContext
 
 from agents.deps import FarmerContext
 from agents.tools.farmer_animal_backends import create_ai_call_api
+from app.config import settings
 from app.core.cache import cache, try_reserve, release_reservation
 from app.models.ai_call import AICallRequestModel, AISpecies
 from app.observability import start_observation, set_trace_io
@@ -59,6 +60,16 @@ async def create_ai_call(
         user_id,
         species.value,
     )
+
+    # Feature flag: route booking through the Amul Beckn network
+    # (services:amul-vet-booking) instead of the direct PashuGPT call.
+    # NOTE: this path returns before the per-session reservation guard below, so
+    # it does NOT carry duplicate-booking protection. Inert while ENABLE_NETWORK
+    # is off (the prod default); must be addressed before the flag is flipped.
+    if settings.enable_network:
+        from agents.tools.beckn_network import network_create_ai_call
+        logger.info("enable_network=on → AI call booking via Beckn network union=%s society=%s", union_code, society_code)
+        return await network_create_ai_call(union_code, society_code, farmer_code, user_id, species.value)
 
     # Per-session id for the atomic booking reservation (placed just before the
     # write call below).
