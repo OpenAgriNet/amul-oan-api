@@ -134,33 +134,17 @@ class Settings(BaseSettings):
     marqo_endpoint_url: Optional[str] = None
     inference_endpoint_url: Optional[str] = None
 
-    # Voice service settings (nudge, STT signals, voice tracing, pretranslation
-    # timeout) — inert on the chat path; consumed by the voice surface once it
-    # folds in. langfuse_environment (voice's name for chat's
-    # langfuse_tracing_environment) is intentionally left out pending the
-    # observability reconciliation (bucket C).
+    # Nudge settings — inert on the chat path; consumed by the voice surface when
+    # it folds in (voice is served by voice-oan-api today).
     nudge_api_url: str = os.getenv("NUDGE_API_URL", "https://vistaar.getraya.app/api/nudge-user")
     nudge_timeout_seconds: float = float(os.getenv("NUDGE_TIMEOUT_SECONDS", "3.0"))
-    # Master switch for the voice pipeline. When false, main.py never imports or
-    # mounts the voice router — no voice Agent is constructed, no /voice route is
-    # registered — so a chat-only deployment carries zero voice cost. Set false on
-    # the chat-prod service (voice is served by the separate voice-oan-api).
-    enable_voice: bool = _get_bool_env("ENABLE_VOICE", default=True)
-    enable_voice_nudges: bool = _get_bool_env("ENABLE_VOICE_NUDGES", default=True)
     # Kill switch for Hindi chat. Default ON: hi/hindi requests use the full
     # src->en->agent->hi translation pipeline. Set HINDI_CHAT_ENABLED=false to
     # disable Hindi independently (hi/hindi then bypass the pipeline and are
     # served like an unsupported language — English passthrough) without
     # touching Gujarati.
     hindi_chat_enabled: bool = _get_bool_env("HINDI_CHAT_ENABLED", default=True)
-    stt_signal_retry_ceiling: int = int(os.getenv("STT_SIGNAL_RETRY_CEILING", "3"))
     openai_pretranslation_timeout_seconds: float = float(os.getenv("OPENAI_PRETRANSLATION_TIMEOUT_SECONDS", "10.0"))
-    voice_non_meaningful_timeout_seconds: float = float(os.getenv("VOICE_NON_MEANINGFUL_TIMEOUT_SECONDS", "0.60"))
-    voice_non_meaningful_gate_timeout_seconds: float = float(os.getenv("VOICE_NON_MEANINGFUL_GATE_TIMEOUT_SECONDS", "0.50"))
-    enable_voice_tracing: bool = _get_bool_env("ENABLE_VOICE_TRACING", default=True)
-    voice_trace_text_mode: str = os.getenv("VOICE_TRACE_TEXT_MODE", "preview_hash")
-    voice_trace_preview_chars: int = int(os.getenv("VOICE_TRACE_PREVIEW_CHARS", "120"))
-    voice_trace_log_summary: bool = _get_bool_env("VOICE_TRACE_LOG_SUMMARY", default=True)
     # RETRIEVAL_AUDIT_LOG: log intent/retrieval_called/query per turn for replay analysis
     retrieval_audit_log: bool = _get_bool_env("RETRIEVAL_AUDIT_LOG", default=False)
 
@@ -291,6 +275,22 @@ class Settings(BaseSettings):
     # Master switch. When false the loan tool is hidden and evaluate_and_issue
     # short-circuits, so the flow is fully inert unless explicitly enabled.
     loan_feature_enabled: bool = os.getenv("LOAN_FEATURE_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
+    # Per-session guard on AI-call booking (try_reserve / SET-NX).
+    #
+    # OFF (default) matches the product decision documented in agents/tools/ai_call.py:
+    # a farmer must be able to book multiple AI visits in one session — two cows in
+    # heat is a real case — so we do not dedupe on session/species/technician. The
+    # accepted cost is that an OSS->managed fallback re-run can re-fire the tool and
+    # create a duplicate booking, with the upstream CreateAICall API as the backstop.
+    #
+    # ON trades that the other way: no duplicate bookings (and no duplicate SMS to a
+    # farmer), at the cost of blocking a legitimate second booking within the TTL.
+    # amul-prod has historically run WITH the guard.
+    ai_call_booking_guard_enabled: bool = os.getenv("AI_CALL_BOOKING_GUARD_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
+    # How long a session stays reserved after a booking. Only consulted when the
+    # guard is on. Shorter = a farmer can legitimately re-book sooner; longer =
+    # wider protection against a delayed fallback re-fire.
+    ai_call_cooldown_ttl_seconds: int = int(os.getenv("AI_CALL_COOLDOWN_TTL_SECONDS", str(60 * 30)))
     # Per-check toggles. A disabled check is BYPASSED (treated as pass) so product
     # can test the end-to-end flow without real Amul submissions / bank-list rows.
     loan_check_bank_list_enabled: bool = os.getenv("LOAN_CHECK_BANK_LIST_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
@@ -332,6 +332,19 @@ class Settings(BaseSettings):
         "{name}, અભિનંદન! આપની વિનંતી મુજબ ₹{amount} ની માઈક્રો લોન મંજૂર કરવામાં આવી છે. "
         "પેમેન્ટ મેળવવા માટે આપની KDCC બેંક શાખામાં આ કોડ રજૂ કરો:{code} .",
     )
+
+    # Beckn Network Feature Flag
+    # When enable_network is true, agent tools that have a Beckn equivalent
+    # (vet-KB search, union schemes, AI-call booking) route through the Amul
+    # Beckn network instead of the direct integrations (Marqo / Redis /
+    # PashuGPT). Default false → existing behaviour is unchanged.
+    enable_network: bool = os.getenv("ENABLE_NETWORK", "false").strip().lower() in {"1", "true", "yes", "y", "on"}
+    # Seeker BAP base URL for network discovery (vet KB, union schemes).
+    amul_network_url: str = os.getenv("AMUL_NETWORK_URL", "http://amul-bap-seeker:3000")
+    # Booking BPP base URL for network AI-call booking.
+    amul_booking_bpp_url: str = os.getenv("AMUL_BOOKING_BPP_URL", "http://amul-net-bpp-booking:6002")
+    # Timeout (seconds) for network calls from the agent tools.
+    amul_network_timeout_s: float = float(os.getenv("AMUL_NETWORK_TIMEOUT_S", "35"))
 
     class Config:
         env_file = ".env"

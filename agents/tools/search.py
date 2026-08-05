@@ -382,6 +382,13 @@ async def search_documents(
     """
     try:
         query = _validate_search_query(query)
+        # Feature flag: route through the Amul Beckn network (advisory:amul-vet)
+        # instead of direct Marqo when enabled. Same formatted-string contract.
+        from app.config import settings
+        if settings.enable_network:
+            from agents.tools.beckn_network import network_search_documents
+            logger.info("enable_network=on → vet-KB search via Beckn network query=%s", query)
+            return await network_search_documents(query, top_k)
         endpoint_url = os.getenv('MARQO_ENDPOINT_URL')
         if not endpoint_url:
             raise ValueError("Marqo endpoint URL is required")
@@ -548,46 +555,3 @@ async def search_documents(
         raise ModelRetry(f"Error searching documents, please try again")
 
 
-async def search_videos(
-    query: str, 
-    top_k: int = 3, 
-) -> str:
-    """
-    Semantic search for videos. Use this tool when recommending videos to the farmer.
-    
-    Args:
-        query: The search query in *English* (required)
-        top_k: Maximum number of results to return (default: 3)
-        
-    Returns:
-        search_results: Formatted list of videos
-    """
-    try:
-        endpoint_url = os.getenv('MARQO_ENDPOINT_URL')
-        if not endpoint_url:
-            raise ValueError("Marqo endpoint URL is required")
-        index_name = os.getenv('MARQO_INDEX_NAME', 'sunbird-va-index')
-        if not index_name:
-            raise ValueError("Marqo index name is required")
-
-        logger.info(f"Searching for '{query}' in index '{index_name}'")
-        search_params = {
-            "q": query,
-            "limit": top_k,
-            "search_method": "tensor",
-        }
-        # Marqo client is sync; run in thread pool to avoid blocking the event loop
-        results = await asyncio.to_thread(
-            _marqo_search_sync, endpoint_url, index_name, search_params
-        )
-
-        if len(results) == 0:
-            return f"No videos found for `{query}`"
-        else:            
-            search_hits = [SearchHit(**hit) for hit in results]            
-            video_string = '\n\n----\n\n'.join([str(document) for document in search_hits])
-            return "> Videos for `" + query + "`\n\n" + video_string
-        
-    except Exception as e:
-        logger.error(f"Error searching documents: {e} for query: {query}")
-        raise ModelRetry(f"Error searching documents, please try again")

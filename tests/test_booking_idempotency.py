@@ -27,6 +27,12 @@ def _ctx(session_id):
     return SimpleNamespace(deps=SimpleNamespace(session_id=session_id, ensure_in_scope=_in_scope))
 
 
+def _enable_guard(monkeypatch, mod):
+    """The guard defaults OFF (main's product decision: a farmer may book twice in
+    one session). These tests are ABOUT the guard, so they turn it on explicitly."""
+    monkeypatch.setattr(mod.settings, "ai_call_booking_guard_enabled", True)
+
+
 def _patch_cache(monkeypatch, module):
     """In-memory cache simulating Redis: add() is atomic SET-NX (raises if key
     exists), shared by try_reserve/release_reservation and the tool's set/get."""
@@ -57,6 +63,7 @@ def _patch_cache(monkeypatch, module):
 
 
 def test_ai_call_idempotent_on_rerun(monkeypatch):
+    _enable_guard(monkeypatch, ai_mod)
     _patch_cache(monkeypatch, ai_mod)
     calls = {"n": 0}
 
@@ -100,6 +107,7 @@ def test_ai_call_concurrent_submits_book_once(monkeypatch):
     """Two concurrent submits for the same session (double-tap / retry) must
     result in exactly ONE booking — the atomic reservation closes the
     check-then-set race."""
+    _enable_guard(monkeypatch, ai_mod)
     _patch_cache(monkeypatch, ai_mod)
     calls = {"n": 0}
 
@@ -126,6 +134,7 @@ def test_ai_call_concurrent_submits_book_once(monkeypatch):
 def test_no_session_id_does_not_crash(monkeypatch):
     """Defensive: missing session_id (e.g. None deps) must not raise; it just
     skips the guard (no dedup, but no crash)."""
+    _enable_guard(monkeypatch, ai_mod)
     _patch_cache(monkeypatch, ai_mod)
 
     async def fake_api(request, token):
@@ -161,6 +170,7 @@ def _patch_obs(monkeypatch, module):
 
 
 def test_ai_call_emits_observation_and_trace_io(monkeypatch):
+    _enable_guard(monkeypatch, ai_mod)
     _patch_cache(monkeypatch, ai_mod)
     obs_names, trace_io = _patch_obs(monkeypatch, ai_mod)
 

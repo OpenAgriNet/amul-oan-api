@@ -95,7 +95,6 @@ def count_tokens_for_part(part) -> int:
         return 0
 
 
-
 def is_sentence_complete(text: str) -> bool:
     """Check if the text is a complete sentence.
     
@@ -340,7 +339,6 @@ def post_process_translation(translation: str) -> str:
     return translation
 
 
-
 def load_prompt_templates(prompt_dir: Path) -> None:
     """Load all .md prompt templates from the given directory into PROMPT_TEMPLATES_CACHE.
     Call once at app startup (e.g. in FastAPI lifespan) to avoid disk I/O at request time.
@@ -384,37 +382,6 @@ def get_prompt(prompt_file: str, context: Dict = {}, prompt_dir: str = "assets/p
     template = env.get_template(prompt_file)
     return template.render(**context) if context else template.render()
 
-
-def clean_output_by_language(text: str, lang_code: str | None) -> str:
-    """Filter model output based on language.
-
-    - Always allow whitespace.
-    - Always allow basic sentence/word punctuation (.,!? and similar) for all languages.
-    - For Gujarati (lang_code 'gu'), additionally restrict letters to the Gujarati Unicode block
-      U+0A80..U+0AFF; everything else (Latin letters, other scripts) is stripped.
-    """
-    if not text:
-        return text
-
-    text = normalize_voice_output(text, lang_code)
-
-    lang = (lang_code or "").strip().lower()
-    # Basic punctuation to always allow
-    allowed_punct = set(".!?,;:()[]{}\"'“”‘’-–—…")
-
-    def _allowed(ch: str) -> bool:
-        if ch.isspace():
-            return True
-        if ch in allowed_punct:
-            return True
-        code = ord(ch)
-        if lang == "gu":
-            # Gujarati block U+0A80..U+0AFF (includes letters, digits, signs)
-            return 0x0A80 <= code <= 0x0AFF
-        # For non-Gujarati, don't restrict characters beyond punctuation/whitespace
-        return True
-
-    return "".join(ch for ch in text if _allowed(ch))
 
 def upload_audio_to_s3(audio_base64: str, session_id: str, bucket_name: str | None = None) -> Dict:
     """Upload base64 encoded audio to S3.

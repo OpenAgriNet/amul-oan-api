@@ -444,3 +444,26 @@ def log_full_config(pipeline: Any) -> None:
         logger.info("llm_core.full_config %s", json.dumps(payload, sort_keys=True))
     except Exception as e:  # pragma: no cover - defensive
         logger.warning("llm_core.trace: log_full_config failed: %s", e)
+
+
+def served_summary(pt: Optional[PipelineTrace]) -> Optional[str]:
+    """Compact "which tier actually answered" string, e.g. ``"agent=oss,post_translation=managed"``.
+
+    ``compact_metadata`` reports the CONFIGURED primary per step; health-prune,
+    concurrency-reorder and failure-fallback can route elsewhere. The walker
+    records the truth via :func:`record_served`, but that happens AFTER the
+    request path has already snapshotted its metadata — so without this the
+    served tier never reaches the trace. Returns None when nothing was recorded.
+    """
+    if pt is None:
+        return None
+    try:
+        parts = [
+            f"{name}={rec.tier_served_kind}"
+            for name, rec in sorted(pt.steps.items())
+            if getattr(rec, "tier_served_kind", None)
+        ]
+        return ",".join(parts) or None
+    except Exception as e:  # pragma: no cover - defensive
+        logger.debug("llm_core.trace: served_summary failed: %s", e)
+        return None

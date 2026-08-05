@@ -116,6 +116,10 @@ def test_shakto_guard_does_not_feminize_third_person_across_comma():
     # masculine clause ("આ બળદ ... શકતો નથી" = "this ox cannot run") must NOT be
     # feminized — the body class excludes clause separators so "હું" cannot
     # govern the verb across the comma.
+    #
+    # Assert the VERB form, not the noun: the gu term policy deliberately rewrites
+    # બળદ -> બુલ (assets/gu_term_policy.json, "bull" not "bullock/ox"), so asserting
+    # the noun survived would couple this guard to the glossary.
     out = _norm("હું સંમત છું, પણ આ બળદ દોડી શકતો નથી.", "chat")
-    assert "બળદ દોડી શકતો નથી" in out
+    assert "દોડી શકતો નથી" in out
     assert "શકતી નથી" not in out
