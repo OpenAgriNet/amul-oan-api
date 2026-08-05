@@ -275,7 +275,22 @@ async def stream_chat_messages(
         else nullcontext()
     )
 
-    with session_ctx:
+    # THE TURN ROOT SPAN. Without it, propagate_attributes leaves no active span,
+    # so every observation opened during the turn (Moderation, query_pretranslation,
+    # Amul AI Agent, suggestions, each tool call) becomes its OWN top-level trace —
+    # measured at 6 traces for one turn — and every trace-level write made outside
+    # an observation is silently dropped by the SDK ("no active span ... skipped").
+    # That is why trace input/output was missing on many turns, why the chat export
+    # has gaps, and why turn-level scores never landed.
+    _root_ctx = (
+        get_langfuse_client().start_as_current_observation(
+            name=f"chat.{pipeline_name}", as_type="span"
+        )
+        if get_langfuse_client
+        else nullcontext()
+    )
+
+    with session_ctx, _root_ctx:
         # ONE exit point for the turn. Without this, an outcome is recorded only
         # on normal completion: a client disconnect or an exception leaves the
         # trace with no output and no signal at all, which is #179's B2.
