@@ -98,6 +98,7 @@ argument. Plus an 80-character lookback buffer for protected proper nouns.
 | **Farmer data: converge the identity KEY, not the records** | `FarmerModel` (profile) and `FarmerRecord` (animal + visit) are different entities from different APIs overlapping on four fields. What recurs is `(union_code, society_code, farmer_code)`. |
 | **Voice code: re-derive from deployed `origin/amul-dev`** | The fork deleted from this repo was already *behind* deployed voice, which has since collapsed duplicated pretranslation functions the fork still carried. |
 | **`translation.py`: rewrite around channels, do not decompose standalone** | It already carries a `translation_channel` ContextVar with additive voice-only guards — a proto-`ChannelProfile`. Deleting those branches would discard the one piece of channel modelling that exists. |
+| **`llm_core` takes a settings *provider callable*, not a frozen config object** (decided 2026-08-05) | `health.py` re-reads settings on every check *deliberately*, so a config change applies without a restart. A frozen snapshot would remove restart-free reconfiguration silently — the failure mode is changing a value in prod and nothing happening. The indirection is nearly free; losing live reconfiguration is not. |
 
 ## Merge cost, measured
 
@@ -238,10 +239,6 @@ Steps 1–3 are independently shippable and none of them requires voice to move.
 
 These need a human before task 15 starts; each changes the interface above.
 
-- **`llm_core` settings coupling — provider callable or frozen config?** `health.py` reads
-  settings per check *deliberately*, so a live config change applies without a restart. Freezing
-  the 15 attributes into a config object silently removes that. Keep the provider callable, or
-  accept the change consciously — the doc flags it, the decision is not made.
 - **Does `Turn` carry the telemetry root span, or does `run_turn` open it?** #200 established
   that the turn needs exactly one root span. If `run_turn` opens it, the adapter cannot add
   attributes before it exists; if `Turn` carries it, construction has a side effect. Leaning
