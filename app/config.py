@@ -287,6 +287,10 @@ class Settings(BaseSettings):
     # farmer), at the cost of blocking a legitimate second booking within the TTL.
     # amul-prod has historically run WITH the guard.
     ai_call_booking_guard_enabled: bool = os.getenv("AI_CALL_BOOKING_GUARD_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
+    # How long a session stays reserved after a booking. Only consulted when the
+    # guard is on. Shorter = a farmer can legitimately re-book sooner; longer =
+    # wider protection against a delayed fallback re-fire.
+    ai_call_cooldown_ttl_seconds: int = int(os.getenv("AI_CALL_COOLDOWN_TTL_SECONDS", str(60 * 30)))
     # Per-check toggles. A disabled check is BYPASSED (treated as pass) so product
     # can test the end-to-end flow without real Amul submissions / bank-list rows.
     loan_check_bank_list_enabled: bool = os.getenv("LOAN_CHECK_BANK_LIST_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}

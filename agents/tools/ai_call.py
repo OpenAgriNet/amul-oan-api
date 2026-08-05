@@ -16,7 +16,9 @@ from helpers.utils import get_logger
 
 logger = get_logger(__name__)
 
-AI_CALL_COOLDOWN_TTL = 60 * 30  # 30 minutes
+# Redis key namespace for booking reservations. Deliberately NOT config: changing
+# it at runtime orphans every in-flight reservation, so a redeploy mid-booking
+# would lose the protection it exists to give.
 AI_CALL_CACHE_NAMESPACE = "ai_call_booked"
 
 
@@ -132,7 +134,7 @@ async def create_ai_call(
         # instead of double-booking. Released below if the booking API itself fails.
         _reserved = False
         if settings.ai_call_booking_guard_enabled and session_id:
-            if not await try_reserve(session_id, AI_CALL_CACHE_NAMESPACE, AI_CALL_COOLDOWN_TTL):
+            if not await try_reserve(session_id, AI_CALL_CACHE_NAMESPACE, settings.ai_call_cooldown_ttl_seconds):
                 logger.info("AI call already booked/in-flight for session %s, skipping", session_id)
                 return (
                     "This session already has an active artificial insemination booking. "
@@ -169,7 +171,7 @@ async def create_ai_call(
                 await cache.set(
                     session_id,
                     {"ticket": response.ticket_number, "species": species.value},
-                    ttl=AI_CALL_COOLDOWN_TTL,
+                    ttl=settings.ai_call_cooldown_ttl_seconds,
                     namespace=AI_CALL_CACHE_NAMESPACE,
                 )
             except Exception as e:

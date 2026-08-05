@@ -17,9 +17,29 @@ import pytest
 from agents.tools import ai_call
 
 
-def test_constants_match_the_prod_contract():
-    assert ai_call.AI_CALL_COOLDOWN_TTL == 60 * 30
+def test_namespace_is_a_constant_not_config():
+    """Changing it at runtime orphans in-flight reservations, so it stays fixed."""
     assert ai_call.AI_CALL_CACHE_NAMESPACE == "ai_call_booked"
+    assert not hasattr(ai_call, "AI_CALL_COOLDOWN_TTL"), "TTL moved to settings"
+
+
+def test_cooldown_ttl_defaults_to_thirty_minutes(monkeypatch):
+    from app.config import Settings
+    monkeypatch.delenv("AI_CALL_COOLDOWN_TTL_SECONDS", raising=False)
+    assert Settings().ai_call_cooldown_ttl_seconds == 60 * 30
+
+
+def test_cooldown_ttl_is_configurable(monkeypatch):
+    from app.config import Settings
+    monkeypatch.setenv("AI_CALL_COOLDOWN_TTL_SECONDS", "300")
+    assert Settings().ai_call_cooldown_ttl_seconds == 300
+
+
+def test_the_reservation_reads_the_configured_ttl():
+    """Both the reserve and the post-success write must use the setting."""
+    import inspect
+    src = inspect.getsource(ai_call)
+    assert src.count("settings.ai_call_cooldown_ttl_seconds") >= 2
 
 
 def test_flag_defaults_off(monkeypatch):
