@@ -31,8 +31,10 @@ from app.services.translation import (
     PRETRANSLATION_PROVIDER,
     PRETRANSLATION_MODEL,
 )
-from pydantic_ai.messages import ModelRequest, ModelResponse, UserPromptPart, TextPart
-from app.services.identity_profile import is_identity_query, build_identity_profile_table
+# NOTE: the pydantic_ai.messages constructors and the identity-profile helpers
+# moved to app/turn/chat_surface.py with the identity classifier. The only
+# remaining "TextPart" here is a runtime type-NAME comparison on a streamed
+# event, not a reference to the class.
 
 
 class SentenceSegmenter:
@@ -162,6 +164,11 @@ except ImportError:
 # Per-turn resolved-pipeline-config tracer (tracing-only; no behaviour change).
 from app.llm_core import trace as _pipeline_trace
 from app.channels.chat import profile_for as _profile_for
+# The channel seam. `_surface` is the SURFACE (which pipeline shape a turn runs);
+# `_profile_for` above resolves the CHANNEL (how the text is delivered). Two
+# orthogonal axes -- see app/turn/types.py.
+from app.turn.chat_surface import CHAT as _surface
+from app.turn.types import Turn as _Turn
 
 
 
@@ -368,32 +375,44 @@ async def stream_chat_messages(
             content_id = f"query_{session_id}_{len(history)//2 + 1}"
             logger.info("request_id=%s user_info=%s", request_id, user_info)
 
-            if is_identity_query(query):
-                identity_response = build_identity_profile_table(
-                    source_lang=source_lang,
-                    target_lang=target_lang,
-                    query=query,
-                )
+            # STRUCTURE 1 — the pre-turn classifier chain. Runs before any
+            # background task is spawned and before any model call, so a match
+            # has nothing to cancel. Chat populates one (identity); voice will
+            # populate six. First match ends the turn.
+            _turn = _Turn(
+                query=query,
+                session_id=session_id,
+                source_lang=source_lang,
+                target_lang=target_lang,
+                user_id=user_id,
+                history=history,
+                user_info=user_info,
+            )
+            for _classifier in _surface.classifiers:
+                _decided = await _classifier(_turn)
+                if _decided is None:
+                    continue
                 logger.info("request_id=%s identity_short_circuit=True", request_id)
                 if get_langfuse_client:
                     try:
                         langfuse = get_langfuse_client()
-                        langfuse.set_current_trace_io(output=identity_response)
+                        langfuse.set_current_trace_io(output=_decided.canned_text)
                     except Exception as e:
                         logger.warning("Langfuse: failed to record identity output: %s", e)
 
-                messages = [
-                    *history,
-                    ModelRequest(parts=[UserPromptPart(content=query)]),
-                    ModelResponse(parts=[TextPart(content=identity_response)]),
-                ]
-                logger.info(
-                    "request_id=%s updating_history_identity_path=True total_messages=%s",
-                    request_id,
-                    len(messages),
-                )
-                await update_message_history(session_id, messages)
-                yield identity_response
+                if _decided.history_pair:
+                    messages = [*history, *_decided.history_pair]
+                    logger.info(
+                        "request_id=%s updating_history_identity_path=True total_messages=%s",
+                        request_id,
+                        len(messages),
+                    )
+                    await update_message_history(session_id, messages)
+                # `raw` is unread on chat: there is no output normalizer to
+                # bypass. It is carried on the result rather than dropped
+                # because voice's hangup line depends on it -- see
+                # app/turn/types.ClassifierResult.
+                yield _decided.canned_text
                 return
 
             # Extract farmer context from phone in JWT via cache-first fetch
