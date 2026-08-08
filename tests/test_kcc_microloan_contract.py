@@ -52,3 +52,13 @@ def test_vistaar_tool_contract_includes_kcc_routing_guard():
     vistaar_tool = _read("agents/tools/vistaar.py")
     assert 'scheme_code="kcc"' in vistaar_tool
     assert "Do NOT route KCC requests to check_loan_eligibility" in vistaar_tool
+
+
+def test_agrinet_prompts_route_local_language_kcc_queries_to_vistaar():
+    for prompt_path in (
+        "assets/prompts/agrinet_system.md",
+        "assets/prompts/agrinet_system_translation_pipeline.md",
+    ):
+        prompt = _read(prompt_path)
+        assert "(or local-language equivalent)" in prompt
+        assert "call `get_vistaar_scheme_info` with `scheme_code=\"kcc\"`" in prompt
