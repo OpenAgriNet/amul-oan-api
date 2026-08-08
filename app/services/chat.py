@@ -393,6 +393,11 @@ async def stream_chat_messages(
                     len(messages),
                 )
                 await update_message_history(session_id, messages)
+                # A short-circuit that answered the farmer is a completed turn, not
+                # an error. `_turn_outcome` defaults to "error" so that an exit we
+                # did not anticipate is loud; every exit that DID answer has to say
+                # so on its way out.
+                _turn_outcome = "success"
                 yield identity_response
                 return
 
@@ -609,6 +614,20 @@ async def stream_chat_messages(
                             request_id,
                             decline_text[:160],
                         )
+                        # The decline IS the turn's answer. Without this the trace
+                        # carries no output and the chat export records the turn as
+                        # a blank answer (~470 rows on 2026-08-06). Same best-effort
+                        # shape as the identity path: telemetry never breaks a turn.
+                        if get_langfuse_client:
+                            try:
+                                langfuse = get_langfuse_client()
+                                langfuse.set_current_trace_io(output=decline_text)
+                            except Exception as e:
+                                logger.warning("Langfuse: failed to record moderation decline output: %s", e)
+                        # Moderation ran and decided: the turn ended the way it was
+                        # supposed to. Recording "error" here inflated the error rate
+                        # by one row per moderated query.
+                        _turn_outcome = "success"
                         yield decline_text
                         return
                     deps.update_moderation_str(str(moderation_data))
@@ -620,6 +639,17 @@ async def stream_chat_messages(
                     request_id,
                     fail_closed_message[:160],
                 )
+                # Deliberately NOT "success": moderation itself failed, the farmer
+                # got a placeholder instead of an answer, and that belongs in the
+                # error rate. `_turn_outcome` is left at "error". The trace output
+                # is still recorded so the export shows what the farmer actually
+                # saw rather than a blank row.
+                if get_langfuse_client:
+                    try:
+                        langfuse = get_langfuse_client()
+                        langfuse.set_current_trace_io(output=fail_closed_message)
+                    except Exception as e:
+                        logger.warning("Langfuse: failed to record fail-closed output: %s", e)
                 yield fail_closed_message
                 return
 
