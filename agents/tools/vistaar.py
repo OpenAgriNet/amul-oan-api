@@ -189,6 +189,12 @@ async def get_vistaar_scheme_info(scheme_code: str) -> str:
     NOT use get_union_scheme_data for these (that is only for Amul dairy-union
     welfare schemes).
 
+    Routing guard:
+    - If the user asks about KCC / Kisan Credit Card, call this tool with
+      ``scheme_code="kcc"``.
+    - Do NOT route KCC requests to check_loan_eligibility; that tool is only for
+      the KDCC/Kheda cooperative micro-loan facility.
+
     Args:
         scheme_code: one of kcc (Kisan Credit Card), pmkisan, pmfby, shc, pmksy,
             sathi, pmasha, aif, smam, pdmc, pkvy, nfsm, rad, ffs, nbhm.

@@ -1,10 +1,15 @@
-"""Micro-loan eligibility tool for the agent (chat + voice).
+"""KDCC micro-loan eligibility tool for the agent (chat + voice).
 
 Thin wrapper over the deterministic ``loan_eligibility.evaluate_and_issue``
 service. The tool passes NO loan decisioning to the LLM: the caller's phone and
 farmer accounts are read from ``ctx.deps`` (never from model-supplied args), and
 the service decides eligibility, generates + stores the code, and sends the SMS.
 The tool only turns the structured outcome into a script-aligned message.
+
+Scope guard:
+- This tool is ONLY for the KDCC/Kheda cooperative micro-loan facility.
+- Do NOT use this tool for KCC (Kisan Credit Card) or any other government
+  scheme; those must route to ``get_vistaar_scheme_info``.
 """
 from __future__ import annotations
 
@@ -121,10 +126,14 @@ async def check_loan_eligibility(ctx: RunContext[FarmerContext], confirmed: bool
        confirmed=true — only then is the code issued and the SMS sent.
     3. If the farmer declines, do not call again; close politely.
 
-    Use when the farmer asks for a loan / micro loan / credit. The farmer's registered
-    mobile is read from the session (you never pass it); if it is not available the
-    tool returns a 'no profile - visit your local cooperative bank' message (it does
-    NOT ask the farmer for a mobile number). Do not pass any codes or amounts.
+    Use ONLY when the farmer asks for the KDCC/Kheda cooperative micro-loan
+    facility. Do NOT use for KCC (Kisan Credit Card) or other central/state
+    government schemes. For KCC, route to get_vistaar_scheme_info("kcc").
+
+    The farmer's registered mobile is read from the session (you never pass it);
+    if it is not available the tool returns a 'no profile - visit your local
+    cooperative bank' message (it does NOT ask the farmer for a mobile number).
+    Do not pass any codes or amounts.
 
     Args:
         confirmed: Set true ONLY after the farmer has explicitly agreed to avail the
