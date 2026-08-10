@@ -1356,18 +1356,18 @@
   },
   {
     "en": "fat",
-    "hi": "वसा / फैट",
-    "transliteration": "vasa / fat"
+    "hi": "फैट (Milk fat)",
+    "transliteration": "phait (Milk fat)"
   },
   {
     "en": "Fat Deposition",
-    "hi": "वसा का जमाव",
-    "transliteration": "vasa ka jamav"
+    "hi": "फैट का जमाव",
+    "transliteration": "phait ka jamav"
   },
   {
     "en": "Fat Percentage",
-    "hi": "वसा प्रतिशत",
-    "transliteration": "vasa pratishat"
+    "hi": "फैट (Milk fat) प्रतिशत",
+    "transliteration": "phait (Milk fat) pratishat"
   },
   {
     "en": "Fatty Liver Syndrome",
@@ -3266,8 +3266,8 @@
   },
   {
     "en": "solids not fat",
-    "hi": "वसा रहित ठोस पदार्थ",
-    "transliteration": "vasa rahit thos padarth"
+    "hi": "फैट (Milk fat) रहित ठोस पदार्थ",
+    "transliteration": "phait (Milk fat) rahit thos padarth"
   },
   {
     "en": "Sorghum",
