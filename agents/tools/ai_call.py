@@ -11,7 +11,7 @@ from agents.tools.farmer_animal_backends import create_ai_call_api
 from app.config import settings
 from app.core.cache import cache, try_reserve, release_reservation
 from app.models.ai_call import AICallRequestModel, AISpecies
-from app.observability import start_observation, set_trace_io
+from app.observability import start_observation
 from helpers.utils import get_logger
 
 logger = get_logger(__name__)
@@ -106,7 +106,6 @@ async def create_ai_call(
         input=_ai_tool_input,
         metadata={"tool_name": "create_ai_call"},
     ) as ai_tool_obs:
-        set_trace_io(input=_ai_tool_input)
         token = os.getenv("PASHUGPT_TOKEN")
         if not token:
             logger.error("PASHUGPT_TOKEN is not set")
@@ -116,10 +115,6 @@ async def create_ai_call(
             )
             if ai_tool_obs is not None:
                 ai_tool_obs.update(output={"success": False, "message": failure_message})
-            set_trace_io(
-                input=_ai_tool_input,
-                output={"success": False, "message": failure_message},
-            )
             return failure_message
 
         request = AICallRequestModel(
@@ -159,10 +154,6 @@ async def create_ai_call(
             )
             if ai_tool_obs is not None:
                 ai_tool_obs.update(output={"success": False, "message": failure_message})
-            set_trace_io(
-                input=_ai_tool_input,
-                output={"success": False, "message": failure_message},
-            )
             return failure_message
 
         # Mark this session as booked so a re-run (or retry) does not double-book.
@@ -196,12 +187,4 @@ async def create_ai_call(
                     "message": success_message,
                 }
             )
-        set_trace_io(
-            input=_ai_tool_input,
-            output={
-                "success": True,
-                "ticket_number": response.ticket_number,
-                "ait_name": response.ait_name,
-            },
-        )
         return success_message
