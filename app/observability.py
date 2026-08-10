@@ -83,11 +83,32 @@ def get_langfuse_client():
 def set_trace_io(
     *, input: Any | None = None, output: Any | None = None
 ) -> None:
-    """Set the current Langfuse trace's input and/or output.
+    """Set the current Langfuse TURN's input and/or output.
 
-    Centralized wrapper around set_current_trace_io so tools/backends don't reach
-    for the langfuse client directly. No-op when tracing is disabled, and never
-    raises — tracing must not break the caller.
+    ⚠️ CALL THIS ONLY FROM THE ORCHESTRATOR, AT TURN LEVEL. Never from inside a
+    tool, a backend call, or any nested observation.
+
+    "Trace" here means the whole turn — the farmer's question and the answer they
+    received. A tool calling this does not annotate itself; it OVERWRITES the
+    turn's question and answer with its own parameters and result.
+
+    This was live in production for five days (#212). The booking tools called it
+    from inside tool execution, so a successful AI-insemination booking recorded
+    ``trace_input`` as ``{"union_code": ..., "farmer_code": ...}`` and
+    ``trace_output`` as ``{"success": true, "ticket_number": ...}`` — while the
+    farmer had asked "ગાય" and been answered in Gujarati. ~140 turns/day, and
+    100% of bookings: exactly the records consulted when a booking is disputed.
+
+    It went unnoticed for a reason worth remembering: before the turn root span
+    (#200) there was no active span, so these writes were silently DISCARDED.
+    #200 made them land. Fixing the drop created the clobber.
+
+    To annotate a tool, update its own observation instead — see
+    ``start_observation`` below, whose ``update(output=...)`` is where tool
+    input/output belongs.
+
+    No-op when tracing is disabled, and never raises — tracing must not break the
+    caller.
     """
     if langfuse_client is None:
         return
