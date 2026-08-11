@@ -24,13 +24,13 @@ logger = get_logger(__name__)
 
 SCHEME_CACHE_NAMESPACE = "milk_producer_schemes"
 SCHEME_LOCK_NAMESPACE = "milk_producer_schemes_locks"
-SCHEME_LOCK_TTL_SECONDS = 60 * 60
-HTTP_TIMEOUT_SECONDS = 30.0
-SCHEME_PDF_MAX_RENDER_PAGES = 30
-SCHEME_OCR_PROMPT_TYPE = "ocr_layout"
-SCHEME_OCR_MAX_OUTPUT_TOKENS = 12284
-SCHEME_OCR_MAX_FAILED_PAGE_RATIO = 0.15
-SCHEME_BANAS_MIN_RECORD_COVERAGE_RATIO = 0.85
+SCHEME_LOCK_TTL_SECONDS = settings.scheme_lock_ttl_seconds
+HTTP_TIMEOUT_SECONDS = settings.scheme_http_timeout_seconds
+SCHEME_PDF_MAX_RENDER_PAGES = settings.scheme_pdf_max_render_pages
+SCHEME_OCR_PROMPT_TYPE = settings.scheme_ocr_prompt_type
+SCHEME_OCR_MAX_OUTPUT_TOKENS = settings.scheme_ocr_max_output_tokens
+SCHEME_OCR_MAX_FAILED_PAGE_RATIO = settings.scheme_ocr_max_failed_page_ratio
+SCHEME_BANAS_MIN_RECORD_COVERAGE_RATIO = settings.scheme_banas_min_record_coverage_ratio
 _redis_client = None
 
 

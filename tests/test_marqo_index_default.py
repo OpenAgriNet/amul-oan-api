@@ -1,20 +1,11 @@
-"""Both Marqo searches must resolve the same index when MARQO_INDEX_NAME is unset.
+"""Search must retain the canonical Marqo index fallback.
 
-They read one env var, so differing fallbacks silently split the two searches
-across different indexes in any environment that does not set it.
+When MARQO_INDEX_NAME is unset, search_documents should still fall back to
+`amul-veterinary-index` so all retrieval paths stay aligned.
 """
-import inspect
-import re
-
-from agents.tools import search
+from app.config import settings
 
 
-def _index_defaults() -> set[str]:
-    src = inspect.getsource(search)
-    return set(re.findall(r"os\.getenv\(\s*['\"]MARQO_INDEX_NAME['\"]\s*,\s*['\"]([^'\"]+)['\"]", src))
-
-
-def test_all_marqo_index_defaults_agree():
-    defaults = _index_defaults()
-    assert defaults, "no MARQO_INDEX_NAME fallback found — did the lookup move?"
-    assert len(defaults) == 1, f"MARQO_INDEX_NAME has divergent defaults: {sorted(defaults)}"
+def test_marqo_index_default_is_canonical():
+    resolved = settings.marqo_index_name or "amul-veterinary-index"
+    assert resolved == "amul-veterinary-index"

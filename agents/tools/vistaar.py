@@ -12,30 +12,28 @@ The BAP runs in sync mode, so `/search` returns the on_search catalog inline.
 Endpoint is overridable via VISTAAR_BAP_URL (default: the Vistaar sandbox).
 Advisory (ICAR/NPSS) is NOT here — on BV that's document search, not Beckn.
 """
-import os
 import uuid
 from typing import Any, Optional
 
 import httpx
 
 from helpers.utils import get_logger
+from app.config import settings
 
 logger = get_logger(__name__)
 
-VISTAAR_BAP_URL = os.getenv(
-    "VISTAAR_BAP_URL", "https://bap-client-playground-sandbox-vistaar.da.gov.in"
-).rstrip("/")
-VISTAAR_TIMEOUT_S = float(os.getenv("VISTAAR_TIMEOUT_S", "40"))
+VISTAAR_BAP_URL = settings.vistaar_bap_url
+VISTAAR_TIMEOUT_S = settings.vistaar_timeout_s
 # Default location (Anand, Gujarat — Amul region) when the caller has no coords.
-DEFAULT_LAT = float(os.getenv("VISTAAR_DEFAULT_LAT", "22.55"))
-DEFAULT_LON = float(os.getenv("VISTAAR_DEFAULT_LON", "72.93"))
+DEFAULT_LAT = settings.vistaar_default_lat
+DEFAULT_LON = settings.vistaar_default_lon
 
 # Route BV searches through Amul's Beckn seeker (canonical N-N: the seeker signs
 # as bap.amul-net.internal -> gateway -> BH BPP, then returns the on_search it
 # gets back). Set VISTAAR_SEEKER_URL="" to fall back to calling the BV sandbox
 # BAP directly (VISTAAR_BAP_URL, sync inline).
-VISTAAR_SEEKER_URL = os.getenv("VISTAAR_SEEKER_URL", "http://amul-bap-seeker:3000").rstrip("/")
-VISTAAR_LEG = os.getenv("VISTAAR_LEG", "vistaar")
+VISTAAR_SEEKER_URL = settings.vistaar_seeker_url
+VISTAAR_LEG = settings.vistaar_leg
 
 # BV's get_scheme_info codes (domain schemes:vistaar, category schemes-agri).
 SCHEME_CODES = {
@@ -49,10 +47,10 @@ def _context() -> dict[str, Any]:
         "domain": "schemes:vistaar",
         "action": "search",
         "version": "1.1.0",
-        "bap_id": os.getenv("VISTAAR_BAP_ID", "amul-dev"),
-        "bap_uri": os.getenv("VISTAAR_BAP_URI", "https://bap-network-playground-sandbox-vistaar.da.gov.in"),
-        "bpp_id": os.getenv("VISTAAR_BPP_ID", "bpp-network-playground-sandbox-vistaar.da.gov.in"),
-        "bpp_uri": os.getenv("VISTAAR_BPP_URI", "https://bpp-network-playground-sandbox-vistaar.da.gov.in"),
+        "bap_id": settings.vistaar_bap_id,
+        "bap_uri": settings.vistaar_bap_uri,
+        "bpp_id": settings.vistaar_bpp_id,
+        "bpp_uri": settings.vistaar_bpp_uri,
         "transaction_id": str(uuid.uuid4()),
         "message_id": str(uuid.uuid4()),
         "timestamp": "1970-01-01T00:00:00.000Z",
@@ -111,7 +109,7 @@ def _fmt_tag_group(tag: dict) -> str:
     return (f"**{header}**\n{body}" if header else body).strip()
 
 
-def _format_items(items: list[dict], max_items: int = 20) -> str:
+def _format_items(items: list[dict], max_items: int = settings.vistaar_max_items) -> str:
     blocks = []
     for it in items[:max_items]:
         d = it.get("descriptor", {}) or {}

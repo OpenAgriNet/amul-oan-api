@@ -15,6 +15,26 @@ def _get_bool_env(name: str, default: bool = False) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _get_int_env(name: str, default: int) -> int:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _get_float_env(name: str, default: float) -> float:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
 class Settings(BaseSettings):
     # Core Application Settings
     app_name: str = "Amul AI API"
@@ -174,6 +194,19 @@ class Settings(BaseSettings):
     llm_provider: Optional[str] = None
     llm_model_name: Optional[str] = None
     marqo_index_name: Optional[str] = None
+    # Tool retrieval config (search_documents): keep env names/defaults unchanged.
+    marqo_use_e5_query_prefix: bool = _get_bool_env("MARQO_USE_E5_QUERY_PREFIX", default=True)
+    marqo_exclude_reference: bool = _get_bool_env("MARQO_EXCLUDE_REFERENCE", default=True)
+    marqo_query_expansion_profile: str = os.getenv("MARQO_QUERY_EXPANSION_PROFILE", "gu-v1")
+    marqo_default_final_chunks: int = _get_int_env("MARQO_DEFAULT_FINAL_CHUNKS", 8)
+    marqo_max_final_chunks: int = _get_int_env("MARQO_MAX_FINAL_CHUNKS", 20)
+    marqo_max_chunks_per_doc: int = _get_int_env("MARQO_MAX_CHUNKS_PER_DOC", 2)
+    marqo_candidate_multiplier: int = _get_int_env("MARQO_CANDIDATE_MULTIPLIER", 10)
+    marqo_candidate_cap: int = _get_int_env("MARQO_CANDIDATE_CAP", 120)
+    marqo_hybrid_alpha: float = _get_float_env("MARQO_HYBRID_ALPHA", 0.6)
+    marqo_hybrid_rrfk: int = _get_int_env("MARQO_HYBRID_RRFK", 60)
+    marqo_search_mode: str = os.getenv("MARQO_SEARCH_MODE", "hybrid")
+    marqo_rerank_mode: str = os.getenv("MARQO_RERANK_MODE", "bm25lite")
 
     # OSS pipeline %-split, sticky TTL and OSS model/endpoint are no longer read
     # via `settings`: they map to llm_core's weighted-profile config, synthesized
@@ -262,10 +295,17 @@ class Settings(BaseSettings):
         "1", "true", "yes", "on"
     }
     # Banas scheme PDF ingestion via Chandra OCR (see scheme_ingestion.py).
-    # Page cap and HTTP fetch timeout stay as module constants, not env vars.
     scheme_ocr_endpoint_url: Optional[str] = os.getenv("SCHEME_OCR_ENDPOINT_URL")
     scheme_ocr_timeout_seconds: float = float(os.getenv("SCHEME_OCR_TIMEOUT_SECONDS", "120"))
     scheme_pdf_render_dpi: int = int(os.getenv("SCHEME_PDF_RENDER_DPI", "200"))
+    # Scheme ingestion operational tunables.
+    scheme_lock_ttl_seconds: int = _get_int_env("SCHEME_LOCK_TTL_SECONDS", 60 * 60)
+    scheme_http_timeout_seconds: float = _get_float_env("SCHEME_HTTP_TIMEOUT_SECONDS", 30.0)
+    scheme_pdf_max_render_pages: int = _get_int_env("SCHEME_PDF_MAX_RENDER_PAGES", 30)
+    scheme_ocr_prompt_type: str = os.getenv("SCHEME_OCR_PROMPT_TYPE", "ocr_layout")
+    scheme_ocr_max_output_tokens: int = _get_int_env("SCHEME_OCR_MAX_OUTPUT_TOKENS", 12284)
+    scheme_ocr_max_failed_page_ratio: float = _get_float_env("SCHEME_OCR_MAX_FAILED_PAGE_RATIO", 0.15)
+    scheme_banas_min_record_coverage_ratio: float = _get_float_env("SCHEME_BANAS_MIN_RECORD_COVERAGE_RATIO", 0.85)
 
     # Ambiguity-term fuzzy-match cutoff (0-1) for get_ambiguity_hints_for_query.
     # Overridable via env; defaults to 0.80 (prior hard-coded behaviour).
@@ -291,6 +331,8 @@ class Settings(BaseSettings):
     # guard is on. Shorter = a farmer can legitimately re-book sooner; longer =
     # wider protection against a delayed fallback re-fire.
     ai_call_cooldown_ttl_seconds: int = int(os.getenv("AI_CALL_COOLDOWN_TTL_SECONDS", str(60 * 30)))
+    # Health-call booking idempotency TTL.
+    health_call_cooldown_ttl_seconds: int = _get_int_env("HEALTH_CALL_COOLDOWN_TTL_SECONDS", 60 * 30)
     # Per-check toggles. A disabled check is BYPASSED (treated as pass) so product
     # can test the end-to-end flow without real Amul submissions / bank-list rows.
     loan_check_bank_list_enabled: bool = os.getenv("LOAN_CHECK_BANK_LIST_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
@@ -345,6 +387,28 @@ class Settings(BaseSettings):
     amul_booking_bpp_url: str = os.getenv("AMUL_BOOKING_BPP_URL", "http://amul-net-bpp-booking:6002")
     # Timeout (seconds) for network calls from the agent tools.
     amul_network_timeout_s: float = float(os.getenv("AMUL_NETWORK_TIMEOUT_S", "35"))
+    # Bharat Vistaar network settings used by tool layer.
+    vistaar_bap_url: str = os.getenv("VISTAAR_BAP_URL", "https://bap-client-playground-sandbox-vistaar.da.gov.in").rstrip("/")
+    vistaar_timeout_s: float = _get_float_env("VISTAAR_TIMEOUT_S", 40.0)
+    vistaar_default_lat: float = _get_float_env("VISTAAR_DEFAULT_LAT", 22.55)
+    vistaar_default_lon: float = _get_float_env("VISTAAR_DEFAULT_LON", 72.93)
+    vistaar_seeker_url: str = os.getenv("VISTAAR_SEEKER_URL", "http://amul-bap-seeker:3000").rstrip("/")
+    vistaar_leg: str = os.getenv("VISTAAR_LEG", "vistaar")
+    vistaar_bap_id: str = os.getenv("VISTAAR_BAP_ID", "amul-dev")
+    vistaar_bap_uri: str = os.getenv("VISTAAR_BAP_URI", "https://bap-network-playground-sandbox-vistaar.da.gov.in")
+    vistaar_bpp_id: str = os.getenv("VISTAAR_BPP_ID", "bpp-network-playground-sandbox-vistaar.da.gov.in")
+    vistaar_bpp_uri: str = os.getenv("VISTAAR_BPP_URI", "https://bpp-network-playground-sandbox-vistaar.da.gov.in")
+    vistaar_max_items: int = _get_int_env("VISTAAR_MAX_ITEMS", 20)
+    # Farmer/animal tool backend URLs and timeout (non-secret, previously hardcoded).
+    amulpashudhan_base_url: str = os.getenv("AMULPASHUDHAN_BASE_URL", "https://api.amulpashudhan.com/configman/v1/PashuGPT")
+    herdman_base_url: str = os.getenv("HERDMAN_BASE_URL", "https://herdman.live/apis/api")
+    banas_mobile_base_url: str = os.getenv("BANAS_MOBILE_BASE_URL", "https://banasmobileapi.amnex.com/api/FarmerVisitAPIKOS")
+    cvcc_base_url: str = os.getenv("CVCC_BASE_URL", "https://api.amuldairy.com/ai_cattle_dtl.php")
+    farmer_backend_http_timeout_seconds: float = _get_float_env("FARMER_BACKEND_HTTP_TIMEOUT_SECONDS", 30.0)
+    # Farmer cache SWR worker tunables (tool-adjacent path used by loan checks).
+    farmer_refresh_lock_ttl_seconds: int = _get_int_env("FARMER_REFRESH_LOCK_TTL_SECONDS", 60 * 5)
+    farmer_cold_fetch_timeout_seconds: float = _get_float_env("FARMER_COLD_FETCH_TIMEOUT_SECONDS", 4.0)
+    farmer_refresh_queue_batch_size: int = _get_int_env("FARMER_REFRESH_QUEUE_BATCH_SIZE", 20)
 
     class Config:
         env_file = ".env"
