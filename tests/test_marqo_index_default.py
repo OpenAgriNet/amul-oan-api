@@ -43,6 +43,46 @@ def test_settings_clamp_operational_numeric_bounds(monkeypatch):
     assert cfg.scheme_http_timeout_seconds == 0.001
 
 
+def test_settings_vistaar_coords_fallback_on_malformed_values(monkeypatch):
+    monkeypatch.setenv("VISTAAR_DEFAULT_LAT", "bad-lat")
+    monkeypatch.setenv("VISTAAR_DEFAULT_LON", "bad-lon")
+
+    cfg = Settings()  # must not raise
+    assert cfg.vistaar_default_lat == 22.55
+    assert cfg.vistaar_default_lon == 72.93
+
+
+def test_settings_vistaar_coords_clamp_geographic_bounds(monkeypatch):
+    monkeypatch.setenv("VISTAAR_DEFAULT_LAT", "999")
+    monkeypatch.setenv("VISTAAR_DEFAULT_LON", "-999")
+
+    cfg = Settings()
+    assert cfg.vistaar_default_lat == 90.0
+    assert cfg.vistaar_default_lon == -180.0
+
+
+def test_settings_non_finite_floats_fallback_to_defaults(monkeypatch):
+    monkeypatch.setenv("SCHEME_HTTP_TIMEOUT_SECONDS", "nan")
+    monkeypatch.setenv("MARQO_HYBRID_ALPHA", "inf")
+
+    cfg = Settings()
+    assert cfg.scheme_http_timeout_seconds == 30.0
+    assert cfg.marqo_hybrid_alpha == 0.6
+
+
+def test_settings_normalize_backend_base_urls(monkeypatch):
+    monkeypatch.setenv("AMULPASHUDHAN_BASE_URL", "https://example.test/root/")
+    monkeypatch.setenv("HERDMAN_BASE_URL", "https://herdman.test/api///")
+    monkeypatch.setenv("BANAS_MOBILE_BASE_URL", "https://banas.test/visit/")
+    monkeypatch.setenv("CVCC_BASE_URL", "https://cvcc.test/path/")
+
+    cfg = Settings()
+    assert cfg.amulpashudhan_base_url == "https://example.test/root"
+    assert cfg.herdman_base_url == "https://herdman.test/api"
+    assert cfg.banas_mobile_base_url == "https://banas.test/visit"
+    assert cfg.cvcc_base_url == "https://cvcc.test/path"
+
+
 def test_search_documents_consumes_settings_endpoint_and_index(monkeypatch):
     captured: dict[str, tuple] = {}
 

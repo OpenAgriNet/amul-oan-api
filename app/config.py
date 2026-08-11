@@ -1,5 +1,6 @@
 import os
 import logging
+import math
 from pathlib import Path
 from typing import ClassVar, List, Optional
 from pydantic import Field, ValidationInfo, field_validator
@@ -79,6 +80,9 @@ def _safe_float_env_value(
         parsed = float(value)
     except (TypeError, ValueError):
         _config_logger.warning("Invalid float for %s=%r; using default=%s", env_name, value, default)
+        return default
+    if not math.isfinite(parsed):
+        _config_logger.warning("Non-finite float for %s=%r; using default=%s", env_name, value, default)
         return default
 
     if minimum is not None and parsed < minimum:
@@ -455,10 +459,22 @@ class Settings(BaseSettings):
     vistaar_bpp_uri: str = os.getenv("VISTAAR_BPP_URI", "https://bpp-network-playground-sandbox-vistaar.da.gov.in")
     vistaar_max_items: int = Field(default=20, validation_alias="VISTAAR_MAX_ITEMS")
     # Farmer/animal tool backend URLs and timeout (non-secret, previously hardcoded).
-    amulpashudhan_base_url: str = os.getenv("AMULPASHUDHAN_BASE_URL", "https://api.amulpashudhan.com/configman/v1/PashuGPT").rstrip("/")
-    herdman_base_url: str = os.getenv("HERDMAN_BASE_URL", "https://herdman.live/apis/api").rstrip("/")
-    banas_mobile_base_url: str = os.getenv("BANAS_MOBILE_BASE_URL", "https://banasmobileapi.amnex.com/api/FarmerVisitAPIKOS").rstrip("/")
-    cvcc_base_url: str = os.getenv("CVCC_BASE_URL", "https://api.amuldairy.com/ai_cattle_dtl.php").rstrip("/")
+    amulpashudhan_base_url: str = Field(
+        default="https://api.amulpashudhan.com/configman/v1/PashuGPT",
+        validation_alias="AMULPASHUDHAN_BASE_URL",
+    )
+    herdman_base_url: str = Field(
+        default="https://herdman.live/apis/api",
+        validation_alias="HERDMAN_BASE_URL",
+    )
+    banas_mobile_base_url: str = Field(
+        default="https://banasmobileapi.amnex.com/api/FarmerVisitAPIKOS",
+        validation_alias="BANAS_MOBILE_BASE_URL",
+    )
+    cvcc_base_url: str = Field(
+        default="https://api.amuldairy.com/ai_cattle_dtl.php",
+        validation_alias="CVCC_BASE_URL",
+    )
     farmer_backend_http_timeout_seconds: float = Field(default=30.0, validation_alias="FARMER_BACKEND_HTTP_TIMEOUT_SECONDS")
     # Farmer cache SWR worker tunables (tool-adjacent path used by loan checks).
     farmer_refresh_lock_ttl_seconds: int = Field(default=60 * 5, validation_alias="FARMER_REFRESH_LOCK_TTL_SECONDS")
@@ -488,6 +504,8 @@ class Settings(BaseSettings):
         "scheme_ocr_max_failed_page_ratio": ("SCHEME_OCR_MAX_FAILED_PAGE_RATIO", 0.15, 0.0, 1.0),
         "scheme_banas_min_record_coverage_ratio": ("SCHEME_BANAS_MIN_RECORD_COVERAGE_RATIO", 0.85, 0.0, 1.0),
         "vistaar_timeout_s": ("VISTAAR_TIMEOUT_S", 40.0, 0.001, None),
+        "vistaar_default_lat": ("VISTAAR_DEFAULT_LAT", 22.55, -90.0, 90.0),
+        "vistaar_default_lon": ("VISTAAR_DEFAULT_LON", 72.93, -180.0, 180.0),
         "farmer_backend_http_timeout_seconds": ("FARMER_BACKEND_HTTP_TIMEOUT_SECONDS", 30.0, 0.001, None),
         "farmer_cold_fetch_timeout_seconds": ("FARMER_COLD_FETCH_TIMEOUT_SECONDS", 4.0, 0.001, None),
     }
@@ -525,6 +543,8 @@ class Settings(BaseSettings):
         "scheme_ocr_max_failed_page_ratio",
         "scheme_banas_min_record_coverage_ratio",
         "vistaar_timeout_s",
+        "vistaar_default_lat",
+        "vistaar_default_lon",
         "farmer_backend_http_timeout_seconds",
         "farmer_cold_fetch_timeout_seconds",
         mode="before",
@@ -539,6 +559,19 @@ class Settings(BaseSettings):
             minimum=minimum,
             maximum=maximum,
         )
+
+    @field_validator(
+        "amulpashudhan_base_url",
+        "herdman_base_url",
+        "banas_mobile_base_url",
+        "cvcc_base_url",
+        mode="before",
+    )
+    @classmethod
+    def _normalize_backend_base_urls(cls, value: object) -> str:
+        if value is None:
+            return ""
+        return str(value).rstrip("/")
 
     class Config:
         env_file = ".env"
