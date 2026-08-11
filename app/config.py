@@ -1,4 +1,5 @@
 import os
+import logging
 from pathlib import Path
 from typing import List, Optional
 from pydantic_settings import BaseSettings
@@ -6,6 +7,7 @@ from dotenv import load_dotenv
 
 # Load environment variables from .env file
 load_dotenv()
+_config_logger = logging.getLogger(__name__)
 
 
 def _get_bool_env(name: str, default: bool = False) -> bool:
@@ -22,6 +24,7 @@ def _get_int_env(name: str, default: int) -> int:
     try:
         return int(value)
     except (TypeError, ValueError):
+        _config_logger.warning("Invalid int for %s=%r; using default=%s", name, value, default)
         return default
 
 
@@ -32,6 +35,7 @@ def _get_float_env(name: str, default: float) -> float:
     try:
         return float(value)
     except (TypeError, ValueError):
+        _config_logger.warning("Invalid float for %s=%r; using default=%s", name, value, default)
         return default
 
 

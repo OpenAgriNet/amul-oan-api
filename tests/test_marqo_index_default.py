@@ -1,11 +1,16 @@
-"""Search must retain the canonical Marqo index fallback.
+"""Verify search_documents uses the centralized settings config path.
 
-When MARQO_INDEX_NAME is unset, search_documents should still fall back to
-`amul-veterinary-index` so all retrieval paths stay aligned.
+This is intentionally source-level to avoid importing heavy runtime deps while
+still asserting the behaviorally important wiring in the actual tool function.
 """
-from app.config import settings
+from pathlib import Path
 
 
-def test_marqo_index_default_is_canonical():
-    resolved = settings.marqo_index_name or "amul-veterinary-index"
-    assert resolved == "amul-veterinary-index"
+def test_search_documents_uses_settings_index_with_canonical_fallback():
+    src = Path("agents/tools/search.py").read_text(encoding="utf-8")
+    assert 'index_name = settings.marqo_index_name or "amul-veterinary-index"' in src
+
+
+def test_search_documents_uses_settings_endpoint_path():
+    src = Path("agents/tools/search.py").read_text(encoding="utf-8")
+    assert "endpoint_url = settings.marqo_endpoint_url" in src

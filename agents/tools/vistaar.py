@@ -22,7 +22,7 @@ from app.config import settings
 
 logger = get_logger(__name__)
 
-VISTAAR_BAP_URL = settings.vistaar_bap_url
+VISTAAR_BAP_URL = settings.vistaar_bap_url.rstrip("/")
 VISTAAR_TIMEOUT_S = settings.vistaar_timeout_s
 # Default location (Anand, Gujarat — Amul region) when the caller has no coords.
 DEFAULT_LAT = settings.vistaar_default_lat
@@ -32,7 +32,7 @@ DEFAULT_LON = settings.vistaar_default_lon
 # as bap.amul-net.internal -> gateway -> BH BPP, then returns the on_search it
 # gets back). Set VISTAAR_SEEKER_URL="" to fall back to calling the BV sandbox
 # BAP directly (VISTAAR_BAP_URL, sync inline).
-VISTAAR_SEEKER_URL = settings.vistaar_seeker_url
+VISTAAR_SEEKER_URL = settings.vistaar_seeker_url.rstrip("/")
 VISTAAR_LEG = settings.vistaar_leg
 
 # BV's get_scheme_info codes (domain schemes:vistaar, category schemes-agri).
