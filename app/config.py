@@ -19,6 +19,18 @@ def _get_bool_env(name: str, default: bool = False) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _safe_bool_env_value(value: object, *, env_name: str, default: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    normalized = str(value or "").strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    _config_logger.warning("Invalid bool for %s=%r; using default=%s", env_name, value, default)
+    return default
+
+
 def _get_int_env(name: str, default: int) -> int:
     value = os.getenv(name)
     if value is None:
@@ -254,8 +266,8 @@ class Settings(BaseSettings):
     llm_model_name: Optional[str] = None
     marqo_index_name: Optional[str] = None
     # Tool retrieval config (search_documents): keep env names/defaults unchanged.
-    marqo_use_e5_query_prefix: bool = _get_bool_env("MARQO_USE_E5_QUERY_PREFIX", default=True)
-    marqo_exclude_reference: bool = _get_bool_env("MARQO_EXCLUDE_REFERENCE", default=True)
+    marqo_use_e5_query_prefix: bool = Field(default=True, validation_alias="MARQO_USE_E5_QUERY_PREFIX")
+    marqo_exclude_reference: bool = Field(default=True, validation_alias="MARQO_EXCLUDE_REFERENCE")
     marqo_query_expansion_profile: str = os.getenv("MARQO_QUERY_EXPANSION_PROFILE", "gu-v1")
     marqo_default_final_chunks: int = Field(default=8, validation_alias="MARQO_DEFAULT_FINAL_CHUNKS")
     marqo_max_final_chunks: int = Field(default=20, validation_alias="MARQO_MAX_FINAL_CHUNKS")
@@ -509,6 +521,20 @@ class Settings(BaseSettings):
         "farmer_backend_http_timeout_seconds": ("FARMER_BACKEND_HTTP_TIMEOUT_SECONDS", 30.0, 0.001, None),
         "farmer_cold_fetch_timeout_seconds": ("FARMER_COLD_FETCH_TIMEOUT_SECONDS", 4.0, 0.001, None),
     }
+    _SAFE_BOOL_FIELDS: ClassVar[dict[str, tuple[str, bool]]] = {
+        "marqo_use_e5_query_prefix": ("MARQO_USE_E5_QUERY_PREFIX", True),
+        "marqo_exclude_reference": ("MARQO_EXCLUDE_REFERENCE", True),
+    }
+
+    @field_validator(
+        "marqo_use_e5_query_prefix",
+        "marqo_exclude_reference",
+        mode="before",
+    )
+    @classmethod
+    def _validate_safe_bool_fields(cls, value: object, info: ValidationInfo) -> bool:
+        env_name, default = cls._SAFE_BOOL_FIELDS[info.field_name]
+        return _safe_bool_env_value(value, env_name=env_name, default=default)
 
     @field_validator(
         "marqo_default_final_chunks",

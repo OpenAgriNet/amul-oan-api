@@ -1,7 +1,47 @@
 import asyncio
 
+import pytest
+
 from app.config import Settings
 from agents.tools import search
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("1", True),
+        ("true", True),
+        ("YES", True),
+        ("on", True),
+        ("0", False),
+        ("false", False),
+        ("NO", False),
+        ("off", False),
+    ],
+)
+def test_settings_accept_valid_marqo_boolean_overrides(monkeypatch, raw, expected):
+    monkeypatch.setenv("MARQO_USE_E5_QUERY_PREFIX", raw)
+    monkeypatch.setenv("MARQO_EXCLUDE_REFERENCE", raw)
+
+    cfg = Settings()
+    assert cfg.marqo_use_e5_query_prefix is expected
+    assert cfg.marqo_exclude_reference is expected
+
+
+@pytest.mark.parametrize("raw", ["invalid", ""])
+def test_settings_fallback_on_invalid_marqo_use_e5_boolean(monkeypatch, raw):
+    monkeypatch.setenv("MARQO_USE_E5_QUERY_PREFIX", raw)
+
+    cfg = Settings()  # must not raise
+    assert cfg.marqo_use_e5_query_prefix is True
+
+
+@pytest.mark.parametrize("raw", ["invalid", ""])
+def test_settings_fallback_on_invalid_marqo_exclude_reference_boolean(monkeypatch, raw):
+    monkeypatch.setenv("MARQO_EXCLUDE_REFERENCE", raw)
+
+    cfg = Settings()  # must not raise
+    assert cfg.marqo_exclude_reference is True
 
 
 def test_settings_accept_valid_marqo_numeric_overrides(monkeypatch):
