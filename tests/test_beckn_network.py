@@ -214,3 +214,45 @@ async def test_ai_call_nack_surfaces_error():
         out = await bn.network_create_ai_call("12", "S1", "F1", "AIT-1", "cow")
     assert "failed" in out.lower()
     assert "society not serviced" in out
+
+
+@pytest.mark.asyncio
+async def test_ai_call_nack_is_marked_authoritative_no_booking():
+    """A NACK is the BPP saying it did not book — the caller may release its
+    reservation on it, so the flag must be set."""
+    payload = {"message": {"ack": {"status": "NACK"}}, "error": {"code": "40002", "message": "society not serviced"}}
+    fake = _FakeAsyncClient(payload)
+    with patch.object(bn.httpx, "AsyncClient", return_value=fake):
+        res = await bn.network_create_ai_call_result("12", "S1", "F1", "AIT-1", "cow")
+    assert res.ok is False
+    assert res.authoritative_no_booking is True
+
+
+@pytest.mark.asyncio
+async def test_ai_call_200_with_unparseable_body_is_not_success():
+    """`ok` used to default to True, so a 200 with no ack and no order.id told
+    the farmer "booked successfully. Ticket: None" and burned the session's TTL
+    with nothing booked. It is a failure, and the message must neither claim
+    success nor print a None ticket."""
+    fake = _FakeAsyncClient({})
+    with patch.object(bn.httpx, "AsyncClient", return_value=fake):
+        res = await bn.network_create_ai_call_result("12", "S1", "F1", "AIT-1", "cow")
+    assert res.ok is False, "a 200 with no order.id was reported as a successful booking"
+    assert res.ticket is None
+    assert "booked successfully" not in res.message.lower()
+    assert "none" not in res.message.lower(), "the farmer was shown a None ticket"
+    assert "could not be confirmed" in res.message.lower()
+    # NOT authoritative: the BPP answered without refusing, so it may already
+    # have called PashuGPT and sent the SMS. Same class as a read timeout —
+    # the caller must hold the reservation.
+    assert res.authoritative_no_booking is False
+
+
+@pytest.mark.asyncio
+async def test_ai_call_200_with_order_but_no_id_is_not_success():
+    """Same for a partially-filled order envelope."""
+    fake = _FakeAsyncClient({"message": {"order": {"state": "ACTIVE"}}})
+    with patch.object(bn.httpx, "AsyncClient", return_value=fake):
+        res = await bn.network_create_ai_call_result("12", "S1", "F1", "AIT-1", "cow")
+    assert res.ok is False
+    assert res.authoritative_no_booking is False
