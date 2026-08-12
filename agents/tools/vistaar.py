@@ -143,8 +143,14 @@ def _format_items(items: list[dict], max_items: int = 20) -> str:
     return "\n\n".join(blocks)
 
 
-def _parse_date(value: Optional[str]) -> Optional[date]:
-    """Parse a DD-MM-YYYY (or YYYY-MM-DD) date; None if absent/unparseable."""
+def _parse_date(value: Optional[str], warn: bool = True) -> Optional[date]:
+    """Parse a DD-MM-YYYY (or YYYY-MM-DD) date; None if absent/unparseable.
+
+    `warn=False` for per-row BPP data: a catalog of odd arrival dates would emit
+    one warning per row, and the row-level fallback ("date n/a") is already
+    graceful. The caller-supplied window keeps the warning — that one is worth
+    knowing about and happens at most twice per call.
+    """
     text = (value or "").strip()
     if not text:
         return None
@@ -153,7 +159,9 @@ def _parse_date(value: Optional[str]) -> Optional[date]:
             return datetime.strptime(text, fmt).date()
         except ValueError:
             continue
-    logger.warning("vistaar mandi: unparseable date %r, ignoring", value)
+    (logger.warning if warn else logger.debug)(
+        "vistaar mandi: unparseable date %r, ignoring", value
+    )
     return None
 
 
@@ -201,7 +209,11 @@ def _format_mandi_items(items: list[dict], max_rows: int = 40) -> str:
     for it in items:
         t = _tag_values(it)
         arrival = t.get("Arrival Date", "")
-        rows.append((_parse_date(arrival) or date.min, arrival, t))
+        parsed = _parse_date(arrival, warn=False)
+        # An unparseable arrival date sorts last (date.min) AND renders as
+        # "date n/a" — echoing the raw junk back at the farmer is worse than
+        # admitting we don't know the date.
+        rows.append((parsed or date.min, arrival if parsed else "", t))
     rows.sort(key=lambda r: r[0], reverse=True)
 
     lines = []

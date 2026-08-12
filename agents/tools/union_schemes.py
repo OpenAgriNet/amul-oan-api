@@ -119,7 +119,20 @@ async def get_union_scheme_data(ctx: RunContext[FarmerContext], scheme_name: str
             primary_union,
             normalized_scheme_name,
         )
-        return await network_union_schemes(normalized_scheme_name or "", union=primary_union)
+        # The network call must degrade exactly like the direct Redis path
+        # below: a seeker timeout / HTTP error / malformed on_search is an
+        # infrastructure failure, not a tool failure. Without this the early
+        # return skips the try/except that follows and the exception escapes
+        # the tool entirely.
+        try:
+            return await network_union_schemes(normalized_scheme_name or "", union=primary_union)
+        except Exception:
+            logger.exception(
+                "Union scheme tool failed via Beckn network union=%s scheme_name=%s",
+                primary_union,
+                normalized_scheme_name,
+            )
+            return "Scheme data is temporarily unavailable due to an unexpected error."
 
     records: list[dict[str, Any]] = []
     for union_name in target_unions:

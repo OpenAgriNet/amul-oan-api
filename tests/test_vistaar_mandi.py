@@ -16,7 +16,8 @@ AI layer, branch OD-2787-fix-date-range).
 import importlib.util
 import re
 import sys
-from datetime import datetime, timedelta
+from contextlib import contextmanager
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -39,12 +40,94 @@ MAX_DAYS = vistaar.MANDI_MAX_RANGE_DAYS
 _DDMMYYYY = re.compile(r"^\d{2}-\d{2}-\d{4}$")
 
 
+# IST is declared HERE, independently of the module under test. Deriving the
+# expected dates from vistaar._IST would make every date assertion vacuous: swap
+# _IST for UTC and implementation + expectation move together, so nothing fails.
+_TEST_IST = timezone(timedelta(hours=5, minutes=30))
+
+# Freeze the clock inside the 18:30–23:59 UTC window, where IST has already
+# rolled over to the next calendar day. Every date assertion below therefore
+# distinguishes IST from UTC: 2026-07-25 20:00 UTC is 2026-07-26 01:30 IST.
+FROZEN_UTC = datetime(2026, 7, 25, 20, 0, tzinfo=timezone.utc)
+
+
+class _FrozenDatetime(datetime):
+    """datetime with a pinned now(); strptime etc. inherit unchanged."""
+    _instant = FROZEN_UTC
+
+    @classmethod
+    def now(cls, tz=None):
+        return cls._instant.astimezone(tz) if tz is not None else cls._instant.replace(tzinfo=None)
+
+
+@contextmanager
+def frozen_clock(instant: datetime):
+    class _Pinned(_FrozenDatetime):
+        _instant = instant
+
+    previous = vistaar.datetime
+    vistaar.datetime = _Pinned
+    try:
+        yield
+    finally:
+        vistaar.datetime = previous
+
+
+@pytest.fixture(autouse=True)
+def _freeze_clock():
+    with frozen_clock(FROZEN_UTC):
+        yield
+
+
 def _today_ist_str() -> str:
-    return datetime.now(vistaar._IST).date().strftime("%d-%m-%Y")
+    return _days_ago_str(0)
 
 
 def _days_ago_str(days: int) -> str:
-    return (datetime.now(vistaar._IST).date() - timedelta(days=days)).strftime("%d-%m-%Y")
+    """Expected date, computed from the locally-declared IST — never vistaar._IST."""
+    return (FROZEN_UTC.astimezone(_TEST_IST).date() - timedelta(days=days)).strftime("%d-%m-%Y")
+
+
+class TestISTClock:
+    """The window is resolved in IST, not UTC or local time.
+
+    Mutate `_IST` in agents/tools/vistaar.py to `timezone.utc` and these must go
+    red — they assert literal dates, so the expectation cannot drift with the
+    implementation.
+    """
+
+    def test_after_1830_utc_the_window_ends_on_the_ist_date(self):
+        # 20:00 UTC on the 25th is 01:30 IST on the 26th.
+        with frozen_clock(datetime(2026, 7, 25, 20, 0, tzinfo=timezone.utc)):
+            from_date, to_date = vistaar._resolve_date_range(None, None)
+        assert to_date == "26-07-2026", "to_date must be today in IST, not the UTC date"
+        assert from_date == "26-06-2026"
+
+    def test_the_ist_date_flips_exactly_at_1830_utc(self):
+        with frozen_clock(datetime(2026, 7, 25, 18, 29, tzinfo=timezone.utc)):
+            assert vistaar._resolve_date_range(None, None)[1] == "25-07-2026"
+        with frozen_clock(datetime(2026, 7, 25, 18, 31, tzinfo=timezone.utc)):
+            assert vistaar._resolve_date_range(None, None)[1] == "26-07-2026"
+
+    def test_a_mid_day_instant_resolves_to_that_same_date(self):
+        # 09:00 UTC is 14:30 IST — same calendar day, the ordinary case.
+        with frozen_clock(datetime(2026, 7, 25, 9, 0, tzinfo=timezone.utc)):
+            from_date, to_date = vistaar._resolve_date_range(None, None)
+        assert (from_date, to_date) == ("25-06-2026", "25-07-2026")
+
+    def test_todays_ist_date_is_not_capped_away_as_a_future_date(self):
+        # In UTC terms the 26th is "tomorrow", so a UTC clock would cap it back
+        # to the 25th and silently drop the freshest arrivals.
+        with frozen_clock(datetime(2026, 7, 25, 20, 0, tzinfo=timezone.utc)):
+            assert vistaar._resolve_date_range("26-07-2026", "26-07-2026") == (
+                "26-07-2026", "26-07-2026",
+            )
+
+    def test_the_ist_rollover_can_cross_the_year_boundary(self):
+        with frozen_clock(datetime(2026, 12, 31, 20, 0, tzinfo=timezone.utc)):
+            from_date, to_date = vistaar._resolve_date_range(None, None)
+        assert to_date == "01-01-2027"
+        assert from_date == "02-12-2026"
 
 
 class TestParseDate:
@@ -187,6 +270,16 @@ class TestFormatMandiItems:
         lines = vistaar._format_mandi_items(items).splitlines()
         assert lines[0].startswith("- 25-07-2026")
         assert "date n/a" in lines[-1]
+
+    @pytest.mark.parametrize("junk", ["not-a-date", "32-13-2026", "2026-07-25T00:00:00Z"])
+    def test_malformed_arrival_dates_render_as_unknown_not_raw(self, junk):
+        # The raw value must not reach the farmer: an unparseable arrival date is
+        # an unknown date, and rendering "32-13-2026" reads as a real one.
+        items = [_mandi_item(junk), _mandi_item("25-07-2026")]
+        lines = vistaar._format_mandi_items(items).splitlines()
+        assert lines[0].startswith("- 25-07-2026")
+        assert "date n/a" in lines[-1]
+        assert junk not in vistaar._format_mandi_items(items)
 
     def test_rows_beyond_the_cap_are_summarised(self):
         items = [_mandi_item(_days_ago_str(d)) for d in range(45)]
