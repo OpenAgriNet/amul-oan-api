@@ -15,12 +15,21 @@ Topology (all reachable over HTTP):
 
 The seeker returns `{ results: { <leg>: on_search|null }, traces, errors }`.
 Leg names: advisory:amul-vet → "amulvet", schemes:amul-union → "amulschemes".
+
+One seeker request carries ONE query string for every leg it fans out to (see
+`seeker.js`: `input.query` is built once and passed to each `callOne`). The legs
+do not share a query vocabulary — `amulschemes` does free-text title matching
+while the Bharat Vistaar BPP matches exact scheme codes and nothing else — so
+scheme discovery issues one concurrent request PER query instead. Same wall
+time, different words down each leg.
 """
+import asyncio
 from dataclasses import dataclass
 from typing import Any, Optional
 
 import httpx
 
+from agents.tools.scheme_codes import resolve_scheme_code
 from app.config import settings
 from helpers.utils import get_logger
 
@@ -55,15 +64,20 @@ def _tag_map(item: dict) -> dict[str, str]:
 
 async def _seeker_search(query: str, leg: str, user_id: Optional[str] = None) -> Any:
     """POST the seeker BAP, scoped to a single leg; return that leg's on_search."""
-    return (await _seeker_search_legs(query, [leg], user_id)).get(leg)
+    return (await _seeker_search_legs(query, [leg], user_id))[0].get(leg)
 
 
 async def _seeker_search_legs(
     query: str, legs: list[str], user_id: Optional[str] = None
-) -> dict[str, Any]:
-    """POST the seeker BAP for one or more legs; return the {leg: on_search} map.
-    One fan-out call aggregates every requested leg (the seeker mixes sync and
-    async legs itself), so callers can merge across sources."""
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """POST the seeker BAP for one or more legs sharing ONE query string.
+
+    Returns `(results, errors)` — both keyed by leg. The seeker only includes
+    `errors` when a leg actually failed, and a failed leg's `results` entry is
+    null, which is indistinguishable from an empty catalogue unless you read
+    `errors`. Callers that ignore the second element will report a dead leg as
+    "nothing found"; that is the bug that hid the `moa` timeout flap.
+    """
     url = f"{settings.amul_network_url.rstrip('/')}/search"
     payload: dict[str, Any] = {"query": query, "legs": legs}
     if user_id:
@@ -72,14 +86,49 @@ async def _seeker_search_legs(
         r = await client.post(url, json=payload)
         r.raise_for_status()
         data = r.json()
-    return data.get("results") or {}
+    return (data.get("results") or {}), (data.get("errors") or {})
+
+
+async def _seeker_search_per_leg(
+    queries: dict[str, str], user_id: Optional[str] = None
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Search several legs, each with its OWN query string.
+
+    The seeker has no per-leg query field, so this is one concurrent request per
+    leg rather than one fan-out request. Wall time is unchanged (they run under
+    a single `asyncio.gather`); what changes is that each leg finally receives
+    words it can match. A leg whose request raises is reported in `errors`
+    rather than taking the whole tool down — a dead central leg must not cost
+    the farmer their union schemes.
+    """
+    legs = list(queries)
+    outcomes = await asyncio.gather(
+        *(_seeker_search_legs(queries[leg], [leg], user_id) for leg in legs),
+        return_exceptions=True,
+    )
+    results: dict[str, Any] = {}
+    errors: dict[str, Any] = {}
+    for leg, outcome in zip(legs, outcomes):
+        if isinstance(outcome, BaseException):
+            logger.warning("seeker leg=%s request failed: %r", leg, outcome)
+            errors[leg] = str(outcome) or outcome.__class__.__name__
+            continue
+        leg_results, leg_errors = outcome
+        results[leg] = leg_results.get(leg)
+        if leg_errors.get(leg):
+            errors[leg] = leg_errors[leg]
+    return results, errors
 
 
 async def network_search_documents(query: str, top_k: int = 12) -> str:
     """Vet-KB discovery via the network (advisory:amul-vet). Formats items the
     same way the direct Marqo tool does: numbered snippets with source."""
-    on_search = await _seeker_search(query, VET_LEG)
-    items = _items(on_search)[:top_k]
+    results, errors = await _seeker_search_per_leg({VET_LEG: query})
+    if errors.get(VET_LEG) or not isinstance(results.get(VET_LEG), dict):
+        # Same distinction as everywhere else: a dead leg is not an empty KB.
+        logger.warning("network vet search leg failed error=%s", errors.get(VET_LEG))
+        return "The document search is temporarily unavailable. Please try again shortly."
+    items = _items(results.get(VET_LEG))[:top_k]
     if not items:
         logger.info("network vet search returned no items query=%s", query)
         return "No relevant documents were found on the network for this query."
@@ -96,8 +145,40 @@ async def network_search_documents(query: str, top_k: int = 12) -> str:
 async def network_union_schemes(query: str, union: Optional[str] = None) -> str:
     """Scheme discovery via the network — Amul union schemes (schemes:amul-union)
     AND Bharat Vistaar central schemes (via the MOA leg), merged so the farmer
-    sees both in one answer."""
-    results = await _seeker_search_legs(query or "schemes", [SCHEMES_LEG, VISTAAR_LEG])
+    sees both in one answer.
+
+    Each leg gets its OWN query. The union leg takes the farmer's free text (it
+    matches scheme titles); the BV leg takes a resolved scheme CODE, because its
+    BPP matches nothing else — measured on dev, `query="schemes"` returns 15
+    union items and 0 central, while `query="kcc"` returns 0 union and 1
+    central. One shared string could never have produced both, which is why this
+    tool returned zero `bharat-vistaar` records every time.
+
+    When no code resolves the farmer is not asking about a central scheme, so
+    the BV leg is SKIPPED rather than sent a word that always returns nothing —
+    saving a guaranteed-empty ~2.2s round trip.
+    """
+    union_query = (query or "").strip() or "schemes"
+    scheme_code = resolve_scheme_code(query)
+    queries = {SCHEMES_LEG: union_query}
+    if scheme_code:
+        queries[VISTAAR_LEG] = scheme_code
+    logger.info(
+        "network scheme discovery union_query=%r vistaar_code=%s legs=%s",
+        union_query, scheme_code, list(queries),
+    )
+    results, errors = await _seeker_search_per_leg(queries)
+
+    def _leg_failed(leg: str) -> bool:
+        """A leg failed if the seeker said so, or if it answered with no
+        on_search body at all. Only a leg we never asked for is 'not failed'."""
+        if leg not in queries:
+            return False
+        return bool(errors.get(leg)) or not isinstance(results.get(leg), dict)
+
+    union_failed = _leg_failed(SCHEMES_LEG)
+    vistaar_failed = _leg_failed(VISTAAR_LEG)
+
     union_items = _items(results.get(SCHEMES_LEG))
     if union:
         u = union.strip().lower()
@@ -126,10 +207,33 @@ async def network_union_schemes(query: str, union: Optional[str] = None) -> str:
             "source": tags.get("source"),
             "source_network": "bharat-vistaar",
         })
+    # A leg that FAILED must never be reported as a leg that found nothing.
+    # These two sentences are the whole point of reading `errors`.
+    unavailable = [
+        name
+        for name, failed in (
+            ("Amul union schemes", union_failed),
+            ("central government schemes", vistaar_failed),
+        )
+        if failed
+    ]
     if not out:
+        if unavailable:
+            return (
+                "Scheme information ("
+                + " and ".join(unavailable)
+                + ") is temporarily unavailable. Please try again shortly."
+            )
         return "No scheme data was found on the network for this query."
     import json
-    return json.dumps(out, ensure_ascii=False, indent=2)
+    payload = json.dumps(out, ensure_ascii=False, indent=2)
+    if unavailable:
+        payload += (
+            "\n\nNOTE: " + " and ".join(unavailable) + " could not be reached for this "
+            "query, so the list above may be incomplete. Tell the farmer that part is "
+            "temporarily unavailable — do NOT state that no such schemes exist."
+        )
+    return payload
 
 
 @dataclass(frozen=True)
