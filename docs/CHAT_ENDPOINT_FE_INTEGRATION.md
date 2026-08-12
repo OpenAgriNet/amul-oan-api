@@ -340,14 +340,14 @@ When hybrid is enabled, retrieval evidence must pass a quality gate:
 - minimum total evidence length
 - minimum lexical overlap between search query and snippets
 
-If the gate fails, suggestions fall back to conversation-only automatically.
+If the gate fails, suggestions fall back to conversation-only automatically. The quality thresholds, conversation limits, evidence-size limits, shadow TTL, and result-cache TTL are configurable through the `SUGGESTIONS_*` environment variables listed in `example.env`.
 
 ### Frontend Integration Notes
 
 - Poll `GET /api/suggest/` after chat stream completes (or retry briefly if you receive `[]`).
 - Use the same `session_id` and `target_lang` as the chat request.
 - When the user taps a suggestion, send it as the next chat `query`.
-- Suggestions are cached for 30 minutes per `(session_id, target_lang)`.
+- Suggestions are cached for 30 minutes by default per `(session_id, target_lang)`.
 
 ### Example
 

@@ -18,13 +18,6 @@ from langcodes import Language
 
 logger = get_logger(__name__)
 
-SUGGESTIONS_CACHE_TTL = 60*30 # 30 minutes
-SUGGESTIONS_HYBRID_MIN_SNIPPETS = 2
-SUGGESTIONS_HYBRID_MIN_CHARS = 240
-SUGGESTIONS_HYBRID_MIN_OVERLAP = 0.15
-SUGGESTIONS_CONVERSATION_LIMIT_HYBRID = 3
-SUGGESTIONS_CONVERSATION_LIMIT_FALLBACK = 5
-
 try:
     from langfuse import propagate_attributes, get_client as get_langfuse_client
 except ImportError:
@@ -75,11 +68,11 @@ def _is_shadow_retrieval_usable(shadow_payload: dict | None) -> tuple[bool, str]
 
     if has_no_result:
         return False, "explicit_no_results"
-    if len(all_snippets) < SUGGESTIONS_HYBRID_MIN_SNIPPETS:
+    if len(all_snippets) < settings.suggestions_hybrid_min_snippets:
         return False, "insufficient_snippets"
-    if sum(len(x) for x in all_snippets) < SUGGESTIONS_HYBRID_MIN_CHARS:
+    if sum(len(x) for x in all_snippets) < settings.suggestions_hybrid_min_chars:
         return False, "insufficient_evidence_chars"
-    if best_overlap < SUGGESTIONS_HYBRID_MIN_OVERLAP:
+    if best_overlap < settings.suggestions_hybrid_min_overlap:
         return False, "low_query_overlap"
 
     return True, "ok"
@@ -175,9 +168,9 @@ async def create_suggestions(
                           include_system_prompts=False
                           )
         conversation_limit = (
-            SUGGESTIONS_CONVERSATION_LIMIT_HYBRID
+            settings.suggestions_conversation_limit_hybrid
             if retrieval_usable
-            else SUGGESTIONS_CONVERSATION_LIMIT_FALLBACK
+            else settings.suggestions_conversation_limit_fallback
         )
         message_pairs = "\n\n".join(format_message_pairs(history, conversation_limit))
 
@@ -187,17 +180,9 @@ async def create_suggestions(
             retrieval_section = _format_retrieval_evidence(shadow_payload)
 
         if retrieval_section:
-            hybrid_guardrails = (
-                "Answerability guardrails:\n"
-                "- Suggest only questions this agent can realistically answer with its current agriculture/cooperative capabilities.\n"
-                "- Do not suggest personal account lookup actions the agent cannot perform.\n"
-                "- Do not suggest language-switch requests to unsupported languages (anything other than English or Gujarati).\n"
-                "- Prefer explainer-style cooperative questions over personal ledger lookup questions.\n\n"
-            )
             message = (
                 f"**Recent Conversation**\n\n{message_pairs}\n\n"
                 f"**Retrieved Evidence**\n\n{retrieval_section}\n\n"
-                f"{hybrid_guardrails}"
                 f"**Using both the recent conversation and retrieved evidence, suggest 3-5 practical questions "
                 f"the farmer can ask in {target_lang_name}. If there is a conflict, prioritize evidence-grounded "
                 f"and answerable questions.**"
@@ -274,7 +259,11 @@ async def create_suggestions(
         logger.info(f"Suggestions: {suggestions}")
         
         # Store suggestions in cache
-        result = await set_cache(f"suggestions_{session_id}_{target_lang}", suggestions, ttl=SUGGESTIONS_CACHE_TTL)
+        result = await set_cache(
+            f"suggestions_{session_id}_{target_lang}",
+            suggestions,
+            ttl=settings.suggestions_cache_ttl,
+        )
         cache_write_wall_ms = int(time.time() * 1000)
         logger.info(
             "suggestions_cache_written session_id=%s target_lang=%s success=%s cache_write_wall_ms=%s task_elapsed_ms=%s queue_delay_ms=%s",

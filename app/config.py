@@ -1,6 +1,7 @@
 import os
 from pathlib import Path
 from typing import List, Optional
+from pydantic import Field
 from pydantic_settings import BaseSettings
 from dotenv import load_dotenv
 
@@ -80,11 +81,51 @@ class Settings(BaseSettings):
     # only requirement is TTL > the gap between turns — exact value is
     # non-load-bearing (2h is generous slack; voice's old 24h was incidental).
     history_cache_ttl_seconds: int = int(os.getenv("HISTORY_CACHE_TTL_SECONDS", str(60 * 60 * 2)))
-    suggestions_cache_ttl: int = 60 * 30    # 30 minutes
+    suggestions_cache_ttl: int = Field(
+        default=int(os.getenv("SUGGESTIONS_CACHE_TTL", str(60 * 30))),
+        gt=0,
+    )
     # Hybrid suggestions are enabled by default; set false for conversation-only mode.
     suggestions_hybrid_enabled: bool = os.getenv("SUGGESTIONS_HYBRID_ENABLED", "true").strip().lower() in {
         "1", "true", "yes", "on"
     }
+    suggestions_hybrid_min_snippets: int = Field(
+        default=int(os.getenv("SUGGESTIONS_HYBRID_MIN_SNIPPETS", "2")),
+        gt=0,
+    )
+    suggestions_hybrid_min_chars: int = Field(
+        default=int(os.getenv("SUGGESTIONS_HYBRID_MIN_CHARS", "240")),
+        gt=0,
+    )
+    suggestions_hybrid_min_overlap: float = Field(
+        default=float(os.getenv("SUGGESTIONS_HYBRID_MIN_OVERLAP", "0.15")),
+        ge=0.0,
+        le=1.0,
+    )
+    suggestions_conversation_limit_hybrid: int = Field(
+        default=int(os.getenv("SUGGESTIONS_CONVERSATION_LIMIT_HYBRID", "3")),
+        gt=0,
+    )
+    suggestions_conversation_limit_fallback: int = Field(
+        default=int(os.getenv("SUGGESTIONS_CONVERSATION_LIMIT_FALLBACK", "5")),
+        gt=0,
+    )
+    suggestions_shadow_context_ttl: int = Field(
+        default=int(os.getenv("SUGGESTIONS_SHADOW_CONTEXT_TTL", str(60 * 10))),
+        gt=0,
+    )
+    suggestions_shadow_max_calls: int = Field(
+        default=int(os.getenv("SUGGESTIONS_SHADOW_MAX_CALLS", "2")),
+        gt=0,
+    )
+    suggestions_shadow_max_snippets_per_call: int = Field(
+        default=int(os.getenv("SUGGESTIONS_SHADOW_MAX_SNIPPETS_PER_CALL", "2")),
+        gt=0,
+    )
+    suggestions_shadow_max_snippet_chars: int = Field(
+        default=int(os.getenv("SUGGESTIONS_SHADOW_MAX_SNIPPET_CHARS", "600")),
+        gt=0,
+    )
     farmer_animal_api_cache_ttl: int = 60 * 60 * 24 * 17  # 17 days
     # Session-ownership locking (voice call concurrency) — consumed by app/utils.py
     # once the voice surface folds in; inert on the chat path.

@@ -64,7 +64,7 @@ def test_hybrid_mode_uses_retrieval_on_matching_turn(monkeypatch):
     )
     assert out == ["q1", "q2"]
     assert "**Retrieved Evidence**" in captured["message"]
-    assert "Answerability guardrails:" in captured["message"]
+    assert "Answerability guardrails:" not in captured["message"]
 
 
 def test_turn_mismatch_falls_back_to_conversation_only(monkeypatch):
@@ -119,3 +119,10 @@ def test_hybrid_on_unsupported_language_skips_shadow_cache(monkeypatch):
 def test_prompt_does_not_reintroduce_bank_suppression():
     prompt = Path("assets/prompts/suggestions_system.md").read_text(encoding="utf-8")
     assert "Do not generate questions about bank accounts or non-milk financial transactions." not in prompt
+
+
+def test_common_prompt_applies_answerability_guardrails_to_all_input_modes():
+    prompt = Path("assets/prompts/suggestions_system.md").read_text(encoding="utf-8")
+    assert "## Answerability guardrails" in prompt
+    assert "Do not suggest personal account lookup actions the agent cannot perform." in prompt
+    assert "anything other than English or Gujarati" in prompt

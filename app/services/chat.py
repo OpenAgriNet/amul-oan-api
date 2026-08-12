@@ -148,10 +148,6 @@ def should_translate_batch(batch_text: str, word_count: int) -> bool:
 
 logger = get_logger(__name__)
 SUGGESTIONS_PENDING_TTL = 30
-SUGGESTIONS_SHADOW_CONTEXT_TTL = 60 * 10  # 10 minutes
-SUGGESTIONS_SHADOW_MAX_CALLS = 2
-SUGGESTIONS_SHADOW_MAX_SNIPPETS_PER_CALL = 2
-SUGGESTIONS_SHADOW_MAX_SNIPPET_CHARS = 600
 GENERIC_UNAVAILABLE_MESSAGE_EN = (
     "I am unable to process your request right now. Please try again later."
 )
@@ -227,7 +223,7 @@ def _extract_snippets_from_search_return(content: str) -> tuple[list[str], bool,
 
     named_blocks = re.findall(r"\*\*(.*?)\*\*\s*```(.*?)```", text, flags=re.DOTALL)
     for doc_name, block in named_blocks:
-        cleaned = _truncate_snippet_sentence_safe(block, SUGGESTIONS_SHADOW_MAX_SNIPPET_CHARS)
+        cleaned = _truncate_snippet_sentence_safe(block, settings.suggestions_shadow_max_snippet_chars)
         if not cleaned:
             continue
         snippets.append(f"{_normalize_ws(doc_name)}: {cleaned}")
@@ -235,7 +231,7 @@ def _extract_snippets_from_search_return(content: str) -> tuple[list[str], bool,
     if not snippets:
         fenced_blocks = re.findall(r"```(.*?)```", text, flags=re.DOTALL)
         for block in fenced_blocks:
-            cleaned = _truncate_snippet_sentence_safe(block, SUGGESTIONS_SHADOW_MAX_SNIPPET_CHARS)
+            cleaned = _truncate_snippet_sentence_safe(block, settings.suggestions_shadow_max_snippet_chars)
             if not cleaned:
                 continue
             snippets.append(cleaned)
@@ -273,7 +269,7 @@ def _extract_shadow_search_evidence(new_messages: list) -> dict:
                     returns_by_call_id[tool_call_id].append(str(getattr(part, "content", "") or ""))
 
     ordered_ids = [x for x in list(returns_by_call_id.keys()) if x in search_call_ids]
-    ordered_ids = ordered_ids[-SUGGESTIONS_SHADOW_MAX_CALLS:]  # most recent calls only
+    ordered_ids = ordered_ids[-settings.suggestions_shadow_max_calls:]  # most recent calls only
 
     distilled_calls = []
     total_snippets = 0
@@ -299,9 +295,9 @@ def _extract_shadow_search_evidence(new_messages: list) -> dict:
                     continue
                 seen_snippets.add(key)
                 snippets_for_call.append(snippet)
-                if len(snippets_for_call) >= SUGGESTIONS_SHADOW_MAX_SNIPPETS_PER_CALL:
+                if len(snippets_for_call) >= settings.suggestions_shadow_max_snippets_per_call:
                     break
-            if len(snippets_for_call) >= SUGGESTIONS_SHADOW_MAX_SNIPPETS_PER_CALL:
+            if len(snippets_for_call) >= settings.suggestions_shadow_max_snippets_per_call:
                 break
 
         if call_no_results:
@@ -1033,7 +1029,11 @@ async def stream_chat_messages(
                         **shadow_evidence,
                     }
                     shadow_cache_key = f"suggestions_shadow_{session_id}_{target_lang}"
-                    await set_cache(shadow_cache_key, shadow_payload, ttl=SUGGESTIONS_SHADOW_CONTEXT_TTL)
+                    await set_cache(
+                        shadow_cache_key,
+                        shadow_payload,
+                        ttl=settings.suggestions_shadow_context_ttl,
+                    )
                     logger.info(
                         "suggestions_shadow_evidence session_id=%s profile=%s turn_id=%s calls=%s returns=%s distilled_calls=%s snippets=%s no_result_calls=%s parser_empty_calls=%s",
                         session_id,

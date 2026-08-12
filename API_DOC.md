@@ -45,10 +45,11 @@ Returns follow-up questions the farmer can ask, generated in the background afte
   1. Triggered after moderation passes on `GET /api/chat/`
   2. Runs after chat streaming completes (FastAPI background task)
   3. Builds input from conversation history; optionally includes distilled `search_documents` evidence when `SUGGESTIONS_HYBRID_ENABLED=true` and retrieval quality gate passes
-  4. Suggestions agent (tool-free LLM) generates follow-ups; result cached for 30 minutes
+  4. Suggestions agent (tool-free LLM) generates follow-ups; result cached for 30 minutes by default
 
 - **Configuration**:
   - `SUGGESTIONS_HYBRID_ENABLED` (default `true`): enable hybrid input (conversation + retrieval evidence). When disabled, suggestions use conversation-only input.
+  - Hybrid quality, conversation history, evidence size, shadow-cache, and result-cache defaults are production-tunable through the `SUGGESTIONS_*` variables documented in `example.env`.
 
 - **See also**: [Chat Endpoint FE Integration – Suggestions Pipeline](docs/CHAT_ENDPOINT_FE_INTEGRATION.md#suggestions-pipeline)
 
