@@ -3,6 +3,7 @@ from typing import AsyncGenerator
 from functools import lru_cache
 import os
 import time
+import uuid
 import regex
 import re
 from collections import defaultdict
@@ -18,7 +19,7 @@ from app.utils import (
     format_message_pairs,
     set_cache,
 )
-from app.tasks.suggestions import create_suggestions
+from app.tasks.suggestions import claim_suggestions_turn, create_suggestions
 from app.config import settings
 from app.services.fallback import AGENT_ACTIVITY, execute_with_fallback, stream_with_fallback, with_first_token_deadline
 from app.core.cache import cache
@@ -717,14 +718,19 @@ async def stream_chat_messages(
                     if moderation_data.category == "valid_agricultural":
                         logger.info(f"Triggering suggestions generation for session {session_id}")
                         try:
-                            suggestions_cache_key = f"suggestions_{session_id}_{target_lang}"
-                            status_key = f"{suggestions_cache_key}:pending"
                             suggestions_queued_wall_ms = int(time.time() * 1000)
                             suggestions_queued_monotonic_s = time.monotonic()
-                            suggestions_turn_id = f"{session_id}:{suggestions_queued_wall_ms}"
-                            # Mark pending and clear stale suggestions so callers wait for fresh output.
-                            await set_cache(status_key, True, ttl=SUGGESTIONS_PENDING_TTL)
-                            await cache.delete(suggestions_cache_key)
+                            suggestions_turn_id = (
+                                f"{session_id}:{suggestions_queued_wall_ms}:{uuid.uuid4().hex}"
+                            )
+                            # Atomically claim publishing ownership, mark pending,
+                            # and clear stale suggestions for this turn.
+                            await claim_suggestions_turn(
+                                session_id,
+                                target_lang,
+                                suggestions_turn_id,
+                                SUGGESTIONS_PENDING_TTL,
+                            )
                             background_tasks.add_task(
                                 create_suggestions,
                                 session_id,

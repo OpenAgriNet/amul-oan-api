@@ -33,9 +33,17 @@ def _setup_common_mocks(monkeypatch, *, hybrid_enabled: bool):
     async def fake_delete(*a, **k):
         return None
 
+    async def fake_publish(*a, **k):
+        return True
+
+    async def fake_clear(*a, **k):
+        return False
+
     monkeypatch.setattr(sug, "_get_message_history", fake_hist)
     monkeypatch.setattr(sug, "set_cache", fake_set_cache)
     monkeypatch.setattr(sug.cache, "delete", fake_delete)
+    monkeypatch.setattr(sug, "_publish_suggestions_if_latest", fake_publish)
+    monkeypatch.setattr(sug, "_clear_suggestions_turn_if_owned", fake_clear)
 
 
 def test_hybrid_mode_uses_retrieval_on_matching_turn(monkeypatch):

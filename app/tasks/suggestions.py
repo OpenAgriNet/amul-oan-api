@@ -3,12 +3,13 @@ Tasks for creating conversation suggestions.
 """
 
 from contextlib import nullcontext
+import json
 import time
 import re
 from typing import Optional
 from helpers.utils import get_logger
 from app.utils import _get_message_history, trim_history, format_message_pairs, set_cache, get_cache
-from app.core.cache import cache
+from app.core.cache import build_cache_key, cache, redis_client
 from app.llm_core import resolver as _llm_resolver
 from app.llm_core.config_model import Step as _LlmStep
 from agents.suggestions import suggestions_agent
@@ -25,6 +26,100 @@ except ImportError:
     get_langfuse_client = None
 
 _TOKEN_RE = re.compile(r"[\w\-]+", flags=re.UNICODE)
+
+
+def _suggestions_cache_keys(session_id: str, target_lang: str) -> tuple[str, str, str]:
+    result_key = f"suggestions_{session_id}_{target_lang}"
+    return (
+        build_cache_key(result_key),
+        build_cache_key(f"{result_key}:pending"),
+        build_cache_key(f"{result_key}:latest_turn"),
+    )
+
+
+async def claim_suggestions_turn(
+    session_id: str,
+    target_lang: str,
+    request_turn_id: str,
+    pending_ttl: int,
+) -> None:
+    """Atomically make this turn the sole publisher and clear stale results."""
+    result_key, pending_key, latest_turn_key = _suggestions_cache_keys(session_id, target_lang)
+    await redis_client.eval(
+        """
+        -- suggestions_claim_turn
+        redis.call('set', KEYS[1], ARGV[1], 'EX', tonumber(ARGV[2]))
+        redis.call('set', KEYS[2], ARGV[1], 'EX', tonumber(ARGV[3]))
+        redis.call('del', KEYS[3])
+        return 1
+        """,
+        3,
+        latest_turn_key,
+        pending_key,
+        result_key,
+        request_turn_id,
+        str(settings.suggestions_cache_ttl),
+        str(pending_ttl),
+    )
+
+
+async def _publish_suggestions_if_latest(
+    session_id: str,
+    target_lang: str,
+    request_turn_id: str,
+    suggestions: list,
+) -> bool:
+    """Atomically publish and clear ownership only while this turn is latest."""
+    result_key, pending_key, latest_turn_key = _suggestions_cache_keys(session_id, target_lang)
+    published = await redis_client.eval(
+        """
+        -- suggestions_publish_if_latest
+        if redis.call('get', KEYS[1]) ~= ARGV[1] then
+            return 0
+        end
+        redis.call('set', KEYS[2], ARGV[2], 'EX', tonumber(ARGV[3]))
+        if redis.call('get', KEYS[3]) == ARGV[1] then
+            redis.call('del', KEYS[3])
+        end
+        redis.call('del', KEYS[1])
+        return 1
+        """,
+        3,
+        latest_turn_key,
+        result_key,
+        pending_key,
+        request_turn_id,
+        json.dumps(suggestions),
+        str(settings.suggestions_cache_ttl),
+    )
+    return bool(published)
+
+
+async def _clear_suggestions_turn_if_owned(
+    session_id: str,
+    target_lang: str,
+    request_turn_id: str,
+) -> bool:
+    """Atomically clear only pending/latest keys still owned by this turn."""
+    _, pending_key, latest_turn_key = _suggestions_cache_keys(session_id, target_lang)
+    cleared = await redis_client.eval(
+        """
+        -- suggestions_clear_if_owned
+        local cleared = 0
+        if redis.call('get', KEYS[1]) == ARGV[1] then
+            cleared = cleared + redis.call('del', KEYS[1])
+        end
+        if redis.call('get', KEYS[2]) == ARGV[1] then
+            cleared = cleared + redis.call('del', KEYS[2])
+        end
+        return cleared
+        """,
+        2,
+        pending_key,
+        latest_turn_key,
+        request_turn_id,
+    )
+    return bool(cleared)
 
 
 def _tokenize(text: str) -> set[str]:
@@ -261,11 +356,27 @@ async def create_suggestions(
         logger.info(f"Suggestions: {suggestions}")
         
         # Store suggestions in cache
-        result = await set_cache(
-            f"suggestions_{session_id}_{target_lang}",
-            suggestions,
-            ttl=settings.suggestions_cache_ttl,
-        )
+        if request_turn_id:
+            result = await _publish_suggestions_if_latest(
+                session_id,
+                target_lang,
+                request_turn_id,
+                suggestions,
+            )
+            if not result:
+                logger.info(
+                    "suggestions_task_superseded session_id=%s target_lang=%s turn_id=%s",
+                    session_id,
+                    target_lang,
+                    request_turn_id,
+                )
+                return []
+        else:
+            result = await set_cache(
+                f"suggestions_{session_id}_{target_lang}",
+                suggestions,
+                ttl=settings.suggestions_cache_ttl,
+            )
         cache_write_wall_ms = int(time.time() * 1000)
         logger.info(
             "suggestions_cache_written session_id=%s target_lang=%s success=%s cache_write_wall_ms=%s task_elapsed_ms=%s queue_delay_ms=%s",
@@ -284,6 +395,9 @@ async def create_suggestions(
         return [] 
     finally:
         try:
-            await cache.delete(status_key)
+            if request_turn_id:
+                await _clear_suggestions_turn_if_owned(session_id, target_lang, request_turn_id)
+            else:
+                await cache.delete(status_key)
         except Exception as e:
             logger.warning(f"Error clearing suggestions pending status for session {session_id}: {e}")
