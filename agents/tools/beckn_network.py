@@ -16,6 +16,7 @@ Topology (all reachable over HTTP):
 The seeker returns `{ results: { <leg>: on_search|null }, traces, errors }`.
 Leg names: advisory:amul-vet → "amulvet", schemes:amul-union → "amulschemes".
 """
+from dataclasses import dataclass
 from typing import Any, Optional
 
 import httpx
@@ -131,15 +132,33 @@ async def network_union_schemes(query: str, union: Optional[str] = None) -> str:
     return json.dumps(out, ensure_ascii=False, indent=2)
 
 
-async def network_create_ai_call(
+@dataclass(frozen=True)
+class NetworkBookingResult:
+    """Outcome of a network booking confirm.
+
+    The caller (agents/tools/ai_call.py) must know whether a booking actually
+    happened — it releases its session reservation on failure and marks the
+    session booked on success — so the outcome is structured rather than
+    inferred from the message string.
+    """
+    ok: bool
+    ticket: Optional[str]
+    message: str
+
+
+async def network_create_ai_call_result(
     union_code: str,
     society_code: str,
     farmer_code: str,
     user_id: str,
     species: str,
-) -> str:
+) -> NetworkBookingResult:
     """AI-call booking via the network (services:amul-vet-booking) — POSTs a
-    Beckn confirm to the booking BPP, which calls PashuGPT CreateAICall."""
+    Beckn confirm to the booking BPP, which calls PashuGPT CreateAICall.
+
+    Raises on transport/HTTP errors (raise_for_status), exactly as before; the
+    caller decides how to surface them.
+    """
     order = {
         "provider": {"id": "amul-ai-service"},
         "items": [{"id": f"ait:{user_id}"}],
@@ -166,6 +185,31 @@ async def network_create_ai_call(
     if (body.get("message", {}).get("ack", {}) or {}).get("status") == "NACK":
         err = body.get("error", {})
         logger.info("network AI call NACK code=%s msg=%s", err.get("code"), err.get("message"))
-        return f"Artificial insemination call booking failed on the network: {err.get('message', 'unknown error')}"
+        return NetworkBookingResult(
+            ok=False,
+            ticket=None,
+            message=(
+                "Artificial insemination call booking failed on the network: "
+                f"{err.get('message', 'unknown error')}"
+            ),
+        )
     ticket = body.get("message", {}).get("order", {}).get("id")
-    return f"Artificial insemination call booked successfully via the Beckn network. Ticket: {ticket}"
+    return NetworkBookingResult(
+        ok=True,
+        ticket=ticket,
+        message=f"Artificial insemination call booked successfully via the Beckn network. Ticket: {ticket}",
+    )
+
+
+async def network_create_ai_call(
+    union_code: str,
+    society_code: str,
+    farmer_code: str,
+    user_id: str,
+    species: str,
+) -> str:
+    """String-returning wrapper kept for callers that only need the message."""
+    result = await network_create_ai_call_result(
+        union_code, society_code, farmer_code, user_id, species
+    )
+    return result.message
