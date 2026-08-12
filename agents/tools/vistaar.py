@@ -19,6 +19,14 @@ from typing import Any, Optional
 
 import httpx
 
+from agents.tools.scheme_codes import (
+    SCHEME_CODES,
+    SCHEME_LABELS,
+    SchemeCode,
+    resolve_scheme_code,
+    scheme_names_sentence,
+)
+from app.config import settings
 from helpers.utils import get_logger
 
 logger = get_logger(__name__)
@@ -26,7 +34,12 @@ logger = get_logger(__name__)
 VISTAAR_BAP_URL = os.getenv(
     "VISTAAR_BAP_URL", "https://bap-client-playground-sandbox-vistaar.da.gov.in"
 ).rstrip("/")
-VISTAAR_TIMEOUT_S = float(os.getenv("VISTAAR_TIMEOUT_S", "40"))
+# Timeout: ONE knob, shared with the rest of the Beckn network tools
+# (AMUL_NETWORK_TIMEOUT_S, default 35s). There used to be a second, larger
+# VISTAAR_TIMEOUT_S (40s) governing exactly these calls, and a real 40.11s stall
+# was observed against the 60s nginx window that has previously dropped voice
+# calls. The larger knob is gone rather than merely lowered: two timeouts for
+# one hop only ever meant the tighter budget was not the one in force.
 # Default location (Anand, Gujarat — Amul region) when the caller has no coords.
 DEFAULT_LAT = float(os.getenv("VISTAAR_DEFAULT_LAT", "22.55"))
 DEFAULT_LON = float(os.getenv("VISTAAR_DEFAULT_LON", "72.93"))
@@ -48,11 +61,25 @@ MANDI_MAX_RANGE_DAYS = 30
 _IST = timezone(timedelta(hours=5, minutes=30))
 _DATE_FMT = "%d-%m-%Y"
 
-# BV's get_scheme_info codes (domain schemes:vistaar, category schemes-agri).
-SCHEME_CODES = {
-    "kcc", "pmkisan", "pmfby", "shc", "pmksy", "sathi", "pmasha", "aif",
-    "smam", "pdmc", "pkvy", "nfsm", "rad", "ffs", "nbhm",
-}
+# BV's get_scheme_info codes and the farmer-phrasing alias map live in
+# agents/tools/scheme_codes.py — ONE copy, shared with beckn_network.py.
+__all__ = [
+    "SCHEME_CODES",
+    "VistaarLegUnavailable",
+    "get_vistaar_weather",
+    "get_vistaar_mandi_prices",
+    "get_vistaar_scheme_info",
+]
+
+
+class VistaarLegUnavailable(RuntimeError):
+    """The seeker reported this leg as failed (or returned no on_search at all).
+
+    Distinct from "the catalogue is empty": an empty catalogue is an answer, a
+    failed leg is not. Conflating the two is what let the `moa` leg's timeout
+    flap render as a confident "No mandi prices were found…" — infrastructure
+    failure presented to the farmer as fact, byte-identical to a real miss.
+    """
 
 
 def _context() -> dict[str, Any]:
@@ -89,7 +116,14 @@ def _items(body: dict) -> list[dict]:
 
 
 async def _vistaar_search(intent: dict) -> list[dict]:
-    async with httpx.AsyncClient(timeout=VISTAAR_TIMEOUT_S) as client:
+    """Run one BV intent and return its items.
+
+    Raises VistaarLegUnavailable when the seeker reports the leg as failed, or
+    hands back no on_search body for it. Previously this read only
+    `results.<leg>` and dropped `errors` on the floor, so a dead leg returned
+    `[]` and every caller announced "none found".
+    """
+    async with httpx.AsyncClient(timeout=settings.amul_network_timeout_s) as client:
         if VISTAAR_SEEKER_URL:
             # Canonical Beckn path: hand the raw intent to the seeker, which
             # signs + routes it to BH and returns the on_search it gets back
@@ -99,8 +133,16 @@ async def _vistaar_search(intent: dict) -> list[dict]:
                 json={"intent": intent, "legs": [VISTAAR_LEG]},
             )
             r.raise_for_status()
-            on_search = (r.json().get("results") or {}).get(VISTAAR_LEG)
-            return _items(on_search) if isinstance(on_search, dict) else []
+            body = r.json()
+            leg_error = (body.get("errors") or {}).get(VISTAAR_LEG)
+            on_search = (body.get("results") or {}).get(VISTAAR_LEG)
+            if leg_error or not isinstance(on_search, dict):
+                logger.warning(
+                    "vistaar leg unavailable leg=%s error=%s on_search_type=%s",
+                    VISTAAR_LEG, leg_error, type(on_search).__name__,
+                )
+                raise VistaarLegUnavailable(str(leg_error or "no on_search returned"))
+            return _items(on_search)
         # Fallback: call the BV sandbox BAP directly (sync inline on_search).
         r = await client.post(
             f"{VISTAAR_BAP_URL}/search",
@@ -295,6 +337,11 @@ async def get_vistaar_mandi_prices(
     }
     try:
         items = await _vistaar_search(intent)
+    except VistaarLegUnavailable:
+        # A failed leg is NOT an empty market. Never fall through to the
+        # "No mandi prices were found…" line below on infrastructure failure.
+        logger.warning("vistaar mandi leg unavailable commodity=%s", commodity_name)
+        return "Mandi prices are temporarily unavailable from Bharat Vistaar. Please try again shortly."
     except Exception:
         logger.exception(
             "vistaar mandi failed commodity=%s from=%s to=%s", commodity_name, from_date, to_date
@@ -312,30 +359,54 @@ async def get_vistaar_mandi_prices(
     return f"Mandi prices for {commodity_name} near Anand ({from_date} to {to_date}):\n" + _format_mandi_items(items)
 
 
-async def get_vistaar_scheme_info(scheme_code: str) -> str:
+async def get_vistaar_scheme_info(scheme_code: SchemeCode) -> str:
     """Get information about a CENTRAL / national government agriculture scheme
-    (e.g. KCC / Kisan Credit Card, PM-KISAN, PMFBY, Soil Health Card) from Bharat
-    Vistaar. Use this for ANY central government scheme a farmer asks about — do
-    NOT use get_union_scheme_data for these (that is only for Amul dairy-union
-    welfare schemes).
+    (e.g. Kisan Credit Card, PM-KISAN, crop insurance, Soil Health Card) from
+    Bharat Vistaar. Use this for ANY central government scheme a farmer asks
+    about. For the farmer's Amul dairy-union welfare schemes, use
+    get_union_scheme_data instead.
 
     Args:
-        scheme_code: one of kcc (Kisan Credit Card), pmkisan, pmfby, shc, pmksy,
-            sathi, pmasha, aif, smam, pdmc, pkvy, nfsm, rad, ffs, nbhm.
+        scheme_code: which central scheme to look up. Pick the closest match:
+            kcc = Kisan Credit Card; pmkisan = PM-KISAN income support;
+            pmfby = crop insurance; shc = Soil Health Card;
+            pmksy = irrigation; sathi = seed authentication;
+            pmasha = price support / MSP; aif = agriculture infrastructure fund;
+            smam = farm mechanisation; pdmc = micro / drip irrigation;
+            pkvy = organic farming; nfsm = food security mission;
+            rad = rainfed area development; ffs = fertilizer sales;
+            nbhm = beekeeping and honey.
     Returns the scheme's eligibility, benefits, and application details.
     """
-    code = (scheme_code or "").strip().lower()
-    if code not in SCHEME_CODES:
-        return f"Unknown scheme code '{scheme_code}'. Valid codes: {', '.join(sorted(SCHEME_CODES))}."
+    # The signature is a Literal, so pydantic-ai publishes a JSON-schema enum
+    # and the model can no longer invent a code (verified: the generated schema
+    # carries `"enum": [...]` under docstring_format='auto'). The alias map is
+    # still applied because this function is also called with free farmer
+    # phrasing from the merged discovery path.
+    code = resolve_scheme_code(scheme_code)
+    if code is None:
+        raw = (scheme_code or "").strip().casefold()
+        code = raw if raw in SCHEME_CODES else None
+    if code is None:
+        # NEVER echo the internal code list at the farmer — agrinet_system.md
+        # ("Do not mention internal tool mechanics"). Name schemes, not codes.
+        logger.info("vistaar scheme: unresolvable scheme_code=%r", scheme_code)
+        return (
+            "I could not match that to a central government scheme. I can look up "
+            f"schemes such as {scheme_names_sentence()}."
+        )
     intent = {
         "category": {"descriptor": {"code": "schemes-agri"}},
         "item": {"descriptor": {"name": code}},
     }
     try:
         items = await _vistaar_search(intent)
+    except VistaarLegUnavailable:
+        logger.warning("vistaar scheme leg unavailable code=%s", code)
+        return "Scheme information is temporarily unavailable from Bharat Vistaar. Please try again shortly."
     except Exception:
         logger.exception("vistaar scheme failed code=%s", code)
         return "Scheme information is temporarily unavailable from Bharat Vistaar."
     if not items:
-        return f"No information was found for scheme '{scheme_code}'."
+        return f"No information was found for the {SCHEME_LABELS.get(code, code)} scheme."
     return _format_items(items)
