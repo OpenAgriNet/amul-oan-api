@@ -4,12 +4,13 @@ Tool for booking an artificial insemination call for a farmer.
 import json
 import os
 
+import httpx
 from pydantic_ai import RunContext
 
 from agents.deps import FarmerContext
 from agents.tools.farmer_animal_backends import create_ai_call_api
 from app.config import settings
-from app.core.cache import cache, try_reserve, release_reservation
+from app.core.cache import cache, reserve, ReservationOutcome, release_reservation
 from app.models.ai_call import AICallRequestModel, AISpecies
 from app.observability import start_observation
 from helpers.utils import get_logger
@@ -29,25 +30,73 @@ ALREADY_BOOKED_MESSAGE = (
 )
 OUT_OF_SCOPE_MESSAGE = "This helpline only handles dairy farming and animal husbandry questions."
 
+# The network route answered, but neither confirmed nor refused the booking. We
+# cannot prove the SMS did not go out, so the reservation is held for the TTL.
+UNCONFIRMED_MESSAGE = (
+    "The artificial insemination call booking could not be confirmed.\n\n"
+    "It may or may not have gone through. Please check with your society before "
+    "booking again, so you do not get two visits."
+)
+
 
 async def _reserve_booking_slot(session_id: str | None) -> tuple[bool, bool]:
     """Atomic per-session reservation, taken immediately before a write.
 
     First caller wins; a concurrent submit OR a fallback re-run for the same
     session short-circuits instead of double-booking. Returns
-    ``(allowed, reserved)``: ``allowed`` False means refuse the booking,
-    ``reserved`` True means the caller owns the reservation and must release it
-    if the booking itself fails.
+    ``(allowed, owned)``: ``allowed`` False means refuse the booking, ``owned``
+    True means we genuinely wrote the reservation key and may release it if the
+    booking itself fails.
+
+    ``owned`` is deliberately narrower than ``allowed``. `reserve` fails OPEN:
+    if Redis is unavailable it lets the booking through without holding
+    anything. Recording that as "reserved" made a later failure delete a key we
+    never wrote — quite possibly this session's marker from an EARLIER
+    successful booking — voiding the guard for the rest of its TTL. The
+    fail-open itself is unchanged (both routes have always proceeded when the
+    cache is down); only the bogus release is gone.
 
     Flag-gated (see the trade-off note in create_ai_call). With the guard off,
     or with no session id, this is a no-op that allows the booking.
     """
     if not (settings.ai_call_booking_guard_enabled and session_id):
         return True, False
-    if not await try_reserve(session_id, AI_CALL_CACHE_NAMESPACE, settings.ai_call_cooldown_ttl_seconds):
+    outcome = await reserve(session_id, AI_CALL_CACHE_NAMESPACE, settings.ai_call_cooldown_ttl_seconds)
+    if outcome is ReservationOutcome.TAKEN:
         logger.info("AI call already booked/in-flight for session %s, skipping", session_id)
         return False, False
+    if outcome is ReservationOutcome.UNGUARDED:
+        logger.warning(
+            "AI call proceeding UNGUARDED for session %s (cache unavailable); "
+            "no reservation held, so none will be released",
+            session_id,
+        )
+        return True, False
     return True, True
+
+
+def _is_provably_pre_send(exc: BaseException) -> bool:
+    """True only when the confirm demonstrably never reached the booking BPP.
+
+    DNS failure, connection refused and connect-timeout all fail before a single
+    byte of the request is written, so no booking can have been made and the
+    reservation is safe to release. Everything else — read/write timeout, pool
+    timeout, protocol error, any HTTP status, anything unexpected — happened at
+    or after the send, and the BPP may already have called PashuGPT and texted
+    the farmer. Those are ambiguous by construction and must NOT release.
+
+    Note httpx.ConnectTimeout is checked before the generic timeout types
+    precisely because it is the one timeout that is provably pre-send.
+    """
+    return isinstance(
+        exc,
+        (
+            httpx.ConnectError,       # refused / DNS failure / network unreachable
+            httpx.ConnectTimeout,     # never established a connection
+            httpx.UnsupportedProtocol,
+            httpx.InvalidURL,
+        ),
+    )
 
 
 async def _mark_session_booked(session_id: str | None, ticket: str | None, species_value: str) -> None:
@@ -188,14 +237,17 @@ async def _book_direct(
         )
         # Atomic reservation immediately before the write: first caller wins; a
         # concurrent submit OR a fallback re-run for the same session short-circuits
-        # instead of double-booking. Released below if the booking API itself fails.
-        _allowed, _reserved = await _reserve_booking_slot(session_id)
+        # instead of double-booking. Released below if the booking API itself
+        # fails AND we actually hold the reservation (see _reserve_booking_slot).
+        # Timeout handling on this path is deliberately untouched: it is live
+        # production behaviour and out of scope for this change.
+        _allowed, _owned = await _reserve_booking_slot(session_id)
         if not _allowed:
             return ALREADY_BOOKED_MESSAGE
 
         response = await create_ai_call_api(request, token)
         if response is None:
-            if _reserved:
+            if _owned:
                 await release_reservation(session_id, AI_CALL_CACHE_NAMESPACE)
             logger.info(
                 "Create AI call failed for union=%s society=%s farmer=%s species=%s",
@@ -268,7 +320,7 @@ async def _book_via_network(
         metadata={"tool_name": "create_ai_call", "route": "beckn_network"},
     ) as ai_tool_obs:
         # Atomic reservation immediately before the write — see _book_direct.
-        _allowed, _reserved = await _reserve_booking_slot(session_id)
+        _allowed, _owned = await _reserve_booking_slot(session_id)
         if not _allowed:
             return ALREADY_BOOKED_MESSAGE
 
@@ -277,39 +329,70 @@ async def _book_via_network(
                 union_code, society_code, farmer_code, user_id, species.value
             )
         except Exception as e:
-            # A transport failure means no booking happened, so the reservation
-            # must not outlive it — otherwise the farmer is locked out for the
-            # whole TTL with nothing booked.
-            if _reserved:
+            # An earlier version of this comment claimed "a transport failure
+            # means no booking happened". That overclaims. The confirm travels
+            # BAP -> booking BPP -> PashuGPT -> SMS to a real farmer; a read
+            # timeout or a mid-chain 502/504 can land AFTER PashuGPT was called
+            # and the SMS sent. Only a failure that provably never left us is
+            # safe to release on.
+            pre_send = _is_provably_pre_send(e)
+            if _owned and pre_send:
                 await release_reservation(session_id, AI_CALL_CACHE_NAMESPACE)
             logger.warning(
-                "Network AI call errored for union=%s society=%s farmer=%s species=%s: %s",
+                "Network AI call errored for union=%s society=%s farmer=%s species=%s "
+                "pre_send=%s reservation=%s: %r",
                 union_code,
                 society_code,
                 farmer_code,
                 species.value,
+                pre_send,
+                "released" if (_owned and pre_send) else "held",
                 e,
             )
-            failure_message = (
-                "Artificial insemination call booking failed.\n\n"
-                "Unable to reach the booking network at the moment."
-            )
+            if pre_send:
+                failure_message = (
+                    "Artificial insemination call booking failed.\n\n"
+                    "Unable to reach the booking network at the moment."
+                )
+            else:
+                # Ambiguous: hold the reservation for the TTL. The trade-off is
+                # deliberate — a possible ~30-minute lockout is preferable to a
+                # possible duplicate visit and duplicate SMS.
+                failure_message = UNCONFIRMED_MESSAGE
             if ai_tool_obs is not None:
-                ai_tool_obs.update(output={"success": False, "message": failure_message})
+                ai_tool_obs.update(
+                    output={
+                        "success": False,
+                        "pre_send_failure": pre_send,
+                        "message": failure_message,
+                    }
+                )
             return failure_message
 
         if not result.ok:
-            if _reserved:
+            # Release only on an authoritative "I did not book" (a NACK). A
+            # failure the BPP did not vouch for — e.g. a 200 with no order id —
+            # keeps the reservation, same rule as the ambiguous exceptions above.
+            if _owned and result.authoritative_no_booking:
                 await release_reservation(session_id, AI_CALL_CACHE_NAMESPACE)
             logger.info(
-                "Network AI call failed for union=%s society=%s farmer=%s species=%s",
+                "Network AI call failed for union=%s society=%s farmer=%s species=%s "
+                "authoritative=%s reservation=%s",
                 union_code,
                 society_code,
                 farmer_code,
                 species.value,
+                result.authoritative_no_booking,
+                "released" if (_owned and result.authoritative_no_booking) else "held",
             )
             if ai_tool_obs is not None:
-                ai_tool_obs.update(output={"success": False, "message": result.message})
+                ai_tool_obs.update(
+                    output={
+                        "success": False,
+                        "authoritative_no_booking": result.authoritative_no_booking,
+                        "message": result.message,
+                    }
+                )
             return result.message
 
         # Mark this session as booked so a re-run (or retry) does not double-book.

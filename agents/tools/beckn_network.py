@@ -140,10 +140,18 @@ class NetworkBookingResult:
     happened — it releases its session reservation on failure and marks the
     session booked on success — so the outcome is structured rather than
     inferred from the message string.
+
+    `ok=False` alone is not enough to justify releasing the reservation: a
+    booking that did happen can still come back as a failure to us. Hence
+    `authoritative_no_booking`, which is only true when the BPP told us in so
+    many words that it did not book (a NACK). It defaults to False so that any
+    new or sloppily-constructed failure result takes the safe branch — hold the
+    reservation — rather than risking a second SMS to a real farmer.
     """
     ok: bool
     ticket: Optional[str]
     message: str
+    authoritative_no_booking: bool = False
 
 
 async def network_create_ai_call_result(
@@ -192,8 +200,35 @@ async def network_create_ai_call_result(
                 "Artificial insemination call booking failed on the network: "
                 f"{err.get('message', 'unknown error')}"
             ),
+            # A NACK is the BPP stating it did not accept the order. Provably no
+            # booking, so the caller may release the reservation and let the
+            # farmer retry immediately.
+            authoritative_no_booking=True,
         )
     ticket = body.get("message", {}).get("order", {}).get("id")
+    if not ticket:
+        # A 200 that is neither a NACK nor a confirmed order. `ok` used to
+        # default to True here, so `200 {}` told the farmer "booked
+        # successfully. Ticket: None" and locked the session for the whole TTL
+        # with nothing booked. Not success.
+        #
+        # It is also NOT authoritative-no-booking: the BPP answered without
+        # saying it refused, so it may well have called PashuGPT and sent the
+        # SMS before losing the order id. Treated as ambiguous — the caller
+        # holds the reservation, same as a read timeout.
+        logger.warning(
+            "network AI call: 200 without NACK and without order.id; treating as unconfirmed body=%s",
+            body,
+        )
+        return NetworkBookingResult(
+            ok=False,
+            ticket=None,
+            message=(
+                "The artificial insemination call booking could not be confirmed. "
+                "Please check with your society whether the visit is booked before booking again."
+            ),
+            authoritative_no_booking=False,
+        )
     return NetworkBookingResult(
         ok=True,
         ticket=ticket,
