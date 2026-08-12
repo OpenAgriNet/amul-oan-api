@@ -52,13 +52,15 @@ def _is_shadow_retrieval_usable(shadow_payload: dict | None) -> tuple[bool, str]
         return False, "no_distilled_calls"
 
     all_snippets: list[str] = []
-    has_no_result = False
+    no_result_calls = 0
     best_overlap = 0.0
     for call in distilled_calls:
+        if bool(call.get("no_results", False)):
+            no_result_calls += 1
+            continue
+
         query = str(call.get("query", "") or "")
         snippets = call.get("snippets", []) or []
-        if bool(call.get("no_results", False)):
-            has_no_result = True
         for snippet in snippets:
             snippet_text = str(snippet or "").strip()
             if snippet_text:
@@ -66,7 +68,7 @@ def _is_shadow_retrieval_usable(shadow_payload: dict | None) -> tuple[bool, str]
                 if query:
                     best_overlap = max(best_overlap, _overlap_ratio(query, snippet_text))
 
-    if has_no_result:
+    if no_result_calls == len(distilled_calls):
         return False, "explicit_no_results"
     if len(all_snippets) < settings.suggestions_hybrid_min_snippets:
         return False, "insufficient_snippets"
