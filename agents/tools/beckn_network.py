@@ -27,6 +27,10 @@ logger = get_logger(__name__)
 
 VET_LEG = "amulvet"
 SCHEMES_LEG = "amulschemes"
+# Bharat Vistaar government schemes (KCC etc.), reached via the seeker's MOA leg.
+# Merged into scheme discovery so a farmer's scheme query surfaces Amul union
+# schemes AND Bharat Vistaar central schemes together.
+VISTAAR_LEG = "moa"
 
 
 def _providers(on_search: Any) -> list[dict]:
@@ -50,15 +54,24 @@ def _tag_map(item: dict) -> dict[str, str]:
 
 async def _seeker_search(query: str, leg: str, user_id: Optional[str] = None) -> Any:
     """POST the seeker BAP, scoped to a single leg; return that leg's on_search."""
+    return (await _seeker_search_legs(query, [leg], user_id)).get(leg)
+
+
+async def _seeker_search_legs(
+    query: str, legs: list[str], user_id: Optional[str] = None
+) -> dict[str, Any]:
+    """POST the seeker BAP for one or more legs; return the {leg: on_search} map.
+    One fan-out call aggregates every requested leg (the seeker mixes sync and
+    async legs itself), so callers can merge across sources."""
     url = f"{settings.amul_network_url.rstrip('/')}/search"
-    payload = {"query": query, "legs": [leg]}
+    payload: dict[str, Any] = {"query": query, "legs": legs}
     if user_id:
         payload["user_id"] = user_id
     async with httpx.AsyncClient(timeout=settings.amul_network_timeout_s) as client:
         r = await client.post(url, json=payload)
         r.raise_for_status()
         data = r.json()
-    return (data.get("results") or {}).get(leg)
+    return data.get("results") or {}
 
 
 async def network_search_documents(query: str, top_k: int = 12) -> str:
@@ -80,16 +93,18 @@ async def network_search_documents(query: str, top_k: int = 12) -> str:
 
 
 async def network_union_schemes(query: str, union: Optional[str] = None) -> str:
-    """Union-scheme discovery via the network (schemes:amul-union)."""
-    on_search = await _seeker_search(query or "schemes", SCHEMES_LEG)
-    items = _items(on_search)
+    """Scheme discovery via the network — Amul union schemes (schemes:amul-union)
+    AND Bharat Vistaar central schemes (via the MOA leg), merged so the farmer
+    sees both in one answer."""
+    results = await _seeker_search_legs(query or "schemes", [SCHEMES_LEG, VISTAAR_LEG])
+    union_items = _items(results.get(SCHEMES_LEG))
     if union:
         u = union.strip().lower()
-        items = [it for it in items if _tag_map(it).get("union", "").lower() == u] or items
-    if not items:
-        return "No union scheme data was found on the network for this query."
+        union_items = [it for it in union_items if _tag_map(it).get("union", "").lower() == u] or union_items
+    vistaar_items = _items(results.get(VISTAAR_LEG))
+
     out: list[dict] = []
-    for it in items:
+    for it in union_items:
         d = it.get("descriptor", {})
         tags = _tag_map(it)
         out.append({
@@ -98,7 +113,20 @@ async def network_union_schemes(query: str, union: Optional[str] = None) -> str:
             "union": tags.get("union"),
             "category": tags.get("category"),
             "source": tags.get("source"),
+            "source_network": "amul-union",
         })
+    for it in vistaar_items:
+        d = it.get("descriptor", {})
+        tags = _tag_map(it)
+        out.append({
+            "scheme_title": d.get("name"),
+            "description": d.get("long_desc") or d.get("short_desc"),
+            "category": tags.get("category"),
+            "source": tags.get("source"),
+            "source_network": "bharat-vistaar",
+        })
+    if not out:
+        return "No scheme data was found on the network for this query."
     import json
     return json.dumps(out, ensure_ascii=False, indent=2)
 

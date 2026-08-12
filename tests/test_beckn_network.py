@@ -54,8 +54,33 @@ class _FakeAsyncClient:
         return _FakeResponse(self._payload)
 
 
+def _leg_result(leg, items):
+    return {"message": {"catalog": {"providers": [{"id": leg, "items": items}]}}}
+
+
 def _seeker_payload(leg, items):
-    return {"results": {leg: {"message": {"catalog": {"providers": [{"id": leg, "items": items}]}}}}}
+    return {"results": {leg: _leg_result(leg, items)}}
+
+
+def _multi_leg_payload(by_leg):
+    """A seeker response covering several legs at once: {leg: items}."""
+    return {"results": {leg: _leg_result(leg, items) for leg, items in by_leg.items()}}
+
+
+class _LegAwareAsyncClient(_FakeAsyncClient):
+    """Like _FakeAsyncClient but answers only for the legs actually requested,
+    the way the real seeker does — so a caller that stops asking for a leg
+    stops receiving it."""
+    def __init__(self, by_leg):
+        super().__init__(None)
+        self._by_leg = by_leg
+
+    async def post(self, url, json=None):
+        self.calls.append((url, json))
+        asked = (json or {}).get("legs") or []
+        return _FakeResponse(_multi_leg_payload(
+            {leg: items for leg, items in self._by_leg.items() if leg in asked}
+        ))
 
 
 VET_ITEMS = [
@@ -67,6 +92,11 @@ SCHEME_ITEMS = [
      "tags": [{"code": "union", "value": "banas"}, {"code": "category", "value": "insurance"}]},
     {"id": "kutch-mineral", "descriptor": {"name": "Mineral Mixture", "long_desc": "Free mineral mixture."},
      "tags": [{"code": "union", "value": "kutch"}, {"code": "category", "value": "input-support"}]},
+]
+# Bharat Vistaar central schemes, served by the seeker's MOA leg.
+VISTAAR_SCHEME_ITEMS = [
+    {"id": "kcc", "descriptor": {"name": "Kisan Credit Card", "long_desc": "Short-term credit for farmers."},
+     "tags": [{"code": "category", "value": "credit"}, {"code": "source", "value": "Bharat Vistaar"}]},
 ]
 
 
@@ -98,6 +128,68 @@ async def test_union_schemes_filters_by_union():
     parsed = json.loads(out)
     assert all(s["union"] == "banas" for s in parsed)
     assert parsed[0]["scheme_title"] == "Cattle Insurance"
+
+
+@pytest.mark.asyncio
+async def test_scheme_discovery_fans_out_to_both_legs_in_one_call():
+    fake = _LegAwareAsyncClient({"amulschemes": SCHEME_ITEMS, "moa": VISTAAR_SCHEME_ITEMS})
+    with patch.object(bn.httpx, "AsyncClient", return_value=fake):
+        await bn.network_union_schemes("credit")
+    # One fan-out request covering both legs, not two sequential searches.
+    assert len(fake.calls) == 1
+    assert fake.calls[0][1]["legs"] == [bn.SCHEMES_LEG, bn.VISTAAR_LEG]
+
+
+@pytest.mark.asyncio
+async def test_scheme_discovery_merges_union_and_vistaar_results():
+    fake = _LegAwareAsyncClient({"amulschemes": SCHEME_ITEMS, "moa": VISTAAR_SCHEME_ITEMS})
+    with patch.object(bn.httpx, "AsyncClient", return_value=fake):
+        parsed = json.loads(await bn.network_union_schemes("credit"))
+    titles = [s["scheme_title"] for s in parsed]
+    assert "Cattle Insurance" in titles and "Kisan Credit Card" in titles
+    by_title = {s["scheme_title"]: s for s in parsed}
+    assert by_title["Cattle Insurance"]["source_network"] == "amul-union"
+    assert by_title["Kisan Credit Card"]["source_network"] == "bharat-vistaar"
+    # Central schemes have no owning union — the key must not be faked.
+    assert by_title["Kisan Credit Card"].get("union") is None
+
+
+@pytest.mark.asyncio
+async def test_union_filter_does_not_drop_vistaar_schemes():
+    fake = _LegAwareAsyncClient({"amulschemes": SCHEME_ITEMS, "moa": VISTAAR_SCHEME_ITEMS})
+    with patch.object(bn.httpx, "AsyncClient", return_value=fake):
+        parsed = json.loads(await bn.network_union_schemes("credit", union="banas"))
+    unions = [s.get("union") for s in parsed if s["source_network"] == "amul-union"]
+    assert unions == ["banas"]
+    assert any(s["source_network"] == "bharat-vistaar" for s in parsed)
+
+
+@pytest.mark.asyncio
+async def test_scheme_discovery_survives_a_dead_vistaar_leg():
+    # The seeker reports a failed leg as null; the union half must still answer.
+    fake = _FakeAsyncClient({"results": {
+        "amulschemes": _leg_result("amulschemes", SCHEME_ITEMS), "moa": None,
+    }})
+    with patch.object(bn.httpx, "AsyncClient", return_value=fake):
+        parsed = json.loads(await bn.network_union_schemes("insurance"))
+    assert {s["source_network"] for s in parsed} == {"amul-union"}
+
+
+@pytest.mark.asyncio
+async def test_scheme_discovery_empty_on_both_legs():
+    fake = _FakeAsyncClient(_multi_leg_payload({"amulschemes": [], "moa": []}))
+    with patch.object(bn.httpx, "AsyncClient", return_value=fake):
+        out = await bn.network_union_schemes("nonsense")
+    assert "No scheme data was found" in out
+
+
+@pytest.mark.asyncio
+async def test_single_leg_wrapper_still_scopes_to_one_leg():
+    fake = _FakeAsyncClient(_seeker_payload("amulvet", VET_ITEMS))
+    with patch.object(bn.httpx, "AsyncClient", return_value=fake):
+        on_search = await bn._seeker_search("mastitis", bn.VET_LEG, user_id="u-1")
+    assert fake.calls[0][1] == {"query": "mastitis", "legs": ["amulvet"], "user_id": "u-1"}
+    assert bn._items(on_search)[0]["descriptor"]["name"] == "Mastitis care"
 
 
 @pytest.mark.asyncio
