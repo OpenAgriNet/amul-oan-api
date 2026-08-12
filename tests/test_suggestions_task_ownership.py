@@ -1,5 +1,4 @@
 import asyncio
-import json
 from types import SimpleNamespace
 
 import pytest
@@ -17,9 +16,9 @@ class FakeOwnershipRedis:
 
         if "suggestions_claim_turn" in script:
             latest_key, pending_key, result_key = keys
-            turn_id = argv[0]
+            turn_id, pending_json = argv[0], argv[2]
             self.store[latest_key] = turn_id
-            self.store[pending_key] = turn_id
+            self.store[pending_key] = pending_json
             self.store.pop(result_key, None)
             return 1
 
@@ -29,20 +28,18 @@ class FakeOwnershipRedis:
             if self.store.get(latest_key) != turn_id:
                 return 0
             self.store[result_key] = suggestions_json
-            if self.store.get(pending_key) == turn_id:
-                self.store.pop(pending_key, None)
+            self.store.pop(pending_key, None)
             self.store.pop(latest_key, None)
             return 1
 
         if "suggestions_clear_if_owned" in script:
             pending_key, latest_key = keys
             turn_id = argv[0]
-            cleared = 0
-            for key in (pending_key, latest_key):
-                if self.store.get(key) == turn_id:
-                    self.store.pop(key)
-                    cleared += 1
-            return cleared
+            if self.store.get(latest_key) != turn_id:
+                return 0
+            self.store.pop(pending_key, None)
+            self.store.pop(latest_key, None)
+            return 1
 
         raise AssertionError("unexpected Lua script")
 
@@ -66,6 +63,17 @@ def ownership_env(monkeypatch):
     monkeypatch.setattr(sug, "get_langfuse_client", None)
     monkeypatch.setattr(sug, "propagate_attributes", None)
     return fake_redis
+
+
+def test_claim_stores_json_compatible_pending_marker(ownership_env):
+    async def scenario():
+        await sug.claim_suggestions_turn("session", "gu", "current-turn", 30)
+
+        _, pending_key, latest_key = sug._suggestions_cache_keys("session", "gu")
+        assert sug.cache.serializer.loads(ownership_env.store[pending_key]) is True
+        assert ownership_env.store[latest_key] == "current-turn"
+
+    asyncio.run(scenario())
 
 
 def test_older_task_finishing_last_cannot_overwrite_newer_suggestions(
@@ -105,7 +113,7 @@ def test_older_task_finishing_last_cannot_overwrite_newer_suggestions(
         result_key, _, _ = sug._suggestions_cache_keys("session", "gu")
         assert new_result == ["new suggestion"]
         assert old_result == []
-        assert json.loads(ownership_env.store[result_key]) == ["new suggestion"]
+        assert sug.cache.serializer.loads(ownership_env.store[result_key]) == ["new suggestion"]
 
     asyncio.run(scenario())
 
@@ -132,7 +140,7 @@ def test_older_task_cannot_clear_newer_pending_state(monkeypatch, ownership_env)
         assert await old_task == []
 
         _, pending_key, latest_key = sug._suggestions_cache_keys("session", "gu")
-        assert ownership_env.store[pending_key] == "new-turn"
+        assert sug.cache.serializer.loads(ownership_env.store[pending_key]) is True
         assert ownership_env.store[latest_key] == "new-turn"
 
     asyncio.run(scenario())
@@ -154,7 +162,7 @@ def test_latest_task_publishes_and_clears_pending(monkeypatch, ownership_env):
 
         result_key, pending_key, latest_key = sug._suggestions_cache_keys("session", "gu")
         assert result == ["current suggestion"]
-        assert json.loads(ownership_env.store[result_key]) == ["current suggestion"]
+        assert sug.cache.serializer.loads(ownership_env.store[result_key]) == ["current suggestion"]
         assert pending_key not in ownership_env.store
         assert latest_key not in ownership_env.store
 

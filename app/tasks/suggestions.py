@@ -49,7 +49,7 @@ async def claim_suggestions_turn(
         """
         -- suggestions_claim_turn
         redis.call('set', KEYS[1], ARGV[1], 'EX', tonumber(ARGV[2]))
-        redis.call('set', KEYS[2], ARGV[1], 'EX', tonumber(ARGV[3]))
+        redis.call('set', KEYS[2], ARGV[3], 'EX', tonumber(ARGV[4]))
         redis.call('del', KEYS[3])
         return 1
         """,
@@ -59,6 +59,7 @@ async def claim_suggestions_turn(
         result_key,
         request_turn_id,
         str(settings.suggestions_cache_ttl),
+        json.dumps(True),
         str(pending_ttl),
     )
 
@@ -78,9 +79,7 @@ async def _publish_suggestions_if_latest(
             return 0
         end
         redis.call('set', KEYS[2], ARGV[2], 'EX', tonumber(ARGV[3]))
-        if redis.call('get', KEYS[3]) == ARGV[1] then
-            redis.call('del', KEYS[3])
-        end
+        redis.call('del', KEYS[3])
         redis.call('del', KEYS[1])
         return 1
         """,
@@ -105,14 +104,12 @@ async def _clear_suggestions_turn_if_owned(
     cleared = await redis_client.eval(
         """
         -- suggestions_clear_if_owned
-        local cleared = 0
-        if redis.call('get', KEYS[1]) == ARGV[1] then
-            cleared = cleared + redis.call('del', KEYS[1])
+        if redis.call('get', KEYS[2]) ~= ARGV[1] then
+            return 0
         end
-        if redis.call('get', KEYS[2]) == ARGV[1] then
-            cleared = cleared + redis.call('del', KEYS[2])
-        end
-        return cleared
+        redis.call('del', KEYS[1])
+        redis.call('del', KEYS[2])
+        return 1
         """,
         2,
         pending_key,
