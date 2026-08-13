@@ -30,13 +30,13 @@ Three things about this table are load-bearing:
 
 ⚠️ **VERIFICATION STATUS — read before trusting any coordinate.**
 
-`verified=True` means only this: that coordinate was observed returning mandi
-rows from the live BV BPP during the 2026-08-12 probe sweep. Everything else is
-`verified=False` — geocoded offline from OpenStreetMap (Nominatim, one pass,
-rate-limited, literals committed) and **never exercised against BV**, because BV
-has been down since 2026-08-13 (`responses: []` from their BAP, both legs
-timing out). Run `scripts/validate_district_coords.py` when BV recovers and
-promote rows on evidence, not on plausibility.
+`verified=True` means only this: that coordinate returned mandi rows from the
+live BV playground BPP during the 2026-08-12 or repeat-2 2026-08-13 sweeps. The
+second sweep covered Onion, Wheat, Bajra, Castor and Groundnut: 540 probes, zero
+transport errors, and zero disagreements between repeats. `Dwarka` and `Rapar`
+returned zero for all five commodities and were removed rather than retained as
+latency-only fallbacks. Re-run `scripts/validate_district_coords.py` against BV
+production before treating any of this as production evidence.
 
 Two further cautions from the same sweep:
   - **Bharuch/Narmada resolve to `Sendhwa APMC, Madhya Pradesh`** (3/3). The
@@ -110,63 +110,59 @@ DISTRICTS: dict[str, DistrictLocation] = dict(
     [
         _d("ahmedabad", "Ahmedabad",
            Candidate("Ahmedabad", 23.022, 72.580, verified=True),
-           Candidate("Viramgam", 23.122, 72.048)),
+           Candidate("Viramgam", 23.122, 72.048, verified=True)),
         _d("amreli", "Amreli",
            Candidate("Amreli", 21.418, 71.250, verified=True),
-           Candidate("Savarkundla", 21.339, 71.308)),
+           Candidate("Savarkundla", 21.339, 71.308, verified=True)),
         _d("anand", "Anand",
            Candidate("Anand", 22.474, 72.736, verified=True)),
         _d("aravalli", "Aravalli",
            Candidate("Modasa", 23.463, 73.299, verified=True)),
         # Banaskantha leads with Deesa, not the administrative HQ Palanpur:
-        # Deesa + Onion returned 10 rows from Deesa Veg Yard where Palanpur
-        # returned 3 rows from Abu Road APMC, *Rajasthan*. ⚠️ That evidence is
-        # onion-only and Deesa's known yard is a vegetable yard, so the grain
-        # case is untested — which is why Palanpur stays as candidate 2 rather
-        # than being dropped. Tharad covers the north-Banaskantha milk belt.
+        # The repeat-2 five-commodity sweep kept Deesa and Palanpur tied on all
+        # four grains; Deesa remained the better Onion anchor. Tharad returned
+        # its own Wheat/Bajra market and covers the north-Banaskantha milk belt.
         _d("banaskantha", "Banaskantha",
            Candidate("Deesa", 24.260, 72.180, verified=True),
-           Candidate("Palanpur", 24.171, 72.437),
-           Candidate("Tharad", 24.387, 71.625)),
+           Candidate("Palanpur", 24.171, 72.437, verified=True),
+           Candidate("Tharad", 24.387, 71.625, verified=True)),
         # ⚠️ Bharuch resolves upstream to Sendhwa APMC, Madhya Pradesh (3/3) —
         # a wrong stored coordinate in the BPP, not a wrong coordinate here.
         _d("bharuch", "Bharuch",
-           Candidate("Bharuch", 21.708, 72.996),
-           Candidate("Jambusar", 22.051, 72.807)),
+           Candidate("Bharuch", 21.708, 72.996, verified=True),
+           Candidate("Jambusar", 22.051, 72.807, verified=True)),
         _d("bhavnagar", "Bhavnagar",
            Candidate("Bhavnagar", 21.772, 72.142, verified=True),
-           Candidate("Mahuva", 21.091, 71.762)),
+           Candidate("Mahuva", 21.091, 71.762, verified=True)),
         _d("botad", "Botad",
            Candidate("Botad", 22.047, 71.669, verified=True)),
         _d("chhotaudaipur", "Chhota Udaipur",
-           Candidate("Chhota Udaipur", 22.315, 74.014),
-           Candidate("Bodeli", 22.275, 73.717)),
+           Candidate("Chhota Udaipur", 22.315, 74.014, verified=True),
+           Candidate("Bodeli", 22.275, 73.717, verified=True)),
         _d("dahod", "Dahod",
            Candidate("Dahod", 22.919, 74.134, verified=True),
-           Candidate("Devgadh Baria", 22.701, 73.909)),
+           Candidate("Devgadh Baria", 22.701, 73.909, verified=True)),
         _d("dang", "Dang",
-           Candidate("Ahwa", 20.759, 73.687)),
+           Candidate("Ahwa", 20.759, 73.687, verified=True)),
         _d("devbhoomidwarka", "Devbhoomi Dwarka",
-           Candidate("Khambhalia", 22.210, 69.650),
-           Candidate("Dwarka", 22.243, 68.961)),
+           Candidate("Khambhalia", 22.210, 69.650, verified=True)),
         _d("gandhinagar", "Gandhinagar",
            Candidate("Gandhinagar", 23.223, 72.649, verified=True)),
         _d("girsomnath", "Gir Somnath",
            Candidate("Veraval", 20.910, 70.365, verified=True),
-           Candidate("Una", 20.820, 71.039)),
+           Candidate("Una", 20.820, 71.039, verified=True)),
         _d("jamnagar", "Jamnagar",
            Candidate("Jamnagar", 22.473, 70.055, verified=True)),
         _d("junagadh", "Junagadh",
            Candidate("Junagadh", 21.522, 70.458, verified=True),
-           Candidate("Visavadar", 21.342, 70.753)),
+           Candidate("Visavadar", 21.342, 70.753, verified=True)),
         # Kheda farmers are Amul (Kaira) — the union is not called "Nadiad".
         _d("kheda", "Kheda",
            Candidate("Nadiad", 22.690, 72.871, verified=True),
-           Candidate("Kapadvanj", 23.023, 73.073)),
+           Candidate("Kapadvanj", 23.023, 73.073, verified=True)),
         _d("kutch", "Kutch",
            Candidate("Bhuj", 23.247, 69.668, verified=True),
-           Candidate("Bhachau", 23.298, 70.346),
-           Candidate("Rapar", 23.571, 70.645)),
+           Candidate("Bhachau", 23.298, 70.346, verified=True)),
         _d("mahisagar", "Mahisagar",
            Candidate("Lunawada", 23.129, 73.610, verified=True)),
         _d("mehsana", "Mehsana",
@@ -174,36 +170,36 @@ DISTRICTS: dict[str, DistrictLocation] = dict(
         _d("morbi", "Morbi",
            Candidate("Morbi", 22.800, 70.886, verified=True)),
         _d("narmada", "Narmada",
-           Candidate("Rajpipla", 21.870, 73.505)),
+           Candidate("Rajpipla", 21.870, 73.505, verified=True)),
         _d("navsari", "Navsari",
            Candidate("Navsari", 20.952, 72.932, verified=True)),
         _d("panchmahal", "Panchmahal",
            Candidate("Godhra", 22.779, 73.625, verified=True),
-           Candidate("Halol", 22.506, 73.472)),
+           Candidate("Halol", 22.506, 73.472, verified=True)),
         _d("patan", "Patan",
            Candidate("Patan", 23.774, 71.680, verified=True),
-           Candidate("Radhanpur", 23.832, 71.610)),
+           Candidate("Radhanpur", 23.832, 71.610, verified=True)),
         _d("porbandar", "Porbandar",
            Candidate("Porbandar", 21.603, 69.854, verified=True)),
         _d("rajkot", "Rajkot",
            Candidate("Rajkot", 22.305, 70.803, verified=True),
-           Candidate("Jetpur", 21.754, 70.619)),
+           Candidate("Jetpur", 21.754, 70.619, verified=True)),
         _d("sabarkantha", "Sabarkantha",
            Candidate("Himatnagar", 23.597, 72.959, verified=True),
-           Candidate("Idar", 23.841, 73.000)),
+           Candidate("Idar", 23.841, 73.000, verified=True)),
         _d("surat", "Surat",
            Candidate("Surat", 21.209, 72.832, verified=True),
-           Candidate("Bardoli", 21.122, 73.114)),
+           Candidate("Bardoli", 21.122, 73.114, verified=True)),
         _d("surendranagar", "Surendranagar",
            Candidate("Surendranagar", 22.825, 71.621, verified=True),
-           Candidate("Dhrangadhra", 22.991, 71.466)),
+           Candidate("Dhrangadhra", 22.991, 71.466, verified=True)),
         _d("tapi", "Tapi",
-           Candidate("Vyara", 21.112, 73.396)),
+           Candidate("Vyara", 21.112, 73.396, verified=True)),
         _d("vadodara", "Vadodara",
            Candidate("Vadodara", 22.297, 73.194, verified=True)),
         _d("valsad", "Valsad",
            Candidate("Valsad", 20.432, 73.141, verified=True),
-           Candidate("Vapi", 20.372, 72.917)),
+           Candidate("Vapi", 20.372, 72.917, verified=True)),
     ]
 )
 

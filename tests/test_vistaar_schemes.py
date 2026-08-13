@@ -188,6 +188,28 @@ async def test_null_leg_without_an_errors_entry_is_still_a_failure():
 
 
 @pytest.mark.asyncio
+async def test_direct_bap_with_no_on_search_is_a_failure_not_an_empty_catalogue():
+    clients = []
+    with patch.object(vistaar, "VISTAAR_SEEKER_URL", ""):
+        with patch.object(vistaar.httpx, "AsyncClient", _client_factory({"responses": []}, clients)):
+            with pytest.raises(vistaar.VistaarLegUnavailable):
+                await vistaar._vistaar_search(
+                    {"category": {"descriptor": {"code": "price-discovery"}}}
+                )
+
+
+@pytest.mark.asyncio
+async def test_direct_bap_with_an_empty_catalogue_remains_a_genuine_miss():
+    payload = {"responses": [{"message": {"catalog": {"providers": []}}}]}
+    clients = []
+    with patch.object(vistaar, "VISTAAR_SEEKER_URL", ""):
+        with patch.object(vistaar.httpx, "AsyncClient", _client_factory(payload, clients)):
+            assert await vistaar._vistaar_search(
+                {"category": {"descriptor": {"code": "price-discovery"}}}
+            ) == []
+
+
+@pytest.mark.asyncio
 async def test_healthy_but_empty_leg_still_says_none_found():
     """The unavailable message must not swallow genuine misses."""
     clients = []

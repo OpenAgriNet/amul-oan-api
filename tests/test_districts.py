@@ -98,43 +98,25 @@ class TestCoordinatesAreSane:
         assert len(DISTRICTS["banaskantha"].candidates) >= 2
 
     def test_banaskantha_leads_with_deesa_not_palanpur(self):
-        # Measured: Deesa + Onion -> 10 rows from Deesa Veg Yard; Palanpur +
-        # Onion -> 3 rows from Abu Road APMC, Rajasthan. Banas is Amul's largest
+        # Repeat-2 across Onion + four grains left the grain coverage tied, while
+        # Deesa remained the stronger Onion anchor. Banas is Amul's largest
         # union, so the order of these two candidates is not cosmetic.
         assert DISTRICTS["banaskantha"].primary.town == "Deesa"
         assert "Palanpur" in [c.town for c in DISTRICTS["banaskantha"].candidates]
 
 
 class TestVerificationHonesty:
-    def test_only_actually_probed_coordinates_claim_verified(self):
+    def test_every_retained_coordinate_has_live_repeat_two_evidence(self):
         """`verified` means observed returning live BV rows — nothing else.
 
-        BV has been down since 2026-08-13, so no coordinate added after that can
-        legitimately carry the flag. This list is the 2026-08-12 sweep; adding to
-        it requires evidence from scripts/validate_district_coords.py, not
-        confidence.
+        The 2026-08-13 sweep covered all 54 draft candidates across five
+        commodities. The 52 retained candidates returned rows in two agreeing
+        runs; all-zero Dwarka and Rapar were removed as latency-only fallbacks.
         """
-        observed = {
-            "Anand", "Rajkot", "Junagadh", "Deesa", "Gandhinagar", "Ahmedabad",
-            "Mehsana", "Patan", "Dahod", "Porbandar", "Jamnagar", "Morbi",
-            "Bhavnagar", "Botad", "Amreli", "Surat", "Navsari", "Valsad", "Bhuj",
-            "Godhra", "Modasa", "Himatnagar", "Nadiad", "Vadodara",
-            "Surendranagar", "Veraval", "Lunawada",
-        }
-        claimed = {
-            c.town
-            for loc in DISTRICTS.values()
-            for c in loc.candidates
-            if c.verified
-        }
-        assert claimed == observed
-
-    def test_most_coordinates_are_still_provisional(self):
-        total = sum(len(loc.candidates) for loc in DISTRICTS.values())
-        verified = sum(c.verified for loc in DISTRICTS.values() for c in loc.candidates)
-        assert 0 < verified < total, (
-            "either nothing is verified or everything claims to be; both are wrong"
-        )
+        candidates = [c for loc in DISTRICTS.values() for c in loc.candidates]
+        assert len(candidates) == 52
+        assert all(c.verified for c in candidates)
+        assert {c.town for c in candidates}.isdisjoint({"Dwarka", "Rapar"})
 
 
 class TestNormalisation:

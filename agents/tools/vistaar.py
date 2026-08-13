@@ -179,7 +179,15 @@ async def _vistaar_search(intent: dict) -> list[dict]:
             json={"context": _context(), "message": {"intent": intent}},
         )
         r.raise_for_status()
-        return _items(r.json())
+        body = r.json()
+        # The sync BAP client wraps each received on_search in `responses`.
+        # An empty wrapper means nobody replied before its internal timeout; it
+        # is infrastructure failure, not a genuine empty catalogue. A present
+        # response whose catalog has zero providers/items remains a valid miss.
+        if body.get("responses") == []:
+            logger.warning("vistaar direct BAP returned no on_search responses")
+            raise VistaarLegUnavailable("no on_search returned")
+        return _items(body)
 
 
 # ── Location resolution ──────────────────────────────────────────────────────
