@@ -5,14 +5,8 @@ base_url/key), shim identity (synthesize_from_env reproduces the legacy env
 wiring), resolver returns a non-empty chain, and the default-OFF flag posture.
 
 Zero network: building a pydantic-ai Model / AsyncOpenAI client is lazy (no call
-is made), and no test invokes a model. Sets a dummy OPENAI_API_KEY before
-importing app code because agents.models constructs the managed model eagerly.
-
-NOTE: these tests deliberately avoid importing app.services.translation /
-agents.tools, which fail to import under the locally-installed pydantic-ai
-(0.2.4) vs the repo-pinned 1.50.0 — a pre-existing environment mismatch unrelated
-to llm_core. The AGENT-step identity check compares against agents.models, which
-imports cleanly.
+is made), and no test invokes a model. The dummy key is read only by factory
+handles materialized inside these tests.
 """
 
 import os
@@ -61,8 +55,7 @@ def test_factory_openai_agent_targets_openai_default():
 
 
 def test_factory_anthropic_agent_builds_anthropic_model():
-    # AnthropicModel reads ANTHROPIC_API_KEY from env at construction (matching
-    # the legacy agents/models anthropic arm).
+    # AnthropicModel reads ANTHROPIC_API_KEY from env at construction.
     os.environ["ANTHROPIC_API_KEY"] = "anthropic-dummy"
     tier = Tier(provider=Provider.ANTHROPIC, model="claude-haiku-4-5", api_key_env="ANTHROPIC_API_KEY")
     handle = build_handle(tier, StepClientKind.AGENT)

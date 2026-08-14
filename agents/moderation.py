@@ -3,7 +3,6 @@ from typing import Literal
 from pydantic_ai import Agent
 from helpers.utils import get_prompt
 from pydantic_ai.models import ModelSettings
-from agents.models import LLM_MODEL
 
 
 class QueryModerationResult(BaseModel):
@@ -24,7 +23,8 @@ class QueryModerationResult(BaseModel):
         return f"**Moderation Recommendation:** {self.action} ({category_str})"
 
 moderation_agent = Agent(
-    model=LLM_MODEL,
+    # Resolved per turn by app.llm_core; no construction-time provider fallback.
+    model=None,
     name="Moderation Agent",
     instructions=get_prompt('moderation_system'),
     instrument=True,

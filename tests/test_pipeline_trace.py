@@ -41,10 +41,8 @@ from app.llm_core.config_model import (
     Tier,
     Triggers,
 )
-# NB: app.services.fallback is imported LAZILY (via importorskip) inside the one
-# test that needs it — importing it at module top pulls in agents.models, which
-# fails under the local pydantic-ai 0.2.4 vs pinned 1.x mismatch and would break
-# collection of the whole (otherwise network-free) module. Mirrors test_split.py.
+# NB: app.services.fallback is imported lazily inside the one test that needs it
+# to keep this otherwise network-free tracer module narrowly scoped.
 
 
 def _oss_tier(model="gemma"):
