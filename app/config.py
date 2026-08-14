@@ -460,7 +460,6 @@ class Settings(BaseSettings):
     amul_network_timeout_s: float = float(os.getenv("AMUL_NETWORK_TIMEOUT_S", "35"))
     # Bharat Vistaar network settings used by tool layer.
     vistaar_bap_url: str = os.getenv("VISTAAR_BAP_URL", "https://bap-client-playground-sandbox-vistaar.da.gov.in").rstrip("/")
-    vistaar_timeout_s: float = Field(default=40.0, validation_alias="VISTAAR_TIMEOUT_S")
     vistaar_default_lat: float = Field(default=22.55, validation_alias="VISTAAR_DEFAULT_LAT")
     vistaar_default_lon: float = Field(default=72.93, validation_alias="VISTAAR_DEFAULT_LON")
     vistaar_seeker_url: str = os.getenv("VISTAAR_SEEKER_URL", "http://amul-bap-seeker:3000").rstrip("/")
@@ -515,7 +514,6 @@ class Settings(BaseSettings):
         "scheme_http_timeout_seconds": ("SCHEME_HTTP_TIMEOUT_SECONDS", 30.0, 0.001, None),
         "scheme_ocr_max_failed_page_ratio": ("SCHEME_OCR_MAX_FAILED_PAGE_RATIO", 0.15, 0.0, 1.0),
         "scheme_banas_min_record_coverage_ratio": ("SCHEME_BANAS_MIN_RECORD_COVERAGE_RATIO", 0.85, 0.0, 1.0),
-        "vistaar_timeout_s": ("VISTAAR_TIMEOUT_S", 40.0, 0.001, None),
         "vistaar_default_lat": ("VISTAAR_DEFAULT_LAT", 22.55, -90.0, 90.0),
         "vistaar_default_lon": ("VISTAAR_DEFAULT_LON", 72.93, -180.0, 180.0),
         "farmer_backend_http_timeout_seconds": ("FARMER_BACKEND_HTTP_TIMEOUT_SECONDS", 30.0, 0.001, None),
@@ -568,7 +566,6 @@ class Settings(BaseSettings):
         "scheme_http_timeout_seconds",
         "scheme_ocr_max_failed_page_ratio",
         "scheme_banas_min_record_coverage_ratio",
-        "vistaar_timeout_s",
         "vistaar_default_lat",
         "vistaar_default_lon",
         "farmer_backend_http_timeout_seconds",
