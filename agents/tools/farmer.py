@@ -14,8 +14,8 @@ from agents.tools.farmer_animal_backends import (
     _fetch_farmer_herdman_raw,
     normalize_phone, merge_farmer_data, merge_farmer_records,
 )
-from agents.models.farmer import FarmerRecord
 from app.models.farmer import FarmerModel
+from app.models.farmer_transport import FarmerRecord
 from app.models.union import UnionName
 from helpers.utils import get_logger, is_from_union
 

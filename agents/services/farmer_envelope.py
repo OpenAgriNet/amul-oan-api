@@ -5,7 +5,7 @@ Surface-agnostic: used by the chat loan tool and by the voice turn builder.
 from typing import Optional
 
 from agents.deps import FarmerAccount
-from agents.models.farmer import FarmerDataEnvelope
+from app.models.farmer_transport import FarmerDataEnvelope
 
 
 def collect_farmer_accounts(envelope: Optional[FarmerDataEnvelope]) -> list[FarmerAccount]:

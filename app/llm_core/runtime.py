@@ -6,11 +6,10 @@ current env (``legacy_shim``), validates it, stores it in the module global
 ``PIPELINE``, and runs the identity self-check. ``get_pipeline()`` lazily
 configures on first use so request paths and tests never see ``None``.
 
-Identity self-check (the P0 bar): for the current ``.env`` it logs the resolved
-(provider, base_url, model, timeout) per step and asserts they equal the legacy
-singletons (``agents.models`` / ``translation.py``). A mismatch raises only when
-``LLM_CORE_ENABLED`` is on — so a flag-off boot can never be broken by a shim
-edge case, while flipping the flag on is gated on true identity.
+The startup self-check logs the resolved (provider, base URL, model, timeout)
+for every configured step and verifies that every primary tier materializes.
+Agents carry no construction-time model; this module is the only runtime model
+selection path.
 """
 
 from __future__ import annotations

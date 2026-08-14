@@ -27,7 +27,7 @@ from typing import Optional
 from app.core.cache import cache, redis_client, build_cache_key
 from app.config import settings
 from app.observability import start_observation
-from agents.models.farmer import FarmerDataEnvelope, FarmerRecord
+from app.models.farmer_transport import FarmerDataEnvelope, FarmerRecord
 from agents.tools.farmer_animal_backends import (
     GetAITechniciansBySocietyQueryParams,
     get_ai_technicians_by_society_api,
