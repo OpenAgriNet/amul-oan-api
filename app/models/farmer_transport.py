@@ -1,6 +1,9 @@
-"""
-Typed models for farmer and animal data from PashuGPT APIs.
-Used throughout both chat and voice backends for consistent data handling.
+"""Transport and cache models for farmer data from PashuGPT APIs.
+
+These camelCase records deliberately remain separate from
+``app.models.farmer.FarmerModel``, the normalized snake_case domain model. They
+live beside that model so the two representations and their conversion boundary
+are explicit instead of being split between ``app.models`` and ``agents.models``.
 """
 from datetime import datetime, timezone
 from typing import List, Optional, Union
@@ -9,7 +12,8 @@ from pydantic import BaseModel, ConfigDict
 
 
 class AnimalRecord(BaseModel):
-    """Canonical animal record — fields normalized from amulpashudhan and herdman APIs."""
+    """Canonical animal record normalized from amulpashudhan and herdman APIs."""
+
     model_config = ConfigDict(extra="allow")
 
     tagNumber: Optional[str] = None
@@ -29,7 +33,8 @@ class AnimalRecord(BaseModel):
 
 
 class FarmerRecord(BaseModel):
-    """Single farmer record from PashuGPT APIs. Accepts both camelCase and snake_case keys."""
+    """Single farmer transport record accepting camelCase and snake_case keys."""
+
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
     farmerName: Optional[str] = None
@@ -41,19 +46,18 @@ class FarmerRecord(BaseModel):
 
     @classmethod
     def model_validate(cls, obj, **kwargs):
-        """Accept snake_case keys from FarmerModel.model_dump() and map to camelCase."""
+        """Map normalized ``FarmerModel`` dumps back to the transport shape."""
         if isinstance(obj, dict):
             mapped = dict(obj)
-            _SNAKE_TO_CAMEL = {
+            snake_to_camel = {
                 "farmer_name": "farmerName",
                 "society_name": "societyName",
                 "farmer_code": "farmerCode",
                 "total_animals": "totalAnimals",
             }
-            for snake, camel in _SNAKE_TO_CAMEL.items():
+            for snake, camel in snake_to_camel.items():
                 if snake in mapped and camel not in mapped:
                     mapped[camel] = mapped.pop(snake)
-            # animal_tags is a list from FarmerModel; convert back to comma-separated string for tagNo
             if "animal_tags" in mapped and "tagNo" not in mapped:
                 tags = mapped.pop("animal_tags")
                 mapped["tagNo"] = ",".join(tags) if isinstance(tags, list) else tags
@@ -62,7 +66,8 @@ class FarmerRecord(BaseModel):
 
 
 class FarmerSummary(BaseModel):
-    """Lightweight farmer summary — safe to embed in JWT payload."""
+    """Lightweight farmer summary safe to embed in a JWT payload."""
+
     farmerName: Optional[str] = None
     societyName: Optional[str] = None
     farmerCode: Optional[str] = None
@@ -71,23 +76,22 @@ class FarmerSummary(BaseModel):
 
 
 class FarmerDataEnvelope(BaseModel):
-    """Consistent wrapper used by both chat and voice backends.
+    """Cache envelope around raw farmer transport records.
 
-    Bucket B decision: FarmerModel (snake) stays the domain model; this envelope's
-    FarmerRecord stays the camelCase cache/transport shape. from_records keeps
-    chat's snake→camel bridge (model_dump() on non-dict records) so a FarmerModel
-    maps in cleanly. The stale/refreshAfter/lookupStatus/aiTechnicians fields back
-    the farmer SWR cache (bucket A Layer 2); they default to safe no-op values so
-    existing chat callers and the /user response are unaffected (additive only).
+    ``FarmerModel`` and ``FarmerRecord`` describe different boundaries. The
+    former is normalized for domain use; this envelope preserves the camelCase
+    cache/API representation. ``from_records`` is the explicit bridge between
+    them.
     """
+
     farmers: List[FarmerRecord] = []
     aiTechnicians: List[dict] = []
     fetchedAt: Optional[str] = None
-    source: Optional[str] = None  # "cache" | "api"
+    source: Optional[str] = None
     stale: bool = False
     staleReason: Optional[str] = None
     refreshAfter: Optional[str] = None
-    lookupStatus: Optional[str] = None  # "found" | "not_found"
+    lookupStatus: Optional[str] = None
 
     @classmethod
     def from_records(
@@ -96,14 +100,12 @@ class FarmerDataEnvelope(BaseModel):
         source: str = "api",
         lookup_status: str = "found",
     ) -> "FarmerDataEnvelope":
-        """Create envelope from raw record dicts or Pydantic models (FarmerModel
-        or FarmerRecord). Non-dicts are model_dump()'d so FarmerModel's snake_case
-        is mapped to camelCase via FarmerRecord.model_validate."""
+        """Create an envelope from raw dictionaries or Pydantic models."""
         farmers = [
             FarmerRecord.model_validate(
-                r if isinstance(r, dict) else r.model_dump()
+                record if isinstance(record, dict) else record.model_dump()
             )
-            for r in records
+            for record in records
         ]
         return cls(
             farmers=farmers,
@@ -114,8 +116,7 @@ class FarmerDataEnvelope(BaseModel):
 
     @classmethod
     def not_found(cls, source: str = "api") -> "FarmerDataEnvelope":
-        """Empty envelope tagged not_found (used by the SWR cache for confirmed
-        empty lookups)."""
+        """Return an empty envelope tagged as a confirmed upstream miss."""
         return cls(
             farmers=[],
             fetchedAt=datetime.now(timezone.utc).isoformat(),
@@ -124,7 +125,7 @@ class FarmerDataEnvelope(BaseModel):
         )
 
     def to_summary(self) -> FarmerSummary:
-        """Extract lightweight summary for JWT embedding."""
+        """Extract the first farmer's lightweight JWT summary."""
         first = self.farmers[0] if self.farmers else None
         return FarmerSummary(
             farmerName=first.farmerName if first else None,

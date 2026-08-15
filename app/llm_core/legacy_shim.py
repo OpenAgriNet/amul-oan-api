@@ -1,7 +1,7 @@
 """Identity shim: synthesize a :class:`PipelineConfig` from TODAY's env vars.
 
 ``synthesize_from_env()`` reads the env exactly as the current wiring reads it —
-``agents/models`` (managed + OSS agent models), ``translation.py``
+the former construction-time agent model wiring, ``translation.py``
 (pre/post-translation), ``pipeline_router`` (the OSS %-split) and the
 ``FALLBACK_*`` timeouts — and emits an equivalent config so that, with
 ``LLM_CORE_ENABLED`` on, the resolver reproduces the legacy provider / base_url /
