@@ -160,7 +160,7 @@ async def test_dead_leg_reports_mandi_prices_unavailable_not_none_found():
     payload = {"results": {leg: None}, "errors": {leg: "timeout"}}
     clients = []
     with patch.object(vistaar.httpx, "AsyncClient", _client_factory(payload, clients)):
-        out = await vistaar.get_vistaar_mandi_prices("Tomato")
+        out = await vistaar.get_vistaar_mandi_prices(None, "Tomato")
     assert "temporarily unavailable" in out.lower()
     assert "No mandi prices were found" not in out
 
@@ -183,8 +183,30 @@ async def test_null_leg_without_an_errors_entry_is_still_a_failure():
     payload = {"results": {vistaar.VISTAAR_LEG: None}}
     clients = []
     with patch.object(vistaar.httpx, "AsyncClient", _client_factory(payload, clients)):
-        out = await vistaar.get_vistaar_mandi_prices("Tomato")
+        out = await vistaar.get_vistaar_mandi_prices(None, "Tomato")
     assert "temporarily unavailable" in out.lower()
+
+
+@pytest.mark.asyncio
+async def test_direct_bap_with_no_on_search_is_a_failure_not_an_empty_catalogue():
+    clients = []
+    with patch.object(vistaar, "VISTAAR_SEEKER_URL", ""):
+        with patch.object(vistaar.httpx, "AsyncClient", _client_factory({"responses": []}, clients)):
+            with pytest.raises(vistaar.VistaarLegUnavailable):
+                await vistaar._vistaar_search(
+                    {"category": {"descriptor": {"code": "price-discovery"}}}
+                )
+
+
+@pytest.mark.asyncio
+async def test_direct_bap_with_an_empty_catalogue_remains_a_genuine_miss():
+    payload = {"responses": [{"message": {"catalog": {"providers": []}}}]}
+    clients = []
+    with patch.object(vistaar, "VISTAAR_SEEKER_URL", ""):
+        with patch.object(vistaar.httpx, "AsyncClient", _client_factory(payload, clients)):
+            assert await vistaar._vistaar_search(
+                {"category": {"descriptor": {"code": "price-discovery"}}}
+            ) == []
 
 
 @pytest.mark.asyncio
@@ -192,7 +214,7 @@ async def test_healthy_but_empty_leg_still_says_none_found():
     """The unavailable message must not swallow genuine misses."""
     clients = []
     with patch.object(vistaar.httpx, "AsyncClient", _client_factory(_seeker_ok([]), clients)):
-        out = await vistaar.get_vistaar_mandi_prices("Tomato")
+        out = await vistaar.get_vistaar_mandi_prices(None, "Tomato")
     assert "No mandi prices were found" in out
     assert "temporarily unavailable" not in out.lower()
 
@@ -211,6 +233,6 @@ async def test_calls_run_under_the_shared_network_budget():
     from app.config import settings
     clients = []
     with patch.object(vistaar.httpx, "AsyncClient", _client_factory(_seeker_ok([]), clients)):
-        await vistaar.get_vistaar_mandi_prices("Tomato")
+        await vistaar.get_vistaar_mandi_prices(None, "Tomato")
     assert clients[0].timeout == settings.amul_network_timeout_s
     assert clients[0].timeout <= 35
