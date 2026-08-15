@@ -7,6 +7,7 @@ from pydantic_ai import RunContext
 
 from agents.deps import FarmerContext
 from agents.tools.farmer_animal_backends import create_health_call_api
+from app.config import settings
 from app.core.cache import cache, try_reserve, release_reservation
 from app.models.ai_call import AISpecies
 from app.models.health_call import HealthCallRequestModel, HealthCaseType
@@ -18,7 +19,7 @@ logger = get_logger(__name__)
 # One booking per session per 30 min. Also makes this tool idempotent against an
 # agent re-run (OSS->managed streaming fallback re-executes tool calls): a second
 # invocation in the same session short-circuits instead of double-booking.
-HEALTH_CALL_COOLDOWN_TTL = 60 * 30  # 30 minutes
+HEALTH_CALL_COOLDOWN_TTL = settings.health_call_cooldown_ttl_seconds
 HEALTH_CALL_CACHE_NAMESPACE = "health_call_booked"
 
 
