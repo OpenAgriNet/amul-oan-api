@@ -37,10 +37,11 @@ logger = get_logger(__name__)
 
 VET_LEG = "amulvet"
 SCHEMES_LEG = "amulschemes"
-# Bharat Vistaar government schemes (KCC etc.), reached via the seeker's MOA leg.
-# Merged into scheme discovery so a farmer's scheme query surfaces Amul union
-# schemes AND Bharat Vistaar central schemes together.
-VISTAAR_LEG = "moa"
+# Bharat Vistaar government schemes (KCC etc.). Use the same configured leg as
+# the dedicated Vistaar tools: dev and production intentionally route through
+# different seeker legs, and hard-coding the legacy MOA leg sends production
+# scheme discovery back to the playground sandbox.
+VISTAAR_LEG = settings.vistaar_leg
 
 
 def _providers(on_search: Any) -> list[dict]:
@@ -144,7 +145,7 @@ async def network_search_documents(query: str, top_k: int = 12) -> str:
 
 async def network_union_schemes(query: str, union: Optional[str] = None) -> str:
     """Scheme discovery via the network — Amul union schemes (schemes:amul-union)
-    AND Bharat Vistaar central schemes (via the MOA leg), merged so the farmer
+    AND Bharat Vistaar central schemes (via the configured Vistaar leg), merged so the farmer
     sees both in one answer.
 
     Each leg gets its OWN query. The union leg takes the farmer's free text (it
