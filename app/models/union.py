@@ -53,6 +53,28 @@ def canonical_union_name(name: str | None) -> str:
     return UNION_NAME_ALIASES.get(key, key)
 
 
+# Canonical union names that must not book artificial-insemination calls.
+# Compare against ``canonical_union_name`` output so brand/spelling aliases
+# (e.g. "sarhad" for Kutch) hit the same entry.
+AI_CALL_BANNED_UNIONS: frozenset[str] = frozenset({UnionName.KUTCH.value})
+
+
+def is_ai_call_banned_union(name: str | None) -> bool:
+    """True when ``name`` canonicalizes to a union banned from AI-call booking."""
+    canonical = canonical_union_name(name)
+    return bool(canonical) and canonical in AI_CALL_BANNED_UNIONS
+
+
+def any_union_banned_from_ai_calls(names: list[str] | None) -> bool:
+    """True when any entry in ``names`` is banned from AI-call booking.
+
+    Farmer context stores unions as ``strip().lower()`` without alias mapping,
+    so this canonicalizes each name before checking :data:`AI_CALL_BANNED_UNIONS`.
+    An empty/missing list is not banned.
+    """
+    return any(is_ai_call_banned_union(name) for name in (names or []))
+
+
 def resolve_supported_unions(union_names: list[str] | None, supported_unions: set[str]) -> list[str]:
     """Canonicalize raw union names and keep only supported values.
 

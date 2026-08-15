@@ -12,6 +12,7 @@ from agents.tools.farmer_animal_backends import create_ai_call_api
 from app.config import settings
 from app.core.cache import cache, reserve, ReservationOutcome, release_reservation
 from app.models.ai_call import AICallRequestModel, AISpecies
+from app.models.union import any_union_banned_from_ai_calls
 from app.observability import start_observation
 from helpers.utils import get_logger
 
@@ -29,6 +30,9 @@ ALREADY_BOOKED_MESSAGE = (
     "Please try again later or contact your society for assistance."
 )
 OUT_OF_SCOPE_MESSAGE = "This helpline only handles dairy farming and animal husbandry questions."
+# Shared with farmer-context copy so banned unions hear the same refusal whether
+# the model follows the prompt or the tool is reached anyway.
+UNION_BANNED_MESSAGE = "AI calls are not allowed for your union."
 
 # The network route answered, but neither confirmed nor refused the booking. We
 # cannot prove the SMS did not go out, so the reservation is held for the TTL.
@@ -129,6 +133,8 @@ async def create_ai_call(
     Ask the farmer whether the booking is for a cow (ગાય) or buffalo (ભેંસ) before calling this tool.
     Never ask the farmer to speak an internal technician ID. Use the selected technician option
     already present in farmer context.
+    If Farmer Profile says AI call booking is not allowed for this union, tell the farmer
+    AI calls are not allowed for their union. Do not ask which technician and do not book.
 
     Args:
         ctx: The run context (automatically provided).
@@ -180,6 +186,18 @@ async def create_ai_call(
     if not await ctx.deps.ensure_in_scope():
         logger.info("AI call blocked: query failed moderation; session=%s", session_id)
         return OUT_OF_SCOPE_MESSAGE
+
+    # Union ban is a policy gate, not a booking write: refuse before Redis
+    # reservation and before either PashuGPT or Beckn. farmer_unions may be
+    # missing on test stubs and on unsigned-in turns — those are not banned.
+    farmer_unions = getattr(ctx.deps, "farmer_unions", []) if ctx and ctx.deps else []
+    if any_union_banned_from_ai_calls(farmer_unions):
+        logger.info(
+            "AI call blocked: union banned from AI-call booking unions=%s session=%s",
+            farmer_unions,
+            session_id,
+        )
+        return UNION_BANNED_MESSAGE
 
     _ai_tool_input = {
         "union_code": union_code,
