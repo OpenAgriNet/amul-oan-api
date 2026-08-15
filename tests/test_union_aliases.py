@@ -81,6 +81,42 @@ def test_tool_unsupported_union_still_fails(monkeypatch):
     assert "could not be determined" in out
 
 
+def test_network_failure_degrades_like_the_direct_path(monkeypatch):
+    """A raising seeker must not fail the tool.
+
+    The direct Redis path answers "temporarily unavailable"; before this the
+    `enable_network` branch returned *before* that error handling, so a seeker
+    timeout / HTTP error propagated out of the tool instead.
+    """
+    monkeypatch.setattr(us.settings, "scheme_require_union_auth", True)
+    monkeypatch.setattr(us.settings, "enable_network", True)
+
+    import agents.tools.beckn_network as bn
+
+    async def boom(scheme_name, union=None):
+        raise RuntimeError("seeker connection reset")
+
+    monkeypatch.setattr(bn, "network_union_schemes", boom)
+
+    out = asyncio.run(us.get_union_scheme_data(_ctx(["banas"]), None))
+    assert "temporarily unavailable" in out
+
+
+def test_network_success_is_returned_unchanged(monkeypatch):
+    monkeypatch.setattr(us.settings, "scheme_require_union_auth", True)
+    monkeypatch.setattr(us.settings, "enable_network", True)
+
+    import agents.tools.beckn_network as bn
+
+    async def ok(scheme_name, union=None):
+        assert union == "banas"
+        return "Banas Network Scheme"
+
+    monkeypatch.setattr(bn, "network_union_schemes", ok)
+
+    assert asyncio.run(us.get_union_scheme_data(_ctx(["banas"]), None)) == "Banas Network Scheme"
+
+
 def test_prepare_and_runtime_agree_for_banaskantha(monkeypatch):
     monkeypatch.setattr(us.settings, "scheme_require_union_auth", True)
     sentinel = object()

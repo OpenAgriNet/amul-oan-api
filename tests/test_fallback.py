@@ -1,8 +1,4 @@
-"""Unit tests for the standard OSS -> managed fallback module.
-
-Sets a dummy OPENAI_API_KEY before importing app code, because agents.models
-constructs the LLM model eagerly at import.
-"""
+"""Unit tests for the standard OSS -> managed fallback module."""
 
 import os
 

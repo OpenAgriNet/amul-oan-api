@@ -27,7 +27,7 @@ from typing import Optional
 from app.core.cache import cache, redis_client, build_cache_key
 from app.config import settings
 from app.observability import start_observation
-from agents.models.farmer import FarmerDataEnvelope, FarmerRecord
+from app.models.farmer_transport import FarmerDataEnvelope, FarmerRecord
 from agents.tools.farmer_animal_backends import (
     GetAITechniciansBySocietyQueryParams,
     get_ai_technicians_by_society_api,
@@ -40,8 +40,9 @@ logger = get_logger(__name__)
 FARMER_CACHE_TTL = settings.farmer_cache_retention_seconds  # hard retention in Redis (deletion), default 7d
 FARMER_REFRESH_INTERVAL = settings.farmer_refresh_interval_seconds  # soft expiry: refresh a "found" record, default 12h
 FARMER_NEGATIVE_REFRESH_INTERVAL = settings.farmer_negative_refresh_interval_seconds  # not_found refreshes sooner, default 2h
-FARMER_REFRESH_LOCK_TTL = 60 * 5  # dedupe concurrent refreshes for 5 minutes
-FARMER_COLD_FETCH_TIMEOUT = 4.0  # bounded blocking fetch for a cold/never-cached miss (cold ~3.1s observed)
+FARMER_REFRESH_LOCK_TTL = settings.farmer_refresh_lock_ttl_seconds  # dedupe concurrent refreshes
+FARMER_COLD_FETCH_TIMEOUT = settings.farmer_cold_fetch_timeout_seconds  # bounded cold/never-cached miss
+FARMER_REFRESH_QUEUE_BATCH_SIZE = settings.farmer_refresh_queue_batch_size
 # Beyond this age a cached record is too stale to serve: the read blocks on a
 # bounded API call instead (falls back to the stale record only if that fails).
 FARMER_MAX_SERVE_STALE_SECONDS = settings.farmer_max_serve_stale_seconds
@@ -294,7 +295,7 @@ async def refresh_farmer_data_bounded(
         return None
 
 
-async def drain_farmer_refresh_queue_once(batch: int = 20) -> int:
+async def drain_farmer_refresh_queue_once(batch: int = FARMER_REFRESH_QUEUE_BATCH_SIZE) -> int:
     """Pop up to `batch` queued phones and refresh each. Returns count processed."""
     try:
         members = await redis_client.spop(FARMER_REFRESH_QUEUE_KEY, batch)

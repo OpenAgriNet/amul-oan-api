@@ -189,5 +189,9 @@ cython_debug/
 
 # Local
 /scripts/*
+!/scripts/validate_district_coords.py
 /exploration/*
 /evals/*
+
+# Claude Code agent worktrees
+.claude/worktrees/

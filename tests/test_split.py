@@ -14,10 +14,8 @@ The bar these pin:
       fallback chain acquisition degrades to the legacy ``attempt_chain``.
 
 Zero network: routing is pure deterministic (no Redis). Building a factory handle
-is lazy (no model call is ever made). A dummy OPENAI_API_KEY / OSS key is set
-before importing app code (agents.models + the factory read keys at build time).
-These tests deliberately avoid app.services.translation / agents.tools, which
-fail to import under the local pydantic-ai 0.2.4 vs pinned 1.50.0 mismatch.
+is lazy (no model call is ever made). Dummy OpenAI/OSS keys are set before import
+because the llm_core factory reads them when test tiers materialize.
 """
 
 import os

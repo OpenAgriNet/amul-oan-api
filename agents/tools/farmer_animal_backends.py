@@ -36,10 +36,11 @@ from app.observability import start_observation
 
 logger = get_logger(__name__)
 
-BASE_AMULPASHUDHAN = "https://api.amulpashudhan.com/configman/v1/PashuGPT"
-BASE_HERDMAN = "https://herdman.live/apis/api"
-BASE_BANAS_MOBILE = "https://banasmobileapi.amnex.com/api/FarmerVisitAPIKOS"
-BASE_CVCC = "https://api.amuldairy.com/ai_cattle_dtl.php"
+BASE_AMULPASHUDHAN = settings.amulpashudhan_base_url
+BASE_HERDMAN = settings.herdman_base_url
+BASE_BANAS_MOBILE = settings.banas_mobile_base_url
+BASE_CVCC = settings.cvcc_base_url
+FARMER_BACKEND_HTTP_TIMEOUT_SECONDS = settings.farmer_backend_http_timeout_seconds
 
 
 def normalize_phone(mobile: str) -> str:
@@ -90,7 +91,7 @@ async def _fetch_farmer_amulpashudhan_raw(
             input={"mobile": mobile},
             metadata={"provider": "amulpashudhan", "url": url},
         ) as observation:
-            async with httpx.AsyncClient(timeout=30.0) as client:
+            async with httpx.AsyncClient(timeout=FARMER_BACKEND_HTTP_TIMEOUT_SECONDS) as client:
                 response = await client.get(
                     url,
                     headers={
@@ -199,7 +200,7 @@ async def fetch_farmer_herdman(mobile: str, token: str) -> list[FarmerModel] | N
             input={"mobile": mobile},
             metadata={"provider": "herdman", "url": url},
         ) as observation:
-            async with httpx.AsyncClient(timeout=30.0) as client:
+            async with httpx.AsyncClient(timeout=FARMER_BACKEND_HTTP_TIMEOUT_SECONDS) as client:
                 response = await client.get(
                     url,
                     params={"mobileno": mobile},
@@ -282,7 +283,7 @@ async def _fetch_farmer_herdman_raw(
             input={"mobile": mobile},
             metadata={"provider": "herdman", "url": url},
         ) as observation:
-            async with httpx.AsyncClient(timeout=30.0) as client:
+            async with httpx.AsyncClient(timeout=FARMER_BACKEND_HTTP_TIMEOUT_SECONDS) as client:
                 response = await client.get(
                     url,
                     params={"mobileno": mobile},
@@ -381,7 +382,7 @@ async def fetch_animal_amulpashudhan(tag_no: str, token: str) -> AnimalModel | N
             input={"tag_no": tag_no},
             metadata={"provider": "amulpashudhan", "url": url},
         ) as observation:
-            async with httpx.AsyncClient(timeout=30.0) as client:
+            async with httpx.AsyncClient(timeout=FARMER_BACKEND_HTTP_TIMEOUT_SECONDS) as client:
                 response = await client.get(
                     url,
                     headers={
@@ -461,7 +462,7 @@ async def fetch_banas_operated_visit(
 
     url = f"{BASE_BANAS_MOBILE}/GetOperatedVisit"
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        async with httpx.AsyncClient(timeout=FARMER_BACKEND_HTTP_TIMEOUT_SECONDS) as client:
             response = await client.post(
                 url,
                 headers={"Content-Type": "application/json"},
@@ -528,7 +529,7 @@ async def fetch_cvcc_health_details(
                 )
 
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        async with httpx.AsyncClient(timeout=FARMER_BACKEND_HTTP_TIMEOUT_SECONDS) as client:
             response = await client.post(
                 BASE_CVCC,
                 headers={"Content-Type": "application/json"},
@@ -588,7 +589,7 @@ async def create_ai_call_api(
             input=_ai_obs_input,
             metadata={"tool_backend": "amulpashudhan", "endpoint": "CreateAICall"},
         ) as ai_obs:
-            async with httpx.AsyncClient(timeout=30.0) as client:
+            async with httpx.AsyncClient(timeout=FARMER_BACKEND_HTTP_TIMEOUT_SECONDS) as client:
                 response = await client.post(
                     api_url,
                     params=request.to_query_params(),
@@ -675,7 +676,7 @@ async def create_health_call_api(
             input=_health_obs_input,
             metadata={"tool_backend": "amulpashudhan", "endpoint": "CreateHealthCall"},
         ) as health_obs:
-            async with httpx.AsyncClient(timeout=30.0) as client:
+            async with httpx.AsyncClient(timeout=FARMER_BACKEND_HTTP_TIMEOUT_SECONDS) as client:
                 response = await client.post(
                     api_url,
                     params=request.to_query_params(),
@@ -746,7 +747,7 @@ async def get_farmer_milk_collection_details_api(
             input=request.to_query_params(),
             metadata={"provider": "amulpashudhan", "url": api_url},
         ) as observation:
-            async with httpx.AsyncClient(timeout=30.0) as client:
+            async with httpx.AsyncClient(timeout=FARMER_BACKEND_HTTP_TIMEOUT_SECONDS) as client:
                 response = await client.get(
                     api_url,
                     params=request.to_query_params(),
@@ -833,7 +834,7 @@ async def fetch_animal_herdman(tag_no: str, token: str) -> Optional[Dict[str, An
             input={"tag_no": tag_no},
             metadata={"provider": "herdman", "url": url},
         ) as observation:
-            async with httpx.AsyncClient(timeout=30.0) as client:
+            async with httpx.AsyncClient(timeout=FARMER_BACKEND_HTTP_TIMEOUT_SECONDS) as client:
                 r = await client.get(
                     url,
                     params={"TagID": tag_no},
@@ -1016,7 +1017,7 @@ async def get_ai_technicians_by_society_api(
             input=query.to_query_params(),
             metadata={"provider": "amulpashudhan", "url": api_url},
         ) as observation:
-            async with httpx.AsyncClient(timeout=30.0) as client:
+            async with httpx.AsyncClient(timeout=FARMER_BACKEND_HTTP_TIMEOUT_SECONDS) as client:
                 response = await client.get(
                     api_url,
                     params=query.to_query_params(),

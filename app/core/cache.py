@@ -4,6 +4,7 @@ Core cache instance configuration using Redis and aiocache.
 This module provides the cache instance that other parts of the application can use.
 Uses enhanced Redis configuration with connection pooling and timeouts.
 """
+from enum import Enum
 from typing import Any
 
 from aiocache import Cache
@@ -65,21 +66,48 @@ def build_api_cache_key(api_name: str, number: str) -> str:
     return f"{api_name}:{number}"
 
 
-async def try_reserve(key: str, namespace: str, ttl: int) -> bool:
-    """Atomically reserve a key (Redis SET NX). Returns True if newly reserved
-    (caller owns it and should proceed), False if a reservation already exists
-    (caller should skip). On a cache error, returns True (proceed UNGUARDED) — a
-    booking must not be blocked by a transient cache blip. Used to make
-    side-effecting tools safe against concurrent duplicate submits + fallback
-    re-runs across containers (shared Redis)."""
+class ReservationOutcome(str, Enum):
+    """Result of attempting a reservation — three states, not two.
+
+    ACQUIRED and UNGUARDED both mean "proceed", which is why a bool loses the
+    distinction that matters: only ACQUIRED means we actually hold the key.
+    Releasing after UNGUARDED deletes a key we never wrote — possibly an earlier
+    successful booking's marker for the same session, voiding the guard for the
+    rest of its TTL.
+    """
+
+    ACQUIRED = "acquired"    # we wrote the key; ours to release
+    TAKEN = "taken"          # someone else holds it; refuse
+    UNGUARDED = "unguarded"  # cache unavailable; fail open, but we own nothing
+
+
+async def reserve(key: str, namespace: str, ttl: int) -> ReservationOutcome:
+    """Atomically reserve a key (Redis SET NX), reporting genuine ownership.
+
+    ACQUIRED if newly reserved, TAKEN if a reservation already exists, UNGUARDED
+    on a cache error — a booking must not be blocked by a transient cache blip,
+    so we still proceed, but without a key we are entitled to delete. Used to
+    make side-effecting tools safe against concurrent duplicate submits +
+    fallback re-runs across containers (shared Redis).
+    """
     try:
         await cache.add(key, True, ttl=ttl, namespace=namespace)
-        return True
+        return ReservationOutcome.ACQUIRED
     except ValueError:
-        return False
+        return ReservationOutcome.TAKEN
     except Exception as e:  # cache unavailable -> fail-open on the guard
         logger.warning("Reservation add failed (%s:%s): %s; proceeding unguarded", namespace, key, str(e))
-        return True
+        return ReservationOutcome.UNGUARDED
+
+
+async def try_reserve(key: str, namespace: str, ttl: int) -> bool:
+    """Bool view of :func:`reserve`: True = proceed, False = already reserved.
+
+    Behaviour is byte-identical to before, so health_call.py's contract is
+    unchanged. Prefer `reserve` in any caller that may release: only ACQUIRED
+    entitles you to delete the key, and this view cannot tell you that.
+    """
+    return await reserve(key, namespace, ttl) is not ReservationOutcome.TAKEN
 
 
 async def release_reservation(key: str, namespace: str) -> None:

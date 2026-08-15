@@ -108,15 +108,21 @@ TOOLS = [
 # must not see them, or an ungated Beckn call (35s timeout) can eat most of a turn.
 if settings.enable_network:
     TOOLS.extend([
+        # ⚠️ takes_ctx flipped False -> True for weather and mandi (2026-08-13).
+        # Both now read ctx.deps.farmer_district and ctx.deps.session_id to search
+        # the farmer's OWN district instead of hardcoding Anand for every farmer
+        # in India. get_vistaar_scheme_info needs no farmer context and stays
+        # takes_ctx=False. The enable_network gate around this whole block is
+        # unchanged: with the flag off the agent must still not see these tools.
         Tool(
             get_vistaar_weather,
-            takes_ctx=False,
+            takes_ctx=True,
             docstring_format='auto',
             require_parameter_descriptions=True,
         ),
         Tool(
             get_vistaar_mandi_prices,
-            takes_ctx=False,
+            takes_ctx=True,
             docstring_format='auto',
             require_parameter_descriptions=True,
         ),

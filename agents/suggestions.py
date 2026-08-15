@@ -3,7 +3,6 @@ from pydantic_ai import Agent
 from typing import List
 from helpers.utils import get_prompt
 from dotenv import load_dotenv
-from agents.models import LLM_MODEL
 load_dotenv()
 
 # Suggestions are follow-up questions derived purely from the conversation — no
@@ -14,7 +13,8 @@ load_dotenv()
 # single fast generation on any model.
 suggestions_agent = Agent(
     name="Suggestions Agent",
-    model=LLM_MODEL,
+    # Resolved per turn by app.llm_core; no construction-time provider fallback.
+    model=None,
     instructions=get_prompt('suggestions_system'),
     instrument=True,
     output_type=List[str],

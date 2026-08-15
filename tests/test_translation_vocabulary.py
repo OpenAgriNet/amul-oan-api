@@ -290,6 +290,34 @@ class TestForbiddenInContext:
         assert "ફેટ" in result
         assert "ધણમાં" in result
 
+    @pytest.mark.parametrize(
+        ("text", "expected"),
+        [
+            ("સબર ડેરી હિંમતનગરમાં આવેલી છે.", "સાબર ડેરી"),
+            ("સબર યુનિયન દૂધ એકત્ર કરે છે.", "સાબર યુનિયન"),
+            ("સબર મિલ્ક યુનિયન ખેડૂતોની સંસ્થા છે.", "સાબર મિલ્ક યુનિયન"),
+            ("સબર દૂધ સંઘ ખેડૂતોની સંસ્થા છે.", "સાબર દૂધ સંઘ"),
+        ],
+    )
+    def test_sabar_organization_names_are_normalized(self, text, expected):
+        """The Sabar Dairy/Union proper name should use સાબર spelling."""
+        result = normalize_gu(text)
+        assert expected in result
+
+    def test_sabarkantha_place_name_is_normalized(self):
+        """District name should use સાબરકાંઠા spelling."""
+        text = "મારું ગામ સબરકાંઠા જિલ્લામાં છે."
+        result = normalize_gu(text)
+        assert "સાબરકાંઠા" in result
+        assert "સબરકાંઠા" not in result
+
+    def test_sabar_patience_word_is_not_rewritten_as_proper_name(self):
+        """The valid Gujarati word સબર (patience) must retain its meaning."""
+        text = "થોડી સબર રાખો."
+        result = normalize_gu(text)
+        assert result == text
+        assert "સાબર" not in result
+
 
 # ---------------------------------------------------------------------------
 # Gender agreement issues from feedback
@@ -490,6 +518,13 @@ class TestPolicyCompleteness:
     def test_replacements_list_built(self):
         """GU_POST_REPLACEMENTS should have base + policy entries."""
         assert len(GU_POST_REPLACEMENTS) >= 30, f"Expected 30+ replacements, got {len(GU_POST_REPLACEMENTS)}"
+
+    def test_glossary_has_sabar_entries(self):
+        """Chat glossary should include canonical Sabar district names."""
+        glossary = json.loads(GLOSSARY_PATH.read_text(encoding="utf-8"))
+        by_en = {str(entry.get("en", "")).strip().lower(): str(entry.get("gu", "")).strip() for entry in glossary}
+        assert by_en.get("sabar") == "સાબર"
+        assert by_en.get("sabarkantha") == "સાબરકાંઠા"
 
 
 class TestMissingQuantityRepair:

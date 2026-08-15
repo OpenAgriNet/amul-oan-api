@@ -85,6 +85,30 @@ def _collect_farmer_unions(farmers: list[FarmerModel]) -> list[str]:
     return unions
 
 
+def _collect_farmer_location(farmers: list[FarmerModel]) -> dict[str, str]:
+    """Pick the structured location to expose to tools: {district, village, state}.
+
+    First record that carries a district wins, and village/state are taken from
+    that SAME record — mixing a district from one account with a village from
+    another would invent a place. A mobile with several accounts (a cow account
+    and a buffalo account, say) is normal and they share a location in practice.
+
+    These fields are already rendered into the prompt markdown; this lifts them
+    into structured deps so the mandi/weather tools can key off them instead of
+    hardcoding Anand.
+    """
+    for farmer in farmers:
+        district = (farmer.district or "").strip()
+        if not district:
+            continue
+        return {
+            "district": district,
+            "village": (farmer.village or "").strip(),
+            "state": (farmer.state or "").strip(),
+        }
+    return {}
+
+
 async def _append_union_scheme_summary_markdown(lines: list[str], farmer_unions: list[str]) -> None:
     scheme_unions = resolve_supported_unions(farmer_unions, SUPPORTED_SCHEME_CONTEXT_UNIONS)
     if not scheme_unions:
@@ -483,7 +507,15 @@ async def _get_animal_context_bundle(
     return tag, animal, banas_visits, cvcc_health  # ty: ignore
 
 
-async def get_farmer_context_bundle_by_mobile(mobile_number: str) -> tuple[str, list[str]]:
+async def get_farmer_context_bundle_by_mobile(
+    mobile_number: str,
+) -> tuple[str, list[str], dict[str, str]]:
+    """Return (prompt markdown, union names, structured location).
+
+    The third element is {district, village, state} (possibly empty) and exists
+    so tools can read the farmer's location. It is deliberately NOT parsed back
+    out of the markdown: the markdown is a prompt, not an API.
+    """
     farmers = await get_farmer_data_by_mobile(mobile_number)
     mobile = normalize_phone(mobile_number) or mobile_number
 
@@ -492,9 +524,11 @@ async def get_farmer_context_bundle_by_mobile(mobile_number: str) -> tuple[str, 
             "# Farmer Context\n\n"
             f"No farmer information found for mobile number `{mobile}`.",
             [],
+            {},
         )
 
     farmer_unions = _collect_farmer_unions(farmers)
+    farmer_location = _collect_farmer_location(farmers)
 
     lines = [
         "# Farmer Context",
@@ -534,9 +568,9 @@ async def get_farmer_context_bundle_by_mobile(mobile_number: str) -> tuple[str, 
         for tag, animal, banas_visits, cvcc_health in animal_contexts:
             _append_animal_markdown(lines, tag, animal, banas_visits, cvcc_health)
 
-    return "\n".join(lines), farmer_unions
+    return "\n".join(lines), farmer_unions, farmer_location
 
 
 async def get_farmer_full_data_by_mobile(mobile_number: str) -> str:
-    farmer_context, _ = await get_farmer_context_bundle_by_mobile(mobile_number)
+    farmer_context, _, _ = await get_farmer_context_bundle_by_mobile(mobile_number)
     return farmer_context
