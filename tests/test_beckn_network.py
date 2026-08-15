@@ -72,7 +72,7 @@ SCHEME_ITEMS = [
     {"id": "kutch-mineral", "descriptor": {"name": "Mineral Mixture", "long_desc": "Free mineral mixture."},
      "tags": [{"code": "union", "value": "kutch"}, {"code": "category", "value": "input-support"}]},
 ]
-# Bharat Vistaar central schemes, served by the seeker's MOA leg. The `id` is
+# Bharat Vistaar central schemes, served by the configured Vistaar leg. The `id` is
 # the scheme CODE, which is the ONLY thing that leg matches on.
 VISTAAR_SCHEME_ITEMS = [
     {"id": "kcc", "descriptor": {"name": "Kisan Credit Card", "long_desc": "Short-term credit for farmers."},
@@ -266,11 +266,18 @@ async def test_union_filter_does_not_drop_vistaar_schemes():
     assert any(s["source_network"] == "bharat-vistaar" for s in parsed)
 
 
+def test_central_scheme_leg_follows_vistaar_configuration():
+    """Production must not fall back to the legacy MOA sandbox leg."""
+    assert bn.VISTAAR_LEG == bn.settings.vistaar_leg
+
+
 @pytest.mark.asyncio
 async def test_dead_central_leg_is_flagged_unavailable_not_silently_dropped():
     """A failed leg must never render as a clean union-only answer — that is an
     infrastructure failure presented to the farmer as fact."""
-    fake = _RealisticSeekerClient(errors={"moa": "timeout"}, dead_legs=["moa"])
+    fake = _RealisticSeekerClient(
+        errors={bn.VISTAAR_LEG: "timeout"}, dead_legs=[bn.VISTAAR_LEG]
+    )
     with patch.object(bn.httpx, "AsyncClient", return_value=fake):
         out = await bn.network_union_schemes("crop insurance")
     assert "Cattle Insurance" in out
@@ -282,7 +289,7 @@ async def test_dead_central_leg_is_flagged_unavailable_not_silently_dropped():
 async def test_dead_leg_with_no_error_entry_is_still_flagged():
     """The seeker omits `errors` for some failures and just nulls the result.
     A null on_search is not an empty catalogue."""
-    fake = _RealisticSeekerClient(dead_legs=["moa"])
+    fake = _RealisticSeekerClient(dead_legs=[bn.VISTAAR_LEG])
     with patch.object(bn.httpx, "AsyncClient", return_value=fake):
         out = await bn.network_union_schemes("crop insurance")
     assert "temporarily unavailable" in out.lower()
@@ -291,8 +298,8 @@ async def test_dead_leg_with_no_error_entry_is_still_flagged():
 @pytest.mark.asyncio
 async def test_all_legs_dead_never_claims_no_schemes_exist():
     fake = _RealisticSeekerClient(
-        errors={"amulschemes": "timeout", "moa": "timeout"},
-        dead_legs=["amulschemes", "moa"],
+        errors={bn.SCHEMES_LEG: "timeout", bn.VISTAAR_LEG: "timeout"},
+        dead_legs=[bn.SCHEMES_LEG, bn.VISTAAR_LEG],
     )
     with patch.object(bn.httpx, "AsyncClient", return_value=fake):
         out = await bn.network_union_schemes("crop insurance")
