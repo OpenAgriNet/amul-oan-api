@@ -16,7 +16,11 @@ from agents.tools import health_call as hc_mod
 from agents.tools.farmer_animal_backends import AITechnicianBySocietyRecord
 from app.models.ai_call import AISpecies
 from app.models.farmer import FarmerModel
-from app.models.union import UNION_BANNED_MESSAGE
+from app.models.union import (
+    UNION_BANNED_MESSAGE,
+    UNION_BANNED_MESSAGE_GU,
+    UNION_BANNED_MESSAGE_HI,
+)
 from app.models.farmer_transport import FarmerRecord
 from app.models.health_call import HealthCaseType
 from helpers.utils import get_prompt
@@ -29,7 +33,9 @@ BANNED_UNION_ALIASES = ("sarhad", "kutch", "kachchh", "kutchh")
 
 
 def test_union_banned_message_is_the_agreed_farmer_facing_string():
-    assert UNION_BANNED_MESSAGE == "AI calls are not allowed for your union."
+    assert UNION_BANNED_MESSAGE == "Kindly contact your Milk Society to book the service."
+    assert UNION_BANNED_MESSAGE_GU == "કૃપા કરીને આપની દૂધ મંડળીનો સંપર્ક કરશો."
+    assert UNION_BANNED_MESSAGE_HI == "कृपया सेवा बुक करने के लिए अपनी दूध मंडली से संपर्क करें।"
 
 
 def _render_prompt(name):
@@ -179,6 +185,13 @@ def test_prompts_keep_technician_selection_for_allowed_unions(name):
     assert "When AI technician options are available, ask the user which technician they want to select." in rendered
 
 
+def test_default_prompt_lists_localized_ban_lines():
+    rendered = _render_prompt("agrinet_system.md")
+    assert UNION_BANNED_MESSAGE in rendered
+    assert UNION_BANNED_MESSAGE_GU in rendered
+    assert UNION_BANNED_MESSAGE_HI in rendered
+
+
 # ── create_ai_call hard block ─────────────────────────────────────────────────
 
 SPECIES = next(iter(AISpecies))
@@ -188,10 +201,12 @@ async def _in_scope():
     return True
 
 
-def _booking_ctx(session_id="s-ban", unions=None, include_unions=True):
+def _booking_ctx(session_id="s-ban", unions=None, include_unions=True, lang_code=None):
     deps = SimpleNamespace(session_id=session_id, ensure_in_scope=_in_scope)
     if include_unions:
         deps.farmer_unions = unions
+    if lang_code is not None:
+        deps.lang_code = lang_code
     return SimpleNamespace(deps=deps)
 
 
@@ -238,6 +253,32 @@ def test_create_ai_call_refuses_canonical_and_mixed_banned_unions(monkeypatch, u
         ai_mod.create_ai_call(_booking_ctx(unions=unions), "U", "S", "F", "tech1", SPECIES)
     )
     assert out == UNION_BANNED_MESSAGE
+    assert calls["n"] == 0
+
+
+@pytest.mark.parametrize("lang,expected", [
+    ("en", UNION_BANNED_MESSAGE),
+    ("gu", UNION_BANNED_MESSAGE_GU),
+    ("gujarati", UNION_BANNED_MESSAGE_GU),
+    ("hi", UNION_BANNED_MESSAGE_HI),
+    ("hindi", UNION_BANNED_MESSAGE_HI),
+])
+def test_create_ai_call_returns_localized_ban_message(monkeypatch, lang, expected):
+    calls = {"n": 0}
+
+    async def fake_api(*args, **kwargs):
+        calls["n"] += 1
+        return SimpleNamespace(ticket_number="T1", ait_name="AIT", model_dump=lambda: {})
+
+    monkeypatch.setattr(ai_mod, "create_ai_call_api", fake_api)
+    monkeypatch.setattr(ai_mod.settings, "enable_network", False)
+
+    out = asyncio.run(
+        ai_mod.create_ai_call(
+            _booking_ctx(unions=["kutch"], lang_code=lang), "U", "S", "F", "tech1", SPECIES,
+        )
+    )
+    assert out == expected
     assert calls["n"] == 0
 
 
@@ -321,3 +362,37 @@ def test_health_call_still_books_for_kutch_union(monkeypatch):
     assert calls["n"] == 1
     assert "booked successfully" in out
     assert UNION_BANNED_MESSAGE not in out
+
+
+@pytest.mark.parametrize("source,target,expected", [
+    (UNION_BANNED_MESSAGE, "gu", UNION_BANNED_MESSAGE_GU),
+    (UNION_BANNED_MESSAGE, "gujarati", UNION_BANNED_MESSAGE_GU),
+    (UNION_BANNED_MESSAGE, "hi", UNION_BANNED_MESSAGE_HI),
+    (UNION_BANNED_MESSAGE, "hindi", UNION_BANNED_MESSAGE_HI),
+    (UNION_BANNED_MESSAGE, "en", UNION_BANNED_MESSAGE),
+    (f"`{UNION_BANNED_MESSAGE}`", "gu", UNION_BANNED_MESSAGE_GU),
+    (UNION_BANNED_MESSAGE_GU, "gujarati", UNION_BANNED_MESSAGE_GU),
+    (UNION_BANNED_MESSAGE_HI, "hindi", UNION_BANNED_MESSAGE_HI),
+])
+def test_post_translation_uses_canned_union_ban_line(source, target, expected):
+    from app.services.translation import _canned_union_ban_translation
+    assert _canned_union_ban_translation(source, target) == expected
+
+
+def test_post_translation_does_not_canned_swap_other_text():
+    from app.services.translation import _canned_union_ban_translation
+    assert _canned_union_ban_translation("Book an AI call for the cow.", "gu") is None
+
+
+def test_translate_text_emits_canned_gu_ban_without_model():
+    from app.services.translation import translate_text
+    assert asyncio.run(translate_text(UNION_BANNED_MESSAGE, "english", "gujarati")) == UNION_BANNED_MESSAGE_GU
+
+
+def test_translate_stream_emits_canned_hi_ban_without_model():
+    from app.services.translation import translate_text_stream_fast
+
+    async def _collect():
+        return "".join([c async for c in translate_text_stream_fast(UNION_BANNED_MESSAGE, "english", "hindi")])
+
+    assert asyncio.run(_collect()) == UNION_BANNED_MESSAGE_HI

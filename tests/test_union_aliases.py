@@ -17,11 +17,15 @@ import pytest
 
 from app.models.union import (
     AI_CALL_BANNED_UNIONS,
+    UNION_BANNED_MESSAGE,
+    UNION_BANNED_MESSAGE_GU,
+    UNION_BANNED_MESSAGE_HI,
     UnionName,
     any_union_banned_from_ai_calls,
     canonical_union_name,
     is_ai_call_banned_union,
     resolve_supported_unions,
+    union_banned_message,
 )
 import agents.tools.union_schemes as us
 
@@ -66,6 +70,20 @@ def test_resolve_supported_unions_canonicalizes_and_deduplicates():
 
 def test_ai_call_banned_unions_contains_only_kutch():
     assert AI_CALL_BANNED_UNIONS == frozenset({UnionName.KUTCH.value})
+
+
+@pytest.mark.parametrize("lang,expected", [
+    (None, UNION_BANNED_MESSAGE),
+    ("en", UNION_BANNED_MESSAGE),
+    ("english", UNION_BANNED_MESSAGE),
+    ("gu", UNION_BANNED_MESSAGE_GU),
+    ("gujarati", UNION_BANNED_MESSAGE_GU),
+    ("hi", UNION_BANNED_MESSAGE_HI),
+    ("hindi", UNION_BANNED_MESSAGE_HI),
+    ("unknown", UNION_BANNED_MESSAGE),
+])
+def test_union_banned_message_by_lang(lang, expected):
+    assert union_banned_message(lang) == expected
 
 
 @pytest.mark.parametrize("raw", [

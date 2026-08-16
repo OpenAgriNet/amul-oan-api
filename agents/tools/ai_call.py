@@ -12,7 +12,7 @@ from agents.tools.farmer_animal_backends import create_ai_call_api
 from app.config import settings
 from app.core.cache import cache, reserve, ReservationOutcome, release_reservation
 from app.models.ai_call import AICallRequestModel, AISpecies
-from app.models.union import UNION_BANNED_MESSAGE, any_union_banned_from_ai_calls
+from app.models.union import any_union_banned_from_ai_calls, union_banned_message
 from app.observability import start_observation
 from helpers.utils import get_logger
 
@@ -131,7 +131,7 @@ async def create_ai_call(
     Never ask the farmer to speak an internal technician ID. Use the selected technician option
     already present in farmer context.
     If Farmer Profile says AI call booking is not allowed for this union, tell the farmer
-    AI calls are not allowed for their union. Do not ask which technician and do not book.
+    Kindly contact your Milk Society to book the service. Do not ask which technician and do not book.
 
     Args:
         ctx: The run context (automatically provided).
@@ -194,7 +194,8 @@ async def create_ai_call(
             farmer_unions,
             session_id,
         )
-        return UNION_BANNED_MESSAGE
+        lang_code = getattr(ctx.deps, "lang_code", None) if ctx and ctx.deps else None
+        return union_banned_message(lang_code)
 
     _ai_tool_input = {
         "union_code": union_code,
