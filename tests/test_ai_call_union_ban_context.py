@@ -13,10 +13,10 @@ import pytest
 
 from agents.tools import ai_call as ai_mod
 from agents.tools import health_call as hc_mod
-from agents.tools.ai_call import UNION_BANNED_MESSAGE
 from agents.tools.farmer_animal_backends import AITechnicianBySocietyRecord
 from app.models.ai_call import AISpecies
 from app.models.farmer import FarmerModel
+from app.models.union import UNION_BANNED_MESSAGE
 from app.models.farmer_transport import FarmerRecord
 from app.models.health_call import HealthCaseType
 from helpers.utils import get_prompt

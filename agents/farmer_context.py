@@ -5,7 +5,6 @@ from types import CoroutineType
 from typing import Any
 
 from agents.tools.animal import get_animal_data_by_tag
-from agents.tools.ai_call import UNION_BANNED_MESSAGE
 from agents.tools.cvcc import get_cvcc_health_data_by_tag
 from agents.tools.farmer import get_farmer_data_by_mobile
 from agents.tools.farmer_animal_backends import (
@@ -28,7 +27,12 @@ from app.models.cvcc import (
     CvccVaccinationModel,
 )
 from app.models.farmer import FarmerModel
-from app.models.union import UnionName, is_ai_call_banned_union, resolve_supported_unions
+from app.models.union import (
+    UNION_BANNED_MESSAGE,
+    UnionName,
+    is_ai_call_banned_union,
+    resolve_supported_unions,
+)
 from app.services.scheme_ingestion import (
     SchemeCacheError,
     SchemeDependencyError,

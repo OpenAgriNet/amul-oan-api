@@ -57,6 +57,9 @@ def canonical_union_name(name: str | None) -> str:
 # Compare against ``canonical_union_name`` output so brand/spelling aliases
 # (e.g. "sarhad" for Kutch) hit the same entry.
 AI_CALL_BANNED_UNIONS: frozenset[str] = frozenset({UnionName.KUTCH.value})
+# Shared by farmer-context copy and create_ai_call so banned unions hear the
+# same refusal whether the model follows the prompt or the tool is reached.
+UNION_BANNED_MESSAGE = "AI calls are not allowed for your union."
 
 
 def is_ai_call_banned_union(name: str | None) -> bool:

@@ -12,7 +12,7 @@ from agents.tools.farmer_animal_backends import create_ai_call_api
 from app.config import settings
 from app.core.cache import cache, reserve, ReservationOutcome, release_reservation
 from app.models.ai_call import AICallRequestModel, AISpecies
-from app.models.union import any_union_banned_from_ai_calls
+from app.models.union import UNION_BANNED_MESSAGE, any_union_banned_from_ai_calls
 from app.observability import start_observation
 from helpers.utils import get_logger
 
@@ -30,9 +30,6 @@ ALREADY_BOOKED_MESSAGE = (
     "Please try again later or contact your society for assistance."
 )
 OUT_OF_SCOPE_MESSAGE = "This helpline only handles dairy farming and animal husbandry questions."
-# Shared with farmer-context copy so banned unions hear the same refusal whether
-# the model follows the prompt or the tool is reached anyway.
-UNION_BANNED_MESSAGE = "AI calls are not allowed for your union."
 
 # The network route answered, but neither confirmed nor refused the booking. We
 # cannot prove the SMS did not go out, so the reservation is held for the TTL.
