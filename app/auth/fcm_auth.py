@@ -1,18 +1,21 @@
 """
 FCM token authentication for app/webview endpoints.
 Accepts token via header: Authorization: Bearer <fcm_token> or X-FCM-Token: <fcm_token>.
-Verifies token using Firebase Admin (dry_run send). Supports up to three Firebase
-projects (primary, secondary, tertiary); if any project accepts the token, authorization
-is allowed.
-Service account can be provided as inline JSON
-(FIREBASE_SERVICE_ACCOUNT / FIREBASE_SERVICE_ACCOUNT_2 / FIREBASE_SERVICE_ACCOUNT_3)
-or as file paths
-(FIREBASE_SERVICE_ACCOUNT_PATH / FIREBASE_SERVICE_ACCOUNT_PATH_2 / FIREBASE_SERVICE_ACCOUNT_PATH_3);
-value takes precedence.
+Verifies token using Firebase Admin (dry_run send). Supports any number of Firebase
+projects; if any project accepts the token, authorization is allowed.
+
+The primary service account uses FIREBASE_SERVICE_ACCOUNT or
+FIREBASE_SERVICE_ACCOUNT_PATH. Additional accounts use matching numbered variables,
+for example FIREBASE_SERVICE_ACCOUNT_2 or FIREBASE_SERVICE_ACCOUNT_PATH_2. Numbered
+accounts are discovered from the environment, so adding _4, _5, and so on does not
+require a code change. For each account, the inline JSON value takes precedence over
+the file path.
 """
 import asyncio
 import json
-from typing import Optional, Dict, Union, Tuple, List
+import os
+import re
+from typing import Dict, List, Optional, Tuple, Union
 
 from fastapi import HTTPException, Request, status
 from helpers.utils import get_logger
@@ -25,55 +28,122 @@ _firebase_initialized = False
 _firebase_apps: Dict[str, object] = {}
 
 
-def _get_primary_credential() -> Optional[Union[str, dict]]:
-    """Resolve primary Firebase credential: inline JSON value or file path."""
-    if settings.firebase_service_account and settings.firebase_service_account.strip():
+CredentialSource = Union[str, dict]
+FirebaseConfig = Tuple[str, CredentialSource]
+
+_NUMBERED_CREDENTIAL_ENV_RE = re.compile(
+    r"^FIREBASE_SERVICE_ACCOUNT(?:_PATH)?_([1-9]\d*)$"
+)
+
+
+def _env_names_for_account(index: int) -> Tuple[str, str]:
+    """Return the inline-value and file-path env names for a 1-based account index."""
+    if index < 1:
+        raise ValueError("Firebase account index must be positive")
+    suffix = "" if index == 1 else f"_{index}"
+    return f"FIREBASE_SERVICE_ACCOUNT{suffix}", f"FIREBASE_SERVICE_ACCOUNT_PATH{suffix}"
+
+
+def _setting_name(env_name: str) -> str:
+    return env_name.lower()
+
+
+def _configured_account_indices() -> List[int]:
+    """Discover all configured credential slots, including arbitrary numbered slots."""
+    indices = {1}
+
+    for env_name in os.environ:
+        match = _NUMBERED_CREDENTIAL_ENV_RE.match(env_name)
+        if match and int(match.group(1)) > 1:
+            indices.add(int(match.group(1)))
+
+    # Settings retains explicit fields for the legacy slots. Include them when set
+    # programmatically even if there is no corresponding process environment value.
+    for index in (2, 3):
+        value_name, path_name = _env_names_for_account(index)
+        if getattr(settings, _setting_name(value_name), None) or getattr(
+            settings, _setting_name(path_name), None
+        ):
+            indices.add(index)
+
+    return sorted(indices)
+
+
+def _configured_value(env_name: str) -> Optional[str]:
+    """Read a config value, allowing environment-discovered slots beyond Settings."""
+    value = os.getenv(env_name)
+    if value is None:
+        value = getattr(settings, _setting_name(env_name), None)
+    if value is None:
+        return None
+    normalized = str(value).strip()
+    return normalized or None
+
+
+def _get_credential(index: int) -> Optional[CredentialSource]:
+    """Resolve one Firebase credential; inline JSON takes precedence over its path."""
+    value_env, path_env = _env_names_for_account(index)
+    inline_value = _configured_value(value_env)
+    if inline_value:
         try:
-            return json.loads(settings.firebase_service_account.strip())
+            return json.loads(inline_value)
         except json.JSONDecodeError as e:
-            logger.error(f"Invalid FIREBASE_SERVICE_ACCOUNT JSON: {e}")
+            logger.error(f"Invalid {value_env} JSON: {e}")
             return None
-    path = settings.base_dir / (settings.firebase_service_account_path or "service-account.json")
+
+    configured_path = _configured_value(path_env)
+    if index == 1 and not configured_path:
+        configured_path = "service-account.json"
+    if not configured_path:
+        return None
+
+    path = settings.base_dir / configured_path
     if path.exists():
         return str(path)
+    logger.warning(f"Firebase service account file for slot {index} not found: {path}")
     return None
+
+
+def _firebase_app_name(index: int) -> str:
+    """Return stable Firebase Admin app names, preserving legacy names for slots 1-3."""
+    legacy_names = {1: "default", 2: "secondary", 3: "tertiary"}
+    return legacy_names.get(index, f"firebase-{index}")
+
+
+def _get_firebase_configs() -> List[FirebaseConfig]:
+    """Build Firebase app configs for every discovered, valid credential slot."""
+    configs: List[FirebaseConfig] = []
+    for index in _configured_account_indices():
+        credential = _get_credential(index)
+        if credential is not None:
+            configs.append((_firebase_app_name(index), credential))
+        elif index == 1:
+            logger.error(
+                "Primary Firebase service account not configured "
+                "(no inline value and path not found)"
+            )
+    return configs
+
+
+def _get_primary_credential() -> Optional[Union[str, dict]]:
+    """Resolve the primary Firebase credential (backwards-compatible helper)."""
+    return _get_credential(1)
 
 
 def _get_secondary_credential() -> Optional[Union[str, dict]]:
-    """Resolve secondary Firebase credential: inline JSON value or file path."""
-    if settings.firebase_service_account_2 and settings.firebase_service_account_2.strip():
-        try:
-            return json.loads(settings.firebase_service_account_2.strip())
-        except json.JSONDecodeError as e:
-            logger.error(f"Invalid FIREBASE_SERVICE_ACCOUNT_2 JSON: {e}")
-            return None
-    if settings.firebase_service_account_path_2:
-        path = settings.base_dir / settings.firebase_service_account_path_2
-        if path.exists():
-            return str(path)
-    return None
+    """Resolve the secondary Firebase credential (backwards-compatible helper)."""
+    return _get_credential(2)
 
 
 def _get_tertiary_credential() -> Optional[Union[str, dict]]:
-    """Resolve tertiary Firebase credential: inline JSON value or file path."""
-    if settings.firebase_service_account_3 and settings.firebase_service_account_3.strip():
-        try:
-            return json.loads(settings.firebase_service_account_3.strip())
-        except json.JSONDecodeError as e:
-            logger.error(f"Invalid FIREBASE_SERVICE_ACCOUNT_3 JSON: {e}")
-            return None
-    if settings.firebase_service_account_path_3:
-        path = settings.base_dir / settings.firebase_service_account_path_3
-        if path.exists():
-            return str(path)
-    return None
+    """Resolve the tertiary Firebase credential (backwards-compatible helper)."""
+    return _get_credential(3)
 
 
 def _ensure_firebase():
     """
     Lazily initialize one or more Firebase apps for FCM verification.
-    Supports a primary, optional secondary, and optional tertiary service account.
-    Credentials from inline values (FIREBASE_SERVICE_ACCOUNT / _2 / _3) take precedence over paths.
+    Supports a primary account and any number of optional numbered accounts.
     """
     global _firebase_initialized, _firebase_apps
     if _firebase_initialized:
@@ -82,21 +152,7 @@ def _ensure_firebase():
         import firebase_admin
         from firebase_admin import credentials
 
-        firebase_configs: List[Tuple[str, Union[str, dict]]] = []
-
-        primary = _get_primary_credential()
-        if primary is not None:
-            firebase_configs.append(("default", primary))
-        else:
-            logger.error("Primary Firebase service account not configured (no value and path not found)")
-
-        secondary = _get_secondary_credential()
-        if secondary is not None:
-            firebase_configs.append(("secondary", secondary))
-
-        tertiary = _get_tertiary_credential()
-        if tertiary is not None:
-            firebase_configs.append(("tertiary", tertiary))
+        firebase_configs = _get_firebase_configs()
 
         if not firebase_configs:
             raise FileNotFoundError("No Firebase service accounts configured for FCM verification")
