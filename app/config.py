@@ -141,6 +141,9 @@ class Settings(BaseSettings):
 
     # Firebase / FCM (for webview endpoint auth)
     # Inline JSON values take precedence; if not set, credentials are loaded from paths.
+    # app.auth.fcm_auth also discovers arbitrary numbered env vars at runtime, so
+    # FIREBASE_SERVICE_ACCOUNT_4 / FIREBASE_SERVICE_ACCOUNT_PATH_4 and later slots
+    # require no corresponding Settings field or code change.
     firebase_service_account: Optional[str] = os.getenv("FIREBASE_SERVICE_ACCOUNT")  # JSON string; overrides path if set
     firebase_service_account_path: Optional[str] = os.getenv("FIREBASE_SERVICE_ACCOUNT_PATH", "service-account.json")
     firebase_service_account_2: Optional[str] = os.getenv("FIREBASE_SERVICE_ACCOUNT_2")  # JSON string; overrides path if set
