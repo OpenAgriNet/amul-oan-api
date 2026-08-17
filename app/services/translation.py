@@ -20,6 +20,7 @@ from openai import AsyncOpenAI
 from helpers.utils import get_logger, normalize_voice_output
 from dotenv import load_dotenv
 from app.config import settings
+from app.models.union import UNION_BANNED_MESSAGE_VARIANTS, union_banned_message
 from agents.tools.terms import get_mini_glossary_for_text, get_ambiguity_hints_for_query, TERM_PAIRS, TermPair
 
 # Post-translation now flows through the unified llm_core config chain
@@ -686,6 +687,19 @@ def _is_untranslatable_fragment(text: str) -> bool:
     return not re.search(r"[^\W_]", text, flags=re.UNICODE)
 
 
+def _canned_union_ban_translation(text: str, target_lang: str) -> str | None:
+    """If ``text`` is the AI-call ban line, return the canned line for ``target_lang``.
+
+    The agent (and create_ai_call on lang_code=en) emit the English policy sentence.
+    Post-translation must not paraphrase it — Gujarati and Hindi copy is fixed.
+    Already-localized GU/HI canned lines pass through as the target-lang variant.
+    """
+    normalized = text.strip().strip("`\"'")
+    if normalized not in UNION_BANNED_MESSAGE_VARIANTS:
+        return None
+    return union_banned_message(target_lang)
+
+
 # ── post-translation tier-chain adapter ───────────────────────────────────────
 # translate_text / translate_text_stream_fast route through the llm_core
 # POST_TRANSLATION chain: [TranslateGemma(LB), managed-LLM overflow]. Per tier the
@@ -1229,6 +1243,10 @@ async def translate_text(
     if _is_untranslatable_fragment(text):
         return text
 
+    canned = _canned_union_ban_translation(text, target_lang)
+    if canned is not None:
+        return canned
+
     if source_lang.lower() == target_lang.lower():
         logger.info("Source and target languages are the same, skipping translation")
         return text
@@ -1432,6 +1450,11 @@ async def translate_text_stream_fast(
 
     if _is_untranslatable_fragment(text):
         yield text
+        return
+
+    canned = _canned_union_ban_translation(text, target_lang)
+    if canned is not None:
+        yield canned
         return
 
     if source_lang.lower() == target_lang.lower():

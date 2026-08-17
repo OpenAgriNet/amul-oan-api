@@ -12,6 +12,7 @@ from agents.tools.farmer_animal_backends import create_ai_call_api
 from app.config import settings
 from app.core.cache import cache, reserve, ReservationOutcome, release_reservation
 from app.models.ai_call import AICallRequestModel, AISpecies
+from app.models.union import any_union_banned_from_ai_calls, union_banned_message
 from app.observability import start_observation
 from helpers.utils import get_logger
 
@@ -129,6 +130,8 @@ async def create_ai_call(
     Ask the farmer whether the booking is for a cow (ગાય) or buffalo (ભેંસ) before calling this tool.
     Never ask the farmer to speak an internal technician ID. Use the selected technician option
     already present in farmer context.
+    If Farmer Profile says AI call booking is not allowed for this union, tell the farmer
+    Kindly contact your Milk Society to book the service. Do not ask which technician and do not book.
 
     Args:
         ctx: The run context (automatically provided).
@@ -180,6 +183,19 @@ async def create_ai_call(
     if not await ctx.deps.ensure_in_scope():
         logger.info("AI call blocked: query failed moderation; session=%s", session_id)
         return OUT_OF_SCOPE_MESSAGE
+
+    # Union ban is a policy gate, not a booking write: refuse before Redis
+    # reservation and before either PashuGPT or Beckn. farmer_unions may be
+    # missing on test stubs and on unsigned-in turns — those are not banned.
+    farmer_unions = getattr(ctx.deps, "farmer_unions", []) if ctx and ctx.deps else []
+    if any_union_banned_from_ai_calls(farmer_unions):
+        logger.info(
+            "AI call blocked: union banned from AI-call booking unions=%s session=%s",
+            farmer_unions,
+            session_id,
+        )
+        lang_code = getattr(ctx.deps, "lang_code", None) if ctx and ctx.deps else None
+        return union_banned_message(lang_code)
 
     _ai_tool_input = {
         "union_code": union_code,
