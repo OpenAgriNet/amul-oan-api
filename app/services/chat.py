@@ -1,9 +1,6 @@
 from contextlib import nullcontext
 from typing import AsyncGenerator
-from functools import lru_cache
 import os
-import regex
-import re
 from fastapi import BackgroundTasks
 from agents.agrinet import agrinet_agent
 from agents.moderation import moderation_agent
@@ -31,33 +28,10 @@ from app.services.translation import (
     PRETRANSLATION_PROVIDER,
     PRETRANSLATION_MODEL,
 )
-from pydantic_ai.messages import ModelRequest, ModelResponse, UserPromptPart, TextPart
-from app.services.identity_profile import is_identity_query, build_identity_profile_table
-
-
-class SentenceSegmenter:
-    sep = 'ŽžŽžSentenceSeparatorŽžŽž'
-    latin_terminals = '!?.'
-    jap_zh_terminals = '。！？'
-    terminals = latin_terminals + jap_zh_terminals
-
-    def __init__(self):
-        terminals = self.terminals
-        self._re = [
-            (regex.compile(r'(\P{N})([' + terminals + r'])(\p{Z}*)'),
-             r'\1\2\3' + self.sep),
-            (regex.compile(r'(' + terminals + r')(\P{N})'),
-             r'\1' + self.sep + r'\2'),
-        ]
-
-    @lru_cache(maxsize=2**16)
-    def __call__(self, line: str):
-        for (_re, repl) in self._re:
-            line = _re.sub(repl, line)
-        return [t for t in line.split(self.sep) if t != '']
-
-
-sentence_segmenter = SentenceSegmenter()
+# NOTE: the pydantic_ai.messages constructors and the identity-profile helpers
+# moved to app/turn/chat_surface.py with the identity classifier. The only
+# remaining "TextPart" here is a runtime type-NAME comparison on a streamed
+# event, not a reference to the class.
 
 
 def _chat_history_trim_max_tokens(agent_provider: str, agent_model_name: str) -> int:
@@ -80,70 +54,6 @@ def _chat_history_trim_max_tokens(agent_provider: str, agent_model_name: str) ->
     return 80_000
 
 
-def extract_complete_sentences(text: str):
-    if not text:
-        return [], ""
-    sentences = sentence_segmenter(text)
-    if len(sentences) <= 1:
-        return [], text
-    complete = sentences[:-1]
-    incomplete = sentences[-1]
-    return complete, incomplete
-
-
-def _batch_starts_new_line_or_list(text: str) -> bool:
-    """True if text starts with a newline or list marker (bullet/numbered), so we should preserve a line break before it when streaming."""
-    if not text or not text.strip():
-        return False
-    stripped = text.lstrip()
-    if text != stripped:
-        return True  # leading whitespace (e.g. newline) — lost when we split into sentence batches
-    if stripped.startswith(("-", "•")) and (len(stripped) == 1 or stripped[1:2].isspace() or stripped[1:2] == "."):
-        return True
-    if stripped.startswith("*") and (len(stripped) == 1 or stripped[1:2].isspace() or stripped[1:2] == "."):
-        return True
-    if re.match(r"^\d+\.\s", stripped):
-        return True
-    return False
-
-
-def should_translate_batch(batch_text: str, word_count: int) -> bool:
-    # Tuned for low-latency streaming while keeping reasonable batch size
-    MIN_WORDS = 15
-    MAX_WORDS = 80
-
-    if word_count < MIN_WORDS:
-        # For very short answers, still allow early flush when a sentence ends
-        text_end = batch_text.rstrip()
-        if text_end.endswith(('.', '!', '?')) and word_count >= 5:
-            return True
-        return False
-    if word_count >= MAX_WORDS:
-        return True
-
-    text_end = batch_text.rstrip()
-
-    # Paragraph break
-    if text_end.endswith('\n\n'):
-        return True
-
-    # Bullet/list endings
-    if text_end.endswith('\n') and len(batch_text.split('\n')) > 1:
-        lines = batch_text.rstrip('\n').split('\n')
-        last_line = lines[-1].strip()
-        if last_line.startswith(('-', '*', '•')):
-            return True
-        if re.match(r'^\d+\.', last_line):
-            return True
-
-    # Sentence end
-    if text_end.endswith(('.', '!', '?')):
-        return True
-
-    return False
-
-
-
 logger = get_logger(__name__)
 SUGGESTIONS_PENDING_TTL = 30
 GENERIC_UNAVAILABLE_MESSAGE_EN = (
@@ -162,6 +72,12 @@ except ImportError:
 # Per-turn resolved-pipeline-config tracer (tracing-only; no behaviour change).
 from app.llm_core import trace as _pipeline_trace
 from app.channels.chat import profile_for as _profile_for
+# The channel seam. `_surface` is the SURFACE (which pipeline shape a turn runs);
+# `_profile_for` above resolves the CHANNEL (how the text is delivered). Two
+# orthogonal axes -- see app/turn/types.py.
+from app.turn.chat_surface import CHAT as _surface
+from app.turn.types import Turn as _Turn
+from app.turn.sinks import ChatSink as _ChatSink
 
 
 
@@ -368,32 +284,44 @@ async def stream_chat_messages(
             content_id = f"query_{session_id}_{len(history)//2 + 1}"
             logger.info("request_id=%s user_info=%s", request_id, user_info)
 
-            if is_identity_query(query):
-                identity_response = build_identity_profile_table(
-                    source_lang=source_lang,
-                    target_lang=target_lang,
-                    query=query,
-                )
+            # STRUCTURE 1 — the pre-turn classifier chain. Runs before any
+            # background task is spawned and before any model call, so a match
+            # has nothing to cancel. Chat populates one (identity); voice will
+            # populate six. First match ends the turn.
+            _turn = _Turn(
+                query=query,
+                session_id=session_id,
+                source_lang=source_lang,
+                target_lang=target_lang,
+                user_id=user_id,
+                history=history,
+                user_info=user_info,
+            )
+            for _classifier in _surface.classifiers:
+                _decided = await _classifier(_turn)
+                if _decided is None:
+                    continue
                 logger.info("request_id=%s identity_short_circuit=True", request_id)
                 if get_langfuse_client:
                     try:
                         langfuse = get_langfuse_client()
-                        langfuse.set_current_trace_io(output=identity_response)
+                        langfuse.set_current_trace_io(output=_decided.canned_text)
                     except Exception as e:
                         logger.warning("Langfuse: failed to record identity output: %s", e)
 
-                messages = [
-                    *history,
-                    ModelRequest(parts=[UserPromptPart(content=query)]),
-                    ModelResponse(parts=[TextPart(content=identity_response)]),
-                ]
-                logger.info(
-                    "request_id=%s updating_history_identity_path=True total_messages=%s",
-                    request_id,
-                    len(messages),
-                )
-                await update_message_history(session_id, messages)
-                yield identity_response
+                if _decided.history_pair:
+                    messages = [*history, *_decided.history_pair]
+                    logger.info(
+                        "request_id=%s updating_history_identity_path=True total_messages=%s",
+                        request_id,
+                        len(messages),
+                    )
+                    await update_message_history(session_id, messages)
+                # `raw` is unread on chat: there is no output normalizer to
+                # bypass. It is carried on the result rather than dropped
+                # because voice's hangup line depends on it -- see
+                # app/turn/types.ClassifierResult.
+                yield _decided.canned_text
                 return
 
             # Extract farmer context from phone in JWT via cache-first fetch
@@ -647,9 +575,17 @@ async def stream_chat_messages(
 
             logger.info(f"Trimmed history length: {len(trimmed_history)} messages")
 
-            # Buffer streamed output for Langfuse trace output
-            translated_output_chunks: list[str] = []
-            raw_output_chunks: list[str] = []
+            # STRUCTURE 4 -- the sink. Chat accumulates and caps; voice's is a
+            # streaming batcher with five pieces of cross-chunk state. Different
+            # objects, not two settings of one -- see app/turn/sinks.py.
+            # translate_text_stream_fast is passed (not imported there) so test
+            # doubles that replace this module's reference still apply.
+            sink = _ChatSink(
+                needs_output_translation=needs_output_translation,
+                target_lang=target_lang,
+                response_max_chars=deps.response_max_chars,
+                translate_stream=translate_text_stream_fast,
+            )
 
             _lf_ag = get_langfuse_client() if get_langfuse_client else None
             _agrinet_obs_ctx = (
@@ -718,79 +654,6 @@ async def stream_chat_messages(
                                             yield text
                         _stream_holder["new_messages"] = agent_run.result.new_messages()
 
-                async def _stream_to_client(english_src):
-                    if needs_output_translation:
-                        sentence_buffer = ""
-                        translation_batch = []
-                        batch_word_count = 0
-                        async for chunk in english_src:
-                            sentence_buffer += chunk
-                            complete_sentences, remaining = extract_complete_sentences(sentence_buffer)
-                            if complete_sentences:
-                                for sentence in complete_sentences:
-                                    translation_batch.append(sentence)
-                                    batch_word_count += len(sentence.split())
-                                batch_text = "".join(translation_batch)
-                                if should_translate_batch(batch_text, batch_word_count):
-                                    if translated_output_chunks and _batch_starts_new_line_or_list(batch_text):
-                                        translated_output_chunks.append("\n")
-                                        yield "\n"
-                                    try:
-                                        async for translated_chunk in translate_text_stream_fast(
-                                            text=batch_text,
-                                            source_lang="english",
-                                            target_lang=target_lang,
-                                            max_output_chars=deps.response_max_chars,
-                                        ):
-                                            translated_output_chunks.append(translated_chunk)
-                                            yield translated_chunk
-                                    except Exception as e:
-                                        logger.error(f"Optimised batch translation failed, falling back to English batch: {e}")
-                                        translated_output_chunks.append(batch_text)
-                                        yield batch_text
-                                    translation_batch = []
-                                    batch_word_count = 0
-                                sentence_buffer = remaining
-                        if translation_batch:
-                            batch_text = "".join(translation_batch)
-                            if translated_output_chunks and _batch_starts_new_line_or_list(batch_text):
-                                translated_output_chunks.append("\n")
-                                yield "\n"
-                            try:
-                                async for translated_chunk in translate_text_stream_fast(
-                                    text=batch_text,
-                                    source_lang="english",
-                                    target_lang=target_lang,
-                                    max_output_chars=deps.response_max_chars,
-                                ):
-                                    translated_output_chunks.append(translated_chunk)
-                                    yield translated_chunk
-                            except Exception as e:
-                                logger.error(f"Final batch translation failed, falling back to English batch: {e}")
-                                translated_output_chunks.append(batch_text)
-                                yield batch_text
-                        if sentence_buffer.strip():
-                            if translated_output_chunks and _batch_starts_new_line_or_list(sentence_buffer):
-                                translated_output_chunks.append("\n")
-                                yield "\n"
-                            try:
-                                async for translated_chunk in translate_text_stream_fast(
-                                    text=sentence_buffer,
-                                    source_lang="english",
-                                    target_lang=target_lang,
-                                    max_output_chars=deps.response_max_chars,
-                                ):
-                                    translated_output_chunks.append(translated_chunk)
-                                    yield translated_chunk
-                            except Exception as e:
-                                logger.error(f"Tail fragment translation failed, falling back to English fragment: {e}")
-                                translated_output_chunks.append(sentence_buffer)
-                                yield sentence_buffer
-                    else:
-                        async for chunk in english_src:
-                            raw_output_chunks.append(chunk)
-                            yield chunk
-
                 if settings.fallback_enabled:
                     # OSS -> managed first-token-commit fallback: swap tiers only BEFORE
                     # the first token reaches the client. with_first_token_deadline bounds
@@ -812,14 +675,14 @@ async def stream_chat_messages(
                     # No fallback: stream the single resolved primary tier directly.
                     # _raw_agent_text_stream still yields the internal AGENT_ACTIVITY
                     # commit sentinel; with no with_first_token_deadline wrapper on this
-                    # path, strip it here so only text reaches _stream_to_client.
+                    # path, strip it here so only text reaches the sink.
                     async def _strip_activity(_src):
                         async for _c in _src:
                             if _c is not AGENT_ACTIVITY:
                                 yield _c
                     english_src = _strip_activity(_raw_agent_text_stream(request_provider, request_model))
 
-                async for _out in _stream_to_client(english_src):
+                async for _out in sink.emit(english_src):
                     yield _out
                 logger.info(f"Streaming complete for session {session_id}")
                 new_messages = _stream_holder.get("new_messages", [])
@@ -827,12 +690,7 @@ async def stream_chat_messages(
                 # Record trace output: translated response for translation pipeline, raw agent output otherwise.
                 if get_langfuse_client:
                     try:
-                        if needs_output_translation and translated_output_chunks:
-                            trace_output = "".join(translated_output_chunks)
-                        elif raw_output_chunks:
-                            trace_output = "".join(raw_output_chunks)
-                        else:
-                            trace_output = None
+                        trace_output = sink.final_text()
                         if trace_output:
                             langfuse = get_langfuse_client()
                             langfuse.set_current_trace_io(output=trace_output)
