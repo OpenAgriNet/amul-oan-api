@@ -28,6 +28,7 @@ from app.core.cache import cache, redis_client, build_cache_key
 from app.config import settings
 from app.observability import start_observation
 from app.models.farmer_transport import FarmerDataEnvelope, FarmerRecord
+from app.models.union import is_ai_call_banned_union
 from agents.tools.farmer_animal_backends import (
     GetAITechniciansBySocietyQueryParams,
     get_ai_technicians_by_society_api,
@@ -332,6 +333,14 @@ async def _fetch_ai_technicians(records: list[FarmerRecord]) -> list[dict]:
 
     async def _fetch_for_farmer(record: FarmerRecord) -> Optional[dict]:
         data = record.model_dump()
+        union_name = data.get("unionName") or data.get("union_name")
+        if is_ai_call_banned_union(union_name if isinstance(union_name, str) else None):
+            logger.info(
+                "Skipping AI technician lookup; union is banned from AI-call booking union=%s farmer=%s",
+                union_name,
+                data.get("farmerName"),
+            )
+            return None
         union_code = data.get("unionCode") or data.get("union_code")
         society_code = data.get("societyCode") or data.get("society_code")
         if not union_code or not society_code:

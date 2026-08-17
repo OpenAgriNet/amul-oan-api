@@ -27,7 +27,12 @@ from app.models.cvcc import (
     CvccVaccinationModel,
 )
 from app.models.farmer import FarmerModel
-from app.models.union import UnionName, resolve_supported_unions
+from app.models.union import (
+    UNION_BANNED_MESSAGE,
+    UnionName,
+    is_ai_call_banned_union,
+    resolve_supported_unions,
+)
 from app.services.scheme_ingestion import (
     SchemeCacheError,
     SchemeDependencyError,
@@ -228,6 +233,17 @@ async def _get_ai_technicians_for_farmer(
 
 async def _append_ai_technicians_markdown(lines: list[str], farmer: FarmerModel) -> None:
     lines.append("")
+    if is_ai_call_banned_union(farmer.union_name):
+        logger.info(
+            "Skipping AI technician lookup; union is banned from AI-call booking union=%s",
+            farmer.union_name,
+        )
+        lines.append("### AI call booking")
+        lines.append("- AI call booking is not allowed for this union.")
+        lines.append(f"- Tell the farmer: `{UNION_BANNED_MESSAGE}`")
+        lines.append("- Do not ask which technician they want. Do not call `create_ai_call`.")
+        return
+
     lines.append("### Available AI technicians")
 
     technician_lines, error_message = await _get_ai_technicians_for_farmer(farmer)
