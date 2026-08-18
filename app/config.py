@@ -367,6 +367,8 @@ class Settings(BaseSettings):
     }
     # Banas scheme PDF ingestion via Chandra OCR (see scheme_ingestion.py).
     scheme_ocr_endpoint_url: Optional[str] = os.getenv("SCHEME_OCR_ENDPOINT_URL")
+    # Per-page OCR timeout budget. Each PDF is one /v1/ocr/pages request;
+    # the HTTP timeout is this value multiplied by the rendered page count.
     scheme_ocr_timeout_seconds: float = float(os.getenv("SCHEME_OCR_TIMEOUT_SECONDS", "120"))
     scheme_pdf_render_dpi: int = int(os.getenv("SCHEME_PDF_RENDER_DPI", "200"))
     # Scheme ingestion operational tunables.

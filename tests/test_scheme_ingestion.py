@@ -2,6 +2,7 @@ import asyncio
 import base64
 from types import SimpleNamespace
 
+import httpx
 import pytest
 
 import app.services.scheme_ingestion as si
@@ -78,39 +79,32 @@ def test_extract_text_from_pdf_bytes_calls_ocr_and_merges_pages(monkeypatch):
     captured_calls = []
 
     class _FakeResponse:
-        def __init__(self, markdown: str, error: bool = False) -> None:
-            self.markdown = markdown
-            self.error = error
-
         def raise_for_status(self) -> None:
             return None
 
         def json(self):
             return {
                 "pages": [
-                    {"markdown": self.markdown, "error": self.error},
+                    {"markdown": "First page text", "error": False},
+                    {"markdown": "Second page text", "error": False},
+                    {"markdown": "Third page text", "error": False},
                 ]
             }
 
     class _FakeClient:
         async def post(self, url, json, timeout):
             captured_calls.append({"url": url, "json": json, "timeout": timeout})
-            image = json["images"][0]
-            if image == "img-a":
-                return _FakeResponse("First page text")
-            if image == "img-b":
-                return _FakeResponse("Second page text")
-            return _FakeResponse("Third page text")
+            return _FakeResponse()
 
     combined = asyncio.run(si.extract_text_from_pdf_bytes(_FakeClient(), b"pdf-bytes"))
 
-    assert len(captured_calls) == 3
-    for call in captured_calls:
-        assert call["url"] == "http://ocr-host:8010/v1/ocr/pages"
-        assert call["timeout"] == 45.0
-        assert len(call["json"]["images"]) == 1
-        assert call["json"]["prompt_type"] == si.SCHEME_OCR_PROMPT_TYPE
-        assert call["json"]["max_output_tokens"] == si.SCHEME_OCR_MAX_OUTPUT_TOKENS
+    assert len(captured_calls) == 1
+    call = captured_calls[0]
+    assert call["url"] == "http://ocr-host:8010/v1/ocr/pages"
+    assert call["timeout"] == 135.0
+    assert call["json"]["images"] == ["img-a", "img-b", "img-c"]
+    assert call["json"]["prompt_type"] == si.SCHEME_OCR_PROMPT_TYPE
+    assert call["json"]["max_output_tokens"] == si.SCHEME_OCR_MAX_OUTPUT_TOKENS
     assert combined == "First page text\n\nSecond page text\n\nThird page text"
 
 
@@ -199,24 +193,38 @@ def test_extract_text_from_pdf_bytes_raises_when_failed_page_ratio_too_high(monk
     monkeypatch.setattr(si, "render_pdf_to_base64_images", lambda *_args, **_kwargs: ["img-a", "img-b", "img-c", "img-d"])
 
     class _FakeResponse:
-        def __init__(self, markdown: str, error: bool = False) -> None:
-            self.markdown = markdown
-            self.error = error
-
         def raise_for_status(self) -> None:
             return None
 
         def json(self):
-            return {"pages": [{"markdown": self.markdown, "error": self.error}]}
+            return {
+                "pages": [
+                    {"markdown": "only one page survives", "error": False},
+                    {"markdown": "", "error": True},
+                    {"markdown": "", "error": True},
+                    {"markdown": "", "error": True},
+                ]
+            }
 
     class _FakeClient:
         async def post(self, url, json, timeout):
-            image = json["images"][0]
-            if image == "img-a":
-                return _FakeResponse("only one page survives")
-            return _FakeResponse("", error=True)
+            return _FakeResponse()
 
     with pytest.raises(si.SchemeParseError, match="too many pages"):
+        asyncio.run(si.extract_text_from_pdf_bytes(_FakeClient(), b"pdf-bytes"))
+
+
+def test_extract_text_from_pdf_bytes_raises_when_ocr_request_fails(monkeypatch):
+    monkeypatch.setattr(si.settings, "scheme_ocr_endpoint_url", "http://ocr-host:8010")
+    monkeypatch.setattr(si.settings, "scheme_ocr_timeout_seconds", 45.0)
+    monkeypatch.setattr(si.settings, "scheme_pdf_render_dpi", 150)
+    monkeypatch.setattr(si, "render_pdf_to_base64_images", lambda *_args, **_kwargs: ["img-a", "img-b"])
+
+    class _FakeClient:
+        async def post(self, url, json, timeout):
+            raise httpx.ConnectError("connection refused")
+
+    with pytest.raises(si.SchemeParseError, match="failed for all pages"):
         asyncio.run(si.extract_text_from_pdf_bytes(_FakeClient(), b"pdf-bytes"))
 
 
