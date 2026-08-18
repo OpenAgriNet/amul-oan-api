@@ -63,10 +63,16 @@ class SchemeSource:
     content_type: str
 
 
+BANAS_SITE_ORIGIN = "https://www.banasdairy.coop"
+BANAS_DOCUMENTS_API_URL = f"{BANAS_SITE_ORIGIN}/api/documents"
+BANAS_SCHEME_SECTION = "schemes"
+
 BANAS_SOURCE = SchemeSource(
     source_name="banas",
     union_name=UnionName.BANAS.value,
-    source_url="https://www.banasdairy.coop/Home/InputActivities#milkproducers",
+    # Public catalog is JSON now (Vite SPA); keep cache_key stable so a failed
+    # refresh still leaves the previously ingested Redis records in place.
+    source_url=BANAS_DOCUMENTS_API_URL,
     cache_key="banasdairy.coop/home/inputactivities#milkproducers",
     content_type="pdf",
 )
@@ -309,6 +315,33 @@ async def extend_refresh_lock(source_key: str, lock_token: str, redis_client=Non
     return True
 
 
+async def fetch_json(client: httpx.AsyncClient, url: str) -> Any:
+    logger.info("Fetching scheme JSON url=%s", url)
+    try:
+        response = await client.get(url, follow_redirects=True)
+        response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        logger.warning(
+            "Scheme JSON fetch returned non-success status url=%s status_code=%s",
+            url,
+            exc.response.status_code,
+        )
+        raise SchemeFetchError(f"non-success status while fetching {url}") from exc
+    except httpx.RequestError as exc:
+        logger.warning("Scheme JSON fetch request failed url=%s error=%s", url, exc)
+        raise SchemeFetchError(f"request failed while fetching {url}") from exc
+    except Exception as exc:
+        logger.exception("Unexpected error while fetching scheme JSON url=%s", url)
+        raise SchemeFetchError(f"unexpected fetch failure for {url}") from exc
+    try:
+        parsed = response.json()
+    except ValueError as exc:
+        logger.warning("Scheme JSON response was not valid JSON url=%s error_repr=%r", url, exc)
+        raise SchemeParseError(f"invalid JSON while fetching {url}") from exc
+    logger.info("Fetched scheme JSON url=%s payload_type=%s", url, type(parsed).__name__)
+    return parsed
+
+
 async def fetch_html(client: httpx.AsyncClient, url: str) -> str:
     logger.info("Fetching scheme HTML url=%s", url)
     try:
@@ -423,48 +456,67 @@ class _SarhadSchemeParser(HTMLParser):
             )
 
 
-def parse_banas_scheme_links(html: str) -> list[dict[str, str]]:
-    logger.info("Parsing Banas scheme links from HTML content_length=%s", len(html))
-    milk_section_match = re.search(
-        r'<section[^>]*id="MilkProducer"[^>]*>(?P<section>.*?)</section>',
-        html,
-        flags=re.IGNORECASE | re.DOTALL,
-    )
-    section_html = milk_section_match.group("section") if milk_section_match else html
-    logger.info("Resolved Banas milk producer section found=%s section_length=%s", bool(milk_section_match), len(section_html))
+def _banas_media_url(file_path: str) -> str:
+    path = _normalize_text(file_path)
+    if not path:
+        return ""
+    if path.startswith("http://") or path.startswith("https://"):
+        return path
+    if path.startswith("/media/"):
+        return urljoin(BANAS_SITE_ORIGIN, path)
+    return f"{BANAS_SITE_ORIGIN}/media/{path.lstrip('/')}"
 
-    english_column_match = re.search(
-        r'<div[^>]*class="[^"]*\bscheme-column\b[^"]*"[^>]*>(?P<column>.*?)</div>\s*<div[^>]*class="[^"]*\bscheme-column\b[^"]*"',
-        section_html,
-        flags=re.IGNORECASE | re.DOTALL,
-    )
-    if english_column_match:
-        section_html = english_column_match.group("column")
-        logger.info("Selected English Banas scheme column section_length=%s", len(section_html))
-    else:
-        logger.warning("Could not isolate English Banas scheme column; falling back to entire section")
 
-    matches = re.findall(
-        r'<div[^>]*class="[^"]*\bscheme-item\b[^"]*"[^>]*>\s*<a[^>]*href="([^"]+)"[^>]*>(.*?)</a>',
-        section_html,
-        flags=re.IGNORECASE | re.DOTALL,
-    )
-    if not matches:
-        logger.warning("No Banas scheme-item anchors found; falling back to PDF anchor scan")
-        matches = re.findall(
-            r'<a[^>]*href="([^"]+\.pdf[^"]*)"[^>]*>(.*?)</a>',
-            section_html,
-            flags=re.IGNORECASE | re.DOTALL,
-        )
-    logger.info("Found Banas scheme candidate links count=%s", len(matches))
+def _banas_document_items(payload: Any) -> list[Any]:
+    if isinstance(payload, list):
+        return payload
+    if isinstance(payload, dict):
+        for key in ("documents", "data", "items"):
+            nested = payload.get(key)
+            if isinstance(nested, list):
+                return nested
+    return []
+
+
+def parse_banas_scheme_links(payload: Any) -> list[dict[str, str]]:
+    documents = _banas_document_items(payload)
+    logger.info("Parsing Banas scheme links from documents API document_count=%s", len(documents))
+
+    candidates: list[tuple[int, str, str]] = []
+    for document in documents:
+        if not isinstance(document, dict):
+            continue
+        section = _normalize_text(str(document.get("section") or "")).casefold()
+        if section != BANAS_SCHEME_SECTION:
+            continue
+        status = _normalize_text(str(document.get("status") or "published")).casefold()
+        if status != "published":
+            logger.info(
+                "Skipping unpublished Banas scheme document title=%s status=%s",
+                document.get("title"),
+                document.get("status"),
+            )
+            continue
+        scheme_title = _normalize_title(str(document.get("title") or ""))
+        file_info = document.get("file") if isinstance(document.get("file"), dict) else {}
+        scheme_url = _banas_media_url(str(file_info.get("file_path") or ""))
+        if not scheme_title or not scheme_url:
+            logger.warning(
+                "Skipping Banas scheme document with missing title or file_path title=%s file_path=%s",
+                document.get("title"),
+                file_info.get("file_path"),
+            )
+            continue
+        sort_order = document.get("sort_order")
+        order = sort_order if isinstance(sort_order, int) else 0
+        candidates.append((order, scheme_title, scheme_url))
+
+    candidates.sort(key=lambda item: (item[0], item[1].casefold(), item[2]))
+    logger.info("Found Banas scheme candidate links count=%s", len(candidates))
 
     seen: set[tuple[str, str]] = set()
     records: list[dict[str, str]] = []
-    for href, raw_title in matches:
-        scheme_url = urljoin("https://www.banasdairy.coop", _normalize_text(href))
-        scheme_title = _normalize_title(_strip_html(raw_title))
-        if not scheme_url or not scheme_title:
-            continue
+    for _order, scheme_title, scheme_url in candidates:
         dedupe_key = (scheme_url, scheme_title.casefold())
         if dedupe_key in seen:
             continue
@@ -800,8 +852,8 @@ async def _ingest_banas_source(
     redis_client=None,
 ) -> list[dict[str, Any]]:
     logger.info("Starting Banas scheme ingestion source=%s url=%s", source.cache_key, source.source_url)
-    html = await fetch_html(client, source.source_url)
-    link_records = parse_banas_scheme_links(html)
+    documents = await fetch_json(client, source.source_url)
+    link_records = parse_banas_scheme_links(documents)
     if not link_records:
         logger.warning("No Banas scheme links parsed source=%s", source.cache_key)
         raise SchemeParseError("no Banas scheme links parsed")

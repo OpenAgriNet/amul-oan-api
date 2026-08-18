@@ -333,17 +333,104 @@ def test_build_banas_record_returns_none_on_parse_error(monkeypatch):
     assert record is None
 
 
+def test_parse_banas_scheme_links_keeps_published_scheme_pdfs_only():
+    payload = [
+        {
+            "section": "vendor_registration",
+            "title": "Web Portal Vendor User Guide",
+            "status": "published",
+            "sort_order": 0,
+            "file": {"file_path": "documents/b2b/vendor-web-portal-user-guide.pdf"},
+        },
+        {
+            "section": "schemes",
+            "title": "MILKING MACHINE ASSISTANCE SCHEME",
+            "status": "draft",
+            "sort_order": 1,
+            "file": {"file_path": "documents/schemes/milking-machine.pdf"},
+        },
+        {
+            "section": "schemes",
+            "title": "IRON STALL ASSISTANCE SCHEME",
+            "status": "published",
+            "sort_order": 10,
+            "file": {"file_path": "documents/schemes/iron-stall.pdf"},
+        },
+        {
+            "section": "schemes",
+            "title": "ANIMAL COOLING SYSTEM ASSISTANCE SCHEME",
+            "status": "published",
+            "sort_order": 1,
+            "file": {"file_path": "documents/schemes/animal-cooling.pdf"},
+        },
+        {
+            "section": "schemes",
+            "title": "MISSING FILE SCHEME",
+            "status": "published",
+            "sort_order": 2,
+            "file": {},
+        },
+        {
+            "section": "schemes",
+            "title": "ANIMAL COOLING SYSTEM ASSISTANCE SCHEME",
+            "status": "published",
+            "sort_order": 99,
+            "file": {"file_path": "documents/schemes/animal-cooling.pdf"},
+        },
+    ]
+
+    records = si.parse_banas_scheme_links(payload)
+
+    assert records == [
+        {
+            "scheme_title": "ANIMAL COOLING SYSTEM ASSISTANCE SCHEME",
+            "scheme_url": "https://www.banasdairy.coop/media/documents/schemes/animal-cooling.pdf",
+        },
+        {
+            "scheme_title": "IRON STALL ASSISTANCE SCHEME",
+            "scheme_url": "https://www.banasdairy.coop/media/documents/schemes/iron-stall.pdf",
+        },
+    ]
+
+
+def test_parse_banas_scheme_links_accepts_wrapped_document_list():
+    records = si.parse_banas_scheme_links(
+        {
+            "data": [
+                {
+                    "section": "schemes",
+                    "title": "PAKI ASSISTANCE SCHEME",
+                    "file": {"file_path": "/media/documents/schemes/paki-assistance.pdf"},
+                }
+            ]
+        }
+    )
+
+    assert records == [
+        {
+            "scheme_title": "PAKI ASSISTANCE SCHEME",
+            "scheme_url": "https://www.banasdairy.coop/media/documents/schemes/paki-assistance.pdf",
+        }
+    ]
+
+
+def test_parse_banas_scheme_links_returns_empty_for_invalid_payload():
+    assert si.parse_banas_scheme_links(None) == []
+    assert si.parse_banas_scheme_links("not-json-list") == []
+    assert si.parse_banas_scheme_links({"ok": True}) == []
+
+
 def test_ingest_banas_source_heartbeats_lock_per_pdf(monkeypatch):
     links = [
         {"scheme_title": "Scheme A", "scheme_url": "https://example.com/a.pdf"},
         {"scheme_title": "Scheme B", "scheme_url": "https://example.com/b.pdf"},
     ]
 
-    async def fake_fetch_html(_client, _url):
-        return "<html></html>"
+    async def fake_fetch_json(_client, _url):
+        return []
 
-    monkeypatch.setattr(si, "fetch_html", fake_fetch_html)
-    monkeypatch.setattr(si, "parse_banas_scheme_links", lambda _html: links)
+    monkeypatch.setattr(si, "fetch_json", fake_fetch_json)
+    monkeypatch.setattr(si, "parse_banas_scheme_links", lambda _payload: links)
 
     async def fake_build(**kwargs):
         return {"scheme_title": kwargs["scheme_title"]}
@@ -374,14 +461,14 @@ def test_ingest_banas_source_heartbeats_lock_per_pdf(monkeypatch):
 
 
 def test_ingest_banas_source_skips_heartbeat_without_token(monkeypatch):
-    async def fake_fetch_html(_client, _url):
-        return "<html></html>"
+    async def fake_fetch_json(_client, _url):
+        return []
 
-    monkeypatch.setattr(si, "fetch_html", fake_fetch_html)
+    monkeypatch.setattr(si, "fetch_json", fake_fetch_json)
     monkeypatch.setattr(
         si,
         "parse_banas_scheme_links",
-        lambda _html: [{"scheme_title": "Scheme A", "scheme_url": "https://example.com/a.pdf"}],
+        lambda _payload: [{"scheme_title": "Scheme A", "scheme_url": "https://example.com/a.pdf"}],
     )
 
     async def fake_build(**kwargs):
@@ -411,11 +498,11 @@ def test_ingest_banas_source_raises_when_batch_coverage_too_low(monkeypatch):
         {"scheme_title": "Scheme E", "scheme_url": "https://example.com/e.pdf"},
     ]
 
-    async def fake_fetch_html(_client, _url):
-        return "<html></html>"
+    async def fake_fetch_json(_client, _url):
+        return []
 
-    monkeypatch.setattr(si, "fetch_html", fake_fetch_html)
-    monkeypatch.setattr(si, "parse_banas_scheme_links", lambda _html: links)
+    monkeypatch.setattr(si, "fetch_json", fake_fetch_json)
+    monkeypatch.setattr(si, "parse_banas_scheme_links", lambda _payload: links)
 
     async def fake_build(**kwargs):
         if kwargs["scheme_title"] == "Scheme A":
