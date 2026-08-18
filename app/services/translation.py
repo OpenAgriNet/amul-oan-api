@@ -301,13 +301,13 @@ GU_POST_REPLACEMENTS = GU_POST_REPLACEMENTS_BASE + GU_POLICY_REPLACEMENTS
 # traffic is never buffered or altered.
 _PROTECTED_OUTPUT = [
     (
-        "Kheda District Central Co-Operative Bank Limited - Nadiad",
+        "Kheda District Central Co-Operative Bank Limited",
         re.compile(
-            r"ખેડા\s+(?:જિલ્લા|ડિસ્ટ્રિક્ટ)\s+"
+            r"ખેડા\s+(?:જિલ્લા|ડિસ્ટ્રિક્ટ|ડિસ્ટ્રિકટ)\s+"
             r"(?:કેન્દ્રીય\s+|મધ્યસ્થ\s+|સેન્ટ્રલ\s+)?"
-            r"(?:સહકારી|કો-?ઓપરેટિવ)\s+બેંક\s+લિમિટેડ\s*-?\s*નડિયાદ"
+            r"(?:સહકારી|કો-?ઓપરેટિવ)\s+બેંક\s+લિમિટેડ(?:\s*-?\s*નડિયાદ)?"
         ),
-        "ખેડા ડિસ્ટ્રિક્ટ સેન્ટ્રલ કો-ઓપરેટિવ બેંક લિમિટેડ - નડિયાદ",
+        "ખેડા ડિસ્ટ્રિકટ સેન્ટ્રલ કો-ઓપરેટિવ બેંક લિમિટેડ",
     ),
     (
         # TranslateGemma transliterates this name letter-by-letter off the Latin
