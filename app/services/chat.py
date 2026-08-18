@@ -6,6 +6,7 @@ import regex
 import re
 from fastapi import BackgroundTasks
 from agents.agrinet import agrinet_agent
+from agents.doctor import doctor_agent
 from agents.moderation import moderation_agent
 from app.llm_core import resolver as _llm_resolver
 from app.llm_core.config_model import Step as _LlmStep
@@ -33,6 +34,7 @@ from app.services.translation import (
 )
 from pydantic_ai.messages import ModelRequest, ModelResponse, UserPromptPart, TextPart
 from app.services.identity_profile import is_identity_query, build_identity_profile_table
+from app.personas import ChatPersona, resolve_chat_persona
 
 
 class SentenceSegmenter:
@@ -197,8 +199,11 @@ async def stream_chat_messages(
     background_tasks: BackgroundTasks,
     use_translation_pipeline: bool = True,
     pipeline_profile: str = "managed",
+    requested_persona: ChatPersona | None = None,
 ) -> AsyncGenerator[str, None]:
     """Async generator for streaming chat messages."""
+    persona = resolve_chat_persona(user_info, requested_persona)
+    active_agent = doctor_agent if persona == "doctor" else agrinet_agent
     # The turn's channel profile: what differs between delivery channels, resolved
     # once here rather than re-derived at each use site.
     profile = _profile_for(channel)
@@ -252,8 +257,13 @@ async def stream_chat_messages(
         "target_lang": (target_lang or "unknown").lower()[:200],
         "user_id": effective_user_id,
         "pipeline_profile": pipeline_profile,
+        "persona": persona,
     }
-    langfuse_tags = [f"pipeline:{pipeline_name}", f"pipeline_profile:{pipeline_profile}"]
+    langfuse_tags = [
+        f"pipeline:{pipeline_name}",
+        f"pipeline_profile:{pipeline_profile}",
+        f"persona:{persona}",
+    ]
     # Serialize the resolved pipeline config into COMPACT flat keys and merge them
     # into the same langfuse_metadata dict propagate_attributes lands on OTEL span
     # attributes (a big nested blob is size-capped/dropped; this SDK has no
@@ -307,6 +317,7 @@ async def stream_chat_messages(
                             "source_lang": source_lang,
                             "target_lang": target_lang,
                             "use_translation_pipeline": use_translation_pipeline,
+                            "persona": persona,
                         }
                     )
                     #this is the same as the update_current_trace method,
@@ -368,7 +379,7 @@ async def stream_chat_messages(
             content_id = f"query_{session_id}_{len(history)//2 + 1}"
             logger.info("request_id=%s user_info=%s", request_id, user_info)
 
-            if is_identity_query(query):
+            if persona == "farmer" and is_identity_query(query):
                 identity_response = build_identity_profile_table(
                     source_lang=source_lang,
                     target_lang=target_lang,
@@ -400,7 +411,7 @@ async def stream_chat_messages(
             farmer_data = ""
             farmer_unions: list[str] = []
             farmer_location: dict[str, str] = {}
-            if user_info and user_info.get('phone'):
+            if persona == "farmer" and user_info and user_info.get('phone'):
                 try:
                     farmer_data, farmer_unions, farmer_location = await get_farmer_context_bundle_by_mobile(user_info['phone'])
                     logger.info(f"request_id={request_id} farmer_context_length={len(farmer_data)}")
@@ -520,7 +531,11 @@ async def stream_chat_messages(
 
             # Normalized caller phone — the micro-loan tool reads this from deps so it
             # never has to trust an LLM-supplied number. None for anonymous sessions.
-            loan_mobile = normalize_phone_to_mobile(user_info['phone']) if user_info and user_info.get('phone') else None
+            loan_mobile = (
+                normalize_phone_to_mobile(user_info['phone'])
+                if persona == "farmer" and user_info and user_info.get('phone')
+                else None
+            )
 
             deps = FarmerContext(
                 query=processing_query,
@@ -534,6 +549,7 @@ async def stream_chat_messages(
                 use_translation_pipeline=use_translation_pipeline,
                 response_max_chars=profile.response_max_chars,
                 mobile=loan_mobile,
+                persona=persona,
             )
 
             message_pairs = "\n\n".join(format_message_pairs(history, 3))
@@ -591,7 +607,7 @@ async def stream_chat_messages(
                             }
                         )
                     # Generate suggestions after moderation passes
-                    if moderation_data.category == "valid_agricultural":
+                    if moderation_data.category == "valid_agricultural" and persona == "farmer":
                         logger.info(f"Triggering suggestions generation for session {session_id}")
                         try:
                             suggestions_cache_key = f"suggestions_{session_id}_{target_lang}"
@@ -603,7 +619,7 @@ async def stream_chat_messages(
                             logger.info("Successfully added suggestions task")
                         except Exception as e:
                             logger.error(f"Error adding suggestions task: {str(e)}")
-                    else:
+                    elif moderation_data.category != "valid_agricultural":
                         # Hard gate: do not run retrieval/answer agent for moderated non-agricultural requests.
                         decline_text = (moderation_data.action or "").strip() or (
                             "I can only answer agriculture and livestock related questions."
@@ -652,17 +668,23 @@ async def stream_chat_messages(
             raw_output_chunks: list[str] = []
 
             _lf_ag = get_langfuse_client() if get_langfuse_client else None
+            agent_observation_name = "Amul Doctor Agent" if persona == "doctor" else "Amul AI Agent"
             _agrinet_obs_ctx = (
                 _lf_ag.start_as_current_observation(
                     # Distinct from Pydantic's "Amul AI Agent run" span; keeps gen_ai/tool children grouped under that name.
-                    name="Amul AI Agent",
+                    name=agent_observation_name,
                     as_type="generation",
                     input={
                         "action": moderation_data.action,
                         "model_name": request_model_name,
+                        "persona": persona,
                     },
                     model=request_model_name,
-                    metadata={"pipeline": pipeline_name, "pipeline_profile": pipeline_profile},
+                    metadata={
+                        "pipeline": pipeline_name,
+                        "pipeline_profile": pipeline_profile,
+                        "persona": persona,
+                    },
                 )
                 if _lf_ag
                 else nullcontext()
@@ -693,7 +715,7 @@ async def stream_chat_messages(
                     # so no sentinel arrives and the deadline still fires -> swap.
                     # new_messages is captured before the run context closes.
                     _activity_signaled = False
-                    async with agrinet_agent.iter(
+                    async with active_agent.iter(
                         user_prompt=user_message,
                         message_history=trimmed_history,
                         deps=deps,

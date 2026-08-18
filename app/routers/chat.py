@@ -30,6 +30,7 @@ async def chat_endpoint(
         f"channel: {request.channel}, "
         f"authenticated_user: {user_info}, source_lang: {request.source_lang}, "
         f"target_lang: {request.target_lang}, "
+        f"requested_persona: {request.persona}, "
         f"use_translation_pipeline: {request.use_translation_pipeline}, query: {request.query}"
     )
     
@@ -55,6 +56,7 @@ async def chat_endpoint(
         background_tasks=background_tasks,
         use_translation_pipeline=request.use_translation_pipeline if request.use_translation_pipeline is not None else True,
         pipeline_profile=pipeline_profile,
+        requested_persona=request.persona,
     )
 
     if request.stream is False:
