@@ -367,8 +367,8 @@ class Settings(BaseSettings):
     }
     # Banas scheme PDF ingestion via Chandra OCR (see scheme_ingestion.py).
     scheme_ocr_endpoint_url: Optional[str] = os.getenv("SCHEME_OCR_ENDPOINT_URL")
-    # Per-page OCR timeout budget. Each PDF is one /v1/ocr/pages request;
-    # the HTTP timeout is this value multiplied by the rendered page count.
+    # Per-page OCR timeout budget. Each OCR POST is a small page batch (or a
+    # single-page fallback); HTTP timeout is this value times images in that request.
     scheme_ocr_timeout_seconds: float = float(os.getenv("SCHEME_OCR_TIMEOUT_SECONDS", "120"))
     scheme_pdf_render_dpi: int = int(os.getenv("SCHEME_PDF_RENDER_DPI", "200"))
     # Scheme ingestion operational tunables.
@@ -377,6 +377,9 @@ class Settings(BaseSettings):
     scheme_pdf_max_render_pages: int = Field(default=30, validation_alias="SCHEME_PDF_MAX_RENDER_PAGES")
     scheme_ocr_prompt_type: str = os.getenv("SCHEME_OCR_PROMPT_TYPE", "ocr_layout")
     scheme_ocr_max_output_tokens: int = Field(default=12284, validation_alias="SCHEME_OCR_MAX_OUTPUT_TOKENS")
+    # Pages per Chandra /v1/ocr/pages request. Small batches avoid 413/resets on
+    # whole-PDF bodies; failed batches retry one page at a time.
+    scheme_ocr_page_batch_size: int = Field(default=4, validation_alias="SCHEME_OCR_PAGE_BATCH_SIZE")
     scheme_ocr_max_failed_page_ratio: float = Field(default=0.15, validation_alias="SCHEME_OCR_MAX_FAILED_PAGE_RATIO")
     scheme_banas_min_record_coverage_ratio: float = Field(default=0.85, validation_alias="SCHEME_BANAS_MIN_RECORD_COVERAGE_RATIO")
 
@@ -506,6 +509,7 @@ class Settings(BaseSettings):
         "scheme_lock_ttl_seconds": ("SCHEME_LOCK_TTL_SECONDS", 60 * 60, 1, None),
         "scheme_pdf_max_render_pages": ("SCHEME_PDF_MAX_RENDER_PAGES", 30, 1, None),
         "scheme_ocr_max_output_tokens": ("SCHEME_OCR_MAX_OUTPUT_TOKENS", 12284, 1, None),
+        "scheme_ocr_page_batch_size": ("SCHEME_OCR_PAGE_BATCH_SIZE", 4, 1, 8),
         "health_call_cooldown_ttl_seconds": ("HEALTH_CALL_COOLDOWN_TTL_SECONDS", 60 * 30, 1, None),
         "vistaar_max_items": ("VISTAAR_MAX_ITEMS", 20, 1, None),
         "farmer_refresh_lock_ttl_seconds": ("FARMER_REFRESH_LOCK_TTL_SECONDS", 60 * 5, 1, None),
@@ -546,6 +550,7 @@ class Settings(BaseSettings):
         "scheme_lock_ttl_seconds",
         "scheme_pdf_max_render_pages",
         "scheme_ocr_max_output_tokens",
+        "scheme_ocr_page_batch_size",
         "health_call_cooldown_ttl_seconds",
         "vistaar_max_items",
         "farmer_refresh_lock_ttl_seconds",

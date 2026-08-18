@@ -286,12 +286,12 @@ async def release_refresh_lock(source_key: str, lock_token: str, redis_client=No
 async def extend_refresh_lock(source_key: str, lock_token: str, redis_client=None) -> bool:
     """Re-arm the lock TTL if we still own it.
 
-    A full Banas OCR batch (many PDFs, each one whole-PDF OCR request that can
-    last SCHEME_OCR_TIMEOUT_SECONDS times page count) can outlast a single fixed
-    TTL. Heartbeating after each PDF keeps the lock alive as long as we are making
-    progress, without inflating the TTL for the common fast case. Returns False if
-    the lock was lost (expired or taken over) so the caller can decide whether to
-    keep going.
+    A full Banas OCR batch (many PDFs, each OCR'd in small page batches that can
+    last SCHEME_OCR_TIMEOUT_SECONDS times pages in that request) can outlast a
+    single fixed TTL. Heartbeating after each PDF keeps the lock alive as long as
+    we are making progress, without inflating the TTL for the common fast case.
+    Returns False if the lock was lost (expired or taken over) so the caller can
+    decide whether to keep going.
     """
     client = redis_client or await get_redis_client()
     lock_key = build_scheme_lock_key(source_key)
@@ -580,6 +580,113 @@ def render_pdf_to_base64_images(pdf_bytes: bytes, dpi: int, max_pages: int = SCH
     return rendered_images
 
 
+def _ocr_pages_payload(images: list[str]) -> dict[str, Any]:
+    return {
+        "images": images,
+        "prompt_type": SCHEME_OCR_PROMPT_TYPE,
+        # Chandra HF generate() uses max_new_tokens per sequence; vLLM uses
+        # max_tokens per page. This cap is per page, not for the whole batch.
+        "max_output_tokens": SCHEME_OCR_MAX_OUTPUT_TOKENS,
+    }
+
+
+def _page_results_from_ocr_payload(parsed: Any, expected_count: int) -> list[Any] | None:
+    if not isinstance(parsed, dict):
+        return None
+    raw_pages = parsed.get("pages")
+    if not isinstance(raw_pages, list):
+        return None
+    results: list[Any] = []
+    for index in range(expected_count):
+        page = raw_pages[index] if index < len(raw_pages) else None
+        results.append(page if isinstance(page, dict) else None)
+    if not raw_pages:
+        logger.warning("Scheme OCR response had empty pages list expected_count=%s", expected_count)
+    return results
+
+
+async def _post_ocr_images(
+    client: httpx.AsyncClient,
+    ocr_endpoint: str,
+    images: list[str],
+) -> list[Any] | None:
+    timeout_seconds = settings.scheme_ocr_timeout_seconds * len(images)
+    logger.info(
+        "Sending scheme OCR request endpoint=%s page_count=%s timeout_seconds=%s",
+        ocr_endpoint,
+        len(images),
+        timeout_seconds,
+    )
+    try:
+        response = await client.post(
+            f"{ocr_endpoint}/v1/ocr/pages",
+            json=_ocr_pages_payload(images),
+            timeout=timeout_seconds,
+        )
+        response.raise_for_status()
+        parsed_pages = _page_results_from_ocr_payload(response.json(), len(images))
+        if parsed_pages is None:
+            logger.warning(
+                "Scheme OCR response missing pages list endpoint=%s page_count=%s",
+                ocr_endpoint,
+                len(images),
+            )
+        return parsed_pages
+    except httpx.HTTPStatusError as exc:
+        logger.warning(
+            "Scheme OCR request returned non-success status endpoint=%s page_count=%s status_code=%s",
+            ocr_endpoint,
+            len(images),
+            exc.response.status_code,
+        )
+        return None
+    except httpx.RequestError as exc:
+        logger.warning(
+            "Scheme OCR request failed endpoint=%s page_count=%s error_type=%s error_repr=%r",
+            ocr_endpoint,
+            len(images),
+            type(exc).__name__,
+            exc,
+        )
+        return None
+    except ValueError as exc:
+        logger.warning(
+            "Scheme OCR response was not valid JSON endpoint=%s page_count=%s error_repr=%r",
+            ocr_endpoint,
+            len(images),
+            exc,
+        )
+        return None
+    except Exception:
+        logger.exception(
+            "Unexpected error while calling scheme OCR endpoint=%s page_count=%s",
+            ocr_endpoint,
+            len(images),
+        )
+        return None
+
+
+async def _ocr_image_chunk(
+    client: httpx.AsyncClient,
+    ocr_endpoint: str,
+    images: list[str],
+) -> list[Any]:
+    results = await _post_ocr_images(client, ocr_endpoint, images)
+    if results is not None:
+        return results
+    if len(images) == 1:
+        return [None]
+    logger.warning(
+        "Scheme OCR batch failed; retrying pages individually page_count=%s",
+        len(images),
+    )
+    fallback: list[Any] = []
+    for image in images:
+        single = await _post_ocr_images(client, ocr_endpoint, [image])
+        fallback.append(None if not single else single[0])
+    return fallback
+
+
 async def extract_text_from_pdf_bytes(client: httpx.AsyncClient, pdf_bytes: bytes) -> str:
     logger.info("Extracting text from scheme PDF via OCR byte_count=%s", len(pdf_bytes))
     ocr_endpoint = (settings.scheme_ocr_endpoint_url or "").strip().rstrip("/")
@@ -595,79 +702,11 @@ async def extract_text_from_pdf_bytes(client: httpx.AsyncClient, pdf_bytes: byte
         max_pages=SCHEME_PDF_MAX_RENDER_PAGES,
     )
     total_pages = len(images)
-    timeout_seconds = settings.scheme_ocr_timeout_seconds * total_pages
-    payload = {
-        "images": images,
-        "prompt_type": SCHEME_OCR_PROMPT_TYPE,
-        "max_output_tokens": SCHEME_OCR_MAX_OUTPUT_TOKENS,
-    }
-    logger.info(
-        "Sending scheme OCR request for whole PDF endpoint=%s page_count=%s timeout_seconds=%s",
-        ocr_endpoint,
-        total_pages,
-        timeout_seconds,
-    )
-
+    batch_size = max(1, settings.scheme_ocr_page_batch_size)
     parsed_pages: list[Any] = []
-    try:
-        response = await client.post(
-            f"{ocr_endpoint}/v1/ocr/pages",
-            json=payload,
-            timeout=timeout_seconds,
-        )
-        response.raise_for_status()
-        parsed = response.json()
-        if not isinstance(parsed, dict):
-            logger.warning(
-                "Scheme OCR response was not a JSON object endpoint=%s page_count=%s payload_type=%s",
-                ocr_endpoint,
-                total_pages,
-                type(parsed).__name__,
-            )
-        else:
-            raw_pages = parsed.get("pages")
-            if isinstance(raw_pages, list):
-                parsed_pages = raw_pages
-                if not parsed_pages:
-                    logger.warning(
-                        "Scheme OCR response had empty pages list endpoint=%s page_count=%s",
-                        ocr_endpoint,
-                        total_pages,
-                    )
-            else:
-                logger.warning(
-                    "Scheme OCR response missing pages list endpoint=%s page_count=%s",
-                    ocr_endpoint,
-                    total_pages,
-                )
-    except httpx.HTTPStatusError as exc:
-        logger.warning(
-            "Scheme OCR request returned non-success status endpoint=%s page_count=%s status_code=%s",
-            ocr_endpoint,
-            total_pages,
-            exc.response.status_code,
-        )
-    except httpx.RequestError as exc:
-        logger.warning(
-            "Scheme OCR request failed endpoint=%s page_count=%s error_type=%s error_repr=%r",
-            ocr_endpoint,
-            total_pages,
-            type(exc).__name__,
-            exc,
-        )
-    except ValueError as exc:
-        logger.warning(
-            "Scheme OCR response was not valid JSON endpoint=%s page_count=%s error_repr=%r",
-            ocr_endpoint,
-            total_pages,
-            exc,
-        )
-    except Exception:
-        logger.exception(
-            "Unexpected error while calling scheme OCR endpoint=%s page_count=%s",
-            ocr_endpoint,
-            total_pages,
-        )
+    for start in range(0, total_pages, batch_size):
+        chunk = images[start : start + batch_size]
+        parsed_pages.extend(await _ocr_image_chunk(client, ocr_endpoint, chunk))
 
     page_texts: list[str] = []
     failed_pages = 0
