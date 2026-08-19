@@ -235,6 +235,10 @@ class Settings(BaseSettings):
     # served like an unsupported language — English passthrough) without
     # touching Gujarati.
     hindi_chat_enabled: bool = _get_bool_env("HINDI_CHAT_ENABLED", default=True)
+    # Allows the feature-flagged chat UI to exercise a persona different from
+    # the signed JWT. Keep off outside controlled testing; JWT user_type remains
+    # authoritative when disabled.
+    chat_persona_override_enabled: bool = _get_bool_env("CHAT_PERSONA_OVERRIDE_ENABLED", default=False)
     openai_pretranslation_timeout_seconds: float = float(os.getenv("OPENAI_PRETRANSLATION_TIMEOUT_SECONDS", "10.0"))
     # RETRIEVAL_AUDIT_LOG: log intent/retrieval_called/query per turn for replay analysis
     retrieval_audit_log: bool = _get_bool_env("RETRIEVAL_AUDIT_LOG", default=False)

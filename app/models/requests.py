@@ -1,5 +1,6 @@
 from pydantic import BaseModel, Field
 from typing import Optional, Literal
+from app.personas import ChatPersona
 
 
 class BaseChatRequest(BaseModel):
@@ -19,6 +20,10 @@ class ChatRequest(BaseChatRequest):
     channel: Literal['web', 'whatsapp'] = Field('web', description="Calling channel")
     use_translation_pipeline: Optional[bool] = Field(True, description="When True, use Gemma pre/post translation (query→en→agent→target_lang)")
     stream: Optional[bool] = Field(True, description="When True (default), return SSE stream. When False, return a single JSON response.")
+    persona: Optional[ChatPersona] = Field(
+        None,
+        description="Test-only persona override; honored only when CHAT_PERSONA_OVERRIDE_ENABLED=true",
+    )
 
 
 class VoiceRequest(BaseChatRequest):

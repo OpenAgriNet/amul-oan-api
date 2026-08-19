@@ -64,6 +64,7 @@ class FarmerContext(BaseModel):
     )
     use_translation_pipeline: bool = Field(default=False, description="When True, use English-only prompt; response is translated externally (chat).")
     response_max_chars: Optional[int] = Field(default=None, description="Optional channel-specific final response character guidance (chat).")
+    persona: Literal['farmer', 'doctor'] = Field(default='farmer', description="Resolved chat persona for this turn.")
 
     # Handle to the per-turn content-moderation task, which runs concurrently with
     # the agent on the voice path (see app.services.voice). Side-effecting tools
