@@ -336,3 +336,269 @@ def test_ingest_banas_source_raises_when_batch_coverage_too_low(monkeypatch):
 
     with pytest.raises(si.SchemeParseError, match="insufficient Banas ingestion coverage"):
         asyncio.run(si._ingest_banas_source(si.BANAS_SOURCE, SimpleNamespace()))
+
+
+# ---------------------------------------------------------------------------
+# Sumul parser tests
+# ---------------------------------------------------------------------------
+
+_SUMUL_HTML_SINGLE = """
+<div class="sumul-farmer-short__item is-open">
+  <span class="sumul-farmer-short__titles">
+    <strong>પશુ સારવાર અને કૃત્રિમ બીજદાન બાબત</strong>
+    <small>Animal Treatment</small>
+  </span>
+  <a href="images/pdf/pasusrvar-paripatra.pdf" class="sim-button" target="_blank">Download</a>
+</div></div></div>
+"""
+
+_SUMUL_HTML_MULTI = """
+<div class="sumul-farmer-short__item is-open">
+  <span class="sumul-farmer-short__titles">
+    <strong>Scheme A</strong>
+  </span>
+  <a href="images/pdf/a.pdf">Download</a>
+</div></div></div>
+<div class="sumul-farmer-short__item">
+  <span class="sumul-farmer-short__titles">
+    <strong>Scheme B</strong>
+  </span>
+  <a href="images/pdf/b.pdf">Download</a>
+</div></div></div>
+"""
+
+
+def test_parse_sumul_scheme_links_single_item():
+    records = si.parse_sumul_scheme_links(_SUMUL_HTML_SINGLE)
+    assert len(records) == 1
+    assert records[0]["scheme_title"] == "પશુ સારવાર અને કૃત્રિમ બીજદાન બાબત"
+    assert records[0]["scheme_url"] == "https://www.sumul.com/images/pdf/pasusrvar-paripatra.pdf"
+
+
+def test_parse_sumul_scheme_links_multiple_items():
+    records = si.parse_sumul_scheme_links(_SUMUL_HTML_MULTI)
+    assert len(records) == 2
+    assert records[0]["scheme_title"] == "Scheme A"
+    assert records[1]["scheme_title"] == "Scheme B"
+    assert records[0]["scheme_url"] == "https://www.sumul.com/images/pdf/a.pdf"
+    assert records[1]["scheme_url"] == "https://www.sumul.com/images/pdf/b.pdf"
+
+
+def test_parse_sumul_scheme_links_deduplication():
+    html = """
+    <div class="sumul-farmer-short__item">
+      <span class="sumul-farmer-short__titles"><strong>Dup</strong></span>
+      <a href="images/pdf/dup.pdf">Download</a>
+      <a href="images/pdf/dup.pdf">Download Again</a>
+    </div></div></div>
+    """
+    records = si.parse_sumul_scheme_links(html)
+    assert len(records) == 1
+
+
+def test_parse_sumul_scheme_links_fallback_no_accordion():
+    html = '<a href="images/pdf/fallback.pdf">Download</a>'
+    records = si.parse_sumul_scheme_links(html)
+    assert len(records) == 1
+    assert records[0]["scheme_url"] == "https://www.sumul.com/images/pdf/fallback.pdf"
+    assert records[0]["scheme_title"] == "fallback.pdf"
+
+
+# ---------------------------------------------------------------------------
+# Sursagar parser tests
+# ---------------------------------------------------------------------------
+
+_SURSAGAR_HTML = """
+<h6 class="fw-bold producer-title" title="યોજના A">યોજના A</h6>
+<a href="/Farmer/DownloadMilkProducerFile?file=aaa.pdf" class="btn">view</a>
+<h6 class="fw-bold producer-title" title="યોજના B">યોજના B</h6>
+<a href="/Farmer/DownloadMilkProducerFile?file=bbb.pdf" class="btn">view</a>
+"""
+
+
+def test_parse_sursagar_scheme_links():
+    records = si.parse_sursagar_scheme_links(_SURSAGAR_HTML)
+    assert len(records) == 2
+    assert records[0]["scheme_title"] == "યોજના A"
+    assert records[0]["scheme_url"] == "https://sursagardairy.com/Farmer/DownloadMilkProducerFile?file=aaa.pdf"
+    assert records[1]["scheme_title"] == "યોજના B"
+    assert records[1]["scheme_url"] == "https://sursagardairy.com/Farmer/DownloadMilkProducerFile?file=bbb.pdf"
+
+
+def test_parse_sursagar_scheme_links_deduplication():
+    html = """
+    <h6 class="fw-bold producer-title" title="Scheme X">Scheme X</h6>
+    <a href="/Farmer/DownloadMilkProducerFile?file=x.pdf" class="btn">view</a>
+    <a href="/Farmer/DownloadMilkProducerFile?file=x.pdf" class="btn">download</a>
+    """
+    records = si.parse_sursagar_scheme_links(html)
+    assert len(records) == 1
+
+
+def test_parse_sursagar_scheme_links_fallback_no_cards():
+    html = '<a href="/Farmer/DownloadMilkProducerFile?file=orphan.pdf" class="btn">view</a>'
+    records = si.parse_sursagar_scheme_links(html)
+    assert len(records) == 1
+    assert records[0]["scheme_url"] == "https://sursagardairy.com/Farmer/DownloadMilkProducerFile?file=orphan.pdf"
+    assert records[0]["scheme_title"] == "orphan.pdf"
+
+
+# ---------------------------------------------------------------------------
+# Sumul ingestion tests
+# ---------------------------------------------------------------------------
+
+def test_ingest_sumul_source_heartbeats_lock(monkeypatch):
+    links = [
+        {"scheme_title": "Scheme A", "scheme_url": "https://example.com/a.pdf"},
+        {"scheme_title": "Scheme B", "scheme_url": "https://example.com/b.pdf"},
+    ]
+
+    async def fake_fetch_html(_client, _url):
+        return "<html></html>"
+
+    monkeypatch.setattr(si, "fetch_html", fake_fetch_html)
+    monkeypatch.setattr(si, "parse_sumul_scheme_links", lambda _html: links)
+
+    async def fake_build(**kwargs):
+        return {"scheme_title": kwargs["scheme_title"]}
+
+    monkeypatch.setattr(si, "_build_pdf_record", fake_build)
+
+    extend_calls = []
+
+    async def fake_extend(source_key, lock_token, redis_client=None):
+        extend_calls.append((source_key, lock_token, redis_client))
+        return True
+
+    monkeypatch.setattr(si, "extend_refresh_lock", fake_extend)
+
+    records = asyncio.run(
+        si._ingest_sumul_source(
+            si.SUMUL_SOURCE,
+            SimpleNamespace(),
+            lock_token="tok-sumul",
+            redis_client="redis-stub",
+        )
+    )
+
+    assert len(records) == 2
+    assert len(extend_calls) == 2
+    assert all(call[1] == "tok-sumul" and call[2] == "redis-stub" for call in extend_calls)
+
+
+def test_ingest_sumul_source_skips_heartbeat_without_token(monkeypatch):
+    async def fake_fetch_html(_client, _url):
+        return "<html></html>"
+
+    monkeypatch.setattr(si, "fetch_html", fake_fetch_html)
+    monkeypatch.setattr(
+        si,
+        "parse_sumul_scheme_links",
+        lambda _html: [{"scheme_title": "A", "scheme_url": "https://example.com/a.pdf"}],
+    )
+
+    async def fake_build(**kwargs):
+        return {"scheme_title": kwargs["scheme_title"]}
+
+    monkeypatch.setattr(si, "_build_pdf_record", fake_build)
+
+    called = []
+
+    async def fake_extend(*args, **kwargs):
+        called.append(args)
+        return True
+
+    monkeypatch.setattr(si, "extend_refresh_lock", fake_extend)
+
+    asyncio.run(si._ingest_sumul_source(si.SUMUL_SOURCE, SimpleNamespace()))
+
+    assert called == []
+
+
+def test_ingest_sumul_source_raises_when_coverage_too_low(monkeypatch):
+    links = [
+        {"scheme_title": f"Scheme {c}", "scheme_url": f"https://example.com/{c}.pdf"}
+        for c in "ABCDE"
+    ]
+
+    async def fake_fetch_html(_client, _url):
+        return "<html></html>"
+
+    monkeypatch.setattr(si, "fetch_html", fake_fetch_html)
+    monkeypatch.setattr(si, "parse_sumul_scheme_links", lambda _html: links)
+
+    async def fake_build(**kwargs):
+        if kwargs["scheme_title"] == "Scheme A":
+            return {"scheme_title": kwargs["scheme_title"]}
+        return None
+
+    monkeypatch.setattr(si, "_build_pdf_record", fake_build)
+
+    with pytest.raises(si.SchemeParseError, match="insufficient sumul ingestion coverage"):
+        asyncio.run(si._ingest_sumul_source(si.SUMUL_SOURCE, SimpleNamespace()))
+
+
+# ---------------------------------------------------------------------------
+# Sursagar ingestion tests
+# ---------------------------------------------------------------------------
+
+def test_ingest_sursagar_source_heartbeats_lock(monkeypatch):
+    links = [
+        {"scheme_title": "Scheme A", "scheme_url": "https://example.com/a.pdf"},
+        {"scheme_title": "Scheme B", "scheme_url": "https://example.com/b.pdf"},
+    ]
+
+    async def fake_fetch_html(_client, _url):
+        return "<html></html>"
+
+    monkeypatch.setattr(si, "fetch_html", fake_fetch_html)
+    monkeypatch.setattr(si, "parse_sursagar_scheme_links", lambda _html: links)
+
+    async def fake_build(**kwargs):
+        return {"scheme_title": kwargs["scheme_title"]}
+
+    monkeypatch.setattr(si, "_build_pdf_record", fake_build)
+
+    extend_calls = []
+
+    async def fake_extend(source_key, lock_token, redis_client=None):
+        extend_calls.append((source_key, lock_token, redis_client))
+        return True
+
+    monkeypatch.setattr(si, "extend_refresh_lock", fake_extend)
+
+    records = asyncio.run(
+        si._ingest_sursagar_source(
+            si.SURSAGAR_SOURCE,
+            SimpleNamespace(),
+            lock_token="tok-sursagar",
+            redis_client="redis-stub",
+        )
+    )
+
+    assert len(records) == 2
+    assert len(extend_calls) == 2
+    assert all(call[1] == "tok-sursagar" and call[2] == "redis-stub" for call in extend_calls)
+
+
+def test_ingest_sursagar_source_raises_when_coverage_too_low(monkeypatch):
+    links = [
+        {"scheme_title": f"Scheme {c}", "scheme_url": f"https://example.com/{c}.pdf"}
+        for c in "ABCDE"
+    ]
+
+    async def fake_fetch_html(_client, _url):
+        return "<html></html>"
+
+    monkeypatch.setattr(si, "fetch_html", fake_fetch_html)
+    monkeypatch.setattr(si, "parse_sursagar_scheme_links", lambda _html: links)
+
+    async def fake_build(**kwargs):
+        if kwargs["scheme_title"] == "Scheme A":
+            return {"scheme_title": kwargs["scheme_title"]}
+        return None
+
+    monkeypatch.setattr(si, "_build_pdf_record", fake_build)
+
+    with pytest.raises(si.SchemeParseError, match="insufficient sursagar ingestion coverage"):
+        asyncio.run(si._ingest_sursagar_source(si.SURSAGAR_SOURCE, SimpleNamespace()))
