@@ -16,6 +16,14 @@ def _doctor_max_output_tokens() -> int:
     return min(_agrinet_max_output_tokens(), 1200)
 
 
+def _doctor_request_limit() -> int:
+    """Allow enough model turns for treatment completeness searches plus synthesis."""
+    override = os.getenv("DOCTOR_REQUEST_LIMIT")
+    if override and override.isdigit() and int(override) > 0:
+        return int(override)
+    return 10
+
+
 # Clinical answers may retrieve evidence, but cannot invoke farmer-service,
 # booking, financial, milk-collection, or network tools.
 DOCTOR_TOOLS = [
@@ -40,7 +48,7 @@ doctor_agent = Agent(
     model_settings=ModelSettings(
         max_tokens=_doctor_max_output_tokens(),
         parallel_tool_calls=False,
-        request_limit=6,
+        request_limit=_doctor_request_limit(),
     ),
 )
 

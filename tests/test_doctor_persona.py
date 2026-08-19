@@ -1,4 +1,4 @@
-from agents.doctor import DOCTOR_TOOLS
+from agents.doctor import DOCTOR_TOOLS, _doctor_request_limit
 from app.config import settings
 from app.personas import resolve_chat_persona
 from helpers.utils import get_prompt
@@ -37,3 +37,26 @@ def test_doctor_prompt_requires_evidence_and_explicit_corpus_gaps():
     assert "Not covered in the current document corpus." in prompt
     assert "Never invent, infer, extrapolate" in prompt
     assert "Do not offer or initiate a health call" in prompt
+
+
+def test_doctor_treatment_prompt_requires_completeness_searches():
+    prompt = get_prompt(
+        "doctor_system_translation_pipeline.md",
+        context={"today_date": "Wednesday, 19 August 2026"},
+    )
+
+    assert "MUST run three distinct focused searches" in prompt
+    assert "drug names dosage concentration route frequency duration withdrawal" in prompt
+    assert "adjunct supportive ethnoveterinary formulation quantities schedule" in prompt
+    assert "three mandatory treatment searches were completed" in prompt
+
+
+def test_doctor_request_limit_defaults_to_ten_and_is_configurable(monkeypatch):
+    monkeypatch.delenv("DOCTOR_REQUEST_LIMIT", raising=False)
+    assert _doctor_request_limit() == 10
+
+    monkeypatch.setenv("DOCTOR_REQUEST_LIMIT", "12")
+    assert _doctor_request_limit() == 12
+
+    monkeypatch.setenv("DOCTOR_REQUEST_LIMIT", "invalid")
+    assert _doctor_request_limit() == 10
