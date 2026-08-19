@@ -42,6 +42,9 @@ import agents.tools.union_schemes as us
     ("banas", "banas"),
     ("dudhsagar", "mehsana"),
     ("mehsana", "mehsana"),
+    ("sursagar", "surendranagar"),
+    ("Sursagar", "surendranagar"),
+    ("sumul", "sumul"),
     ("kaira", "kaira"),   # no alias -> unchanged
     ("", ""),
     (None, ""),
@@ -131,6 +134,7 @@ def _ctx(unions):
 
 def test_tool_resolves_sarhad_to_kutch(monkeypatch):
     monkeypatch.setattr(us.settings, "scheme_require_union_auth", True)
+    monkeypatch.setattr(us.settings, "enable_network", False)
 
     async def fake_records(union_name):
         assert union_name == "kutch"  # canonicalized before lookup
@@ -188,6 +192,7 @@ def test_network_success_is_returned_unchanged(monkeypatch):
 
 def test_prepare_and_runtime_agree_for_banaskantha(monkeypatch):
     monkeypatch.setattr(us.settings, "scheme_require_union_auth", True)
+    monkeypatch.setattr(us.settings, "enable_network", False)
     sentinel = object()
 
     async def fake_records(union_name):
@@ -201,3 +206,39 @@ def test_prepare_and_runtime_agree_for_banaskantha(monkeypatch):
 
     out = asyncio.run(us.get_union_scheme_data(_ctx(["banaskantha"]), None))
     assert "Banas Test Scheme" in out
+
+
+def test_prepare_and_runtime_agree_for_sursagar(monkeypatch):
+    monkeypatch.setattr(us.settings, "scheme_require_union_auth", True)
+    monkeypatch.setattr(us.settings, "enable_network", False)
+    sentinel = object()
+
+    async def fake_records(union_name):
+        assert union_name == UnionName.SURENDRANAGAR.value
+        return [{"scheme_title": "Sursagar Test Scheme"}]
+
+    monkeypatch.setattr(us, "get_cached_scheme_records_for_union", fake_records)
+
+    prepared = asyncio.run(us.prepare_get_union_scheme_data(_ctx(["sursagar"]), sentinel))
+    assert prepared is sentinel
+
+    out = asyncio.run(us.get_union_scheme_data(_ctx(["sursagar"]), None))
+    assert "Sursagar Test Scheme" in out
+
+
+def test_prepare_and_runtime_agree_for_sumul(monkeypatch):
+    monkeypatch.setattr(us.settings, "scheme_require_union_auth", True)
+    monkeypatch.setattr(us.settings, "enable_network", False)
+    sentinel = object()
+
+    async def fake_records(union_name):
+        assert union_name == UnionName.SUMUL.value
+        return [{"scheme_title": "Sumul Test Scheme"}]
+
+    monkeypatch.setattr(us, "get_cached_scheme_records_for_union", fake_records)
+
+    prepared = asyncio.run(us.prepare_get_union_scheme_data(_ctx(["sumul"]), sentinel))
+    assert prepared is sentinel
+
+    out = asyncio.run(us.get_union_scheme_data(_ctx(["sumul"]), None))
+    assert "Sumul Test Scheme" in out

@@ -19,6 +19,8 @@ from helpers.utils import get_logger
 SUPPORTED_SCHEME_UNIONS = {
     UnionName.BANAS.value,
     UnionName.KUTCH.value,
+    UnionName.SUMUL.value,
+    UnionName.SURENDRANAGAR.value,
 }
 
 logger = get_logger(__name__)
