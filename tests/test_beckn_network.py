@@ -7,6 +7,7 @@ direct tools return, and that errors (NACK) are surfaced cleanly.
 import importlib.util
 import json
 import sys
+import uuid
 from pathlib import Path
 from unittest.mock import patch
 
@@ -339,6 +340,28 @@ async def test_ai_call_success_returns_ticket():
     order = fake.calls[0][1]["message"]["order"]
     assert order["items"][0]["id"] == "ait:AIT-1"
     assert {"code": "farmer_id", "value": "F1"} in order["fulfillment"]["customer"]["tags"]
+    # correlation IDs must be unique UUIDs (not society+AIT / static message_id)
+    ctx = fake.calls[0][1]["context"]
+    assert uuid.UUID(ctx["transaction_id"])
+    assert uuid.UUID(ctx["message_id"])
+    assert ctx["transaction_id"] != ctx["message_id"]
+    assert not ctx["transaction_id"].startswith("agent-")
+    assert ctx["message_id"] != "agent-confirm"
+
+
+@pytest.mark.asyncio
+async def test_ai_call_confirm_ids_are_unique_per_attempt():
+    """Same society + AIT must not reuse Beckn correlation IDs across confirms."""
+    payload = {"message": {"order": {"id": "AICALL-1", "state": "ACTIVE"}}}
+    fake = _FakeAsyncClient(payload)
+    with patch.object(bn.httpx, "AsyncClient", return_value=fake):
+        await bn.network_create_ai_call_result("12", "S1", "F1", "AIT-1", "cow")
+        await bn.network_create_ai_call_result("12", "S1", "F1", "AIT-1", "cow")
+    assert len(fake.calls) == 2
+    ctx1 = fake.calls[0][1]["context"]
+    ctx2 = fake.calls[1][1]["context"]
+    assert ctx1["transaction_id"] != ctx2["transaction_id"]
+    assert ctx1["message_id"] != ctx2["message_id"]
 
 
 @pytest.mark.asyncio
