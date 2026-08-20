@@ -451,15 +451,14 @@ class Settings(BaseSettings):
     )
 
     # Beckn Network Feature Flag
-    # When enable_network is true, agent tools that have a Beckn equivalent
-    # (vet-KB search, union schemes, AI-call booking) route through the Amul
-    # Beckn network instead of the direct integrations (Marqo / Redis /
-    # PashuGPT). Default false → existing behaviour is unchanged.
+    # When enable_network is true: union schemes route through the Amul Beckn
+    # seeker (merged with Vistaar central schemes), and Bharat Vistaar tools
+    # (weather / mandi / scheme info) are registered on the agent. Vet-KB
+    # search and AI-call booking always use Marqo / PashuGPT regardless.
+    # Default false → existing behaviour is unchanged.
     enable_network: bool = os.getenv("ENABLE_NETWORK", "false").strip().lower() in {"1", "true", "yes", "y", "on"}
-    # Seeker BAP base URL for network discovery (vet KB, union schemes).
+    # Seeker BAP base URL for network scheme discovery.
     amul_network_url: str = os.getenv("AMUL_NETWORK_URL", "http://amul-bap-seeker:3000")
-    # Booking BPP base URL for network AI-call booking.
-    amul_booking_bpp_url: str = os.getenv("AMUL_BOOKING_BPP_URL", "http://amul-net-bpp-booking:6002")
     # Timeout (seconds) for network calls from the agent tools.
     amul_network_timeout_s: float = float(os.getenv("AMUL_NETWORK_TIMEOUT_S", "35"))
     # Bharat Vistaar network settings used by tool layer.

@@ -223,13 +223,6 @@ def test_create_ai_call_refuses_sarhad_without_writing(monkeypatch):
 
     monkeypatch.setattr(ai_mod, "create_ai_call_api", fake_api)
     monkeypatch.setattr(ai_mod, "_reserve_booking_slot", fake_reserve)
-    monkeypatch.setattr(ai_mod.settings, "enable_network", True)
-
-    async def fake_network(*args, **kwargs):
-        calls["api"] += 1
-        return "should not book"
-
-    monkeypatch.setattr(ai_mod, "_book_via_network", fake_network)
 
     out = asyncio.run(
         ai_mod.create_ai_call(_booking_ctx(unions=["sarhad"]), "U", "S", "F", "tech1", SPECIES)
@@ -247,7 +240,6 @@ def test_create_ai_call_refuses_canonical_and_mixed_banned_unions(monkeypatch, u
         return SimpleNamespace(ticket_number="T1", ait_name="AIT", model_dump=lambda: {})
 
     monkeypatch.setattr(ai_mod, "create_ai_call_api", fake_api)
-    monkeypatch.setattr(ai_mod.settings, "enable_network", False)
 
     out = asyncio.run(
         ai_mod.create_ai_call(_booking_ctx(unions=unions), "U", "S", "F", "tech1", SPECIES)
@@ -271,7 +263,6 @@ def test_create_ai_call_returns_localized_ban_message(monkeypatch, lang, expecte
         return SimpleNamespace(ticket_number="T1", ait_name="AIT", model_dump=lambda: {})
 
     monkeypatch.setattr(ai_mod, "create_ai_call_api", fake_api)
-    monkeypatch.setattr(ai_mod.settings, "enable_network", False)
 
     out = asyncio.run(
         ai_mod.create_ai_call(
@@ -291,7 +282,6 @@ def test_create_ai_call_still_books_for_kaira(monkeypatch):
 
     monkeypatch.setenv("PASHUGPT_TOKEN", "tok")
     monkeypatch.setattr(ai_mod, "create_ai_call_api", fake_api)
-    monkeypatch.setattr(ai_mod.settings, "enable_network", False)
 
     out = asyncio.run(
         ai_mod.create_ai_call(_booking_ctx(unions=["kaira"]), "U", "S", "F", "tech1", SPECIES)
@@ -311,7 +301,6 @@ def test_create_ai_call_empty_or_missing_unions_is_not_banned(monkeypatch, union
 
     monkeypatch.setenv("PASHUGPT_TOKEN", "tok")
     monkeypatch.setattr(ai_mod, "create_ai_call_api", fake_api)
-    monkeypatch.setattr(ai_mod.settings, "enable_network", False)
 
     out = asyncio.run(
         ai_mod.create_ai_call(

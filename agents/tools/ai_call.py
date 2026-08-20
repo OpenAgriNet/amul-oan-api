@@ -4,7 +4,6 @@ Tool for booking an artificial insemination call for a farmer.
 import json
 import os
 
-import httpx
 from pydantic_ai import RunContext
 
 from agents.deps import FarmerContext
@@ -23,21 +22,11 @@ logger = get_logger(__name__)
 # would lose the protection it exists to give.
 AI_CALL_CACHE_NAMESPACE = "ai_call_booked"
 
-# Shared by both booking routes (direct PashuGPT and Beckn network) so the two
-# cannot drift into telling the farmer different things.
 ALREADY_BOOKED_MESSAGE = (
     "This session already has an active artificial insemination booking. "
     "Please try again later or contact your society for assistance."
 )
 OUT_OF_SCOPE_MESSAGE = "This helpline only handles dairy farming and animal husbandry questions."
-
-# The network route answered, but neither confirmed nor refused the booking. We
-# cannot prove the SMS did not go out, so the reservation is held for the TTL.
-UNCONFIRMED_MESSAGE = (
-    "The artificial insemination call booking could not be confirmed.\n\n"
-    "It may or may not have gone through. Please check with your society before "
-    "booking again, so you do not get two visits."
-)
 
 
 async def _reserve_booking_slot(session_id: str | None) -> tuple[bool, bool]:
@@ -54,8 +43,8 @@ async def _reserve_booking_slot(session_id: str | None) -> tuple[bool, bool]:
     anything. Recording that as "reserved" made a later failure delete a key we
     never wrote — quite possibly this session's marker from an EARLIER
     successful booking — voiding the guard for the rest of its TTL. The
-    fail-open itself is unchanged (both routes have always proceeded when the
-    cache is down); only the bogus release is gone.
+    fail-open itself is unchanged (booking proceeds when the cache is down);
+    only the bogus release is gone.
 
     Flag-gated (see the trade-off note in create_ai_call). With the guard off,
     or with no session id, this is a no-op that allows the booking.
@@ -74,30 +63,6 @@ async def _reserve_booking_slot(session_id: str | None) -> tuple[bool, bool]:
         )
         return True, False
     return True, True
-
-
-def _is_provably_pre_send(exc: BaseException) -> bool:
-    """True only when the confirm demonstrably never reached the booking BPP.
-
-    DNS failure, connection refused and connect-timeout all fail before a single
-    byte of the request is written, so no booking can have been made and the
-    reservation is safe to release. Everything else — read/write timeout, pool
-    timeout, protocol error, any HTTP status, anything unexpected — happened at
-    or after the send, and the BPP may already have called PashuGPT and texted
-    the farmer. Those are ambiguous by construction and must NOT release.
-
-    Note httpx.ConnectTimeout is checked before the generic timeout types
-    precisely because it is the one timeout that is provably pre-send.
-    """
-    return isinstance(
-        exc,
-        (
-            httpx.ConnectError,       # refused / DNS failure / network unreachable
-            httpx.ConnectTimeout,     # never established a connection
-            httpx.UnsupportedProtocol,
-            httpx.InvalidURL,
-        ),
-    )
 
 
 async def _mark_session_booked(session_id: str | None, ticket: str | None, species_value: str) -> None:
@@ -157,8 +122,7 @@ async def create_ai_call(
     session_id = ctx.deps.session_id if ctx and ctx.deps else None
 
     # Booking idempotency is a PRODUCT TRADE-OFF, so it is a config flag rather
-    # than a code decision — the two branches disagreed about it and kept
-    # conflicting on every promote.
+    # than a code decision.
     #
     # OFF (default): a farmer can book multiple AI visits in one session, including
     # the same species with the same technician (two cows in heat is a real case).
@@ -170,11 +134,6 @@ async def create_ai_call(
     # booking inside the TTL is refused. amul-prod has historically run this way.
     #
     # See health_call.py, which keeps an unconditional guard for a different contract.
-    #
-    # Both protections below are route-independent: settings.enable_network
-    # decides HOW the booking is executed (Beckn network vs direct PashuGPT),
-    # never WHETHER it is protected. The network branch used to return above
-    # this point, silently voiding both.
 
     # A booking is IRREVERSIBLE, so block on the moderation verdict before writing.
     # On the voice path moderation runs concurrently with the agent; this refuses
@@ -185,8 +144,8 @@ async def create_ai_call(
         return OUT_OF_SCOPE_MESSAGE
 
     # Union ban is a policy gate, not a booking write: refuse before Redis
-    # reservation and before either PashuGPT or Beckn. farmer_unions may be
-    # missing on test stubs and on unsigned-in turns — those are not banned.
+    # reservation and before PashuGPT. farmer_unions may be missing on test
+    # stubs and on unsigned-in turns — those are not banned.
     farmer_unions = getattr(ctx.deps, "farmer_unions", []) if ctx and ctx.deps else []
     if any_union_banned_from_ai_calls(farmer_unions):
         logger.info(
@@ -205,28 +164,6 @@ async def create_ai_call(
         "species": species.value,
     }
 
-    # Feature flag: route the booking through the Amul Beckn network
-    # (services:amul-vet-booking) instead of the direct PashuGPT call.
-    if settings.enable_network:
-        return await _book_via_network(
-            union_code, society_code, farmer_code, user_id, species, session_id, _ai_tool_input
-        )
-
-    return await _book_direct(
-        union_code, society_code, farmer_code, user_id, species, session_id, _ai_tool_input
-    )
-
-
-async def _book_direct(
-    union_code: str,
-    society_code: str,
-    farmer_code: str,
-    user_id: str,
-    species: AISpecies,
-    session_id: str | None,
-    _ai_tool_input: dict,
-) -> str:
-    """Direct PashuGPT CreateAICall booking (settings.enable_network off)."""
     with start_observation(
         "ai_call_booking",
         as_type="generation",
@@ -255,8 +192,6 @@ async def _book_direct(
         # concurrent submit OR a fallback re-run for the same session short-circuits
         # instead of double-booking. Released below if the booking API itself
         # fails AND we actually hold the reservation (see _reserve_booking_slot).
-        # Timeout handling on this path is deliberately untouched: it is live
-        # production behaviour and out of scope for this change.
         _allowed, _owned = await _reserve_booking_slot(session_id)
         if not _allowed:
             return ALREADY_BOOKED_MESSAGE
@@ -303,131 +238,3 @@ async def _book_direct(
                 }
             )
         return success_message
-
-
-async def _book_via_network(
-    union_code: str,
-    society_code: str,
-    farmer_code: str,
-    user_id: str,
-    species: AISpecies,
-    session_id: str | None,
-    _ai_tool_input: dict,
-) -> str:
-    """Booking via the Amul Beckn network (settings.enable_network on).
-
-    Same protections as the direct path: the caller has already blocked on the
-    moderation verdict, and the per-session reservation below is taken with the
-    same flag, namespace and TTL, so a fallback re-run cannot double-book (and
-    cannot send a duplicate SMS to a real farmer).
-    """
-    from agents.tools.beckn_network import network_create_ai_call_result
-
-    logger.info(
-        "enable_network=on → AI call booking via Beckn network union=%s society=%s",
-        union_code,
-        society_code,
-    )
-
-    with start_observation(
-        "ai_call_booking",
-        as_type="generation",
-        input=_ai_tool_input,
-        metadata={"tool_name": "create_ai_call", "route": "beckn_network"},
-    ) as ai_tool_obs:
-        # Atomic reservation immediately before the write — see _book_direct.
-        _allowed, _owned = await _reserve_booking_slot(session_id)
-        if not _allowed:
-            return ALREADY_BOOKED_MESSAGE
-
-        try:
-            result = await network_create_ai_call_result(
-                union_code, society_code, farmer_code, user_id, species.value
-            )
-        except Exception as e:
-            # An earlier version of this comment claimed "a transport failure
-            # means no booking happened". That overclaims. The confirm travels
-            # BAP -> booking BPP -> PashuGPT -> SMS to a real farmer; a read
-            # timeout or a mid-chain 502/504 can land AFTER PashuGPT was called
-            # and the SMS sent. Only a failure that provably never left us is
-            # safe to release on.
-            pre_send = _is_provably_pre_send(e)
-            if _owned and pre_send:
-                await release_reservation(session_id, AI_CALL_CACHE_NAMESPACE)
-            logger.warning(
-                "Network AI call errored for union=%s society=%s farmer=%s species=%s "
-                "pre_send=%s reservation=%s: %r",
-                union_code,
-                society_code,
-                farmer_code,
-                species.value,
-                pre_send,
-                "released" if (_owned and pre_send) else "held",
-                e,
-            )
-            if pre_send:
-                failure_message = (
-                    "Artificial insemination call booking failed.\n\n"
-                    "Unable to reach the booking network at the moment."
-                )
-            else:
-                # Ambiguous: hold the reservation for the TTL. The trade-off is
-                # deliberate — a possible ~30-minute lockout is preferable to a
-                # possible duplicate visit and duplicate SMS.
-                failure_message = UNCONFIRMED_MESSAGE
-            if ai_tool_obs is not None:
-                ai_tool_obs.update(
-                    output={
-                        "success": False,
-                        "pre_send_failure": pre_send,
-                        "message": failure_message,
-                    }
-                )
-            return failure_message
-
-        if not result.ok:
-            # Release only on an authoritative "I did not book" (a NACK). A
-            # failure the BPP did not vouch for — e.g. a 200 with no order id —
-            # keeps the reservation, same rule as the ambiguous exceptions above.
-            if _owned and result.authoritative_no_booking:
-                await release_reservation(session_id, AI_CALL_CACHE_NAMESPACE)
-            logger.info(
-                "Network AI call failed for union=%s society=%s farmer=%s species=%s "
-                "authoritative=%s reservation=%s",
-                union_code,
-                society_code,
-                farmer_code,
-                species.value,
-                result.authoritative_no_booking,
-                "released" if (_owned and result.authoritative_no_booking) else "held",
-            )
-            if ai_tool_obs is not None:
-                ai_tool_obs.update(
-                    output={
-                        "success": False,
-                        "authoritative_no_booking": result.authoritative_no_booking,
-                        "message": result.message,
-                    }
-                )
-            return result.message
-
-        # Mark this session as booked so a re-run (or retry) does not double-book.
-        await _mark_session_booked(session_id, result.ticket, species.value)
-
-        logger.info(
-            "Network AI call succeeded for union=%s society=%s farmer=%s species=%s ticket=%s",
-            union_code,
-            society_code,
-            farmer_code,
-            species.value,
-            result.ticket,
-        )
-        if ai_tool_obs is not None:
-            ai_tool_obs.update(
-                output={
-                    "success": True,
-                    "ticket_number": result.ticket,
-                    "message": result.message,
-                }
-            )
-        return result.message

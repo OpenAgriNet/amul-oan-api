@@ -126,7 +126,6 @@ def test_settings_normalize_backend_base_urls(monkeypatch):
 def test_search_documents_consumes_settings_endpoint_and_index(monkeypatch):
     captured: dict[str, tuple] = {}
 
-    monkeypatch.setattr(search.settings, "enable_network", False)
     monkeypatch.setattr(search.settings, "marqo_endpoint_url", "http://marqo.test")
     monkeypatch.setattr(search.settings, "marqo_index_name", None)
 

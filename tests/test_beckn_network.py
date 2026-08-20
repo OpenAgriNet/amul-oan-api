@@ -1,8 +1,8 @@
 """Tests for the Beckn network client (agents/tools/beckn_network.py).
 
-Mocks the HTTP layer so no live services are needed; asserts the Beckn
-on_search / on_confirm payloads are formatted into the same string contract the
-direct tools return, and that errors (NACK) are surfaced cleanly.
+Mocks the HTTP layer so no live services are needed; asserts scheme
+on_search payloads are formatted into the JSON string contract the direct
+tool returns, and that dead legs are surfaced as unavailable rather than empty.
 """
 import importlib.util
 import json
@@ -62,10 +62,6 @@ def _seeker_payload(leg, items):
     return {"results": {leg: _leg_result(leg, items)}}
 
 
-VET_ITEMS = [
-    {"id": "doc-1#3", "descriptor": {"name": "Mastitis care", "long_desc": "Treat with intramammary antibiotics after stripping."},
-     "tags": [{"code": "source", "value": "Merck Vet Manual"}, {"code": "score", "value": "0.91"}]},
-]
 SCHEME_ITEMS = [
     {"id": "banas-cattle-insurance", "descriptor": {"name": "Cattle Insurance", "long_desc": "Cover for milch cattle."},
      "tags": [{"code": "union", "value": "banas"}, {"code": "category", "value": "insurance"}]},
@@ -152,37 +148,6 @@ def _queries_by_leg(calls):
         assert len(legs) == 1, f"expected one leg per request, got {legs}"
         out[legs[0]] = body["query"]
     return out
-
-
-@pytest.mark.asyncio
-async def test_vet_search_formats_items_with_source():
-    fake = _FakeAsyncClient(_seeker_payload("amulvet", VET_ITEMS))
-    with patch.object(bn.httpx, "AsyncClient", return_value=fake):
-        out = await bn.network_search_documents("mastitis", top_k=5)
-    assert "Mastitis care" in out
-    assert "intramammary antibiotics" in out
-    assert "source: Merck Vet Manual" in out
-    # scoped to the vet leg only
-    assert fake.calls[0][1]["legs"] == ["amulvet"]
-
-
-@pytest.mark.asyncio
-async def test_vet_search_empty():
-    fake = _FakeAsyncClient(_seeker_payload("amulvet", []))
-    with patch.object(bn.httpx, "AsyncClient", return_value=fake):
-        out = await bn.network_search_documents("nonsense")
-    assert "No relevant documents" in out
-
-
-@pytest.mark.asyncio
-async def test_vet_search_dead_leg_is_not_reported_as_no_documents():
-    """Same failure/empty distinction as scheme discovery: a leg the seeker
-    reports as failed must not read as an empty knowledge base."""
-    fake = _FakeAsyncClient({"results": {"amulvet": None}, "errors": {"amulvet": "timeout"}})
-    with patch.object(bn.httpx, "AsyncClient", return_value=fake):
-        out = await bn.network_search_documents("mastitis")
-    assert "temporarily unavailable" in out.lower()
-    assert "No relevant documents" not in out
 
 
 @pytest.mark.asyncio
@@ -319,78 +284,18 @@ async def test_scheme_discovery_empty_on_both_legs_is_reported_as_empty():
 
 
 @pytest.mark.asyncio
-async def test_single_leg_wrapper_still_scopes_to_one_leg():
-    fake = _FakeAsyncClient(_seeker_payload("amulvet", VET_ITEMS))
+async def test_seeker_passes_user_id_when_provided():
+    fake = _FakeAsyncClient(_seeker_payload("amulschemes", SCHEME_ITEMS))
     with patch.object(bn.httpx, "AsyncClient", return_value=fake):
-        on_search = await bn._seeker_search("mastitis", bn.VET_LEG, user_id="u-1")
-    assert fake.calls[0][1] == {"query": "mastitis", "legs": ["amulvet"], "user_id": "u-1"}
-    assert bn._items(on_search)[0]["descriptor"]["name"] == "Mastitis care"
-
-
-@pytest.mark.asyncio
-async def test_ai_call_success_returns_ticket():
-    payload = {"message": {"order": {"id": "AICALL-889231", "state": "ACTIVE"}}}
-    fake = _FakeAsyncClient(payload)
-    with patch.object(bn.httpx, "AsyncClient", return_value=fake):
-        out = await bn.network_create_ai_call("12", "S1", "F1", "AIT-1", "cow")
-    assert "AICALL-889231" in out
-    assert "booked successfully" in out
-    # confirm order carried the farmer + technician correctly
-    order = fake.calls[0][1]["message"]["order"]
-    assert order["items"][0]["id"] == "ait:AIT-1"
-    assert {"code": "farmer_id", "value": "F1"} in order["fulfillment"]["customer"]["tags"]
-
-
-@pytest.mark.asyncio
-async def test_ai_call_nack_surfaces_error():
-    payload = {"message": {"ack": {"status": "NACK"}}, "error": {"code": "40002", "message": "society not serviced"}}
-    fake = _FakeAsyncClient(payload)
-    with patch.object(bn.httpx, "AsyncClient", return_value=fake):
-        out = await bn.network_create_ai_call("12", "S1", "F1", "AIT-1", "cow")
-    assert "failed" in out.lower()
-    assert "society not serviced" in out
-
-
-@pytest.mark.asyncio
-async def test_ai_call_nack_is_marked_authoritative_no_booking():
-    """A NACK is the BPP saying it did not book — the caller may release its
-    reservation on it, so the flag must be set."""
-    payload = {"message": {"ack": {"status": "NACK"}}, "error": {"code": "40002", "message": "society not serviced"}}
-    fake = _FakeAsyncClient(payload)
-    with patch.object(bn.httpx, "AsyncClient", return_value=fake):
-        res = await bn.network_create_ai_call_result("12", "S1", "F1", "AIT-1", "cow")
-    assert res.ok is False
-    assert res.authoritative_no_booking is True
-
-
-@pytest.mark.asyncio
-async def test_ai_call_200_with_unparseable_body_is_not_success():
-    """`ok` used to default to True, so a 200 with no ack and no order.id told
-    the farmer "booked successfully. Ticket: None" and burned the session's TTL
-    with nothing booked. It is a failure, and the message must neither claim
-    success nor print a None ticket."""
-    fake = _FakeAsyncClient({})
-    with patch.object(bn.httpx, "AsyncClient", return_value=fake):
-        res = await bn.network_create_ai_call_result("12", "S1", "F1", "AIT-1", "cow")
-    assert res.ok is False, "a 200 with no order.id was reported as a successful booking"
-    assert res.ticket is None
-    assert "booked successfully" not in res.message.lower()
-    assert "none" not in res.message.lower(), "the farmer was shown a None ticket"
-    assert "could not be confirmed" in res.message.lower()
-    # NOT authoritative: the BPP answered without refusing, so it may already
-    # have called PashuGPT and sent the SMS. Same class as a read timeout —
-    # the caller must hold the reservation.
-    assert res.authoritative_no_booking is False
-
-
-@pytest.mark.asyncio
-async def test_ai_call_200_with_order_but_no_id_is_not_success():
-    """Same for a partially-filled order envelope."""
-    fake = _FakeAsyncClient({"message": {"order": {"state": "ACTIVE"}}})
-    with patch.object(bn.httpx, "AsyncClient", return_value=fake):
-        res = await bn.network_create_ai_call_result("12", "S1", "F1", "AIT-1", "cow")
-    assert res.ok is False
-    assert res.authoritative_no_booking is False
+        results, _errors = await bn._seeker_search_legs(
+            "insurance", [bn.SCHEMES_LEG], user_id="u-1"
+        )
+    assert fake.calls[0][1] == {
+        "query": "insurance",
+        "legs": ["amulschemes"],
+        "user_id": "u-1",
+    }
+    assert bn._items(results.get(bn.SCHEMES_LEG))[0]["descriptor"]["name"] == "Cattle Insurance"
 
 
 # ── the LLM-visible docstring must match what the tool actually does ─────────
