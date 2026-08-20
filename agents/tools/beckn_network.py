@@ -24,6 +24,7 @@ scheme discovery issues one concurrent request PER query instead. Same wall
 time, different words down each leg.
 """
 import asyncio
+import uuid
 from dataclasses import dataclass
 from typing import Any, Optional
 
@@ -287,7 +288,7 @@ async def network_create_ai_call_result(
     }
     context = {
         "domain": "services:amul-vet-booking", "action": "confirm", "version": "1.1.0",
-        "transaction_id": f"agent-{society_code}-{user_id}", "message_id": "agent-confirm",
+        "transaction_id": str(uuid.uuid4()), "message_id": str(uuid.uuid4()),
         "timestamp": "1970-01-01T00:00:00.000Z",
     }
     url = f"{settings.amul_booking_bpp_url.rstrip('/')}/confirm"
