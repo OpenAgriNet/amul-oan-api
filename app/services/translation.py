@@ -299,15 +299,39 @@ GU_POST_REPLACEMENTS = GU_POST_REPLACEMENTS_BASE + GU_POLICY_REPLACEMENTS
 # (unary) or through a lookback buffer (streaming) so a multi-token name is matched
 # before it is flushed. Gated on the English source containing the term, so ordinary
 # traffic is never buffered or altered.
+
+# ── The KDCC bank name ────────────────────────────────────────────────────────
+# The pattern deliberately stops at બેંક and pins ONLY the part of the name the
+# model consistently mistranslates (District Central Co-Operative -> જિલ્લા
+# કેન્દ્રીય સહકારી). Everything the model appends after it — લિમિટેડ, the
+# "- નડિયાદ" branch suffix, and the Gujarati case ending that attaches with no
+# space (…લિમિટેડમાંથી) — is left exactly as emitted.
+#
+# The earlier pattern instead required a trailing નડિયાદ and swapped the whole
+# span for a fixed string. That silently did nothing whenever the model dropped
+# the branch: "ખેડા જિલ્લા કેન્દ્રીય સહકારી બેંક લિમિટેડમાંથી" reached farmers in prod
+# untouched (AMUL-51). Anchoring on the invariant head instead of the full span
+# also makes the rule idempotent and safe to apply to a partial streaming buffer:
+# it can never duplicate or invent a word the model did not produce.
+_KDCC_PINNED = "ખેડા ડિસ્ટ્રિક્ટ સેન્ટ્રલ કો-ઓપરેટિવ બેંક"
+_KDCC_RENDERINGS = re.compile(
+    r"ખેડા\s+(?:જિલ્લા|ડિસ્ટ્ર[િી]ક્?ટ)\s+"
+    r"(?:કેન્દ્રીય\s+|મધ્યસ્થ\s+|સેન્ટ્રલ\s+)?"
+    r"(?:સહકારી|કો[-\s]?ઓપરેટિવ)\s+"
+    r"(?:બે[ંઁ]ક|બૅ[ંઁ]ક|બેન્ક)"
+)
+# The English gate is a REGEX, not a substring. The agent composes its own English
+# before translation and routinely shortens the name it was given, so a gate on the
+# full "…Limited - Nadiad" armed nothing for exactly the traffic that needed the pin.
+# Requiring kheda + district + bank within one sentence keeps ordinary "Kheda
+# district" weather/market answers from arming (and from being stream-buffered).
+_KDCC_EN = re.compile(r"kheda[\s\-]+(?:district|dist\.?)[^.\n]{0,80}?bank")
+
 _PROTECTED_OUTPUT = [
     (
-        "Kheda District Central Co-Operative Bank Limited - Nadiad",
-        re.compile(
-            r"ખેડા\s+(?:જિલ્લા|ડિસ્ટ્રિક્ટ)\s+"
-            r"(?:કેન્દ્રીય\s+|મધ્યસ્થ\s+|સેન્ટ્રલ\s+)?"
-            r"(?:સહકારી|કો-?ઓપરેટિવ)\s+બેંક\s+લિમિટેડ\s*-?\s*નડિયાદ"
-        ),
-        "ખેડા ડિસ્ટ્રિક્ટ સેન્ટ્રલ કો-ઓપરેટિવ બેંક લિમિટેડ - નડિયાદ",
+        _KDCC_EN,
+        _KDCC_RENDERINGS,
+        _KDCC_PINNED,
     ),
     (
         # TranslateGemma transliterates this name letter-by-letter off the Latin
@@ -345,11 +369,21 @@ def _protected_output_triggers(source_text: str, target_lang: str):
 
     The trigger match is case-insensitive: a personal name reaches the translator in
     whatever case the upstream record or the agent's sentence used (RAMESHBHAI /
-    Rameshbhai), and a case-sensitive gate would silently skip the pin for most of them."""
+    Rameshbhai), and a case-sensitive gate would silently skip the pin for most of them.
+
+    A gate is either a literal (substring test) or a compiled pattern (search). Names
+    the agent always passes through verbatim can use a literal; a term it paraphrases —
+    like the bank name, which it shortens at will — needs the pattern, since a literal
+    gate on the long form disarms the pin exactly when it is needed."""
     if not source_text or target_lang.lower() not in ("gujarati", "gu"):
         return []
     lowered = source_text.lower()
-    return [(rx, pinned) for en, rx, pinned in _PROTECTED_OUTPUT if en.lower() in lowered]
+    out = []
+    for en, rx, pinned in _PROTECTED_OUTPUT:
+        armed = en.search(lowered) if isinstance(en, re.Pattern) else en.lower() in lowered
+        if armed:
+            out.append((rx, pinned))
+    return out
 
 
 def _apply_protected_output(text: str, triggers) -> str:
