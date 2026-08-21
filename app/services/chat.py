@@ -7,7 +7,7 @@ import re
 from fastapi import BackgroundTasks
 from agents.agrinet import agrinet_agent
 from agents.doctor import doctor_agent
-from agents.moderation import moderation_agent
+from agents.moderation import doctor_moderation_agent, moderation_agent
 from app.llm_core import resolver as _llm_resolver
 from app.llm_core.config_model import Step as _LlmStep
 from helpers.utils import get_logger
@@ -33,7 +33,11 @@ from app.services.translation import (
     PRETRANSLATION_MODEL,
 )
 from pydantic_ai.messages import ModelRequest, ModelResponse, UserPromptPart, TextPart
-from app.services.identity_profile import is_identity_query, build_identity_profile_table
+from app.services.identity_profile import (
+    build_doctor_identity_response,
+    build_identity_profile_table,
+    is_identity_query,
+)
 from app.personas import ChatPersona, resolve_chat_persona
 
 
@@ -145,6 +149,49 @@ def should_translate_batch(batch_text: str, word_count: int) -> bool:
     return False
 
 
+_DOCTOR_PROVENANCE_LINE_RE = re.compile(
+    r"^\s*(?:[-*•]\s*)?(?:\*{0,2})?"
+    r"(?:sources?|references?|citations?|cited\s+sources?|document\s+sources?|"
+    r"source\s+documents?|સ્ત્રોત|સ્રોત|સંદર્ભ)"
+    r"(?:\*{0,2})?\s*[:：-]",
+    re.IGNORECASE,
+)
+_DOCTOR_INLINE_PROVENANCE_RE = re.compile(
+    r"\s*\((?:sources?|references?|citations?|સ્ત્રોત|સ્રોત|સંદર્ભ)\s*:[^)]*\)",
+    re.IGNORECASE,
+)
+
+
+def sanitize_doctor_answer(text: str) -> str:
+    """Remove source-document audit text from a Doctor-facing answer.
+
+    Prompt compliance is probabilistic, so the user-facing contract is enforced
+    here as well. Clinical content is preserved; only explicitly labelled
+    provenance lines and inline parenthetical source tags are removed.
+    """
+    if not text:
+        return text
+    kept: list[str] = []
+    for line in text.splitlines(keepends=True):
+        if _DOCTOR_PROVENANCE_LINE_RE.match(line):
+            continue
+        kept.append(_DOCTOR_INLINE_PROVENANCE_RE.sub("", line))
+    return "".join(kept).strip()
+
+
+async def _sanitize_doctor_stream(source):
+    """Line-buffer a stream so provenance labels split across chunks are caught."""
+    buffer = ""
+    async for chunk in source:
+        buffer += chunk
+        while "\n" in buffer:
+            line, buffer = buffer.split("\n", 1)
+            if not _DOCTOR_PROVENANCE_LINE_RE.match(line):
+                yield _DOCTOR_INLINE_PROVENANCE_RE.sub("", line) + "\n"
+    if buffer and not _DOCTOR_PROVENANCE_LINE_RE.match(buffer):
+        yield _DOCTOR_INLINE_PROVENANCE_RE.sub("", buffer)
+
+
 
 logger = get_logger(__name__)
 SUGGESTIONS_PENDING_TTL = 30
@@ -200,10 +247,13 @@ async def stream_chat_messages(
     use_translation_pipeline: bool = True,
     pipeline_profile: str = "managed",
     requested_persona: ChatPersona | None = None,
+    history_session_id: str | None = None,
 ) -> AsyncGenerator[str, None]:
     """Async generator for streaming chat messages."""
     persona = resolve_chat_persona(user_info, requested_persona)
     active_agent = doctor_agent if persona == "doctor" else agrinet_agent
+    active_moderation_agent = doctor_moderation_agent if persona == "doctor" else moderation_agent
+    message_history_session_id = history_session_id or session_id
     # The turn's channel profile: what differs between delivery channels, resolved
     # once here rather than re-derived at each use site.
     profile = _profile_for(channel)
@@ -379,11 +429,11 @@ async def stream_chat_messages(
             content_id = f"query_{session_id}_{len(history)//2 + 1}"
             logger.info("request_id=%s user_info=%s", request_id, user_info)
 
-            if persona == "farmer" and is_identity_query(query):
-                identity_response = build_identity_profile_table(
-                    source_lang=source_lang,
-                    target_lang=target_lang,
-                    query=query,
+            if is_identity_query(query):
+                identity_response = (
+                    build_doctor_identity_response(source_lang, target_lang, query)
+                    if persona == "doctor"
+                    else build_identity_profile_table(source_lang, target_lang, query)
                 )
                 logger.info("request_id=%s identity_short_circuit=True", request_id)
                 if get_langfuse_client:
@@ -403,7 +453,7 @@ async def stream_chat_messages(
                     request_id,
                     len(messages),
                 )
-                await update_message_history(session_id, messages)
+                await update_message_history(message_history_session_id, messages)
                 yield identity_response
                 return
 
@@ -588,10 +638,10 @@ async def stream_chat_messages(
                             pipeline="moderation",
                             session_id=session_id_safe,
                             profile_name=pipeline_profile,
-                            run=lambda a: moderation_agent.run(user_message, model=a.model),
+                            run=lambda a: active_moderation_agent.run(user_message, model=a.model),
                         )
                     else:
-                        moderation_run = await moderation_agent.run(user_message, model=moderation_model)
+                        moderation_run = await active_moderation_agent.run(user_message, model=moderation_model)
                     moderation_data = moderation_run.output
                     logger.info(
                         "request_id=%s moderation_category=%s moderation_action=%s",
@@ -841,7 +891,16 @@ async def stream_chat_messages(
                                 yield _c
                     english_src = _strip_activity(_raw_agent_text_stream(request_provider, request_model))
 
-                async for _out in _stream_to_client(english_src):
+                if persona == "doctor":
+                    english_src = _sanitize_doctor_stream(english_src)
+
+                client_src = _stream_to_client(english_src)
+                if persona == "doctor":
+                    # Defence in depth: also remove a provenance label invented by
+                    # post-translation rather than present in the English answer.
+                    client_src = _sanitize_doctor_stream(client_src)
+
+                async for _out in client_src:
                     yield _out
                 logger.info(f"Streaming complete for session {session_id}")
                 new_messages = _stream_holder.get("new_messages", [])
@@ -850,7 +909,7 @@ async def stream_chat_messages(
                 if get_langfuse_client:
                     try:
                         if needs_output_translation and translated_output_chunks:
-                            trace_output = "".join(translated_output_chunks)
+                            trace_output = sanitize_doctor_answer("".join(translated_output_chunks)) if persona == "doctor" else "".join(translated_output_chunks)
                         elif raw_output_chunks:
                             trace_output = "".join(raw_output_chunks)
                         else:
@@ -893,7 +952,7 @@ async def stream_chat_messages(
             ]
 
             logger.info(f"Updating message history for session {session_id} with {len(messages)} messages")
-            await update_message_history(session_id, messages)
+            await update_message_history(message_history_session_id, messages)
             _turn_outcome = "success"
         except GeneratorExit:
             # Client hung up mid-stream. Re-raised so generator teardown is normal.

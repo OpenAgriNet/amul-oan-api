@@ -6,6 +6,7 @@ from app.llm_core import split as _llm_split
 from app.config import settings
 from app.utils import _get_message_history
 from app.models.requests import ChatRequest
+from app.personas import history_session_id_for_persona, resolve_chat_persona
 from helpers.utils import get_logger
 import uuid
 
@@ -34,7 +35,9 @@ async def chat_endpoint(
         f"use_translation_pipeline: {request.use_translation_pipeline}, query: {request.query}"
     )
     
-    history = await _get_message_history(session_id)
+    resolved_persona = resolve_chat_persona(user_info, request.persona)
+    history_session_id = history_session_id_for_persona(session_id, resolved_persona)
+    history = await _get_message_history(history_session_id)
     logger.debug(f"Retrieved message history for session {session_id} - length: {len(history)}")
 
     # Sticky per-session routing via the unified weighted named-profile split
@@ -57,6 +60,7 @@ async def chat_endpoint(
         use_translation_pipeline=request.use_translation_pipeline if request.use_translation_pipeline is not None else True,
         pipeline_profile=pipeline_profile,
         requested_persona=request.persona,
+        history_session_id=history_session_id,
     )
 
     if request.stream is False:

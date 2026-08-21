@@ -111,6 +111,12 @@ def _drive(monkeypatch, *, source_lang="gu", target_lang="gu",
             output=SimpleNamespace(category=moderation_category, action=moderation_action)
         )
 
+    async def _doctor_moderate(user_message, model=None):
+        seen.append("doctor_moderation")
+        return SimpleNamespace(
+            output=SimpleNamespace(category=moderation_category, action=moderation_action)
+        )
+
     def _agent_iter(**_kw):
         seen.append("agent")
         return _Run(["Give clean water daily."])
@@ -138,6 +144,7 @@ def _drive(monkeypatch, *, source_lang="gu", target_lang="gu",
 
     monkeypatch.setattr(chat_service, "translate_to_english_pretranslation", _pretranslate)
     monkeypatch.setattr(chat_service.moderation_agent, "run", _moderate)
+    monkeypatch.setattr(chat_service.doctor_moderation_agent, "run", _doctor_moderate)
     monkeypatch.setattr(chat_service.agrinet_agent, "iter", _agent_iter)
     monkeypatch.setattr(chat_service.doctor_agent, "iter", _doctor_agent_iter)
     monkeypatch.setattr(chat_service, "get_farmer_context_bundle_by_mobile", _farmer_context)
@@ -233,5 +240,7 @@ def test_doctor_jwt_routes_to_doctor_agent_without_farmer_context(monkeypatch):
 
     assert output
     assert "doctor_agent" in stages
+    assert "doctor_moderation" in stages
+    assert "moderation" not in stages
     assert "agent" not in stages
     assert "farmer_context" not in stages

@@ -192,6 +192,31 @@ def _expand_query_by_profile(query: str, profile: str) -> str:
     return cleaned
 
 
+def _expand_veterinary_synonyms(query: str) -> str:
+    """Add stable clinical synonyms for known corpus vocabulary mismatches.
+
+    The restored veterinary corpus frequently uses ``hypocalcemia`` or
+    ``parturient paresis`` without the phrase ``milk fever`` in the same indexed
+    field. Likewise, calf-diarrhea material is split between ``scours`` and
+    ``diarrhea``. Expanding these aliases before both Beckn and direct Marqo
+    retrieval prevents an exact-word miss from being reported as a corpus gap.
+    """
+    normalized = re.sub(r"\s+", " ", (query or "").strip())
+    lowered = normalized.lower()
+    additions: list[str] = []
+    if "milk fever" in lowered:
+        if "hypocalc" not in lowered:
+            additions.append("hypocalcemia")
+        if "parturient paresis" not in lowered:
+            additions.append("parturient paresis")
+    if "calf" in lowered and ("scour" in lowered or "diarrh" in lowered):
+        if "scour" not in lowered:
+            additions.append("scours")
+        if "diarrh" not in lowered:
+            additions.append("diarrhea")
+    return " ".join([normalized, *additions]).strip()
+
+
 def _doc_key(hit: Dict[str, Any]) -> str:
     return (
         str(hit.get("doc_id") or "").strip()
@@ -352,7 +377,7 @@ async def search_documents(
         search_results: Formatted list of documents
     """
     try:
-        query = _validate_search_query(query)
+        query = _expand_veterinary_synonyms(_validate_search_query(query))
         # Feature flag: route through the Amul Beckn network (advisory:amul-vet)
         # instead of direct Marqo when enabled. Same formatted-string contract.
         if settings.enable_network:
@@ -523,5 +548,4 @@ async def search_documents(
     except Exception as e:
         logger.error(f"Error searching documents: {e} for query: {query}")
         raise ModelRetry(f"Error searching documents, please try again")
-
 
