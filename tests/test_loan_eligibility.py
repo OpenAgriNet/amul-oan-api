@@ -10,6 +10,8 @@ import os
 import sys
 from types import SimpleNamespace
 
+import pytest
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from agents.deps import FarmerAccount
@@ -255,17 +257,95 @@ class TestMessageMapping:
         assert "mobile" in msg.lower()
 
 
+
+# ── per-farmer loan amount (AMUL-51) ─────────────────────────────────────────
+# The bank sets an eligible amount per member in the uploaded sheet. It has to
+# reach the offer, the stored code, and the SMS — a hardcoded 5,000 anywhere is
+# the bug this guards.
+class TestPerFarmerAmount:
+    def _wire_eligible(self, monkeypatch, session, row, *, sms=False):
+        _wire(monkeypatch, session, sms=sms)
+        monkeypatch.setattr(le, "_active_code_for_phone", _none)
+        monkeypatch.setattr(le, "_redeemed_code_for_phone", _none)
+        monkeypatch.setattr(le, "_eligibility_row_for_phone", row)
+        monkeypatch.setattr(le, "_compute_last_month_milk", _milk(5200.0))
+        monkeypatch.setattr(le, "_generate_unique_code", _code("222333"))
+
+    def test_offer_uses_the_per_farmer_amount(self, monkeypatch):
+        self._wire_eligible(monkeypatch, _FakeSession(), _row_with(max_loan_amount=12000))
+        assert _run(confirm=False).loan_amount == 12000.0
+
+    def test_issued_code_stores_the_per_farmer_amount(self, monkeypatch):
+        session = _FakeSession()
+        self._wire_eligible(monkeypatch, session, _row_with(max_loan_amount=12000))
+        res = _run(confirm=True)
+        assert res.loan_amount == 12000.0
+        assert float(session.added[0].loan_amount) == 12000.0
+
+    def test_sms_carries_the_per_farmer_amount(self, monkeypatch):
+        """The DLT template interpolates {amount}; a per-farmer loan whose SMS still
+        says 5,000 would contradict what the farmer was just told."""
+        session = _FakeSession()
+        self._wire_eligible(monkeypatch, session, _row_with(max_loan_amount=12000), sms=True)
+        sent = {}
+
+        async def _send(mobile, name, amount, code):
+            sent.update(mobile=mobile, amount=amount, code=code)
+            return SimpleNamespace(status="sent", message_id="m1", error=None)
+
+        monkeypatch.setattr(le, "send_loan_approval_sms", _send)
+        _run(confirm=True)
+        assert sent["amount"] == 12000.0
+        assert "12,000" in build_loan_sms_body("Ramesh", sent["amount"], sent["code"])
+
+    def test_blank_amount_falls_back_to_the_configured_default(self, monkeypatch):
+        """A blank cell means 'use the standard amount' — every row loaded before
+        this feature has NULL here, so the fallback IS the no-op upgrade path."""
+        self._wire_eligible(monkeypatch, _FakeSession(), _row_with(max_loan_amount=None))
+        assert _run(confirm=False).loan_amount == 5000.0
+
+    @pytest.mark.parametrize("bad", [0, -1, "abc"])
+    def test_unusable_amount_falls_back_rather_than_offering_zero(self, monkeypatch, bad):
+        """A malformed sheet must not offer a farmer a 0 rupee loan."""
+        self._wire_eligible(monkeypatch, _FakeSession(), _row_with(max_loan_amount=bad))
+        assert _run(confirm=False).loan_amount == 5000.0
+
+    def test_existing_code_keeps_its_issued_amount(self, monkeypatch):
+        """Re-sharing an active code must report the amount fixed at issue time, not
+        whatever the bank has since uploaded — the farmer already has that SMS."""
+        _wire(monkeypatch, _FakeSession(), allow_multiple=False)
+
+        async def _existing(session, phone):
+            return SimpleNamespace(code="999999", loan_amount=8000, farmer_name="Ramesh",
+                                   sms_status="sent", issued_at="x", expires_at=None)
+
+        monkeypatch.setattr(le, "_active_code_for_phone", _existing)
+        monkeypatch.setattr(le, "_eligibility_row_for_phone", _row_with(max_loan_amount=12000))
+        res = _run(confirm=True)
+        assert res.reshared is True and res.loan_amount == 8000.0
+
 # ── shared async stubs ───────────────────────────────────────────────────────
 async def _none(*a, **k):
     return None
 
 
 def _row(*a, **k):
+    return _row_with(max_loan_amount=None)(*a, **k)
+
+
+def _row_with(**overrides):
+    """An eligibility-list row stub. Mirrors the ORM row's attribute surface — the
+    service reads max_loan_amount off it directly, so a stub missing the attribute
+    would pass here and fail in prod."""
+    fields = dict(
+        id=1, farmer_code="1554", mandali_name="DANTALI", sabhsad_name="ALPESH PATEL",
+        max_loan_amount=None,
+    )
+    fields.update(overrides)
+
     async def inner(*a, **k):
-        return SimpleNamespace(
-            farmer_code="1554", mandali_name="DANTALI", sabhsad_name="ALPESH PATEL",
-        )
-    return inner()
+        return SimpleNamespace(**fields)
+    return inner
 
 
 def _milk(value):

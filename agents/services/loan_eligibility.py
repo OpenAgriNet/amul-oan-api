@@ -195,6 +195,26 @@ async def _generate_unique_code(session) -> str:
     raise RuntimeError("could not generate a unique loan code after 20 attempts")
 
 
+def _amount_for(elig_row: Optional[LoanEligibilityRow]) -> float:
+    """The loan amount to offer this farmer.
+
+    The bank sets a per-member amount in the eligibility upload (AMUL-51). A blank
+    cell means "use the standard amount", so NULL — and a non-positive value, which
+    can only come from a malformed sheet — both fall back to LOAN_MAX_AMOUNT rather
+    than offering a farmer ₹0."""
+    if elig_row is not None and elig_row.max_loan_amount is not None:
+        try:
+            amount = float(elig_row.max_loan_amount)
+        except (TypeError, ValueError):
+            logger.warning("Non-numeric max_loan_amount on eligibility row %s", elig_row.id)
+        else:
+            if amount > 0:
+                return amount
+            logger.warning("Non-positive max_loan_amount (%s) on eligibility row %s — using default",
+                           amount, elig_row.id)
+    return float(settings.loan_max_amount)
+
+
 def _resolve_name(
     passed_name: Optional[str],
     accounts: Sequence[FarmerAccount],
@@ -277,6 +297,11 @@ async def evaluate_and_issue(
                             outcome=MILK_BELOW_THRESHOLD, phone=mobile,
                             milk_amount_month=milk_total, milk_threshold=threshold, checks_applied=checks,
                         )
+
+            # Per-farmer amount from the eligibility list. Only meaningful on the
+            # path that looked one up: with an existing code the amount was already
+            # fixed at issue time and is read off that row instead.
+            amount = _amount_for(elig_row)
 
             name = existing.farmer_name if existing is not None else _resolve_name(farmer_name, accounts, elig_row)
 
