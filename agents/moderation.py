@@ -36,3 +36,21 @@ moderation_agent = Agent(
         timeout=5 # NOTE: Added timeout to avoid infinite loops
     )
 )
+
+
+doctor_moderation_agent = Agent(
+    # Doctor turns have a distinct scope: veterinary clinical and pharmacology
+    # questions are the product's primary use case, not a medical-policy edge
+    # case inside the farmer classifier.
+    model=None,
+    name="Doctor Moderation Agent",
+    instructions=get_prompt('doctor_moderation_system'),
+    instrument=True,
+    output_type=QueryModerationResult,
+    retries=2,
+    model_settings=ModelSettings(
+        temperature=0.1,
+        max_tokens=128,
+        timeout=5,
+    ),
+)

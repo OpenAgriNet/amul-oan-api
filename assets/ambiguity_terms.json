@@ -1,6 +1,17 @@
 [
   {
     "gu_terms": [
+      "વાછરડા ને જાડા",
+      "વાછરડાને જાડા",
+      "વાછરડાને ઝાડા",
+      "બચ્ચામાં જાડા",
+      "બચ્ચાને જાડા"
+    ],
+    "type": "hardcode",
+    "rule": "In calf context, જાડા / ઝાડા means calf scours (diarrhea), NOT fatness, obesity, or weight gain. Translate and search as 'calf scours / calf diarrhea'."
+  },
+  {
+    "gu_terms": [
       "ઉથલા",
       "uthalo",
       "uthal",

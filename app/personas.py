@@ -21,3 +21,14 @@ def resolve_chat_persona(
     if settings.chat_persona_override_enabled and requested_persona:
         return cast(ChatPersona, requested_persona)
     return resolved
+
+
+def history_session_id_for_persona(session_id: str, persona: ChatPersona) -> str:
+    """Keep Doctor context isolated from the farmer/Sarlaben conversation.
+
+    Farmer history retains its legacy cache key to avoid disrupting existing
+    sessions. Doctor history uses a namespaced key so changing the test selector
+    cannot replay farmer tool calls, identity text, or audience framing into a
+    clinical turn.
+    """
+    return f"{session_id}:persona:doctor" if persona == "doctor" else session_id

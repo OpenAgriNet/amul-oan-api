@@ -147,3 +147,16 @@ def build_identity_profile_table(source_lang: str, target_lang: str, query: str)
     else:
         table = "\n".join(["| Field | Details |", "|---|---|", *table_rows])
     return f"{table}\n\n{quote}"
+
+
+def build_doctor_identity_response(source_lang: str, target_lang: str, query: str) -> str:
+    """Return a deterministic Doctor identity without invoking SarlaBen/RAG."""
+    if _select_identity_language(source_lang, target_lang, query) == "gu":
+        return (
+            "હું અમૂલ વેટરનરી આસિસ્ટન્ટ છું—ગાય, ભેંસ અને વાછરડાં માટે "
+            "પશુચિકિત્સકોને દસ્તાવેજ-આધારિત ક્લિનિકલ નિર્ણય સહાય આપતો AI સહાયક."
+        )
+    return (
+        "I am Amul Veterinary Assistant, an AI clinical decision-support assistant "
+        "for veterinary doctors working with cattle, buffalo, and calves."
+    )

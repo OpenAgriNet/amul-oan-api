@@ -1,4 +1,5 @@
 from agents.doctor import DOCTOR_TOOLS, _doctor_request_limit
+from agents.moderation import doctor_moderation_agent, moderation_agent
 from app.config import settings
 from app.personas import resolve_chat_persona
 from helpers.utils import get_prompt
@@ -24,6 +25,11 @@ def test_request_override_is_guarded_by_backend_flag(monkeypatch):
 def test_doctor_agent_exposes_only_document_search():
     assert len(DOCTOR_TOOLS) == 1
     assert DOCTOR_TOOLS[0].name == "search_documents"
+
+
+def test_doctor_uses_a_distinct_moderation_agent():
+    assert doctor_moderation_agent is not moderation_agent
+    assert doctor_moderation_agent.name == "Doctor Moderation Agent"
 
 
 def test_doctor_prompt_requires_evidence_and_explicit_corpus_gaps():
