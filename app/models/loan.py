@@ -52,6 +52,12 @@ class LoanEligibilityRow(Base):
     # Snapshot of the milk payout from the source sheet (informational only —
     # the live milk check uses the milk API, not this column).
     milk_payment_amount: Mapped[float | None] = mapped_column(Numeric(12, 2))
+    # Per-member eligible loan amount, set by the bank in the uploaded sheet
+    # (AMUL-51). NULL means the bank did not set one for this member, in which
+    # case the configured LOAN_MAX_AMOUNT applies — NULL is "unspecified", never
+    # "zero". This is the ONLY loan-facing column on this table; every other
+    # column here is informational.
+    max_loan_amount: Mapped[float | None] = mapped_column(Numeric(12, 2))
     source_batch: Mapped[str | None] = mapped_column(String(64), index=True)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="true")
     created_at: Mapped[datetime] = mapped_column(
