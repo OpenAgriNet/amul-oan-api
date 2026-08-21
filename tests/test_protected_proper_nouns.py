@@ -129,3 +129,114 @@ def test_name_followed_by_an_unrelated_va_word_still_fixed():
     raw = "રામેશ વગેરે લોકો આવ્યા."
     out = _apply_protected_output(raw, _protected_output_triggers("Ramesh and others", "gu"))
     assert out == "રમેશ વગેરે લોકો આવ્યા."
+
+
+# ── The KDCC bank name (AMUL-51) ──────────────────────────────────────────────
+# The pin must repair the name whether or not the model keeps the "- Nadiad"
+# branch, and must not disturb the લિમિટેડ / case-ending the model appended.
+
+BANK_EN = (
+    "You are eligible for a micro loan of Rs 5,000 from Kheda District Central "
+    "Co-Operative Bank Limited - Nadiad."
+)
+# Verbatim from the AMUL-51 report: the model dropped "Nadiad", so the old
+# pattern (which required a trailing નડિયાદ) never fired and this reached prod.
+BANK_RAW_NO_BRANCH = "ખેડા જિલ્લા કેન્દ્રીય સહકારી બેંક લિમિટેડમાંથી લોન મંજૂર થઈ છે."
+BANK_FIXED_NO_BRANCH = "ખેડા ડિસ્ટ્રિક્ટ સેન્ટ્રલ કો-ઓપરેટિવ બેંક લિમિટેડમાંથી લોન મંજૂર થઈ છે."
+
+BANK_RAW_WITH_BRANCH = "ખેડા જિલ્લા કેન્દ્રીય સહકારી બેંક લિમિટેડ - નડિયાદમાંથી લોન મંજૂર થઈ છે."
+BANK_FIXED_WITH_BRANCH = "ખેડા ડિસ્ટ્રિક્ટ સેન્ટ્રલ કો-ઓપરેટિવ બેંક લિમિટેડ - નડિયાદમાંથી લોન મંજૂર થઈ છે."
+
+
+def test_bank_name_pinned_when_model_drops_the_branch():
+    """The AMUL-51 regression. The case ending (માંથી) attaches to લિમિટેડ with no
+    space, so the pattern has to stop at બેંક and leave the tail alone."""
+    out = _apply_protected_output(BANK_RAW_NO_BRANCH, _protected_output_triggers(BANK_EN, "gu"))
+    assert out == BANK_FIXED_NO_BRANCH
+    assert "જિલ્લા કેન્દ્રીય સહકારી" not in out
+
+
+def test_bank_name_pinned_when_model_keeps_the_branch():
+    """The case the old pattern already handled — must not regress."""
+    out = _apply_protected_output(BANK_RAW_WITH_BRANCH, _protected_output_triggers(BANK_EN, "gu"))
+    assert out == BANK_FIXED_WITH_BRANCH
+
+
+@pytest.mark.parametrize("raw,fixed", [
+    # 'Central' dropped by the model
+    ("ખેડા જિલ્લા સહકારી બેંક લિમિટેડ", "ખેડા ડિસ્ટ્રિક્ટ સેન્ટ્રલ કો-ઓપરેટિવ બેંક લિમિટેડ"),
+    # 'મધ્યસ્થ' instead of 'કેન્દ્રીય'
+    ("ખેડા જિલ્લા મધ્યસ્થ સહકારી બેંક", "ખેડા ડિસ્ટ્રિક્ટ સેન્ટ્રલ કો-ઓપરેટિવ બેંક"),
+    # half-transliterated, and the ક્ટ conjunct written open (ડિસ્ટ્રિકટ)
+    ("ખેડા ડિસ્ટ્રિકટ કેન્દ્રીય સહકારી બેંક", "ખેડા ડિસ્ટ્રિક્ટ સેન્ટ્રલ કો-ઓપરેટિવ બેંક"),
+    # 'કો ઓપરેટિવ' written with a space instead of the hyphen
+    ("ખેડા જિલ્લા સેન્ટ્રલ કો ઓપરેટિવ બેંક", "ખેડા ડિસ્ટ્રિક્ટ સેન્ટ્રલ કો-ઓપરેટિવ બેંક"),
+])
+def test_bank_name_variants_are_normalised(raw, fixed):
+    assert _apply_protected_output(raw, _protected_output_triggers(BANK_EN, "gu")) == fixed
+
+
+def test_bank_pin_is_idempotent():
+    """Already-correct text must round-trip: the pin re-matches its own output, so a
+    self-replace is the only safe shape for a rule applied to a streaming buffer."""
+    triggers = _protected_output_triggers(BANK_EN, "gu")
+    once = _apply_protected_output(BANK_RAW_NO_BRANCH, triggers)
+    assert _apply_protected_output(once, triggers) == once
+
+
+@pytest.mark.parametrize("src", [
+    # The agent composes its own English and shortens the name it was given. A
+    # substring gate on the full "…Limited - Nadiad" missed every one of these.
+    "You qualify for a micro loan from Kheda District Central Co-Operative Bank.",
+    "Visit your nearest Kheda District Central Co-operative Bank branch.",
+    "a loan from the kheda district central co-operative bank limited",
+])
+def test_bank_gate_arms_on_shortened_english_names(src):
+    assert _protected_output_triggers(src, "gu")
+
+
+@pytest.mark.parametrize("src", [
+    "Rainfall in Kheda district is expected tomorrow.",
+    "Kheda district mandi prices are higher this week.",
+])
+def test_bank_gate_does_not_arm_on_plain_district_mentions(src):
+    """Arming costs an 80-char stream holdback on every chunk, so ordinary Kheda
+    weather/market answers must not trip it."""
+    assert _protected_output_triggers(src, "gu") == []
+
+
+def test_bank_pin_does_not_fire_on_another_district_bank():
+    """The pattern is anchored on ખેડા — a different district's bank is left alone."""
+    other = "મહેસાણા જિલ્લા કેન્દ્રીય સહકારી બેંક લિમિટેડમાંથી"
+    assert _apply_protected_output(other, _protected_output_triggers(BANK_EN, "gu")) == other
+
+
+@pytest.mark.asyncio
+async def test_bank_pin_survives_a_chunk_boundary_mid_name():
+    chunks = ["ખેડા જિલ્લા કેન્દ્રીય સહ", "કારી બેંક લિમિટેડમાંથી લોન મંજૂર થઈ છે."]
+
+    async def gen():
+        for c in chunks:
+            yield c
+
+    triggers = _protected_output_triggers(BANK_EN, "gu")
+    out = "".join([c async for c in _buffered_protected_stream(gen(), triggers)])
+    assert out == BANK_FIXED_NO_BRANCH
+
+
+@pytest.mark.asyncio
+async def test_bank_pin_does_not_duplicate_words_arriving_after_the_match():
+    """The buffer is rewritten on every chunk, so a rule that APPENDS words the model
+    has not emitted yet duplicates them when they arrive. Pinning only through બેંક
+    keeps લિમિટેડ / નડિયાદ the model's to supply — this is the guard on that."""
+    chunks = ["ખેડા જિલ્લા કેન્દ્રીય સહકારી બેંક", " લિમિટેડ", " - નડિયાદમાંથી લોન મંજૂર થઈ છે."]
+
+    async def gen():
+        for c in chunks:
+            yield c
+
+    triggers = _protected_output_triggers(BANK_EN, "gu")
+    out = "".join([c async for c in _buffered_protected_stream(gen(), triggers)])
+    assert out == BANK_FIXED_WITH_BRANCH
+    assert out.count("લિમિટેડ") == 1
+    assert out.count("બેંક") == 1
