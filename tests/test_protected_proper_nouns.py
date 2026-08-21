@@ -137,8 +137,11 @@ def test_name_followed_by_an_unrelated_va_word_still_fixed():
 
 BANK_EN = (
     "You are eligible for a micro loan of Rs 5,000 from Kheda District Central "
-    "Co-Operative Bank Limited - Nadiad."
+    "Co-Operative Bank Limited."
 )
+# The branch suffix was dropped from the name, but the model can still emit નડિયાદ
+# from a farmer's own question or a KB passage, so the pin must keep coping with it.
+BANK_EN_WITH_BRANCH = BANK_EN[:-1] + " - Nadiad."
 # Verbatim from the AMUL-51 report: the model dropped "Nadiad", so the old
 # pattern (which required a trailing નડિયાદ) never fired and this reached prod.
 BANK_RAW_NO_BRANCH = "ખેડા જિલ્લા કેન્દ્રીય સહકારી બેંક લિમિટેડમાંથી લોન મંજૂર થઈ છે."
@@ -158,7 +161,8 @@ def test_bank_name_pinned_when_model_drops_the_branch():
 
 def test_bank_name_pinned_when_model_keeps_the_branch():
     """The case the old pattern already handled — must not regress."""
-    out = _apply_protected_output(BANK_RAW_WITH_BRANCH, _protected_output_triggers(BANK_EN, "gu"))
+    out = _apply_protected_output(BANK_RAW_WITH_BRANCH,
+                                  _protected_output_triggers(BANK_EN_WITH_BRANCH, "gu"))
     assert out == BANK_FIXED_WITH_BRANCH
 
 
