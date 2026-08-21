@@ -63,10 +63,16 @@ class SchemeSource:
     content_type: str
 
 
+BANAS_SITE_ORIGIN = "https://www.banasdairy.coop"
+BANAS_DOCUMENTS_API_URL = f"{BANAS_SITE_ORIGIN}/api/documents"
+BANAS_SCHEME_SECTION = "schemes"
+
 BANAS_SOURCE = SchemeSource(
     source_name="banas",
     union_name=UnionName.BANAS.value,
-    source_url="https://www.banasdairy.coop/Home/InputActivities#milkproducers",
+    # Public catalog is JSON now (Vite SPA); keep cache_key stable so a failed
+    # refresh still leaves the previously ingested Redis records in place.
+    source_url=BANAS_DOCUMENTS_API_URL,
     cache_key="banasdairy.coop/home/inputactivities#milkproducers",
     content_type="pdf",
 )
@@ -286,11 +292,12 @@ async def release_refresh_lock(source_key: str, lock_token: str, redis_client=No
 async def extend_refresh_lock(source_key: str, lock_token: str, redis_client=None) -> bool:
     """Re-arm the lock TTL if we still own it.
 
-    A full Banas OCR batch (many PDFs, each up to SCHEME_PDF_MAX_RENDER_PAGES pages
-    at SCHEME_OCR_TIMEOUT_SECONDS each) can outlast a single fixed TTL. Heartbeating
-    after each PDF keeps the lock alive as long as we are making progress, without
-    inflating the TTL for the common fast case. Returns False if the lock was lost
-    (expired or taken over) so the caller can decide whether to keep going.
+    A full Banas OCR batch (many PDFs, each OCR'd in small page batches that can
+    last SCHEME_OCR_TIMEOUT_SECONDS times pages in that request) can outlast a
+    single fixed TTL. Heartbeating after each PDF keeps the lock alive as long as
+    we are making progress, without inflating the TTL for the common fast case.
+    Returns False if the lock was lost (expired or taken over) so the caller can
+    decide whether to keep going.
     """
     client = redis_client or await get_redis_client()
     lock_key = build_scheme_lock_key(source_key)
@@ -306,6 +313,33 @@ async def extend_refresh_lock(source_key: str, lock_token: str, redis_client=Non
         return True
     logger.info("Extended scheme refresh lock source_key=%s ttl=%s", source_key, SCHEME_LOCK_TTL_SECONDS)
     return True
+
+
+async def fetch_json(client: httpx.AsyncClient, url: str) -> Any:
+    logger.info("Fetching scheme JSON url=%s", url)
+    try:
+        response = await client.get(url, follow_redirects=True)
+        response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        logger.warning(
+            "Scheme JSON fetch returned non-success status url=%s status_code=%s",
+            url,
+            exc.response.status_code,
+        )
+        raise SchemeFetchError(f"non-success status while fetching {url}") from exc
+    except httpx.RequestError as exc:
+        logger.warning("Scheme JSON fetch request failed url=%s error=%s", url, exc)
+        raise SchemeFetchError(f"request failed while fetching {url}") from exc
+    except Exception as exc:
+        logger.exception("Unexpected error while fetching scheme JSON url=%s", url)
+        raise SchemeFetchError(f"unexpected fetch failure for {url}") from exc
+    try:
+        parsed = response.json()
+    except ValueError as exc:
+        logger.warning("Scheme JSON response was not valid JSON url=%s error_repr=%r", url, exc)
+        raise SchemeParseError(f"invalid JSON while fetching {url}") from exc
+    logger.info("Fetched scheme JSON url=%s payload_type=%s", url, type(parsed).__name__)
+    return parsed
 
 
 async def fetch_html(client: httpx.AsyncClient, url: str) -> str:
@@ -422,48 +456,67 @@ class _SarhadSchemeParser(HTMLParser):
             )
 
 
-def parse_banas_scheme_links(html: str) -> list[dict[str, str]]:
-    logger.info("Parsing Banas scheme links from HTML content_length=%s", len(html))
-    milk_section_match = re.search(
-        r'<section[^>]*id="MilkProducer"[^>]*>(?P<section>.*?)</section>',
-        html,
-        flags=re.IGNORECASE | re.DOTALL,
-    )
-    section_html = milk_section_match.group("section") if milk_section_match else html
-    logger.info("Resolved Banas milk producer section found=%s section_length=%s", bool(milk_section_match), len(section_html))
+def _banas_media_url(file_path: str) -> str:
+    path = _normalize_text(file_path)
+    if not path:
+        return ""
+    if path.startswith("http://") or path.startswith("https://"):
+        return path
+    if path.startswith("/media/"):
+        return urljoin(BANAS_SITE_ORIGIN, path)
+    return f"{BANAS_SITE_ORIGIN}/media/{path.lstrip('/')}"
 
-    english_column_match = re.search(
-        r'<div[^>]*class="[^"]*\bscheme-column\b[^"]*"[^>]*>(?P<column>.*?)</div>\s*<div[^>]*class="[^"]*\bscheme-column\b[^"]*"',
-        section_html,
-        flags=re.IGNORECASE | re.DOTALL,
-    )
-    if english_column_match:
-        section_html = english_column_match.group("column")
-        logger.info("Selected English Banas scheme column section_length=%s", len(section_html))
-    else:
-        logger.warning("Could not isolate English Banas scheme column; falling back to entire section")
 
-    matches = re.findall(
-        r'<div[^>]*class="[^"]*\bscheme-item\b[^"]*"[^>]*>\s*<a[^>]*href="([^"]+)"[^>]*>(.*?)</a>',
-        section_html,
-        flags=re.IGNORECASE | re.DOTALL,
-    )
-    if not matches:
-        logger.warning("No Banas scheme-item anchors found; falling back to PDF anchor scan")
-        matches = re.findall(
-            r'<a[^>]*href="([^"]+\.pdf[^"]*)"[^>]*>(.*?)</a>',
-            section_html,
-            flags=re.IGNORECASE | re.DOTALL,
-        )
-    logger.info("Found Banas scheme candidate links count=%s", len(matches))
+def _banas_document_items(payload: Any) -> list[Any]:
+    if isinstance(payload, list):
+        return payload
+    if isinstance(payload, dict):
+        for key in ("documents", "data", "items"):
+            nested = payload.get(key)
+            if isinstance(nested, list):
+                return nested
+    return []
+
+
+def parse_banas_scheme_links(payload: Any) -> list[dict[str, str]]:
+    documents = _banas_document_items(payload)
+    logger.info("Parsing Banas scheme links from documents API document_count=%s", len(documents))
+
+    candidates: list[tuple[int, str, str]] = []
+    for document in documents:
+        if not isinstance(document, dict):
+            continue
+        section = _normalize_text(str(document.get("section") or "")).casefold()
+        if section != BANAS_SCHEME_SECTION:
+            continue
+        status = _normalize_text(str(document.get("status") or "published")).casefold()
+        if status != "published":
+            logger.info(
+                "Skipping unpublished Banas scheme document title=%s status=%s",
+                document.get("title"),
+                document.get("status"),
+            )
+            continue
+        scheme_title = _normalize_title(str(document.get("title") or ""))
+        file_info = document.get("file") if isinstance(document.get("file"), dict) else {}
+        scheme_url = _banas_media_url(str(file_info.get("file_path") or ""))
+        if not scheme_title or not scheme_url:
+            logger.warning(
+                "Skipping Banas scheme document with missing title or file_path title=%s file_path=%s",
+                document.get("title"),
+                file_info.get("file_path"),
+            )
+            continue
+        sort_order = document.get("sort_order")
+        order = sort_order if isinstance(sort_order, int) else 0
+        candidates.append((order, scheme_title, scheme_url))
+
+    candidates.sort(key=lambda item: (item[0], item[1].casefold(), item[2]))
+    logger.info("Found Banas scheme candidate links count=%s", len(candidates))
 
     seen: set[tuple[str, str]] = set()
     records: list[dict[str, str]] = []
-    for href, raw_title in matches:
-        scheme_url = urljoin("https://www.banasdairy.coop", _normalize_text(href))
-        scheme_title = _normalize_title(_strip_html(raw_title))
-        if not scheme_url or not scheme_title:
-            continue
+    for _order, scheme_title, scheme_url in candidates:
         dedupe_key = (scheme_url, scheme_title.casefold())
         if dedupe_key in seen:
             continue
@@ -579,6 +632,113 @@ def render_pdf_to_base64_images(pdf_bytes: bytes, dpi: int, max_pages: int = SCH
     return rendered_images
 
 
+def _ocr_pages_payload(images: list[str]) -> dict[str, Any]:
+    return {
+        "images": images,
+        "prompt_type": SCHEME_OCR_PROMPT_TYPE,
+        # Chandra HF generate() uses max_new_tokens per sequence; vLLM uses
+        # max_tokens per page. This cap is per page, not for the whole batch.
+        "max_output_tokens": SCHEME_OCR_MAX_OUTPUT_TOKENS,
+    }
+
+
+def _page_results_from_ocr_payload(parsed: Any, expected_count: int) -> list[Any] | None:
+    if not isinstance(parsed, dict):
+        return None
+    raw_pages = parsed.get("pages")
+    if not isinstance(raw_pages, list):
+        return None
+    results: list[Any] = []
+    for index in range(expected_count):
+        page = raw_pages[index] if index < len(raw_pages) else None
+        results.append(page if isinstance(page, dict) else None)
+    if not raw_pages:
+        logger.warning("Scheme OCR response had empty pages list expected_count=%s", expected_count)
+    return results
+
+
+async def _post_ocr_images(
+    client: httpx.AsyncClient,
+    ocr_endpoint: str,
+    images: list[str],
+) -> list[Any] | None:
+    timeout_seconds = settings.scheme_ocr_timeout_seconds * len(images)
+    logger.info(
+        "Sending scheme OCR request endpoint=%s page_count=%s timeout_seconds=%s",
+        ocr_endpoint,
+        len(images),
+        timeout_seconds,
+    )
+    try:
+        response = await client.post(
+            f"{ocr_endpoint}/v1/ocr/pages",
+            json=_ocr_pages_payload(images),
+            timeout=timeout_seconds,
+        )
+        response.raise_for_status()
+        parsed_pages = _page_results_from_ocr_payload(response.json(), len(images))
+        if parsed_pages is None:
+            logger.warning(
+                "Scheme OCR response missing pages list endpoint=%s page_count=%s",
+                ocr_endpoint,
+                len(images),
+            )
+        return parsed_pages
+    except httpx.HTTPStatusError as exc:
+        logger.warning(
+            "Scheme OCR request returned non-success status endpoint=%s page_count=%s status_code=%s",
+            ocr_endpoint,
+            len(images),
+            exc.response.status_code,
+        )
+        return None
+    except httpx.RequestError as exc:
+        logger.warning(
+            "Scheme OCR request failed endpoint=%s page_count=%s error_type=%s error_repr=%r",
+            ocr_endpoint,
+            len(images),
+            type(exc).__name__,
+            exc,
+        )
+        return None
+    except ValueError as exc:
+        logger.warning(
+            "Scheme OCR response was not valid JSON endpoint=%s page_count=%s error_repr=%r",
+            ocr_endpoint,
+            len(images),
+            exc,
+        )
+        return None
+    except Exception:
+        logger.exception(
+            "Unexpected error while calling scheme OCR endpoint=%s page_count=%s",
+            ocr_endpoint,
+            len(images),
+        )
+        return None
+
+
+async def _ocr_image_chunk(
+    client: httpx.AsyncClient,
+    ocr_endpoint: str,
+    images: list[str],
+) -> list[Any]:
+    results = await _post_ocr_images(client, ocr_endpoint, images)
+    if results is not None:
+        return results
+    if len(images) == 1:
+        return [None]
+    logger.warning(
+        "Scheme OCR batch failed; retrying pages individually page_count=%s",
+        len(images),
+    )
+    fallback: list[Any] = []
+    for image in images:
+        single = await _post_ocr_images(client, ocr_endpoint, [image])
+        fallback.append(None if not single else single[0])
+    return fallback
+
+
 async def extract_text_from_pdf_bytes(client: httpx.AsyncClient, pdf_bytes: bytes) -> str:
     logger.info("Extracting text from scheme PDF via OCR byte_count=%s", len(pdf_bytes))
     ocr_endpoint = (settings.scheme_ocr_endpoint_url or "").strip().rstrip("/")
@@ -593,94 +753,42 @@ async def extract_text_from_pdf_bytes(client: httpx.AsyncClient, pdf_bytes: byte
         dpi=settings.scheme_pdf_render_dpi,
         max_pages=SCHEME_PDF_MAX_RENDER_PAGES,
     )
+    total_pages = len(images)
+    batch_size = max(1, settings.scheme_ocr_page_batch_size)
+    parsed_pages: list[Any] = []
+    for start in range(0, total_pages, batch_size):
+        chunk = images[start : start + batch_size]
+        parsed_pages.extend(await _ocr_image_chunk(client, ocr_endpoint, chunk))
+
     page_texts: list[str] = []
     failed_pages = 0
-    for index, image in enumerate(images):
-        payload = {
-            "images": [image],
-            "prompt_type": SCHEME_OCR_PROMPT_TYPE,
-            "max_output_tokens": SCHEME_OCR_MAX_OUTPUT_TOKENS,
-        }
-
-        try:
-            response = await client.post(
-                f"{ocr_endpoint}/v1/ocr/pages",
-                json=payload,
-                timeout=settings.scheme_ocr_timeout_seconds,
-            )
-            response.raise_for_status()
-        except httpx.HTTPStatusError as exc:
+    for index in range(total_pages):
+        if index >= len(parsed_pages) or not isinstance(parsed_pages[index], dict):
             failed_pages += 1
             logger.warning(
-                "Scheme OCR request returned non-success status endpoint=%s page_index=%s status_code=%s",
-                ocr_endpoint,
+                "Missing or malformed OCR page result page_index=%s type=%s",
                 index,
-                exc.response.status_code,
-            )
-            continue
-        except httpx.RequestError as exc:
-            failed_pages += 1
-            logger.warning(
-                "Scheme OCR request failed endpoint=%s page_index=%s error_type=%s error_repr=%r",
-                ocr_endpoint,
-                index,
-                type(exc).__name__,
-                exc,
-            )
-            continue
-        except Exception as exc:
-            failed_pages += 1
-            logger.exception(
-                "Unexpected error while calling scheme OCR endpoint=%s page_index=%s",
-                ocr_endpoint,
-                index,
+                type(parsed_pages[index]).__name__ if index < len(parsed_pages) else "missing",
             )
             continue
 
-        try:
-            parsed = response.json()
-        except ValueError as exc:
-            failed_pages += 1
-            logger.warning(
-                "Scheme OCR response was not valid JSON endpoint=%s page_index=%s error_repr=%r",
-                ocr_endpoint,
-                index,
-                exc,
-            )
-            continue
-
-        pages = parsed.get("pages")
-        if not isinstance(pages, list):
-            failed_pages += 1
-            logger.warning("Scheme OCR response missing pages list endpoint=%s page_index=%s", ocr_endpoint, index)
-            continue
-        if not pages:
-            failed_pages += 1
-            logger.warning("Scheme OCR response had empty pages list endpoint=%s page_index=%s", ocr_endpoint, index)
-            continue
-
-        page_result = pages[0]
-        if not isinstance(page_result, dict):
-            failed_pages += 1
-            logger.warning(
-                "Skipping malformed OCR page result page_index=%s type=%s",
-                index,
-                type(page_result).__name__,
-            )
-            continue
-
+        page_result = parsed_pages[index]
         page_markdown = _normalize_text(str(page_result.get("markdown") or ""))
         page_error = bool(page_result.get("error"))
-        logger.info("Received scheme OCR page result page_index=%s page_error=%s text_length=%s", index, page_error, len(page_markdown))
+        logger.info(
+            "Received scheme OCR page result page_index=%s page_error=%s text_length=%s",
+            index,
+            page_error,
+            len(page_markdown),
+        )
         if page_error or not page_markdown:
             failed_pages += 1
             continue
         page_texts.append(page_markdown)
 
     combined_text = "\n\n".join(page_texts)
-    total_pages = len(images)
     failed_ratio = (failed_pages / total_pages) if total_pages else 1.0
-    if failed_pages == len(images):
+    if failed_pages == total_pages:
         raise SchemeParseError("scheme OCR failed for all pages")
     if failed_ratio > SCHEME_OCR_MAX_FAILED_PAGE_RATIO:
         raise SchemeParseError(
@@ -744,8 +852,8 @@ async def _ingest_banas_source(
     redis_client=None,
 ) -> list[dict[str, Any]]:
     logger.info("Starting Banas scheme ingestion source=%s url=%s", source.cache_key, source.source_url)
-    html = await fetch_html(client, source.source_url)
-    link_records = parse_banas_scheme_links(html)
+    documents = await fetch_json(client, source.source_url)
+    link_records = parse_banas_scheme_links(documents)
     if not link_records:
         logger.warning("No Banas scheme links parsed source=%s", source.cache_key)
         raise SchemeParseError("no Banas scheme links parsed")

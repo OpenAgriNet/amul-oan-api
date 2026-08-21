@@ -2,6 +2,7 @@ import asyncio
 import base64
 from types import SimpleNamespace
 
+import httpx
 import pytest
 
 import app.services.scheme_ingestion as si
@@ -78,39 +79,32 @@ def test_extract_text_from_pdf_bytes_calls_ocr_and_merges_pages(monkeypatch):
     captured_calls = []
 
     class _FakeResponse:
-        def __init__(self, markdown: str, error: bool = False) -> None:
-            self.markdown = markdown
-            self.error = error
-
         def raise_for_status(self) -> None:
             return None
 
         def json(self):
             return {
                 "pages": [
-                    {"markdown": self.markdown, "error": self.error},
+                    {"markdown": "First page text", "error": False},
+                    {"markdown": "Second page text", "error": False},
+                    {"markdown": "Third page text", "error": False},
                 ]
             }
 
     class _FakeClient:
         async def post(self, url, json, timeout):
             captured_calls.append({"url": url, "json": json, "timeout": timeout})
-            image = json["images"][0]
-            if image == "img-a":
-                return _FakeResponse("First page text")
-            if image == "img-b":
-                return _FakeResponse("Second page text")
-            return _FakeResponse("Third page text")
+            return _FakeResponse()
 
     combined = asyncio.run(si.extract_text_from_pdf_bytes(_FakeClient(), b"pdf-bytes"))
 
-    assert len(captured_calls) == 3
-    for call in captured_calls:
-        assert call["url"] == "http://ocr-host:8010/v1/ocr/pages"
-        assert call["timeout"] == 45.0
-        assert len(call["json"]["images"]) == 1
-        assert call["json"]["prompt_type"] == si.SCHEME_OCR_PROMPT_TYPE
-        assert call["json"]["max_output_tokens"] == si.SCHEME_OCR_MAX_OUTPUT_TOKENS
+    assert len(captured_calls) == 1
+    call = captured_calls[0]
+    assert call["url"] == "http://ocr-host:8010/v1/ocr/pages"
+    assert call["timeout"] == 135.0
+    assert call["json"]["images"] == ["img-a", "img-b", "img-c"]
+    assert call["json"]["prompt_type"] == si.SCHEME_OCR_PROMPT_TYPE
+    assert call["json"]["max_output_tokens"] == si.SCHEME_OCR_MAX_OUTPUT_TOKENS
     assert combined == "First page text\n\nSecond page text\n\nThird page text"
 
 
@@ -199,25 +193,121 @@ def test_extract_text_from_pdf_bytes_raises_when_failed_page_ratio_too_high(monk
     monkeypatch.setattr(si, "render_pdf_to_base64_images", lambda *_args, **_kwargs: ["img-a", "img-b", "img-c", "img-d"])
 
     class _FakeResponse:
-        def __init__(self, markdown: str, error: bool = False) -> None:
-            self.markdown = markdown
-            self.error = error
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self):
+            return {
+                "pages": [
+                    {"markdown": "only one page survives", "error": False},
+                    {"markdown": "", "error": True},
+                    {"markdown": "", "error": True},
+                    {"markdown": "", "error": True},
+                ]
+            }
+
+    class _FakeClient:
+        async def post(self, url, json, timeout):
+            return _FakeResponse()
+
+    with pytest.raises(si.SchemeParseError, match="too many pages"):
+        asyncio.run(si.extract_text_from_pdf_bytes(_FakeClient(), b"pdf-bytes"))
+
+
+def test_extract_text_from_pdf_bytes_raises_when_ocr_request_fails(monkeypatch):
+    monkeypatch.setattr(si.settings, "scheme_ocr_endpoint_url", "http://ocr-host:8010")
+    monkeypatch.setattr(si.settings, "scheme_ocr_timeout_seconds", 45.0)
+    monkeypatch.setattr(si.settings, "scheme_pdf_render_dpi", 150)
+    monkeypatch.setattr(si, "render_pdf_to_base64_images", lambda *_args, **_kwargs: ["img-a", "img-b"])
+
+    class _FakeClient:
+        async def post(self, url, json, timeout):
+            raise httpx.ConnectError("connection refused")
+
+    with pytest.raises(si.SchemeParseError, match="failed for all pages"):
+        asyncio.run(si.extract_text_from_pdf_bytes(_FakeClient(), b"pdf-bytes"))
+
+
+def test_extract_text_from_pdf_bytes_chunks_pages_into_batches(monkeypatch):
+    monkeypatch.setattr(si.settings, "scheme_ocr_endpoint_url", "http://ocr-host:8010")
+    monkeypatch.setattr(si.settings, "scheme_ocr_timeout_seconds", 45.0)
+    monkeypatch.setattr(si.settings, "scheme_ocr_page_batch_size", 2)
+    monkeypatch.setattr(si.settings, "scheme_pdf_render_dpi", 150)
+    monkeypatch.setattr(
+        si,
+        "render_pdf_to_base64_images",
+        lambda *_args, **_kwargs: ["img-a", "img-b", "img-c", "img-d", "img-e"],
+    )
+
+    captured_calls = []
+
+    class _FakeResponse:
+        def __init__(self, images: list[str]) -> None:
+            self.images = images
 
         def raise_for_status(self) -> None:
             return None
 
         def json(self):
-            return {"pages": [{"markdown": self.markdown, "error": self.error}]}
+            return {
+                "pages": [
+                    {"markdown": f"text-{image}", "error": False}
+                    for image in self.images
+                ]
+            }
 
     class _FakeClient:
         async def post(self, url, json, timeout):
-            image = json["images"][0]
-            if image == "img-a":
-                return _FakeResponse("only one page survives")
-            return _FakeResponse("", error=True)
+            captured_calls.append({"images": list(json["images"]), "timeout": timeout})
+            return _FakeResponse(json["images"])
 
-    with pytest.raises(si.SchemeParseError, match="too many pages"):
-        asyncio.run(si.extract_text_from_pdf_bytes(_FakeClient(), b"pdf-bytes"))
+    combined = asyncio.run(si.extract_text_from_pdf_bytes(_FakeClient(), b"pdf-bytes"))
+
+    assert [call["images"] for call in captured_calls] == [
+        ["img-a", "img-b"],
+        ["img-c", "img-d"],
+        ["img-e"],
+    ]
+    assert [call["timeout"] for call in captured_calls] == [90.0, 90.0, 45.0]
+    assert combined == "text-img-a\n\ntext-img-b\n\ntext-img-c\n\ntext-img-d\n\ntext-img-e"
+
+
+def test_extract_text_from_pdf_bytes_falls_back_to_single_pages_when_batch_fails(monkeypatch):
+    monkeypatch.setattr(si.settings, "scheme_ocr_endpoint_url", "http://ocr-host:8010")
+    monkeypatch.setattr(si.settings, "scheme_ocr_timeout_seconds", 45.0)
+    monkeypatch.setattr(si.settings, "scheme_ocr_page_batch_size", 4)
+    monkeypatch.setattr(si.settings, "scheme_pdf_render_dpi", 150)
+    monkeypatch.setattr(si, "render_pdf_to_base64_images", lambda *_args, **_kwargs: ["img-a", "img-b"])
+
+    captured_calls = []
+
+    class _FakeResponse:
+        def __init__(self, markdown: str) -> None:
+            self.markdown = markdown
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self):
+            return {"pages": [{"markdown": self.markdown, "error": False}]}
+
+    class _FakeClient:
+        async def post(self, url, json, timeout):
+            images = list(json["images"])
+            captured_calls.append(images)
+            if len(images) > 1:
+                request = httpx.Request("POST", url)
+                raise httpx.HTTPStatusError(
+                    "payload too large",
+                    request=request,
+                    response=httpx.Response(413, request=request),
+                )
+            return _FakeResponse(f"text-{images[0]}")
+
+    combined = asyncio.run(si.extract_text_from_pdf_bytes(_FakeClient(), b"pdf-bytes"))
+
+    assert captured_calls == [["img-a", "img-b"], ["img-a"], ["img-b"]]
+    assert combined == "text-img-a\n\ntext-img-b"
 
 
 def test_build_banas_record_returns_none_on_parse_error(monkeypatch):
@@ -243,17 +333,104 @@ def test_build_banas_record_returns_none_on_parse_error(monkeypatch):
     assert record is None
 
 
+def test_parse_banas_scheme_links_keeps_published_scheme_pdfs_only():
+    payload = [
+        {
+            "section": "vendor_registration",
+            "title": "Web Portal Vendor User Guide",
+            "status": "published",
+            "sort_order": 0,
+            "file": {"file_path": "documents/b2b/vendor-web-portal-user-guide.pdf"},
+        },
+        {
+            "section": "schemes",
+            "title": "MILKING MACHINE ASSISTANCE SCHEME",
+            "status": "draft",
+            "sort_order": 1,
+            "file": {"file_path": "documents/schemes/milking-machine.pdf"},
+        },
+        {
+            "section": "schemes",
+            "title": "IRON STALL ASSISTANCE SCHEME",
+            "status": "published",
+            "sort_order": 10,
+            "file": {"file_path": "documents/schemes/iron-stall.pdf"},
+        },
+        {
+            "section": "schemes",
+            "title": "ANIMAL COOLING SYSTEM ASSISTANCE SCHEME",
+            "status": "published",
+            "sort_order": 1,
+            "file": {"file_path": "documents/schemes/animal-cooling.pdf"},
+        },
+        {
+            "section": "schemes",
+            "title": "MISSING FILE SCHEME",
+            "status": "published",
+            "sort_order": 2,
+            "file": {},
+        },
+        {
+            "section": "schemes",
+            "title": "ANIMAL COOLING SYSTEM ASSISTANCE SCHEME",
+            "status": "published",
+            "sort_order": 99,
+            "file": {"file_path": "documents/schemes/animal-cooling.pdf"},
+        },
+    ]
+
+    records = si.parse_banas_scheme_links(payload)
+
+    assert records == [
+        {
+            "scheme_title": "ANIMAL COOLING SYSTEM ASSISTANCE SCHEME",
+            "scheme_url": "https://www.banasdairy.coop/media/documents/schemes/animal-cooling.pdf",
+        },
+        {
+            "scheme_title": "IRON STALL ASSISTANCE SCHEME",
+            "scheme_url": "https://www.banasdairy.coop/media/documents/schemes/iron-stall.pdf",
+        },
+    ]
+
+
+def test_parse_banas_scheme_links_accepts_wrapped_document_list():
+    records = si.parse_banas_scheme_links(
+        {
+            "data": [
+                {
+                    "section": "schemes",
+                    "title": "PAKI ASSISTANCE SCHEME",
+                    "file": {"file_path": "/media/documents/schemes/paki-assistance.pdf"},
+                }
+            ]
+        }
+    )
+
+    assert records == [
+        {
+            "scheme_title": "PAKI ASSISTANCE SCHEME",
+            "scheme_url": "https://www.banasdairy.coop/media/documents/schemes/paki-assistance.pdf",
+        }
+    ]
+
+
+def test_parse_banas_scheme_links_returns_empty_for_invalid_payload():
+    assert si.parse_banas_scheme_links(None) == []
+    assert si.parse_banas_scheme_links("not-json-list") == []
+    assert si.parse_banas_scheme_links({"ok": True}) == []
+
+
 def test_ingest_banas_source_heartbeats_lock_per_pdf(monkeypatch):
     links = [
         {"scheme_title": "Scheme A", "scheme_url": "https://example.com/a.pdf"},
         {"scheme_title": "Scheme B", "scheme_url": "https://example.com/b.pdf"},
     ]
 
-    async def fake_fetch_html(_client, _url):
-        return "<html></html>"
+    async def fake_fetch_json(_client, _url):
+        return []
 
-    monkeypatch.setattr(si, "fetch_html", fake_fetch_html)
-    monkeypatch.setattr(si, "parse_banas_scheme_links", lambda _html: links)
+    monkeypatch.setattr(si, "fetch_json", fake_fetch_json)
+    monkeypatch.setattr(si, "parse_banas_scheme_links", lambda _payload: links)
 
     async def fake_build(**kwargs):
         return {"scheme_title": kwargs["scheme_title"]}
@@ -284,14 +461,14 @@ def test_ingest_banas_source_heartbeats_lock_per_pdf(monkeypatch):
 
 
 def test_ingest_banas_source_skips_heartbeat_without_token(monkeypatch):
-    async def fake_fetch_html(_client, _url):
-        return "<html></html>"
+    async def fake_fetch_json(_client, _url):
+        return []
 
-    monkeypatch.setattr(si, "fetch_html", fake_fetch_html)
+    monkeypatch.setattr(si, "fetch_json", fake_fetch_json)
     monkeypatch.setattr(
         si,
         "parse_banas_scheme_links",
-        lambda _html: [{"scheme_title": "Scheme A", "scheme_url": "https://example.com/a.pdf"}],
+        lambda _payload: [{"scheme_title": "Scheme A", "scheme_url": "https://example.com/a.pdf"}],
     )
 
     async def fake_build(**kwargs):
@@ -321,11 +498,11 @@ def test_ingest_banas_source_raises_when_batch_coverage_too_low(monkeypatch):
         {"scheme_title": "Scheme E", "scheme_url": "https://example.com/e.pdf"},
     ]
 
-    async def fake_fetch_html(_client, _url):
-        return "<html></html>"
+    async def fake_fetch_json(_client, _url):
+        return []
 
-    monkeypatch.setattr(si, "fetch_html", fake_fetch_html)
-    monkeypatch.setattr(si, "parse_banas_scheme_links", lambda _html: links)
+    monkeypatch.setattr(si, "fetch_json", fake_fetch_json)
+    monkeypatch.setattr(si, "parse_banas_scheme_links", lambda _payload: links)
 
     async def fake_build(**kwargs):
         if kwargs["scheme_title"] == "Scheme A":

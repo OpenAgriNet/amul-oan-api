@@ -75,12 +75,14 @@ def test_settings_clamp_operational_numeric_bounds(monkeypatch):
     monkeypatch.setenv("SCHEME_OCR_MAX_FAILED_PAGE_RATIO", "1.5")
     monkeypatch.setenv("SCHEME_BANAS_MIN_RECORD_COVERAGE_RATIO", "-0.2")
     monkeypatch.setenv("SCHEME_HTTP_TIMEOUT_SECONDS", "0")
+    monkeypatch.setenv("SCHEME_OCR_PAGE_BATCH_SIZE", "99")
 
     cfg = Settings()
     assert cfg.farmer_refresh_queue_batch_size == 1
     assert cfg.scheme_ocr_max_failed_page_ratio == 1.0
     assert cfg.scheme_banas_min_record_coverage_ratio == 0.0
     assert cfg.scheme_http_timeout_seconds == 0.001
+    assert cfg.scheme_ocr_page_batch_size == 8
 
 
 def test_settings_vistaar_coords_fallback_on_malformed_values(monkeypatch):
