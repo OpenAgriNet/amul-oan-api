@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 from typing import Optional
 
+from app.config import settings
 from helpers.utils import get_logger
 
 logger = get_logger(__name__)
@@ -19,7 +20,7 @@ logger = get_logger(__name__)
 # Seconds to wait before re-polling when the queue is empty.
 IDLE_SLEEP_SECONDS = 5.0
 # Phones to refresh per drain iteration.
-DRAIN_BATCH = 20
+DRAIN_BATCH = settings.farmer_refresh_queue_batch_size
 
 _worker_task: Optional[asyncio.Task] = None
 

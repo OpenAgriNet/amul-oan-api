@@ -60,21 +60,36 @@ def _filter_scheme_records(records: list[dict[str, Any]], scheme_name: str) -> l
 
 async def get_union_scheme_data(ctx: RunContext[FarmerContext], scheme_name: str | None = None) -> str:
     """
-    Get the farmer's Amul MILK-UNION / dairy-cooperative welfare schemes — the
-    scheme benefits their specific dairy union (e.g. Banas, Sarhad) offers, such
-    as accident insurance or cattle/producer welfare. ONLY for these dairy-union
-    schemes.
+    Get scheme information for the farmer, starting from their Amul MILK-UNION /
+    dairy-cooperative welfare schemes — the benefits their specific dairy union
+    (e.g. Banas, Sarhad) offers, such as accident insurance or cattle/producer
+    welfare.
 
-    Do NOT use this for central / national government agriculture schemes such as
-    KCC (Kisan Credit Card), PM-KISAN, PMFBY, or Soil Health Card — for any
-    central government scheme use get_vistaar_scheme_info instead.
+    If `scheme_name` names a CENTRAL / national government agriculture scheme
+    (Kisan Credit Card, PM-KISAN, crop insurance, Soil Health Card, …), this
+    tool may also return that central scheme alongside the union ones, each
+    record labelled with its source. It is therefore safe — not wrong — to call
+    it for a mixed "what schemes can I get?" question. If a dedicated central-
+    scheme tool (get_vistaar_scheme_info) is listed among your tools, prefer it
+    for a question that is purely about one central scheme.
 
     Args:
-        scheme_name: Optional union-scheme title filter, when the user names one.
+        scheme_name: Optional scheme the user named, in their own words
+            ("cattle insurance", "Kisan Credit Card", "પાક વીમો"). Omit for the
+            farmer's full union scheme list.
 
     Returns:
-        A JSON-formatted string of cached scheme records, or a clear no-data message.
+        A JSON-formatted string of scheme records, or a clear no-data message.
     """
+    # ⚠️ The docstring above is the LLM-visible contract and must stay true for
+    # BOTH states of settings.enable_network, because the flag changes what this
+    # function returns:
+    #   flag OFF → union schemes only, read from the Redis cache below.
+    #   flag ON  → union schemes from the Beckn network, MERGED with Bharat
+    #              Vistaar central schemes when `scheme_name` resolves to a
+    #              central scheme code.
+    # It previously said "ONLY for these dairy-union schemes / Do NOT use this
+    # for KCC, PM-KISAN, PMFBY" while, with the flag on, doing exactly that.
     farmer_unions = [union_name for union_name in (ctx.deps.farmer_unions or []) if union_name]
     supported_farmer_unions = resolve_supported_unions(farmer_unions, SUPPORTED_SCHEME_UNIONS)
     normalized_union_name = supported_farmer_unions[0] if supported_farmer_unions else None
@@ -119,7 +134,20 @@ async def get_union_scheme_data(ctx: RunContext[FarmerContext], scheme_name: str
             primary_union,
             normalized_scheme_name,
         )
-        return await network_union_schemes(normalized_scheme_name or "", union=primary_union)
+        # The network call must degrade exactly like the direct Redis path
+        # below: a seeker timeout / HTTP error / malformed on_search is an
+        # infrastructure failure, not a tool failure. Without this the early
+        # return skips the try/except that follows and the exception escapes
+        # the tool entirely.
+        try:
+            return await network_union_schemes(normalized_scheme_name or "", union=primary_union)
+        except Exception:
+            logger.exception(
+                "Union scheme tool failed via Beckn network union=%s scheme_name=%s",
+                primary_union,
+                normalized_scheme_name,
+            )
+            return "Scheme data is temporarily unavailable due to an unexpected error."
 
     records: list[dict[str, Any]] = []
     for union_name in target_unions:

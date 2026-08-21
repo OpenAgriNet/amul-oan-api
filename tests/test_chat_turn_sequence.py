@@ -84,7 +84,8 @@ class _Run:
 
 def _drive(monkeypatch, *, source_lang="gu", target_lang="gu",
            fallback_enabled=False, moderation_action="allow",
-           moderation_category="valid_agricultural"):
+           moderation_category="valid_agricultural", user_info=None,
+           requested_persona=None):
     """Run one turn with every stage instrumented, and return the stage order."""
     seen: list[str] = []
 
@@ -110,9 +111,26 @@ def _drive(monkeypatch, *, source_lang="gu", target_lang="gu",
             output=SimpleNamespace(category=moderation_category, action=moderation_action)
         )
 
+    async def _doctor_moderate(user_message, model=None):
+        seen.append("doctor_moderation")
+        return SimpleNamespace(
+            output=SimpleNamespace(category=moderation_category, action=moderation_action)
+        )
+
     def _agent_iter(**_kw):
         seen.append("agent")
         return _Run(["Give clean water daily."])
+
+    def _doctor_agent_iter(**_kw):
+        seen.append("doctor_agent")
+        assert _kw["deps"].persona == "doctor"
+        assert _kw["deps"].farmer_info == ""
+        assert _kw["deps"].mobile is None
+        return _Run(["Administer only the retrieved protocol."])
+
+    async def _farmer_context(_phone):
+        seen.append("farmer_context")
+        return "farmer data", [], {}
 
     async def _translate_stream(text, *_a, **_kw):
         seen.append("output_translation")
@@ -126,7 +144,10 @@ def _drive(monkeypatch, *, source_lang="gu", target_lang="gu",
 
     monkeypatch.setattr(chat_service, "translate_to_english_pretranslation", _pretranslate)
     monkeypatch.setattr(chat_service.moderation_agent, "run", _moderate)
+    monkeypatch.setattr(chat_service.doctor_moderation_agent, "run", _doctor_moderate)
     monkeypatch.setattr(chat_service.agrinet_agent, "iter", _agent_iter)
+    monkeypatch.setattr(chat_service.doctor_agent, "iter", _doctor_agent_iter)
+    monkeypatch.setattr(chat_service, "get_farmer_context_bundle_by_mobile", _farmer_context)
     monkeypatch.setattr(chat_service, "translate_text_stream_fast", _translate_stream)
     monkeypatch.setattr(chat_service, "update_message_history", _history)
     monkeypatch.setattr(chat_service, "set_cache", _set_cache)
@@ -142,10 +163,11 @@ def _drive(monkeypatch, *, source_lang="gu", target_lang="gu",
             channel="web",
             user_id="+919876543210",
             history=[],
-            user_info={},
+            user_info=user_info or {},
             background_tasks=BackgroundTasks(),
             use_translation_pipeline=True,
             pipeline_profile="managed",
+            requested_persona=requested_persona,
         ):
             out.append(chunk)
         return "".join(out)
@@ -202,3 +224,23 @@ def test_blocked_moderation_never_reaches_the_agent(monkeypatch, fallback_enable
     assert "moderation" in stages
     assert "agent" not in stages, f"blocked query reached the agent: {stages}"
     assert output, "a blocked turn must still say something to the farmer"
+
+
+def test_doctor_jwt_routes_to_doctor_agent_without_farmer_context(monkeypatch):
+    output, stages = _drive(
+        monkeypatch,
+        source_lang="en",
+        target_lang="en",
+        user_info={
+            "phone": "9375028676",
+            "user_type": "doctor",
+            "auth_type": "jwt",
+        },
+    )
+
+    assert output
+    assert "doctor_agent" in stages
+    assert "doctor_moderation" in stages
+    assert "moderation" not in stages
+    assert "agent" not in stages
+    assert "farmer_context" not in stages

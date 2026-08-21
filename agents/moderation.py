@@ -3,7 +3,6 @@ from typing import Literal
 from pydantic_ai import Agent
 from helpers.utils import get_prompt
 from pydantic_ai.models import ModelSettings
-from agents.models import LLM_MODEL
 
 
 class QueryModerationResult(BaseModel):
@@ -24,7 +23,8 @@ class QueryModerationResult(BaseModel):
         return f"**Moderation Recommendation:** {self.action} ({category_str})"
 
 moderation_agent = Agent(
-    model=LLM_MODEL,
+    # Resolved per turn by app.llm_core; no construction-time provider fallback.
+    model=None,
     name="Moderation Agent",
     instructions=get_prompt('moderation_system'),
     instrument=True,
@@ -35,4 +35,22 @@ moderation_agent = Agent(
         max_tokens=128,  # Sufficient for JSON output with category and action fields
         timeout=5 # NOTE: Added timeout to avoid infinite loops
     )
+)
+
+
+doctor_moderation_agent = Agent(
+    # Doctor turns have a distinct scope: veterinary clinical and pharmacology
+    # questions are the product's primary use case, not a medical-policy edge
+    # case inside the farmer classifier.
+    model=None,
+    name="Doctor Moderation Agent",
+    instructions=get_prompt('doctor_moderation_system'),
+    instrument=True,
+    output_type=QueryModerationResult,
+    retries=2,
+    model_settings=ModelSettings(
+        temperature=0.1,
+        max_tokens=128,
+        timeout=5,
+    ),
 )

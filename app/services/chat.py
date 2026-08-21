@@ -9,7 +9,8 @@ import re
 from collections import defaultdict
 from fastapi import BackgroundTasks
 from agents.agrinet import agrinet_agent
-from agents.moderation import moderation_agent
+from agents.doctor import doctor_agent
+from agents.moderation import doctor_moderation_agent, moderation_agent
 from app.llm_core import resolver as _llm_resolver
 from app.llm_core.config_model import Step as _LlmStep
 from helpers.utils import get_logger
@@ -35,7 +36,12 @@ from app.services.translation import (
     PRETRANSLATION_MODEL,
 )
 from pydantic_ai.messages import ModelRequest, ModelResponse, UserPromptPart, TextPart
-from app.services.identity_profile import is_identity_query, build_identity_profile_table
+from app.services.identity_profile import (
+    build_doctor_identity_response,
+    build_identity_profile_table,
+    is_identity_query,
+)
+from app.personas import ChatPersona, resolve_chat_persona
 
 
 class SentenceSegmenter:
@@ -144,6 +150,49 @@ def should_translate_batch(batch_text: str, word_count: int) -> bool:
         return True
 
     return False
+
+
+_DOCTOR_PROVENANCE_LINE_RE = re.compile(
+    r"^\s*(?:[-*•]\s*)?(?:\*{0,2})?"
+    r"(?:sources?|references?|citations?|cited\s+sources?|document\s+sources?|"
+    r"source\s+documents?|સ્ત્રોત|સ્રોત|સંદર્ભ)"
+    r"(?:\*{0,2})?\s*[:：-]",
+    re.IGNORECASE,
+)
+_DOCTOR_INLINE_PROVENANCE_RE = re.compile(
+    r"\s*\((?:sources?|references?|citations?|સ્ત્રોત|સ્રોત|સંદર્ભ)\s*:[^)]*\)",
+    re.IGNORECASE,
+)
+
+
+def sanitize_doctor_answer(text: str) -> str:
+    """Remove source-document audit text from a Doctor-facing answer.
+
+    Prompt compliance is probabilistic, so the user-facing contract is enforced
+    here as well. Clinical content is preserved; only explicitly labelled
+    provenance lines and inline parenthetical source tags are removed.
+    """
+    if not text:
+        return text
+    kept: list[str] = []
+    for line in text.splitlines(keepends=True):
+        if _DOCTOR_PROVENANCE_LINE_RE.match(line):
+            continue
+        kept.append(_DOCTOR_INLINE_PROVENANCE_RE.sub("", line))
+    return "".join(kept).strip()
+
+
+async def _sanitize_doctor_stream(source):
+    """Line-buffer a stream so provenance labels split across chunks are caught."""
+    buffer = ""
+    async for chunk in source:
+        buffer += chunk
+        while "\n" in buffer:
+            line, buffer = buffer.split("\n", 1)
+            if not _DOCTOR_PROVENANCE_LINE_RE.match(line):
+                yield _DOCTOR_INLINE_PROVENANCE_RE.sub("", line) + "\n"
+    if buffer and not _DOCTOR_PROVENANCE_LINE_RE.match(buffer):
+        yield _DOCTOR_INLINE_PROVENANCE_RE.sub("", buffer)
 
 
 
@@ -337,9 +386,15 @@ async def stream_chat_messages(
     background_tasks: BackgroundTasks,
     use_translation_pipeline: bool = True,
     pipeline_profile: str = "managed",
+    requested_persona: ChatPersona | None = None,
+    history_session_id: str | None = None,
 ) -> AsyncGenerator[str, None]:
     """Async generator for streaming chat messages."""
     request_start_monotonic_s = time.monotonic()
+    persona = resolve_chat_persona(user_info, requested_persona)
+    active_agent = doctor_agent if persona == "doctor" else agrinet_agent
+    active_moderation_agent = doctor_moderation_agent if persona == "doctor" else moderation_agent
+    message_history_session_id = history_session_id or session_id
     # The turn's channel profile: what differs between delivery channels, resolved
     # once here rather than re-derived at each use site.
     profile = _profile_for(channel)
@@ -396,8 +451,13 @@ async def stream_chat_messages(
         "target_lang": (target_lang or "unknown").lower()[:200],
         "user_id": effective_user_id,
         "pipeline_profile": pipeline_profile,
+        "persona": persona,
     }
-    langfuse_tags = [f"pipeline:{pipeline_name}", f"pipeline_profile:{pipeline_profile}"]
+    langfuse_tags = [
+        f"pipeline:{pipeline_name}",
+        f"pipeline_profile:{pipeline_profile}",
+        f"persona:{persona}",
+    ]
     # Serialize the resolved pipeline config into COMPACT flat keys and merge them
     # into the same langfuse_metadata dict propagate_attributes lands on OTEL span
     # attributes (a big nested blob is size-capped/dropped; this SDK has no
@@ -419,7 +479,22 @@ async def stream_chat_messages(
         else nullcontext()
     )
 
-    with session_ctx:
+    # THE TURN ROOT SPAN. Without it, propagate_attributes leaves no active span,
+    # so every observation opened during the turn (Moderation, query_pretranslation,
+    # Amul AI Agent, suggestions, each tool call) becomes its OWN top-level trace —
+    # measured at 6 traces for one turn — and every trace-level write made outside
+    # an observation is silently dropped by the SDK ("no active span ... skipped").
+    # That is why trace input/output was missing on many turns, why the chat export
+    # has gaps, and why turn-level scores never landed.
+    _root_ctx = (
+        get_langfuse_client().start_as_current_observation(
+            name=f"chat.{pipeline_name}", as_type="span"
+        )
+        if get_langfuse_client
+        else nullcontext()
+    )
+
+    with session_ctx, _root_ctx:
         # ONE exit point for the turn. Without this, an outcome is recorded only
         # on normal completion: a client disconnect or an exception leaves the
         # trace with no output and no signal at all, which is #179's B2.
@@ -436,6 +511,7 @@ async def stream_chat_messages(
                             "source_lang": source_lang,
                             "target_lang": target_lang,
                             "use_translation_pipeline": use_translation_pipeline,
+                            "persona": persona,
                         }
                     )
                     #this is the same as the update_current_trace method,
@@ -498,10 +574,10 @@ async def stream_chat_messages(
             logger.info("request_id=%s user_info=%s", request_id, user_info)
 
             if is_identity_query(query):
-                identity_response = build_identity_profile_table(
-                    source_lang=source_lang,
-                    target_lang=target_lang,
-                    query=query,
+                identity_response = (
+                    build_doctor_identity_response(source_lang, target_lang, query)
+                    if persona == "doctor"
+                    else build_identity_profile_table(source_lang, target_lang, query)
                 )
                 logger.info("request_id=%s identity_short_circuit=True", request_id)
                 if get_langfuse_client:
@@ -521,18 +597,20 @@ async def stream_chat_messages(
                     request_id,
                     len(messages),
                 )
-                await update_message_history(session_id, messages)
+                await update_message_history(message_history_session_id, messages)
                 yield identity_response
                 return
 
             # Extract farmer context from phone in JWT via cache-first fetch
             farmer_data = ""
             farmer_unions: list[str] = []
-            if user_info and user_info.get('phone'):
+            farmer_location: dict[str, str] = {}
+            if persona == "farmer" and user_info and user_info.get('phone'):
                 try:
-                    farmer_data, farmer_unions = await get_farmer_context_bundle_by_mobile(user_info['phone'])
+                    farmer_data, farmer_unions, farmer_location = await get_farmer_context_bundle_by_mobile(user_info['phone'])
                     logger.info(f"request_id={request_id} farmer_context_length={len(farmer_data)}")
                     logger.info("request_id=%s farmer_unions=%s", request_id, farmer_unions)
+                    logger.info("request_id=%s farmer_district=%s", request_id, farmer_location.get("district"))
                 except Exception as e:
                     logger.warning(f"request_id={request_id} farmer_context_fetch_failed={e}")
 
@@ -647,7 +725,11 @@ async def stream_chat_messages(
 
             # Normalized caller phone — the micro-loan tool reads this from deps so it
             # never has to trust an LLM-supplied number. None for anonymous sessions.
-            loan_mobile = normalize_phone_to_mobile(user_info['phone']) if user_info and user_info.get('phone') else None
+            loan_mobile = (
+                normalize_phone_to_mobile(user_info['phone'])
+                if persona == "farmer" and user_info and user_info.get('phone')
+                else None
+            )
 
             deps = FarmerContext(
                 query=processing_query,
@@ -655,9 +737,13 @@ async def stream_chat_messages(
                 lang_code=processing_lang,
                 farmer_info=farmer_data,
                 farmer_unions=farmer_unions,
+                farmer_district=farmer_location.get("district") or None,
+                farmer_village=farmer_location.get("village") or None,
+                farmer_state=farmer_location.get("state") or None,
                 use_translation_pipeline=use_translation_pipeline,
                 response_max_chars=profile.response_max_chars,
                 mobile=loan_mobile,
+                persona=persona,
             )
 
             message_pairs = "\n\n".join(format_message_pairs(history, 3))
@@ -696,10 +782,10 @@ async def stream_chat_messages(
                             pipeline="moderation",
                             session_id=session_id_safe,
                             profile_name=pipeline_profile,
-                            run=lambda a: moderation_agent.run(user_message, model=a.model),
+                            run=lambda a: active_moderation_agent.run(user_message, model=a.model),
                         )
                     else:
-                        moderation_run = await moderation_agent.run(user_message, model=moderation_model)
+                        moderation_run = await active_moderation_agent.run(user_message, model=moderation_model)
                     moderation_data = moderation_run.output
                     logger.info(
                         "request_id=%s moderation_category=%s moderation_action=%s",
@@ -715,7 +801,7 @@ async def stream_chat_messages(
                             }
                         )
                     # Generate suggestions after moderation passes
-                    if moderation_data.category == "valid_agricultural":
+                    if moderation_data.category == "valid_agricultural" and persona == "farmer":
                         logger.info(f"Triggering suggestions generation for session {session_id}")
                         try:
                             suggestions_queued_wall_ms = int(time.time() * 1000)
@@ -749,7 +835,7 @@ async def stream_chat_messages(
                             )
                         except Exception as e:
                             logger.error(f"Error adding suggestions task: {str(e)}")
-                    else:
+                    elif moderation_data.category != "valid_agricultural":
                         # Hard gate: do not run retrieval/answer agent for moderated non-agricultural requests.
                         decline_text = (moderation_data.action or "").strip() or (
                             "I can only answer agriculture and livestock related questions."
@@ -798,17 +884,23 @@ async def stream_chat_messages(
             raw_output_chunks: list[str] = []
 
             _lf_ag = get_langfuse_client() if get_langfuse_client else None
+            agent_observation_name = "Amul Doctor Agent" if persona == "doctor" else "Amul AI Agent"
             _agrinet_obs_ctx = (
                 _lf_ag.start_as_current_observation(
                     # Distinct from Pydantic's "Amul AI Agent run" span; keeps gen_ai/tool children grouped under that name.
-                    name="Amul AI Agent",
+                    name=agent_observation_name,
                     as_type="generation",
                     input={
                         "action": moderation_data.action,
                         "model_name": request_model_name,
+                        "persona": persona,
                     },
                     model=request_model_name,
-                    metadata={"pipeline": pipeline_name, "pipeline_profile": pipeline_profile},
+                    metadata={
+                        "pipeline": pipeline_name,
+                        "pipeline_profile": pipeline_profile,
+                        "persona": persona,
+                    },
                 )
                 if _lf_ag
                 else nullcontext()
@@ -839,7 +931,7 @@ async def stream_chat_messages(
                     # so no sentinel arrives and the deadline still fires -> swap.
                     # new_messages is captured before the run context closes.
                     _activity_signaled = False
-                    async with agrinet_agent.iter(
+                    async with active_agent.iter(
                         user_prompt=user_message,
                         message_history=trimmed_history,
                         deps=deps,
@@ -965,7 +1057,16 @@ async def stream_chat_messages(
                                 yield _c
                     english_src = _strip_activity(_raw_agent_text_stream(request_provider, request_model))
 
-                async for _out in _stream_to_client(english_src):
+                if persona == "doctor":
+                    english_src = _sanitize_doctor_stream(english_src)
+
+                client_src = _stream_to_client(english_src)
+                if persona == "doctor":
+                    # Defence in depth: also remove a provenance label invented by
+                    # post-translation rather than present in the English answer.
+                    client_src = _sanitize_doctor_stream(client_src)
+
+                async for _out in client_src:
                     yield _out
                 logger.info(f"Streaming complete for session {session_id}")
                 new_messages = _stream_holder.get("new_messages", [])
@@ -974,7 +1075,7 @@ async def stream_chat_messages(
                 if get_langfuse_client:
                     try:
                         if needs_output_translation and translated_output_chunks:
-                            trace_output = "".join(translated_output_chunks)
+                            trace_output = sanitize_doctor_answer("".join(translated_output_chunks)) if persona == "doctor" else "".join(translated_output_chunks)
                         elif raw_output_chunks:
                             trace_output = "".join(raw_output_chunks)
                         else:
@@ -1017,7 +1118,7 @@ async def stream_chat_messages(
             ]
 
             logger.info(f"Updating message history for session {session_id} with {len(messages)} messages")
-            await update_message_history(session_id, messages)
+            await update_message_history(message_history_session_id, messages)
             # The turn is done from the caller's point of view. Everything below is
             # suggestions side-work, so it sits after the outcome is fixed: a failure
             # in it must not re-label a delivered turn as an error.

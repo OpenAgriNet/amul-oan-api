@@ -592,7 +592,7 @@
   {
     "en": "Bypass Fat",
     "hi": "बाईपास फैट",
-    "transliteration": "baeepaas phait"
+    "transliteration": "baeepaas fat"
   },
   {
     "en": "Bypass Protein",
@@ -1356,18 +1356,18 @@
   },
   {
     "en": "fat",
-    "hi": "वसा / फैट",
-    "transliteration": "vasa / fat"
+    "hi": "फैट ",
+    "transliteration": "fat "
   },
   {
     "en": "Fat Deposition",
-    "hi": "वसा का जमाव",
-    "transliteration": "vasa ka jamav"
+    "hi": "फैट का जमाव",
+    "transliteration": "fat ka jamav"
   },
   {
     "en": "Fat Percentage",
-    "hi": "वसा प्रतिशत",
-    "transliteration": "vasa pratishat"
+    "hi": "फैट प्रतिशत",
+    "transliteration": "fat pratishat"
   },
   {
     "en": "Fatty Liver Syndrome",
@@ -3266,8 +3266,8 @@
   },
   {
     "en": "solids not fat",
-    "hi": "वसा रहित ठोस पदार्थ",
-    "transliteration": "vasa rahit thos padarth"
+    "hi": "फैट रहित ठोस पदार्थ",
+    "transliteration": "fat rahit thos padarth"
   },
   {
     "en": "Sorghum",

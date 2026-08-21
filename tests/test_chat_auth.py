@@ -1,5 +1,8 @@
 import asyncio
 
+import pytest
+from pydantic import ValidationError
+
 from fastapi import HTTPException
 from starlette.requests import Request
 
@@ -70,6 +73,17 @@ def test_chat_request_defaults_channel_to_web():
     request = ChatRequest(query="hello")
 
     assert request.channel == "web"
+    assert request.persona is None
+
+
+@pytest.mark.parametrize("persona", ["farmer", "doctor"])
+def test_chat_request_accepts_supported_personas(persona):
+    assert ChatRequest(query="hello", persona=persona).persona == persona
+
+
+def test_chat_request_rejects_unknown_persona():
+    with pytest.raises(ValidationError):
+        ChatRequest(query="hello", persona="admin")
 
 
 def test_response_max_chars_is_set_only_for_whatsapp_channel():

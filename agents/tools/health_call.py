@@ -7,10 +7,11 @@ from pydantic_ai import RunContext
 
 from agents.deps import FarmerContext
 from agents.tools.farmer_animal_backends import create_health_call_api
+from app.config import settings
 from app.core.cache import cache, try_reserve, release_reservation
 from app.models.ai_call import AISpecies
 from app.models.health_call import HealthCallRequestModel, HealthCaseType
-from app.observability import start_observation, set_trace_io
+from app.observability import start_observation
 from helpers.utils import get_logger
 
 logger = get_logger(__name__)
@@ -18,7 +19,7 @@ logger = get_logger(__name__)
 # One booking per session per 30 min. Also makes this tool idempotent against an
 # agent re-run (OSS->managed streaming fallback re-executes tool calls): a second
 # invocation in the same session short-circuits instead of double-booking.
-HEALTH_CALL_COOLDOWN_TTL = 60 * 30  # 30 minutes
+HEALTH_CALL_COOLDOWN_TTL = settings.health_call_cooldown_ttl_seconds
 HEALTH_CALL_CACHE_NAMESPACE = "health_call_booked"
 
 
@@ -81,17 +82,12 @@ async def create_health_call(
         input=_health_tool_input,
         metadata={"tool_name": "create_health_call"},
     ) as health_tool_obs:
-        set_trace_io(input=_health_tool_input)
         token = os.getenv("PASHUGPT_TOKEN")
         if not token:
             logger.error("PASHUGPT_TOKEN is not set")
             failure_message = "Health call booking failed.\n\nPASHUGPT_TOKEN is not configured."
             if health_tool_obs is not None:
                 health_tool_obs.update(output={"agent_response": failure_message})
-            set_trace_io(
-                input=_health_tool_input,
-                output={"agent_response": failure_message},
-            )
             return failure_message
 
         request = HealthCallRequestModel(
@@ -132,10 +128,6 @@ async def create_health_call(
             failure_message = "Health call booking failed.\n\nUnable to create health call at the moment."
             if health_tool_obs is not None:
                 health_tool_obs.update(output={"agent_response": failure_message})
-            set_trace_io(
-                input=_health_tool_input,
-                output={"agent_response": failure_message},
-            )
             return failure_message
 
         # Mark this session as booked so a re-run (or retry) does not double-book.
@@ -165,16 +157,8 @@ async def create_health_call(
             success_message = f"Health call booked successfully. Ticket number: {ticket_number}"
             if health_tool_obs is not None:
                 health_tool_obs.update(output={"agent_response": success_message})
-            set_trace_io(
-                input=_health_tool_input,
-                output={"agent_response": success_message},
-            )
             return success_message
         success_message = "Health call booked successfully, but ticket number was not returned."
         if health_tool_obs is not None:
             health_tool_obs.update(output={"agent_response": success_message})
-        set_trace_io(
-            input=_health_tool_input,
-            output={"agent_response": success_message},
-        )
         return success_message

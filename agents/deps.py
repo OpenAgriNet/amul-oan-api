@@ -46,6 +46,15 @@ class FarmerContext(BaseModel):
     moderation_str: Optional[str] = Field(default=None, description="The moderation result of the user's question (chat).")
     farmer_info: str = Field(default="", description="Pre-built markdown string with farmer profile/animals/vet visits (from JWT or context bundle).")
     farmer_unions: list[str] = Field(default_factory=list, description="Normalized union names derived from the farmer context.")
+    # Structured farmer location. `farmer_info` has always RENDERED these into the
+    # prompt markdown (agents/farmer_context.py), but only as prose — a tool could
+    # not read them, so the mandi/weather tools hardcoded Anand for every farmer in
+    # India. Lowercased, exactly as the farmer API returns them; district is the one
+    # that matters (it drives agents/tools/districts.py), village/state ride along
+    # because they are free once the record is open.
+    farmer_district: Optional[str] = Field(default=None, description="Farmer's district, lowercased as returned by the farmer API (drives mandi/weather location).")
+    farmer_village: Optional[str] = Field(default=None, description="Farmer's village, lowercased as returned by the farmer API.")
+    farmer_state: Optional[str] = Field(default=None, description="Farmer's state, lowercased as returned by the farmer API.")
     ai_technician_info: str = Field(default="", description="Pre-built internal AI technician context string (voice).")
     signed_in: bool = Field(default=False, description="Whether the session is signed in/authenticated for farmer-specific tools.")
     mobile: Optional[str] = Field(default=None, description="Normalized mobile number when available.")
@@ -55,6 +64,7 @@ class FarmerContext(BaseModel):
     )
     use_translation_pipeline: bool = Field(default=False, description="When True, use English-only prompt; response is translated externally (chat).")
     response_max_chars: Optional[int] = Field(default=None, description="Optional channel-specific final response character guidance (chat).")
+    persona: Literal['farmer', 'doctor'] = Field(default='farmer', description="Resolved chat persona for this turn.")
 
     # Handle to the per-turn content-moderation task, which runs concurrently with
     # the agent on the voice path (see app.services.voice). Side-effecting tools
@@ -105,6 +115,16 @@ class FarmerContext(BaseModel):
     def get_farmer_context_string(self) -> str:
         """Format farmer context information for the system prompt."""
         return self.farmer_info
+
+    def get_farmer_district(self) -> Optional[str]:
+        """Get the farmer's district, or None when the record carries no location.
+
+        None is a real and common state — roughly half the sampled farmer records
+        have no union and no district — so callers must handle it rather than
+        assuming a location.
+        """
+        district = (self.farmer_district or "").strip()
+        return district or None
 
     def get_preferred_union_name(self) -> Optional[str]:
         """Get the primary farmer union name when available."""

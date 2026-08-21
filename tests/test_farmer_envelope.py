@@ -3,7 +3,7 @@
 Pins the behavior that survived the move out of app/services/voice.py, so the
 remaining extractions from that module have something to move against.
 """
-from agents.models.farmer import FarmerDataEnvelope, FarmerRecord
+from app.models.farmer_transport import FarmerDataEnvelope, FarmerRecord
 from agents.services.farmer_envelope import collect_farmer_accounts
 
 

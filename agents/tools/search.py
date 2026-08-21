@@ -4,7 +4,6 @@ The Marqo Python client is synchronous; we run it in asyncio.to_thread() to avoi
 blocking the event loop when serving many concurrent requests.
 """
 import asyncio
-import os
 import re
 import marqo
 from typing import Any, Dict, List, Literal, Optional
@@ -12,6 +11,7 @@ from pydantic import BaseModel, Field
 from pydantic_ai import ModelRetry
 from helpers.utils import get_logger
 from app.observability import start_observation
+from app.config import settings
 # NOTE: This is a hack to add Gujarati terms to the search results.
 from agents.tools.terms import normalize_text_with_glossary
 
@@ -134,40 +134,11 @@ def _get_index_capabilities_sync(endpoint_url: str, index_name: str) -> Dict[str
     return capabilities
 
 
-def _env_bool(name: str, default: bool = False) -> bool:
-    val = os.getenv(name)
-    if val is None:
-        return default
-    return val.strip().lower() in {"1", "true", "yes", "y", "on"}
-
-
 def _prepare_query_for_e5(query: str) -> str:
     cleaned = query.strip()
     if cleaned.lower().startswith("query:"):
         return cleaned
     return f"query: {cleaned}"
-
-
-def _parse_int_env(name: str, default: int) -> int:
-    raw = os.getenv(name)
-    if raw is None:
-        return default
-    try:
-        return int(raw)
-    except (TypeError, ValueError):
-        logger.warning("Invalid int for %s=%r; using default=%s", name, raw, default)
-        return default
-
-
-def _parse_float_env(name: str, default: float) -> float:
-    raw = os.getenv(name)
-    if raw is None:
-        return default
-    try:
-        return float(raw)
-    except (TypeError, ValueError):
-        logger.warning("Invalid float for %s=%r; using default=%s", name, raw, default)
-        return default
 
 
 def _resolve_final_top_k(requested_top_k: int) -> int:
@@ -180,8 +151,8 @@ def _resolve_final_top_k(requested_top_k: int) -> int:
     - MARQO_MAX_FINAL_CHUNKS (default 20): absolute hard ceiling.
     - hard cap at 20
     """
-    default_final = max(1, _parse_int_env("MARQO_DEFAULT_FINAL_CHUNKS", 8))
-    env_cap = max(1, _parse_int_env("MARQO_MAX_FINAL_CHUNKS", 20))
+    default_final = max(1, int(settings.marqo_default_final_chunks))
+    env_cap = max(1, int(settings.marqo_max_final_chunks))
     hard_cap = min(env_cap, 20)
 
     try:
@@ -219,6 +190,39 @@ def _expand_query_by_profile(query: str, profile: str) -> str:
 
     logger.warning("Unknown MARQO_QUERY_EXPANSION_PROFILE=%s; using raw normalized query", profile)
     return cleaned
+
+
+def _expand_veterinary_synonyms(query: str) -> str:
+    """Add stable clinical synonyms for known corpus vocabulary mismatches.
+
+    The restored veterinary corpus frequently uses ``hypocalcemia`` or
+    ``parturient paresis`` without the phrase ``milk fever`` in the same indexed
+    field. Likewise, calf-diarrhea material is split between ``scours`` and
+    ``diarrhea``. Expanding these aliases before both Beckn and direct Marqo
+    retrieval prevents an exact-word miss from being reported as a corpus gap.
+    """
+    normalized = re.sub(r"\s+", " ", (query or "").strip())
+    lowered = normalized.lower()
+    additions: list[str] = []
+    if "milk fever" in lowered:
+        if "hypocalc" not in lowered:
+            additions.append("hypocalcemia")
+        if "parturient paresis" not in lowered:
+            additions.append("parturient paresis")
+    if "calf" in lowered and ("scour" in lowered or "diarrh" in lowered):
+        if "scour" not in lowered:
+            additions.append("scours")
+        if "diarrh" not in lowered:
+            additions.append("diarrhea")
+        # The core clinical evidence is indexed under fluid-loss concepts rather
+        # than under the colloquial disease name alone. Keep an explicitly
+        # ethnoveterinary search focused, but make every standard clinical search
+        # retrieve stabilization and dehydration assessment.
+        if "ethnoveterinary" not in lowered:
+            for term in ("oral rehydration", "electrolytes", "dehydration"):
+                if term not in lowered:
+                    additions.append(term)
+    return " ".join([normalized, *additions]).strip()
 
 
 def _doc_key(hit: Dict[str, Any]) -> str:
@@ -381,18 +385,17 @@ async def search_documents(
         search_results: Formatted list of documents
     """
     try:
-        query = _validate_search_query(query)
+        query = _expand_veterinary_synonyms(_validate_search_query(query))
         # Feature flag: route through the Amul Beckn network (advisory:amul-vet)
         # instead of direct Marqo when enabled. Same formatted-string contract.
-        from app.config import settings
         if settings.enable_network:
             from agents.tools.beckn_network import network_search_documents
             logger.info("enable_network=on → vet-KB search via Beckn network query=%s", query)
             return await network_search_documents(query, top_k)
-        endpoint_url = os.getenv('MARQO_ENDPOINT_URL')
+        endpoint_url = settings.marqo_endpoint_url
         if not endpoint_url:
             raise ValueError("Marqo endpoint URL is required")
-        index_name = os.getenv('MARQO_INDEX_NAME', 'amul-veterinary-index')
+        index_name = settings.marqo_index_name or "amul-veterinary-index"
         if not index_name:
             raise ValueError("Marqo index name is required")
 
@@ -410,15 +413,15 @@ async def search_documents(
 
         logger.info(f"Searching for '{query}' in index '{index_name}'")
 
-        use_e5_query_prefix = _env_bool("MARQO_USE_E5_QUERY_PREFIX", True)
-        exclude_reference_chunks = _env_bool("MARQO_EXCLUDE_REFERENCE", True)
-        query_expansion_profile = os.getenv("MARQO_QUERY_EXPANSION_PROFILE", "gu-v1")
+        use_e5_query_prefix = bool(settings.marqo_use_e5_query_prefix)
+        exclude_reference_chunks = bool(settings.marqo_exclude_reference)
+        query_expansion_profile = settings.marqo_query_expansion_profile
         final_top_k = _resolve_final_top_k(top_k)
-        max_per_doc = int(os.getenv("MARQO_MAX_CHUNKS_PER_DOC", "2"))
-        candidate_multiplier = int(os.getenv("MARQO_CANDIDATE_MULTIPLIER", "10"))
-        candidate_cap = int(os.getenv("MARQO_CANDIDATE_CAP", "120"))
-        hybrid_alpha = _parse_float_env("MARQO_HYBRID_ALPHA", 0.6)
-        hybrid_rrfk = _parse_int_env("MARQO_HYBRID_RRFK", 60)
+        max_per_doc = int(settings.marqo_max_chunks_per_doc)
+        candidate_multiplier = int(settings.marqo_candidate_multiplier)
+        candidate_cap = int(settings.marqo_candidate_cap)
+        hybrid_alpha = float(settings.marqo_hybrid_alpha)
+        hybrid_rrfk = int(settings.marqo_hybrid_rrfk)
         search_limit = min(
             max(final_top_k * max(candidate_multiplier, 1), final_top_k),
             max(candidate_cap, final_top_k),
@@ -426,7 +429,7 @@ async def search_documents(
         expanded_query = _expand_query_by_profile(query, query_expansion_profile)
         effective_query = _prepare_query_for_e5(expanded_query) if use_e5_query_prefix else expanded_query
 
-        search_mode = (os.getenv("MARQO_SEARCH_MODE", "hybrid") or "hybrid").strip().lower()
+        search_mode = (settings.marqo_search_mode or "hybrid").strip().lower()
         search_params: Dict[str, Any] = {
             "q": effective_query,
             "limit": search_limit,
@@ -515,7 +518,7 @@ async def search_documents(
                     },
                 )
 
-        rerank_mode = (os.getenv("MARQO_RERANK_MODE", "bm25lite") or "bm25lite").strip().lower()
+        rerank_mode = (settings.marqo_rerank_mode or "bm25lite").strip().lower()
         if rerank_mode not in {"off", "none", "disabled"}:
             results = _rerank_hits(query, results)
         results = _apply_doc_diversity(results, top_k=final_top_k, max_per_doc=max_per_doc)
@@ -553,5 +556,3 @@ async def search_documents(
     except Exception as e:
         logger.error(f"Error searching documents: {e} for query: {query}")
         raise ModelRetry(f"Error searching documents, please try again")
-
-

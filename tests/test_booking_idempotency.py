@@ -174,7 +174,13 @@ import contextlib
 
 
 def _patch_obs(monkeypatch, module):
-    """Capture start_observation (span name) + set_trace_io invocations."""
+    """Capture start_observation (span name) + any TURN-level trace-IO writes.
+
+    The trace_io counter must stay at ZERO: a tool writing turn-level IO
+    overwrites the farmer's question and the answer they received (#212).
+    ``set_trace_io`` is patched defensively even though the tools no longer
+    import it, so re-introducing the call is caught rather than ignored.
+    """
     obs_names = []
     trace_io = {"n": 0}
 
@@ -187,11 +193,11 @@ def _patch_obs(monkeypatch, module):
         trace_io["n"] += 1
 
     monkeypatch.setattr(module, "start_observation", fake_start_observation)
-    monkeypatch.setattr(module, "set_trace_io", fake_set_trace_io)
+    monkeypatch.setattr(module, "set_trace_io", fake_set_trace_io, raising=False)
     return obs_names, trace_io
 
 
-def test_ai_call_emits_observation_and_trace_io(monkeypatch):
+def test_ai_call_annotates_its_own_span_and_never_the_turn(monkeypatch):
     monkeypatch.setenv("PASHUGPT_TOKEN", "tok")
     obs_names, trace_io = _patch_obs(monkeypatch, ai_mod)
 
@@ -204,10 +210,13 @@ def test_ai_call_emits_observation_and_trace_io(monkeypatch):
     r = asyncio.run(ai_mod.create_ai_call(_ctx("obs1"), "U", "S", "F", "t", species))
     assert "booked successfully" in r
     assert obs_names == ["ai_call_booking"]   # the booking span was opened
-    assert trace_io["n"] >= 1                  # root-trace IO was set via the helper
+    # #212: the tool must NOT write turn-level IO. Doing so replaced the
+    # farmer's question with the booking parameters and their answer with a
+    # status dict, on 100% of bookings, for five days in production.
+    assert trace_io["n"] == 0
 
 
-def test_health_call_emits_observation_and_trace_io(monkeypatch):
+def test_health_call_annotates_its_own_span_and_never_the_turn(monkeypatch):
     _patch_cache(monkeypatch, hc_mod)
     obs_names, trace_io = _patch_obs(monkeypatch, hc_mod)
 
@@ -221,4 +230,4 @@ def test_health_call_emits_observation_and_trace_io(monkeypatch):
     r = asyncio.run(hc_mod.create_health_call(_ctx("obsh1"), "U", "S", "F", species, case_type, "r"))
     assert "booked successfully" in r
     assert obs_names == ["health_call_booking"]
-    assert trace_io["n"] >= 1
+    assert trace_io["n"] == 0   # #212 — see the AI-call test above

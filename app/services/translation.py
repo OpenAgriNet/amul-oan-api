@@ -20,6 +20,7 @@ from openai import AsyncOpenAI
 from helpers.utils import get_logger, normalize_voice_output
 from dotenv import load_dotenv
 from app.config import settings
+from app.models.union import UNION_BANNED_MESSAGE_VARIANTS, union_banned_message
 from agents.tools.terms import get_mini_glossary_for_text, get_ambiguity_hints_for_query, TERM_PAIRS, TermPair
 
 # Post-translation now flows through the unified llm_core config chain
@@ -686,6 +687,19 @@ def _is_untranslatable_fragment(text: str) -> bool:
     return not re.search(r"[^\W_]", text, flags=re.UNICODE)
 
 
+def _canned_union_ban_translation(text: str, target_lang: str) -> str | None:
+    """If ``text`` is the AI-call ban line, return the canned line for ``target_lang``.
+
+    The agent (and create_ai_call on lang_code=en) emit the English policy sentence.
+    Post-translation must not paraphrase it — Gujarati and Hindi copy is fixed.
+    Already-localized GU/HI canned lines pass through as the target-lang variant.
+    """
+    normalized = text.strip().strip("`\"'")
+    if normalized not in UNION_BANNED_MESSAGE_VARIANTS:
+        return None
+    return union_banned_message(target_lang)
+
+
 # ── post-translation tier-chain adapter ───────────────────────────────────────
 # translate_text / translate_text_stream_fast route through the llm_core
 # POST_TRANSLATION chain: [TranslateGemma(LB), managed-LLM overflow]. Per tier the
@@ -1229,6 +1243,10 @@ async def translate_text(
     if _is_untranslatable_fragment(text):
         return text
 
+    canned = _canned_union_ban_translation(text, target_lang)
+    if canned is not None:
+        return canned
+
     if source_lang.lower() == target_lang.lower():
         logger.info("Source and target languages are the same, skipping translation")
         return text
@@ -1319,6 +1337,37 @@ def _pretranslation_system_with_glossary(text: str) -> str:
     )
 
 
+_CALF_TERMS_GU_RE = re.compile(r"(?:વાછરડ|બચ્ચ)")
+_CALF_SCOURS_GU_RE = re.compile(r"(?:જાડા|ઝાડા)")
+
+
+def _enforce_clinical_pretranslation_terms(source_text: str, translated_text: str) -> str:
+    """Deterministically protect high-impact Gujarati veterinary homonyms.
+
+    In calf context, colloquial ``જાડા`` means scours/diarrhea. Translation
+    models otherwise commonly read the adjective literally as fat/obese and
+    send retrieval to an unrelated weight-management intent.
+    """
+    if not (_CALF_TERMS_GU_RE.search(source_text or "") and _CALF_SCOURS_GU_RE.search(source_text or "")):
+        return translated_text
+
+    corrected = re.sub(
+        r"\b(calves?)\s+(?:have\s+become|became|are)\s+(?:fat|obese|overweight)\b",
+        r"\1 have diarrhea (calf scours)",
+        translated_text,
+        flags=re.IGNORECASE,
+    )
+    corrected = re.sub(
+        r"\b(?:fat|obese|overweight)\s+(calves?)\b",
+        r"\1 with diarrhea (calf scours)",
+        corrected,
+        flags=re.IGNORECASE,
+    )
+    if re.search(r"\b(?:diarrh(?:ea|oea)|scours?)\b", corrected, re.IGNORECASE):
+        return corrected
+    return corrected.rstrip() + " Clinical intent: calf scours (diarrhea), not obesity."
+
+
 async def _pretranslate_openai(text: str, source_name: str, source_code: str, max_tokens: int) -> str:
     """Pretranslate using OpenAI API."""
     client = _get_openai_client()
@@ -1388,7 +1437,7 @@ async def translate_to_english_pretranslation(
         translated_text = await pretranslate_fn(text, source_name, source_code, max_tokens)
         if not translated_text:
             raise ValueError(f"{effective_provider} pre-translation returned empty output")
-        return translated_text
+        return _enforce_clinical_pretranslation_terms(text, translated_text)
 
     with langfuse.start_as_current_observation(
         name="query_pretranslation",
@@ -1407,6 +1456,7 @@ async def translate_to_english_pretranslation(
         translated_text = await pretranslate_fn(text, source_name, source_code, max_tokens)
         if not translated_text:
             raise ValueError(f"{effective_provider} pre-translation returned empty output")
+        translated_text = _enforce_clinical_pretranslation_terms(text, translated_text)
         observation.update(output=translated_text)
         return translated_text
 
@@ -1432,6 +1482,11 @@ async def translate_text_stream_fast(
 
     if _is_untranslatable_fragment(text):
         yield text
+        return
+
+    canned = _canned_union_ban_translation(text, target_lang)
+    if canned is not None:
+        yield canned
         return
 
     if source_lang.lower() == target_lang.lower():
@@ -1476,5 +1531,3 @@ async def translate_text_stream_fast(
 # shared helpers (_get_openai_client, LANG_NAMES, _get_langfuse, etc.).
 # Consumed by the voice pipeline (voice.py, 7.4b); chat's path is unchanged.
 # ──────────────────────────────────────────────────────────────────────────
-
-
