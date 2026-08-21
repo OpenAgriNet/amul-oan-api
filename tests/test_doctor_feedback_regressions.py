@@ -70,10 +70,28 @@ def test_calf_scours_pretranslation_cannot_become_obesity(bad_translation):
 def test_clinical_query_expansion_covers_corpus_synonyms():
     milk_fever = _expand_veterinary_synonyms("milk fever definition cattle buffalo")
     scours = _expand_veterinary_synonyms("calf scours treatment")
+    ethnoveterinary_scours = _expand_veterinary_synonyms(
+        "calf scours ethnoveterinary ingredients"
+    )
 
     assert "hypocalcemia" in milk_fever
     assert "parturient paresis" in milk_fever
     assert "diarrhea" in scours
+    assert "oral rehydration" in scours
+    assert "electrolytes" in scours
+    assert "dehydration" in scours
+    assert "oral rehydration" not in ethnoveterinary_scours
+
+
+def test_doctor_prompt_prioritizes_standard_calf_scours_care():
+    prompt = get_prompt(
+        "doctor_system_translation_pipeline.md",
+        context={"today_date": "Friday, 21 August 2026"},
+    )
+    assert "Standard-of-Care Priority" in prompt
+    assert "replacement of water and electrolytes" in prompt
+    assert "oral versus intravenous fluid criteria" in prompt
+    assert "controlled substance" in prompt
 
 
 def test_doctor_answer_removes_english_and_gujarati_document_references():

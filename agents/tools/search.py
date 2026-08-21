@@ -214,6 +214,14 @@ def _expand_veterinary_synonyms(query: str) -> str:
             additions.append("scours")
         if "diarrh" not in lowered:
             additions.append("diarrhea")
+        # The core clinical evidence is indexed under fluid-loss concepts rather
+        # than under the colloquial disease name alone. Keep an explicitly
+        # ethnoveterinary search focused, but make every standard clinical search
+        # retrieve stabilization and dehydration assessment.
+        if "ethnoveterinary" not in lowered:
+            for term in ("oral rehydration", "electrolytes", "dehydration"):
+                if term not in lowered:
+                    additions.append(term)
     return " ".join([normalized, *additions]).strip()
 
 
@@ -548,4 +556,3 @@ async def search_documents(
     except Exception as e:
         logger.error(f"Error searching documents: {e} for query: {query}")
         raise ModelRetry(f"Error searching documents, please try again")
-
