@@ -17,6 +17,7 @@ from app.services import fallback as fb
 @pytest.fixture
 def oss_on(monkeypatch, install_chain):
     monkeypatch.setattr(fb.settings, "fallback_enabled", True)
+    monkeypatch.setattr(sug.settings, "suggestions_hybrid_enabled", False)
     # config-driven chain: oss tier's handle "OSS", managed tier's handle "MANAGED"
     # (the walker passes attempt.model=handle to suggestions_agent.run).
     install_chain(oss_handle="OSS", managed_handle="MANAGED")
@@ -30,11 +31,15 @@ def oss_on(monkeypatch, install_chain):
     async def fake_set_cache(*a, **k):
         return True
 
+    async def fake_get_cache(*a, **k):
+        return None
+
     async def fake_delete(*a, **k):
         return None
 
     monkeypatch.setattr(sug, "_get_message_history", fake_hist)
     monkeypatch.setattr(sug, "set_cache", fake_set_cache)
+    monkeypatch.setattr(sug, "get_cache", fake_get_cache)
     monkeypatch.setattr(sug.cache, "delete", fake_delete)
     return events
 
@@ -72,3 +77,33 @@ def test_suggestions_success_on_oss_no_fallback(oss_on, monkeypatch):
     out = asyncio.run(sug.create_suggestions("s1", "gu", "oss"))
     assert out == ["a", "b"]
     assert oss_on == []  # no fallback event on success
+
+
+def test_hybrid_flag_off_skips_shadow_cache_lookup(monkeypatch, install_chain):
+    monkeypatch.setattr(sug.settings, "fallback_enabled", False)
+    monkeypatch.setattr(sug.settings, "suggestions_hybrid_enabled", False)
+    install_chain(oss_handle="OSS", managed_handle="MANAGED")
+
+    async def fake_hist(session_id):
+        return []
+
+    async def fake_set_cache(*a, **k):
+        return True
+
+    async def fake_delete(*a, **k):
+        return None
+
+    async def raising_get_cache(*a, **k):
+        raise AssertionError("get_cache should not be called when hybrid is disabled")
+
+    async def fake_run(message, model=None):
+        return SimpleNamespace(output=["q1"])
+
+    monkeypatch.setattr(sug, "_get_message_history", fake_hist)
+    monkeypatch.setattr(sug, "set_cache", fake_set_cache)
+    monkeypatch.setattr(sug, "get_cache", raising_get_cache)
+    monkeypatch.setattr(sug.cache, "delete", fake_delete)
+    monkeypatch.setattr(sug.suggestions_agent, "run", fake_run)
+
+    out = asyncio.run(sug.create_suggestions("s2", "mr", "managed"))
+    assert out == ["q1"]
