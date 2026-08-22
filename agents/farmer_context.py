@@ -10,7 +10,7 @@ from agents.tools.farmer import get_farmer_data_by_mobile
 from agents.tools.farmer_animal_backends import (
     GetAITechniciansBySocietyQueryParams,
     fetch_banas_operated_visit,
-    get_ai_technicians_by_society_api,
+    get_ai_technicians_by_society_cached,
     normalize_phone,
 )
 from app.models.animal import AnimalModel
@@ -203,10 +203,9 @@ async def _get_ai_technicians_for_farmer(
     if not farmer.union_code or not farmer.society_code:
         return None, "AI technician lookup skipped because union code or society code is missing."
 
-    # get_ai_technicians_by_society_api logs internally and returns None on error
-    # (graceful — no raise), or a (possibly empty) list on success. None = lookup
-    # failed; [] = no technicians found.
-    technicians = await get_ai_technicians_by_society_api(
+    # Cache-first society lookup (union_code + society_code): None = lookup failed,
+    # [] = successful lookup with no technicians.
+    technicians = await get_ai_technicians_by_society_cached(
         GetAITechniciansBySocietyQueryParams(
             unionCode=farmer.union_code,
             societyCode=farmer.society_code,

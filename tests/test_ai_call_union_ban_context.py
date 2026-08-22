@@ -62,7 +62,7 @@ def _append_markdown(farmer, monkeypatch):
         calls["n"] += 1
         return [_tech()]
 
-    monkeypatch.setattr(farmer_ctx, "get_ai_technicians_by_society_api", fake_api)
+    monkeypatch.setattr(farmer_ctx, "get_ai_technicians_by_society_cached", fake_api)
     lines = []
     asyncio.run(farmer_ctx._append_ai_technicians_markdown(lines, farmer))
     return "\n".join(lines), calls["n"]
@@ -110,7 +110,7 @@ def test_farmer_context_bundle_for_sarhad_omits_technicians(monkeypatch):
 
     monkeypatch.setattr(farmer_ctx, "get_farmer_data_by_mobile", fake_farmers)
     monkeypatch.setattr(farmer_ctx, "_append_union_scheme_summary_markdown", fake_schemes)
-    monkeypatch.setattr(farmer_ctx, "get_ai_technicians_by_society_api", fake_api)
+    monkeypatch.setattr(farmer_ctx, "get_ai_technicians_by_society_cached", fake_api)
 
     markdown, unions, _location = asyncio.run(
         farmer_ctx.get_farmer_context_bundle_by_mobile("9876543210")
@@ -131,7 +131,7 @@ def _fetch_cache(records, monkeypatch):
         return [_tech()]
 
     monkeypatch.setenv("PASHUGPT_TOKEN", "tok")
-    monkeypatch.setattr(farmer_cache, "get_ai_technicians_by_society_api", fake_api)
+    monkeypatch.setattr(farmer_cache, "get_ai_technicians_by_society_cached", fake_api)
     return asyncio.run(farmer_cache._fetch_ai_technicians(records)), calls
 
 
@@ -161,6 +161,26 @@ def test_cache_fetches_technicians_for_kaira_and_skips_kutch(monkeypatch):
     assert len(groups) == 1
     assert groups[0]["unionCode"] == "1"
     assert groups[0]["technicians"][0]["userId"] == "ait-1"
+
+
+def test_cache_dedupes_lookup_for_same_union_and_society(monkeypatch):
+    records = [
+        FarmerRecord(
+            unionName="kaira", unionCode="1", societyCode="S-Kaira", farmerCode="F-1",
+            farmerName="Farmer One",
+        ),
+        FarmerRecord(
+            unionName="kaira", unionCode="1", societyCode="S-Kaira", farmerCode="F-2",
+            farmerName="Farmer Two",
+        ),
+    ]
+    groups, calls = _fetch_cache(records, monkeypatch)
+    assert calls == [("1", "S-Kaira")]
+    assert len(groups) == 2
+    assert groups[0]["farmerCode"] == "F-1"
+    assert groups[1]["farmerCode"] == "F-2"
+    assert groups[0]["technicians"][0]["userId"] == "ait-1"
+    assert groups[1]["technicians"][0]["userId"] == "ait-1"
 
 
 @pytest.mark.parametrize("name", PROMPTS)
