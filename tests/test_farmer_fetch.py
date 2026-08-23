@@ -440,3 +440,46 @@ def test_herdman_raw_no_farmer_key_returns_none(monkeypatch):
     _patch_http(monkeypatch, _FakeResp(json_data={"somethingElse": 1}))
     out = asyncio.run(backends._fetch_farmer_herdman_raw("9999999999", "tok3"))
     assert out is None
+
+
+def test_mobile_cache_bypass_skips_amul_farmer_cache_read_and_write(monkeypatch):
+    monkeypatch.setattr(backends.settings, "farmer_layer1_mobile_cache_bypass_enabled", True)
+
+    async def forbidden_get(_key):
+        raise AssertionError("farmer mobile cache read must be bypassed")
+
+    async def forbidden_set(_key, _value):
+        raise AssertionError("farmer mobile cache write must be bypassed")
+
+    monkeypatch.setattr(backends, "get_cached_api_response", forbidden_get)
+    monkeypatch.setattr(backends, "set_cached_api_response", forbidden_set)
+    _patch_http(monkeypatch, _FakeResp(json_data=[dict(_AMUL_ROW)]))
+
+    out = asyncio.run(backends.fetch_farmer_amulpashudhan("9999999999", "tok"))
+    assert out is not None and out[0].farmer_name == "ramesh"
+
+
+def test_mobile_cache_bypass_skips_herdman_farmer_cache_read_and_write(monkeypatch):
+    monkeypatch.setattr(backends.settings, "farmer_layer1_mobile_cache_bypass_enabled", True)
+
+    async def forbidden_get(_key):
+        raise AssertionError("farmer mobile cache read must be bypassed")
+
+    async def forbidden_set(_key, _value):
+        raise AssertionError("farmer mobile cache write must be bypassed")
+
+    monkeypatch.setattr(backends, "get_cached_api_response", forbidden_get)
+    monkeypatch.setattr(backends, "set_cached_api_response", forbidden_set)
+    _patch_http(monkeypatch, _FakeResp(json_data={"Farmer": [dict(_AMUL_ROW)]}))
+
+    out = asyncio.run(backends._fetch_farmer_herdman_raw("9999999999", "tok3"))
+    assert out is not None and out[0]["farmerName"] == "Ramesh"
+
+
+def test_mobile_cache_bypass_does_not_disable_animal_cache(monkeypatch):
+    monkeypatch.setattr(backends.settings, "farmer_layer1_mobile_cache_bypass_enabled", True)
+    _patch_cache_hit(monkeypatch, {"tagNo": "123", "animalType": "cow"})
+    _patch_http(monkeypatch, AssertionError("HTTP must not be called on animal cache hit"))
+
+    out = asyncio.run(backends.fetch_animal_amulpashudhan("123", "tok"))
+    assert out is not None and out.tag_number == "123"

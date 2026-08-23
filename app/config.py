@@ -205,6 +205,22 @@ class Settings(BaseSettings):
     # deep-debug), capped at FARMER_API_TRACE_BODY_CHARS.
     farmer_api_trace_body: bool = _get_bool_env("FARMER_API_TRACE_BODY", default=False)
     farmer_api_trace_body_chars: int = int(os.getenv("FARMER_API_TRACE_BODY_CHARS", "8000"))
+    # Farmer cache consolidation rollout (Layer 2-first for farmer-by-mobile).
+    # Defaults preserve current behavior until later steps wire these flags in:
+    #   chat stays on Layer 1; fallback is armed for Phase A; Layer 1 mobile
+    #   cache remains active until Phase C bypass.
+    farmer_layer2_chat_context_enabled: bool = Field(
+        default=False,
+        validation_alias="FARMER_LAYER2_CHAT_CONTEXT_ENABLED",
+    )
+    farmer_layer2_fallback_to_legacy_enabled: bool = Field(
+        default=True,
+        validation_alias="FARMER_LAYER2_FALLBACK_TO_LEGACY_ENABLED",
+    )
+    farmer_layer1_mobile_cache_bypass_enabled: bool = Field(
+        default=False,
+        validation_alias="FARMER_LAYER1_MOBILE_CACHE_BYPASS_ENABLED",
+    )
 
     # Logging Configuration
     log_level: str = "INFO"
@@ -613,11 +629,17 @@ class Settings(BaseSettings):
     _SAFE_BOOL_FIELDS: ClassVar[dict[str, tuple[str, bool]]] = {
         "marqo_use_e5_query_prefix": ("MARQO_USE_E5_QUERY_PREFIX", True),
         "marqo_exclude_reference": ("MARQO_EXCLUDE_REFERENCE", True),
+        "farmer_layer2_chat_context_enabled": ("FARMER_LAYER2_CHAT_CONTEXT_ENABLED", False),
+        "farmer_layer2_fallback_to_legacy_enabled": ("FARMER_LAYER2_FALLBACK_TO_LEGACY_ENABLED", True),
+        "farmer_layer1_mobile_cache_bypass_enabled": ("FARMER_LAYER1_MOBILE_CACHE_BYPASS_ENABLED", False),
     }
 
     @field_validator(
         "marqo_use_e5_query_prefix",
         "marqo_exclude_reference",
+        "farmer_layer2_chat_context_enabled",
+        "farmer_layer2_fallback_to_legacy_enabled",
+        "farmer_layer1_mobile_cache_bypass_enabled",
         mode="before",
     )
     @classmethod

@@ -46,6 +46,8 @@ class _Env:
     def __init__(self, lookup_status, age_hours):
         self.lookupStatus = lookup_status
         self.fetchedAt = (datetime.now(timezone.utc) - timedelta(hours=age_hours)).isoformat()
+        self.stale, self.staleReason, self.refreshAfter = fc._compute_freshness(self)
+        self.farmers = [{}] if lookup_status == "found" else []
 
     def model_dump(self):
         return {"lookupStatus": self.lookupStatus, "fetchedAt": self.fetchedAt}
@@ -246,3 +248,85 @@ def test_restamp_kept_record_preserves_ttl():
     assert existing.fetchedAt != orig_fetched           # restamped
     fake_cache.set.assert_awaited()
     assert fake_cache.set.call_args.kwargs.get("ttl") == 100000  # hard TTL preserved, not reset
+
+
+def test_get_or_fetch_fresh_hit_does_not_enqueue():
+    fresh = _Env("found", 1)
+    enqueue = AsyncMock()
+    with patch.object(fc, "get_cached_farmer_data", new=AsyncMock(return_value=fresh)), \
+         patch.object(fc, "enqueue_farmer_refresh", new=enqueue), \
+         patch.object(fc, "refresh_farmer_data", new=AsyncMock()) as refresh:
+        result = asyncio.run(fc.get_or_fetch_farmer_data("9999999999"))
+    assert result is fresh
+    enqueue.assert_not_called()
+    refresh.assert_not_called()
+
+
+def test_get_or_fetch_soft_stale_enqueues_and_returns_cached():
+    stale = _Env("found", 13)
+    enqueue = AsyncMock()
+    with patch.object(fc, "get_cached_farmer_data", new=AsyncMock(return_value=stale)), \
+         patch.object(fc, "enqueue_farmer_refresh", new=enqueue), \
+         patch.object(fc, "refresh_farmer_data_bounded", new=AsyncMock()) as bounded:
+        result = asyncio.run(fc.get_or_fetch_farmer_data("9999999999"))
+    assert result is stale
+    enqueue.assert_awaited_once_with("9999999999")
+    bounded.assert_not_called()
+
+
+def test_get_or_fetch_max_serve_stale_blocks_then_returns_fresh():
+    ancient = _Env("found", 1000)
+    fresh = _Env("found", 0)
+    enqueue = AsyncMock()
+    bounded = AsyncMock(return_value=fresh)
+    with patch.object(fc, "get_cached_farmer_data", new=AsyncMock(return_value=ancient)), \
+         patch.object(fc, "enqueue_farmer_refresh", new=enqueue), \
+         patch.object(fc, "refresh_farmer_data_bounded", new=bounded):
+        result = asyncio.run(fc.get_or_fetch_farmer_data("9999999999"))
+    assert result is fresh
+    bounded.assert_awaited_once_with("9999999999")
+    enqueue.assert_not_called()
+
+
+def test_get_or_fetch_max_serve_stale_fallback_returns_stale_and_enqueues():
+    ancient = _Env("found", 1000)
+    enqueue = AsyncMock()
+    with patch.object(fc, "get_cached_farmer_data", new=AsyncMock(return_value=ancient)), \
+         patch.object(fc, "enqueue_farmer_refresh", new=enqueue), \
+         patch.object(fc, "refresh_farmer_data_bounded", new=AsyncMock(return_value=None)):
+        result = asyncio.run(fc.get_or_fetch_farmer_data("9999999999"))
+    assert result is ancient
+    enqueue.assert_awaited_once_with("9999999999")
+
+
+def test_get_or_fetch_cache_miss_calls_refresh():
+    sentinel = _Env("found", 0)
+    with patch.object(fc, "get_cached_farmer_data", new=AsyncMock(return_value=None)), \
+         patch.object(fc, "refresh_farmer_data", new=AsyncMock(return_value=sentinel)) as refresh:
+        result = asyncio.run(fc.get_or_fetch_farmer_data("9999999999"))
+    assert result is sentinel
+    refresh.assert_awaited_once_with("9999999999")
+
+
+def test_cached_only_soft_stale_enqueues_without_block_fetch():
+    stale = _Env("found", 13)
+    enqueue = AsyncMock()
+    with patch.object(fc, "get_cached_farmer_data", new=AsyncMock(return_value=stale)), \
+         patch.object(fc, "enqueue_farmer_refresh", new=enqueue), \
+         patch.object(fc, "refresh_farmer_data_bounded", new=AsyncMock()) as bounded:
+        result = asyncio.run(fc.get_farmer_data_cached_only("9999999999"))
+    assert result is stale
+    enqueue.assert_awaited_once_with("9999999999")
+    bounded.assert_not_called()
+
+
+def test_cached_only_max_serve_stale_still_does_not_block():
+    ancient = _Env("found", 1000)
+    enqueue = AsyncMock()
+    with patch.object(fc, "get_cached_farmer_data", new=AsyncMock(return_value=ancient)), \
+         patch.object(fc, "enqueue_farmer_refresh", new=enqueue), \
+         patch.object(fc, "refresh_farmer_data_bounded", new=AsyncMock()) as bounded:
+        result = asyncio.run(fc.get_farmer_data_cached_only("9999999999"))
+    assert result is ancient
+    enqueue.assert_awaited_once_with("9999999999")
+    bounded.assert_not_called()

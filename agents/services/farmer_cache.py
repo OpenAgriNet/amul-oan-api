@@ -59,6 +59,10 @@ def _cache_key(phone: str) -> str:
     return hashlib.sha256(phone.encode()).hexdigest()
 
 
+def _phone_log_hash(phone: str) -> str:
+    return _cache_key(phone)[:8]
+
+
 def _refresh_lock_key(phone: str) -> str:
     return build_cache_key(_cache_key(phone), namespace=FARMER_REFRESH_LOCK_NAMESPACE)
 
@@ -238,27 +242,6 @@ async def refresh_farmer_data(phone: str) -> Optional[FarmerDataEnvelope]:
                 pass
 
 
-async def get_farmer_data_cached_only(phone: str) -> Optional[FarmerDataEnvelope]:
-    """Read farmer context from Redis only; never block on upstream APIs."""
-    return await get_cached_farmer_data(phone)
-
-
-def should_refresh_farmer_data(envelope: Optional[FarmerDataEnvelope]) -> bool:
-    if envelope is None:
-        return True
-    return envelope.stale
-
-
-async def get_or_fetch_farmer_data(phone: str) -> Optional[FarmerDataEnvelope]:
-    """Cache-first retrieval used by the /user endpoint. Returns cached data if
-    present, else does a full refresh (raw fetch + AI-technician enrichment)."""
-    cached = await get_cached_farmer_data(phone)
-    if cached:
-        return cached
-
-    return await refresh_farmer_data(phone)
-
-
 async def enqueue_farmer_refresh(phone: str) -> None:
     """Queue a phone for background refresh (stale-while-revalidate).
 
@@ -272,6 +255,90 @@ async def enqueue_farmer_refresh(phone: str) -> None:
         await redis_client.sadd(FARMER_REFRESH_QUEUE_KEY, phone)
     except Exception as e:
         logger.warning("Failed to enqueue farmer refresh: %s", e)
+
+
+async def _revalidate_stale_read(
+    phone: str,
+    envelope: FarmerDataEnvelope,
+    *,
+    allow_block_fetch: bool,
+) -> FarmerDataEnvelope:
+    """SWR read policy for a cached envelope: return immediately; refresh off-path
+    when soft-stale. When ``allow_block_fetch`` is True and the record exceeds
+    max-serve-stale, block briefly on a bounded upstream fetch before falling
+    back to the stale envelope."""
+    phone_hash = _phone_log_hash(phone)
+
+    if not envelope.stale:
+        logger.info(
+            "Farmer cache read: cache_hit_fresh phone_hash=%s lookup_status=%s",
+            phone_hash,
+            envelope.lookupStatus,
+        )
+        return envelope
+
+    if allow_block_fetch and exceeds_max_serve_stale(envelope):
+        logger.info(
+            "Farmer cache read: cold_fetch phone_hash=%s lookup_status=%s reason=max_serve_stale",
+            phone_hash,
+            envelope.lookupStatus,
+        )
+        refreshed = await refresh_farmer_data_bounded(phone)
+        if refreshed is not None:
+            logger.info(
+                "Farmer cache read: cold_fetch_success phone_hash=%s lookup_status=%s",
+                phone_hash,
+                refreshed.lookupStatus,
+            )
+            return refreshed
+        logger.warning(
+            "Farmer cache read: cold_fetch_fallback_stale phone_hash=%s lookup_status=%s",
+            phone_hash,
+            envelope.lookupStatus,
+        )
+        await enqueue_farmer_refresh(phone)
+        return envelope
+
+    await enqueue_farmer_refresh(phone)
+    logger.info(
+        "Farmer cache read: cache_hit_stale_enqueued phone_hash=%s lookup_status=%s stale_reason=%s",
+        phone_hash,
+        envelope.lookupStatus,
+        envelope.staleReason,
+    )
+    return envelope
+
+
+async def get_farmer_data_cached_only(phone: str) -> Optional[FarmerDataEnvelope]:
+    """Read farmer context from Redis only; never block on upstream APIs."""
+    cached = await get_cached_farmer_data(phone)
+    if cached is None:
+        return None
+    return await _revalidate_stale_read(phone, cached, allow_block_fetch=False)
+
+
+def should_refresh_farmer_data(envelope: Optional[FarmerDataEnvelope]) -> bool:
+    if envelope is None:
+        return True
+    return envelope.stale
+
+
+async def get_or_fetch_farmer_data(phone: str) -> Optional[FarmerDataEnvelope]:
+    """Cache-first retrieval used by the /user endpoint and loan tool.
+
+    Fresh cache hits return immediately. Soft-stale hits are served immediately
+    and enqueued for background refresh. Records older than max-serve-stale
+    trigger a bounded blocking fetch; cold misses do a full refresh."""
+    cached = await get_cached_farmer_data(phone)
+    if cached:
+        return await _revalidate_stale_read(phone, cached, allow_block_fetch=True)
+
+    logger.info(
+        "Farmer cache read: cold_fetch phone_hash=%s reason=cache_miss",
+        _phone_log_hash(phone),
+    )
+    with fetch_reason("cold_fetch"):
+        return await refresh_farmer_data(phone)
 
 
 async def refresh_farmer_data_bounded(

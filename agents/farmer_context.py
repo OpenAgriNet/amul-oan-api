@@ -35,6 +35,7 @@ from app.models.cvcc import (
     CvccVaccinationModel,
 )
 from app.models.farmer import FarmerModel
+from app.models.farmer_transport import FarmerRecord
 from app.models.union import (
     UNION_BANNED_MESSAGE,
     UnionName,
@@ -46,6 +47,7 @@ from app.services.scheme_ingestion import (
     SchemeDependencyError,
     get_cached_scheme_records_for_union,
 )
+from app.config import settings
 from helpers.utils import get_logger, is_from_union
 
 
@@ -286,6 +288,242 @@ async def _append_ai_technicians_markdown(lines: list[str], farmer: FarmerModel)
         "- Use these details when the user wants to book an AI call. Show only name and mobile number to the user, but use the mapped `user_id` when calling `create_ai_call`."
     )
     lines.extend(technician_lines)
+
+
+def _technician_group_for_farmer(farmer: FarmerModel, ai_groups: list[dict]) -> dict | None:
+    for group in ai_groups:
+        group_code = group.get("farmerCode")
+        if farmer.farmer_code and group_code and str(farmer.farmer_code) == str(group_code):
+            return group
+        if (
+            farmer.society_code
+            and farmer.union_code
+            and str(farmer.society_code) == str(group.get("societyCode"))
+            and str(farmer.union_code) == str(group.get("unionCode"))
+        ):
+            return group
+    return None
+
+
+def _format_cached_technician_lines(technicians: list[dict]) -> list[str]:
+    unique_technicians: dict[str, str] = {}
+    for technician in technicians:
+        user_id = technician.get("userId")
+        full_name = technician.get("fullName")
+        mobile_number = technician.get("mobileNumber")
+        key = user_id or f"{full_name}|{mobile_number}"
+        if key in unique_technicians:
+            continue
+        unique_technicians[key] = (
+            f"- **Name:** {full_name} | "
+            f"**Mobile number:** {mobile_number} | "
+            f"**user_id:** {user_id}"
+        )
+    return list(unique_technicians.values())
+
+
+async def _append_ai_technicians_markdown_with_cache(
+    lines: list[str],
+    farmer: FarmerModel,
+    ai_groups: list[dict] | None,
+) -> None:
+    lines.append("")
+    if is_ai_call_banned_union(farmer.union_name):
+        logger.info(
+            "Skipping AI technician lookup; union is banned from AI-call booking union=%s",
+            farmer.union_name,
+        )
+        lines.append("### AI call booking")
+        lines.append("- AI call booking is not allowed for this union.")
+        lines.append(f"- Tell the farmer: `{UNION_BANNED_MESSAGE}`")
+        lines.append("- Do not ask which technician they want. Do not call `create_ai_call`.")
+        return
+
+    lines.append("### Available AI technicians")
+
+    if ai_groups:
+        group = _technician_group_for_farmer(farmer, ai_groups)
+        if group is not None:
+            technician_lines = _format_cached_technician_lines(group.get("technicians") or [])
+            if not technician_lines:
+                lines.append("- No AI technicians were found for this society.")
+                return
+            lines.append(
+                "- Use these details when the user wants to book an AI call. Show only name and mobile number to the user, but use the mapped `user_id` when calling `create_ai_call`."
+            )
+            lines.extend(technician_lines)
+            return
+
+    technician_lines, error_message = await _get_ai_technicians_for_farmer(farmer)
+    if error_message:
+        lines.append(f"- {error_message}")
+        return
+
+    if technician_lines == []:
+        lines.append("- No AI technicians were found for this society.")
+        return
+
+    if not technician_lines:
+        lines.append("- AI technician details are unavailable.")
+        return
+
+    lines.append(
+        "- Use these details when the user wants to book an AI call. Show only name and mobile number to the user, but use the mapped `user_id` when calling `create_ai_call`."
+    )
+    lines.extend(technician_lines)
+
+
+def _farmer_records_to_models(records: list[FarmerRecord]) -> list[FarmerModel]:
+    farmers: list[FarmerModel] = []
+    for record in records:
+        try:
+            farmers.append(
+                FarmerModel.model_validate(record.model_dump(), extra="ignore", by_alias=True)
+            )
+        except Exception as exc:
+            logger.warning("Skipping invalid farmer record during Layer 2 context build: %s", exc)
+    return farmers
+
+
+def _not_found_context(mobile: str) -> tuple[str, list[str], dict[str, str]]:
+    return (
+        "# Farmer Context\n\n"
+        f"No farmer information found for mobile number `{mobile}`.",
+        [],
+        {},
+    )
+
+
+async def _build_farmer_context_bundle_from_farmers(
+    mobile: str,
+    farmers: list[FarmerModel],
+    *,
+    ai_groups: list[dict] | None = None,
+) -> tuple[str, list[str], dict[str, str]]:
+    farmer_unions = _collect_farmer_unions(farmers)
+    farmer_location = _collect_farmer_location(farmers)
+
+    lines = [
+        "# Farmer Context",
+        "",
+        "This context is built from farmer records fetched by mobile number and animal records fetched by each farmer tag number.",
+        "",
+        f"- **Requested mobile number:** `{mobile}`",
+        f"- **Matched farmer records:** {len(farmers)}",
+    ]
+    await _append_union_scheme_summary_markdown(lines, farmer_unions)
+
+    for index, farmer in enumerate(farmers, start=1):
+        _append_farmer_markdown(lines, farmer, index)
+        if ai_groups is not None:
+            await _append_ai_technicians_markdown_with_cache(lines, farmer, ai_groups)
+        else:
+            await _append_ai_technicians_markdown(lines, farmer)
+
+        tags = farmer.animal_tags or []
+        include_banas_visit = is_from_union([farmer], UnionName.BANAS)
+        include_cvcc_health = is_from_union([farmer], UnionName.KAIRA)
+        lines.append("")
+        lines.append("### Animal tags")
+        if not tags:
+            lines.append("- No animal tags found for this farmer.")
+            continue
+
+        lines.append(f"- **Animal tags:** {', '.join(tags)}")
+        animal_contexts = await asyncio.gather(
+            *(
+                _get_animal_context_bundle(
+                    tag,
+                    include_banas_visit,
+                    include_cvcc_health,
+                    farmer.union_name,
+                )
+                for tag in tags
+            )
+        )
+        for tag, animal, banas_visits, cvcc_health in animal_contexts:
+            _append_animal_markdown(lines, tag, animal, banas_visits, cvcc_health)
+
+    return "\n".join(lines), farmer_unions, farmer_location
+
+
+async def _get_farmer_context_bundle_legacy(
+    mobile_number: str,
+) -> tuple[str, list[str], dict[str, str]]:
+    farmers = await get_farmer_data_by_mobile(mobile_number)
+    mobile = normalize_phone(mobile_number) or mobile_number
+
+    if farmers is None:
+        return _not_found_context(mobile)
+
+    return await _build_farmer_context_bundle_from_farmers(mobile, farmers)
+
+
+async def _get_farmer_context_bundle_layer2(
+    mobile_number: str,
+) -> tuple[str, list[str], dict[str, str]] | None:
+    from agents.services.farmer_cache import get_or_fetch_farmer_data
+
+    mobile = normalize_phone(mobile_number) or mobile_number
+    envelope = await get_or_fetch_farmer_data(mobile_number)
+
+    if envelope is None:
+        return None
+
+    if envelope.lookupStatus == "not_found" or not envelope.farmers:
+        return _not_found_context(mobile)
+
+    farmers = _farmer_records_to_models(envelope.farmers)
+    if not farmers:
+        return None
+
+    return await _build_farmer_context_bundle_from_farmers(
+        mobile,
+        farmers,
+        ai_groups=envelope.aiTechnicians or [],
+    )
+
+
+async def get_farmer_context_bundle_by_mobile(
+    mobile_number: str,
+) -> tuple[str, list[str], dict[str, str]]:
+    """Return (prompt markdown, union names, structured location).
+
+    The third element is {district, village, state} (possibly empty) and exists
+    so tools can read the farmer's location. It is deliberately NOT parsed back
+    out of the markdown: the markdown is a prompt, not an API.
+    """
+    if not settings.farmer_layer2_chat_context_enabled:
+        return await _get_farmer_context_bundle_legacy(mobile_number)
+
+    try:
+        bundle = await _get_farmer_context_bundle_layer2(mobile_number)
+    except Exception as exc:
+        logger.warning(
+            "Farmer context Layer 2 build failed for mobile=%s: %s",
+            mobile_number,
+            exc,
+        )
+        bundle = None
+
+    if bundle is not None:
+        return bundle
+
+    if settings.farmer_layer2_fallback_to_legacy_enabled:
+        logger.info(
+            "Farmer cache read: fallback_legacy mobile=%s reason=layer2_unusable",
+            normalize_phone(mobile_number) or mobile_number,
+        )
+        return await _get_farmer_context_bundle_legacy(mobile_number)
+
+    mobile = normalize_phone(mobile_number) or mobile_number
+    return _not_found_context(mobile)
+
+
+async def get_farmer_full_data_by_mobile(mobile_number: str) -> str:
+    farmer_context, _, _ = await get_farmer_context_bundle_by_mobile(mobile_number)
+    return farmer_context
+
 
 def _format_medicines(medicines: list[BanasMedicineModel] | None) -> str | None:
     if not medicines:
