@@ -230,21 +230,26 @@ async def _get_ai_technicians_for_farmer(
             logger.warning("AI technician Beckn lookup failed: %s", exc)
             technicians = None
     else:
-        # Compatibility path for environments that have not enabled callback
-        # transactions yet. Verification paths can bypass cached empties and
-        # refresh from upstream.
-        lookup = (
-            get_ai_technicians_by_society_refresh
-            if force_refresh
-            else get_ai_technicians_by_society_cached
+        query = GetAITechniciansBySocietyQueryParams(
+            unionCode=farmer.union_code,
+            societyCode=farmer.society_code,
         )
-        technicians = await lookup(
-            GetAITechniciansBySocietyQueryParams(
-                unionCode=farmer.union_code,
-                societyCode=farmer.society_code,
-            ),
-            os.getenv("PASHUGPT_TOKEN"),
-        )
+        token = os.getenv("PASHUGPT_TOKEN")
+
+        # force_refresh: always hit upstream. Otherwise use cache-first, but do
+        # not trust a cached empty list — verify with a refresh so legacy and
+        # Layer 2 share the same empty/untrusted semantics.
+        if force_refresh:
+            technicians = await get_ai_technicians_by_society_refresh(query, token)
+        else:
+            technicians = await get_ai_technicians_by_society_cached(query, token)
+            if technicians is not None and not technicians:
+                logger.info(
+                    "Cached AI technician list is empty; verifying live lookup union=%s society=%s",
+                    farmer.union_code,
+                    farmer.society_code,
+                )
+                technicians = await get_ai_technicians_by_society_refresh(query, token)
     if technicians is None:
         return None, "AI technician details could not be fetched right now."
 

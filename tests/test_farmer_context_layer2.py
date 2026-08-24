@@ -306,6 +306,73 @@ def test_live_verify_bypasses_cached_technician_helper(monkeypatch):
     refresh_lookup.assert_awaited_once()
 
 
+def test_legacy_empty_cache_triggers_refresh_verification(monkeypatch):
+    """Legacy/default path must not trust a cached empty technician list."""
+    import agents.farmer_context as fc
+    from agents.tools.farmer_animal_backends import AITechnicianBySocietyRecord
+
+    farmer = FarmerModel(
+        farmerName="Target Farmer",
+        unionName="kaira",
+        unionCode="1",
+        societyCode="S1",
+    )
+    cached_lookup = AsyncMock(return_value=[])
+    refresh_lookup = AsyncMock(
+        return_value=[
+            AITechnicianBySocietyRecord(
+                userId="ait-recovered",
+                fullName="Recovered Tech",
+                mobileNumber="9000000003",
+            )
+        ]
+    )
+    monkeypatch.setattr(fc, "get_ai_technicians_by_society_cached", cached_lookup)
+    monkeypatch.setattr(fc, "get_ai_technicians_by_society_refresh", refresh_lookup)
+
+    lines, error = asyncio.run(fc._get_ai_technicians_for_farmer(farmer))
+
+    assert error is None
+    assert lines is not None
+    assert any("ait-recovered" in line for line in lines)
+    cached_lookup.assert_awaited_once()
+    refresh_lookup.assert_awaited_once()
+
+
+def test_legacy_markdown_does_not_hard_none_found_on_stale_empty_cache(monkeypatch):
+    import agents.farmer_context as fc
+    from agents.tools.farmer_animal_backends import AITechnicianBySocietyRecord
+
+    farmer = FarmerModel(
+        farmerName="Target Farmer",
+        unionName="kaira",
+        unionCode="1",
+        societyCode="S1",
+    )
+    monkeypatch.setattr(fc, "get_ai_technicians_by_society_cached", AsyncMock(return_value=[]))
+    monkeypatch.setattr(
+        fc,
+        "get_ai_technicians_by_society_refresh",
+        AsyncMock(
+            return_value=[
+                AITechnicianBySocietyRecord(
+                    userId="ait-recovered",
+                    fullName="Recovered Tech",
+                    mobileNumber="9000000003",
+                )
+            ]
+        ),
+    )
+
+    lines: list[str] = []
+    asyncio.run(fc._append_ai_technicians_markdown(lines, farmer))
+    markdown = "\n".join(lines)
+
+    assert "Recovered Tech" in markdown
+    assert "ait-recovered" in markdown
+    assert "No AI technicians were found for this society." not in markdown
+
+
 def test_layer2_records_preserve_legacy_merge_behavior(monkeypatch):
     import agents.farmer_context as fc
 
