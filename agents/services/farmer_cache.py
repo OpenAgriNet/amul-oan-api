@@ -33,6 +33,7 @@ from agents.tools.farmer_animal_backends import (
     GetAITechniciansBySocietyQueryParams,
     get_ai_technicians_by_society_cached,
     fetch_reason,
+    normalize_phone,
 )
 from helpers.utils import get_logger
 
@@ -52,6 +53,14 @@ FARMER_REFRESH_LOCK_NAMESPACE = "farmer-refresh"
 FARMER_REFRESH_QUEUE_NAMESPACE = "farmer-refresh-queue"
 # Single Redis set holding raw phone numbers awaiting a background refresh.
 FARMER_REFRESH_QUEUE_KEY = build_cache_key("pending", namespace=FARMER_REFRESH_QUEUE_NAMESPACE)
+
+
+def _normalize_cache_phone(phone: str) -> str:
+    """Canonical phone for cache keys and queue membership."""
+    if not phone:
+        return phone
+    normalized = normalize_phone(phone)
+    return normalized or phone
 
 
 def _cache_key(phone: str) -> str:
@@ -182,6 +191,7 @@ async def refresh_farmer_data(phone: str) -> Optional[FarmerDataEnvelope]:
     Returns the refreshed envelope, or the in-flight refresh's result when the
     lock is busy and clears in time, or None on actual failure / lock-still-busy.
     """
+    phone = _normalize_cache_phone(phone)
     lock_key = _refresh_lock_key(phone)
     acquired = False
     try:
@@ -249,6 +259,7 @@ async def enqueue_farmer_refresh(phone: str) -> None:
     off the request path. The set dedupes naturally, and refresh_farmer_data
     self-dedupes via its NX lock, so enqueuing the same phone repeatedly is safe.
     """
+    phone = _normalize_cache_phone(phone)
     if not phone:
         return
     try:
@@ -311,6 +322,7 @@ async def _revalidate_stale_read(
 
 async def get_farmer_data_cached_only(phone: str) -> Optional[FarmerDataEnvelope]:
     """Read farmer context from Redis only; never block on upstream APIs."""
+    phone = _normalize_cache_phone(phone)
     cached = await get_cached_farmer_data(phone)
     if cached is None:
         return None
@@ -329,6 +341,7 @@ async def get_or_fetch_farmer_data(phone: str) -> Optional[FarmerDataEnvelope]:
     Fresh cache hits return immediately. Soft-stale hits are served immediately
     and enqueued for background refresh. Records older than max-serve-stale
     trigger a bounded blocking fetch; cold misses do a full refresh."""
+    phone = _normalize_cache_phone(phone)
     cached = await get_cached_farmer_data(phone)
     if cached:
         return await _revalidate_stale_read(phone, cached, allow_block_fetch=True)

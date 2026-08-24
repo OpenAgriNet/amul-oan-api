@@ -181,6 +181,28 @@ def test_layer2_uses_cached_technicians_without_live_api(monkeypatch):
     assert api_calls["n"] == 0
 
 
+def test_layer2_passes_normalized_phone_to_cache_fetch(monkeypatch):
+    import agents.farmer_context as fc
+
+    envelope = _envelope_found()
+    fetch = AsyncMock(return_value=envelope)
+    monkeypatch.setattr("agents.services.farmer_cache.get_or_fetch_farmer_data", fetch)
+    monkeypatch.setattr(
+        fc,
+        "_append_union_scheme_summary_markdown",
+        AsyncMock(return_value=None),
+    )
+    monkeypatch.setattr(
+        fc,
+        "_get_animal_context_bundle",
+        AsyncMock(return_value=("T1", None, None, None)),
+    )
+
+    asyncio.run(fc._get_farmer_context_bundle_layer2("+91 9876543210"))
+
+    fetch.assert_awaited_once_with("9876543210")
+
+
 def test_technician_group_prefers_exact_farmer_code_over_earlier_society_match():
     """Regression: same society/union groups must not steal an exact farmerCode match.
 

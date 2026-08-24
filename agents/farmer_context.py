@@ -506,7 +506,7 @@ async def _get_farmer_context_bundle_layer2(
     from agents.services.farmer_cache import get_or_fetch_farmer_data
 
     mobile = normalize_phone(mobile_number) or mobile_number
-    envelope = await get_or_fetch_farmer_data(mobile_number)
+    envelope = await get_or_fetch_farmer_data(mobile)
 
     if envelope is None:
         return None

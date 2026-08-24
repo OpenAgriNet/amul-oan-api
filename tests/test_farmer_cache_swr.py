@@ -330,3 +330,15 @@ def test_cached_only_max_serve_stale_still_does_not_block():
     assert result is ancient
     enqueue.assert_awaited_once_with("9999999999")
     bounded.assert_not_called()
+
+
+def test_get_or_fetch_normalizes_equivalent_phone_formats():
+    fresh = _Env("found", 1)
+    cache_get = AsyncMock(return_value=fresh)
+    with patch.object(fc, "get_cached_farmer_data", new=cache_get):
+        asyncio.run(fc.get_or_fetch_farmer_data("+91 9876543210"))
+        asyncio.run(fc.get_or_fetch_farmer_data("9876543210"))
+    assert cache_get.await_count == 2
+    assert cache_get.await_args_list[0].args[0] == "9876543210"
+    assert cache_get.await_args_list[1].args[0] == "9876543210"
+    assert fc._normalize_cache_phone("+91 9876543210") == "9876543210"
