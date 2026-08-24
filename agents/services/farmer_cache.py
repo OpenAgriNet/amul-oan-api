@@ -449,6 +449,7 @@ async def _fetch_ai_technicians(records: list[FarmerRecord]) -> list[dict]:
     groups: list[dict] = []
     for data, union_code, society_code in eligible_rows:
         technicians = pair_to_technicians.get((union_code, society_code))
+        lookup_failed = technicians is None
         groups.append(
             {
                 "farmerName": data.get("farmerName"),
@@ -456,7 +457,13 @@ async def _fetch_ai_technicians(records: list[FarmerRecord]) -> list[dict]:
                 "societyName": data.get("societyName"),
                 "societyCode": society_code,
                 "unionCode": union_code,
-                "technicians": [technician.model_dump() for technician in (technicians or [])],
+                # Preserve fetch failure distinctly from a true empty list.
+                "technicians": (
+                    None
+                    if lookup_failed
+                    else [technician.model_dump() for technician in technicians]
+                ),
+                "techniciansLookupFailed": lookup_failed,
             }
         )
     return groups

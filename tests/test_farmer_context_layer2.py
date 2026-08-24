@@ -250,6 +250,38 @@ def test_technician_group_falls_back_to_society_union_when_no_farmer_code_match(
     assert selected["technicians"][0]["userId"] == "ait-fallback"
 
 
+def test_cached_technician_failure_does_not_emit_hard_none_found(monkeypatch):
+    import agents.farmer_context as fc
+
+    farmer = FarmerModel(
+        farmerName="Target Farmer",
+        unionName="kaira",
+        unionCode="1",
+        societyCode="S1",
+        farmerCode="F1",
+    )
+    ai_groups = [{
+        "farmerCode": "F1",
+        "societyCode": "S1",
+        "unionCode": "1",
+        "technicians": None,
+        "techniciansLookupFailed": True,
+    }]
+    lines = []
+
+    monkeypatch.setattr(
+        fc,
+        "_get_ai_technicians_for_farmer",
+        AsyncMock(return_value=(None, "AI technician details could not be fetched right now.")),
+    )
+
+    asyncio.run(fc._append_ai_technicians_markdown_with_cache(lines, farmer, ai_groups))
+
+    markdown = "\n".join(lines)
+    assert "AI technician details could not be fetched right now." in markdown
+    assert "No AI technicians were found for this society." not in markdown
+
+
 def test_layer2_integration_sarhad_skips_technicians(monkeypatch):
     import agents.farmer_context as fc
 

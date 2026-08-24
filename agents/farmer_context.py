@@ -348,15 +348,31 @@ async def _append_ai_technicians_markdown_with_cache(
     if ai_groups:
         group = _technician_group_for_farmer(farmer, ai_groups)
         if group is not None:
-            technician_lines = _format_cached_technician_lines(group.get("technicians") or [])
-            if not technician_lines:
-                lines.append("- No AI technicians were found for this society.")
-                return
-            lines.append(
-                "- Use these details when the user wants to book an AI call. Show only name and mobile number to the user, but use the mapped `user_id` when calling `create_ai_call`."
-            )
-            lines.extend(technician_lines)
-            return
+            cached_failed = bool(group.get("techniciansLookupFailed"))
+            cached_technicians = group.get("technicians")
+            if not cached_failed and cached_technicians:
+                technician_lines = _format_cached_technician_lines(cached_technicians)
+                if technician_lines:
+                    lines.append(
+                        "- Use these details when the user wants to book an AI call. Show only name and mobile number to the user, but use the mapped `user_id` when calling `create_ai_call`."
+                    )
+                    lines.extend(technician_lines)
+                    return
+
+            # If cached list is empty or previously failed, verify live before
+            # emitting a hard "none found" message.
+            if cached_failed or cached_technicians is None:
+                logger.info(
+                    "Cached AI technician lookup was unavailable; retrying live lookup union=%s society=%s",
+                    farmer.union_code,
+                    farmer.society_code,
+                )
+            else:
+                logger.info(
+                    "Cached AI technician list is empty; verifying live lookup union=%s society=%s",
+                    farmer.union_code,
+                    farmer.society_code,
+                )
 
     technician_lines, error_message = await _get_ai_technicians_for_farmer(farmer)
     if error_message:
