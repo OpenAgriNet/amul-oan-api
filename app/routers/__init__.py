@@ -8,3 +8,4 @@ from . import health
 from . import auth
 from . import user
 from . import telemetry
+from . import beckn

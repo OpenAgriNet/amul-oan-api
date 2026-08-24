@@ -209,7 +209,14 @@ async def create_ai_call(
     # (services:amul-vet-booking) instead of the direct PashuGPT call.
     if settings.enable_network:
         return await _book_via_network(
-            union_code, society_code, farmer_code, user_id, species, session_id, _ai_tool_input
+            union_code,
+            society_code,
+            farmer_code,
+            user_id,
+            species,
+            session_id,
+            _ai_tool_input,
+            tool_call_id=getattr(ctx, "tool_call_id", None),
         )
 
     return await _book_direct(
@@ -313,6 +320,7 @@ async def _book_via_network(
     species: AISpecies,
     session_id: str | None,
     _ai_tool_input: dict,
+    tool_call_id: str | None = None,
 ) -> str:
     """Booking via the Amul Beckn network (settings.enable_network on).
 
@@ -341,8 +349,18 @@ async def _book_via_network(
             return ALREADY_BOOKED_MESSAGE
 
         try:
+            callback_kwargs = (
+                {"session_id": session_id, "tool_call_id": tool_call_id}
+                if settings.beckn_callback_transactions_enabled
+                else {}
+            )
             result = await network_create_ai_call_result(
-                union_code, society_code, farmer_code, user_id, species.value
+                union_code,
+                society_code,
+                farmer_code,
+                user_id,
+                species.value,
+                **callback_kwargs,
             )
         except Exception as e:
             # An earlier version of this comment claimed "a transport failure

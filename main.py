@@ -19,7 +19,7 @@ load_dotenv()
 import app.observability  # noqa: F401, E402
 
 # Import all routers
-from app.routers import chat, transcribe, suggestions, tts, health, auth, user, telemetry
+from app.routers import chat, transcribe, suggestions, tts, health, auth, user, telemetry, beckn
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -106,6 +106,7 @@ app.include_router(suggestions.router, prefix=settings.api_prefix)
 app.include_router(tts.router, prefix=settings.api_prefix)
 app.include_router(user.router, prefix=settings.api_prefix)
 app.include_router(health.router, prefix=settings.api_prefix)
+app.include_router(beckn.router, prefix=settings.api_prefix)
 # Keep telemetry path compatible with existing frontend calls:
 # /observability-service/action/data/v3/telemetry
 app.include_router(telemetry.router)
