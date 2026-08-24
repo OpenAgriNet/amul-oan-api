@@ -1103,6 +1103,26 @@ async def get_ai_technicians_by_society_cached(
     return technicians
 
 
+async def get_ai_technicians_by_society_refresh(
+    query: GetAITechniciansBySocietyQueryParams,
+    token: str,
+) -> list[AITechnicianBySocietyRecord] | None:
+    """Bypass Redis read and refresh technician cache from upstream API.
+
+    This is used by verification paths that must not trust a previously cached
+    empty result. Successful API responses (including empty lists) replace cache.
+    """
+    union_code = str(query.union_code).strip()
+    society_code = str(query.society_code).strip()
+    if not union_code or not society_code:
+        return None
+
+    technicians = await get_ai_technicians_by_society_api(query, token)
+    if technicians is not None:
+        await _set_cached_ai_technicians(union_code, society_code, technicians)
+    return technicians
+
+
 async def get_ai_technicians_by_society_api(
     query: GetAITechniciansBySocietyQueryParams,
     token: str,

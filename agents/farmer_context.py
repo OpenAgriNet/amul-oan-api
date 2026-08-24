@@ -11,6 +11,8 @@ from agents.tools.farmer_animal_backends import (
     GetAITechniciansBySocietyQueryParams,
     fetch_banas_operated_visit,
     get_ai_technicians_by_society_cached,
+    get_ai_technicians_by_society_refresh,
+    merge_farmer_data,
     normalize_phone,
 )
 from agents.services.beckn_amul import (
@@ -209,6 +211,8 @@ def _append_farmer_markdown(lines: list[str], farmer: FarmerModel, index: int) -
 
 async def _get_ai_technicians_for_farmer(
     farmer: FarmerModel,
+    *,
+    force_refresh: bool = False,
 ) -> tuple[list[str] | None, str | None]:
     if not farmer.union_code or not farmer.society_code:
         return None, "AI technician lookup skipped because union code or society code is missing."
@@ -226,10 +230,15 @@ async def _get_ai_technicians_for_farmer(
             logger.warning("AI technician Beckn lookup failed: %s", exc)
             technicians = None
     else:
-        # Compatibility path for environments that have not enabled the Amul
-        # callback transactions yet: keep society lookup cache-first.
-        # None = lookup failed, [] = successful lookup with no technicians.
-        technicians = await get_ai_technicians_by_society_cached(
+        # Compatibility path for environments that have not enabled callback
+        # transactions yet. Verification paths can bypass cached empties and
+        # refresh from upstream.
+        lookup = (
+            get_ai_technicians_by_society_refresh
+            if force_refresh
+            else get_ai_technicians_by_society_cached
+        )
+        technicians = await lookup(
             GetAITechniciansBySocietyQueryParams(
                 unionCode=farmer.union_code,
                 societyCode=farmer.society_code,
@@ -344,6 +353,7 @@ async def _append_ai_technicians_markdown_with_cache(
         return
 
     lines.append("### Available AI technicians")
+    force_refresh = False
 
     if ai_groups:
         group = _technician_group_for_farmer(farmer, ai_groups)
@@ -361,6 +371,7 @@ async def _append_ai_technicians_markdown_with_cache(
 
             # If cached list is empty or previously failed, verify live before
             # emitting a hard "none found" message.
+            force_refresh = True
             if cached_failed or cached_technicians is None:
                 logger.info(
                     "Cached AI technician lookup was unavailable; retrying live lookup union=%s society=%s",
@@ -374,7 +385,10 @@ async def _append_ai_technicians_markdown_with_cache(
                     farmer.society_code,
                 )
 
-    technician_lines, error_message = await _get_ai_technicians_for_farmer(farmer)
+    technician_lines, error_message = await _get_ai_technicians_for_farmer(
+        farmer,
+        force_refresh=force_refresh,
+    )
     if error_message:
         lines.append(f"- {error_message}")
         return
@@ -402,7 +416,9 @@ def _farmer_records_to_models(records: list[FarmerRecord]) -> list[FarmerModel]:
             )
         except Exception as exc:
             logger.warning("Skipping invalid farmer record during Layer 2 context build: %s", exc)
-    return farmers
+    # Preserve legacy chat semantics: consolidate duplicates with the same
+    # merge strategy used by get_farmer_data_by_mobile().
+    return merge_farmer_data(farmers)
 
 
 def _not_found_context(mobile: str) -> tuple[str, list[str], dict[str, str]]:

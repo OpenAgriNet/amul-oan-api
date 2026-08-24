@@ -269,10 +269,11 @@ def test_cached_technician_failure_does_not_emit_hard_none_found(monkeypatch):
     }]
     lines = []
 
+    lookup = AsyncMock(return_value=(None, "AI technician details could not be fetched right now."))
     monkeypatch.setattr(
         fc,
         "_get_ai_technicians_for_farmer",
-        AsyncMock(return_value=(None, "AI technician details could not be fetched right now.")),
+        lookup,
     )
 
     asyncio.run(fc._append_ai_technicians_markdown_with_cache(lines, farmer, ai_groups))
@@ -280,6 +281,47 @@ def test_cached_technician_failure_does_not_emit_hard_none_found(monkeypatch):
     markdown = "\n".join(lines)
     assert "AI technician details could not be fetched right now." in markdown
     assert "No AI technicians were found for this society." not in markdown
+    lookup.assert_awaited_once_with(farmer, force_refresh=True)
+
+
+def test_live_verify_bypasses_cached_technician_helper(monkeypatch):
+    import agents.farmer_context as fc
+
+    farmer = FarmerModel(
+        farmerName="Target Farmer",
+        unionName="kaira",
+        unionCode="1",
+        societyCode="S1",
+    )
+    cached_lookup = AsyncMock(side_effect=AssertionError("cached helper must be bypassed"))
+    refresh_lookup = AsyncMock(return_value=[])
+    monkeypatch.setattr(fc, "get_ai_technicians_by_society_cached", cached_lookup)
+    monkeypatch.setattr(fc, "get_ai_technicians_by_society_refresh", refresh_lookup)
+
+    lines, error = asyncio.run(fc._get_ai_technicians_for_farmer(farmer, force_refresh=True))
+
+    assert lines == []
+    assert error is None
+    cached_lookup.assert_not_called()
+    refresh_lookup.assert_awaited_once()
+
+
+def test_layer2_records_preserve_legacy_merge_behavior(monkeypatch):
+    import agents.farmer_context as fc
+
+    records = [
+        FarmerRecord(farmerName="Ramesh", societyName="Alpha Society", farmerCode="F1"),
+        FarmerRecord(farmerName="Ramesh", societyName="Alpha Society", farmerCode="F1"),
+    ]
+    sentinel = [FarmerModel(farmerName="Merged Farmer")]
+    from unittest.mock import Mock
+    merge = Mock(return_value=sentinel)
+    monkeypatch.setattr(fc, "merge_farmer_data", merge)
+    farmers = fc._farmer_records_to_models(records)
+
+    assert farmers is sentinel
+    assert merge.call_count == 1
+    assert len(merge.call_args.args[0]) == 2
 
 
 def test_layer2_integration_sarhad_skips_technicians(monkeypatch):
