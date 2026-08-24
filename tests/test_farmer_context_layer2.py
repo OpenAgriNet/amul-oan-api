@@ -168,7 +168,7 @@ def test_layer2_uses_cached_technicians_without_live_api(monkeypatch):
         AsyncMock(return_value=envelope),
     )
     monkeypatch.setattr(fc, "_append_union_scheme_summary_markdown", fake_schemes)
-    monkeypatch.setattr(fc, "get_ai_technicians_by_society_api", fake_api)
+    monkeypatch.setattr(fc, "get_ai_technicians_by_society_cached", fake_api)
     monkeypatch.setattr(fc, "_get_animal_context_bundle", fake_animal)
 
     markdown, unions, location = asyncio.run(
@@ -179,6 +179,75 @@ def test_layer2_uses_cached_technicians_without_live_api(monkeypatch):
     assert "Ramesh Patel" in markdown
     assert "ait-1" in markdown
     assert api_calls["n"] == 0
+
+
+def test_technician_group_prefers_exact_farmer_code_over_earlier_society_match():
+    """Regression: same society/union groups must not steal an exact farmerCode match.
+
+    If society/union fallback returns inside the same loop as farmerCode matching,
+    Group A (wrong farmer) is returned before Group B (exact code) is reached.
+    """
+    import agents.farmer_context as fc
+
+    farmer = FarmerModel(
+        farmerName="Target Farmer",
+        unionName="kaira",
+        unionCode="1",
+        societyCode="S1",
+        farmerCode="222",
+    )
+    group_a = {
+        "farmerCode": "111",
+        "societyCode": "S1",
+        "unionCode": "1",
+        "technicians": [{
+            "userId": "ait-wrong",
+            "fullName": "Wrong Tech",
+            "mobileNumber": "9000000001",
+        }],
+    }
+    group_b = {
+        "farmerCode": "222",
+        "societyCode": "S1",
+        "unionCode": "1",
+        "technicians": [{
+            "userId": "ait-correct",
+            "fullName": "Correct Tech",
+            "mobileNumber": "9000000002",
+        }],
+    }
+
+    selected = fc._technician_group_for_farmer(farmer, [group_a, group_b])
+    assert selected is group_b
+    assert selected["technicians"][0]["userId"] == "ait-correct"
+
+
+def test_technician_group_falls_back_to_society_union_when_no_farmer_code_match():
+    import agents.farmer_context as fc
+
+    farmer = FarmerModel(
+        farmerName="Target Farmer",
+        unionName="kaira",
+        unionCode="1",
+        societyCode="S1",
+        farmerCode="999",
+    )
+    other_society = {
+        "farmerCode": "111",
+        "societyCode": "S2",
+        "unionCode": "1",
+        "technicians": [{"userId": "ait-other"}],
+    }
+    same_society = {
+        "farmerCode": "222",
+        "societyCode": "S1",
+        "unionCode": "1",
+        "technicians": [{"userId": "ait-fallback"}],
+    }
+
+    selected = fc._technician_group_for_farmer(farmer, [other_society, same_society])
+    assert selected is same_society
+    assert selected["technicians"][0]["userId"] == "ait-fallback"
 
 
 def test_layer2_integration_sarhad_skips_technicians(monkeypatch):
@@ -220,7 +289,7 @@ def test_layer2_integration_sarhad_skips_technicians(monkeypatch):
         AsyncMock(return_value=envelope),
     )
     monkeypatch.setattr(fc, "_append_union_scheme_summary_markdown", fake_schemes)
-    monkeypatch.setattr(fc, "get_ai_technicians_by_society_api", fake_api)
+    monkeypatch.setattr(fc, "get_ai_technicians_by_society_cached", fake_api)
     monkeypatch.setattr(
         fc,
         "_get_animal_context_bundle",

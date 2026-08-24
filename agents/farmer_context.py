@@ -291,10 +291,14 @@ async def _append_ai_technicians_markdown(lines: list[str], farmer: FarmerModel)
 
 
 def _technician_group_for_farmer(farmer: FarmerModel, ai_groups: list[dict]) -> dict | None:
+    # Prefer exact farmer-code mapping if present; only fall back to
+    # society/union when no exact match exists across all groups.
     for group in ai_groups:
         group_code = group.get("farmerCode")
         if farmer.farmer_code and group_code and str(farmer.farmer_code) == str(group_code):
             return group
+
+    for group in ai_groups:
         if (
             farmer.society_code
             and farmer.union_code
