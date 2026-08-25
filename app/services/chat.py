@@ -665,7 +665,13 @@ async def stream_chat_messages(
                             # Mark pending and clear stale suggestions so callers wait for fresh output.
                             await set_cache(status_key, True, ttl=SUGGESTIONS_PENDING_TTL)
                             await cache.delete(suggestions_cache_key)
-                            background_tasks.add_task(create_suggestions, session_id, target_lang, pipeline_profile)
+                            background_tasks.add_task(
+                                create_suggestions,
+                                session_id,
+                                target_lang,
+                                pipeline_profile,
+                                farmer_unions,
+                            )
                             logger.info("Successfully added suggestions task")
                         except Exception as e:
                             logger.error(f"Error adding suggestions task: {str(e)}")

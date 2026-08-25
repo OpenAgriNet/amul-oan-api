@@ -1,0 +1,168 @@
+{
+  "version": 1,
+  "domains": {
+    "animal_health": {
+      "opens_on_tools": ["create_health_call"],
+      "questions": [
+        {
+          "id": "animal_health_doctor_arrival",
+          "en": "When will my doctor arrive?",
+          "gu": "મારા ડોક્ટર ક્યારે આવશે?",
+          "hi": "मेरा डॉक्टर कब आएगा?"
+        },
+        {
+          "id": "animal_health_doctor_charge",
+          "en": "How much does the doctor charge?",
+          "gu": "ડોક્ટરનું ચાર્જ કેટલું છે?",
+          "hi": "डॉक्टर का शुल्क कितना है?"
+        },
+        {
+          "id": "animal_health_other_species",
+          "en": "Can I also book a doctor visit for my cow?",
+          "gu": "શું હું મારી ગાય માટે પણ ડોક્ટર મુલાકાત બુક કરાવી શકું?",
+          "hi": "क्या मैं अपनी गाय के लिए भी डॉक्टर विज़िट बुक करवा सकता हूँ?"
+        },
+        {
+          "id": "animal_health_remark",
+          "en": "Should I add symptoms as a remark on the health call?",
+          "gu": "શું મારે આરોગ્ય કૉલમાં લક્ષણો રિમાર્ક તરીકે ઉમેરવા જોઈએ?",
+          "hi": "क्या मुझे हेल्थ कॉल में लक्षण रिमार्क के रूप में जोड़ने चाहिए?"
+        }
+      ]
+    },
+    "milk_quantity": {
+      "opens_on_tools": ["get_farmer_milk_collection_details"],
+      "questions": [
+        {
+          "id": "milk_increase_production",
+          "en": "How to increase milk production?",
+          "gu": "દૂધ ઉત્પાદન કેવી રીતે વધારવું?",
+          "hi": "दूध उत्पादन कैसे बढ़ाएँ?"
+        },
+        {
+          "id": "milk_fat_snf",
+          "en": "What were my milk quantity, FAT, and SNF yesterday?",
+          "gu": "ગઈકાલે મારું દૂધ જથ્થો, ફેટ અને એસ.એન.એફ. કેટલા હતા?",
+          "hi": "कल मेरा दूध की मात्रा, फैट और एस.एन.एफ. कितना था?"
+        },
+        {
+          "id": "milk_deductions",
+          "en": "Show my milk deductions for this period.",
+          "gu": "આ સમયગાળાના મારા દૂધ કપાત બતાવો.",
+          "hi": "इस अवधि के मेरे दूध कटौती दिखाएँ।"
+        },
+        {
+          "id": "milk_last_15_days",
+          "en": "Show my milk collection for the last 15 days.",
+          "gu": "છેલ્લા ૧૫ દિવસનું મારું દૂધ સંગ્રહ બતાવો.",
+          "hi": "पिछले 15 दिनों का मेरा दूध संग्रह दिखाएँ।"
+        }
+      ]
+    },
+    "ai_call": {
+      "opens_on_tools": ["create_ai_call"],
+      "questions": [
+        {
+          "id": "ai_call_technician_arrival",
+          "en": "When will the AI technician arrive?",
+          "gu": "કૃત્રિમ બીજદાનના ટેકનિશિયન ક્યારે આવશે?",
+          "hi": "एआई तकनीशियन कब आएंगे?"
+        },
+        {
+          "id": "ai_call_insemination_charge",
+          "en": "What will be the charge of insemination?",
+          "gu": "કૃત્રિમ બીજદાનનો ચાર્જ કેટલો થશે?",
+          "hi": "कृत्रिम गर्भाधान का शुल्क कितना होगा?"
+        },
+        {
+          "id": "ai_call_choose_timing",
+          "en": "Can I decide when I want the artificial insemination to be done after booking?",
+          "gu": "બુકિંગ પછી શું હું કૃત્રિમ બીજદાન ક્યારે કરાવવું તે નક્કી કરી શકું?",
+          "hi": "बुकिंग के बाद क्या मैं तय कर सकता हूँ कि कृत्रिम गर्भाधान कब करवाना है?"
+        },
+        {
+          "id": "ai_call_another",
+          "en": "Can I book another artificial insemination call in this session?",
+          "gu": "શું હું આ સેશનમાં બીજું કૃત્રિમ બીજદાન કૉલ બુક કરાવી શકું?",
+          "hi": "क्या मैं इस सेशन में एक और कृत्रिम गर्भाधान कॉल बुक करवा सकता हूँ?"
+        }
+      ]
+    },
+    "vistaar": {
+      "opens_on_tools": ["get_vistaar_weather", "get_vistaar_mandi_prices"],
+      "questions": [
+        {
+          "id": "vistaar_weather_forecast",
+          "tag": "weather",
+          "en": "What is the weather forecast for my district?",
+          "gu": "મારા જિલ્લાનું હવામાન આગાહી શું છે?",
+          "hi": "मेरे जिले का मौसम पूर्वानुमान क्या है?"
+        },
+        {
+          "id": "vistaar_weather_rain",
+          "tag": "weather",
+          "en": "Will it rain in my area in the next few days?",
+          "gu": "આગામી થોડા દિવસમાં મારા વિસ્તારમાં વરસાદ પડશે?",
+          "hi": "अगले कुछ दिनों में मेरे इलाके में बारिश होगी?"
+        },
+        {
+          "id": "vistaar_weather_temp",
+          "tag": "weather",
+          "en": "What will be the temperature and humidity this week?",
+          "gu": "આ અઠવાડિયે તાપમાન અને ભેજ કેટલા રહેશે?",
+          "hi": "इस हफ्ते तापमान और नमी कितनी रहेगी?"
+        },
+        {
+          "id": "vistaar_mandi_price",
+          "tag": "mandi",
+          "en": "What is the current mandi price for my crop?",
+          "gu": "મારા પાકનો હાલનો મંડી ભાવ કેટલો છે?",
+          "hi": "मेरी फसल का वर्तमान मंडी भाव कितना है?"
+        },
+        {
+          "id": "vistaar_mandi_nearby",
+          "tag": "mandi",
+          "en": "Show mandi prices near my district.",
+          "gu": "મારા જિલ્લા નજીકના મંડી ભાવ બતાવો.",
+          "hi": "मेरे जिले के पास के मंडी भाव दिखाएँ।"
+        },
+        {
+          "id": "vistaar_mandi_trend",
+          "tag": "mandi",
+          "en": "How have mandi prices changed recently?",
+          "gu": "તાજેતરમાં મંડી ભાવ કેવી રીતે બદલાયા છે?",
+          "hi": "हाल ही में मंडी भाव कैसे बदले हैं?"
+        }
+      ]
+    },
+    "loan_eligibility": {
+      "opens_on_tools": ["check_loan_eligibility"],
+      "questions": [
+        {
+          "id": "loan_which_bank",
+          "en": "Which bank is providing the loan?",
+          "gu": "લોન કઈ બેંક આપી રહી છે?",
+          "hi": "ऋण कौन सा बैंक दे रहा है?"
+        },
+        {
+          "id": "loan_amount_interest",
+          "en": "What is the micro loan amount and interest rate?",
+          "gu": "માઇક્રો લોનની રકમ અને વ્યાજ દર કેટલો છે?",
+          "hi": "माइक्रो लोन की राशि और ब्याज दर कितनी है?"
+        },
+        {
+          "id": "loan_documents",
+          "en": "What documents do I need to take to the bank for the loan?",
+          "gu": "લોન માટે બેંકમાં કયા દસ્તાવેજો લઈ જવા પડે?",
+          "hi": "लोन के लिए बैंक में कौन से दस्तावेज़ ले जाने हैं?"
+        },
+        {
+          "id": "loan_confirm",
+          "en": "Can you confirm my micro loan so I can get the approval code?",
+          "gu": "શું તમે મારી માઇક્રો લોન કન્ફર્મ કરીને મને મંજૂરી કોડ આપી શકો?",
+          "hi": "क्या आप मेरा माइक्रो लोन कन्फर्म करके मुझे अप्रूवल कोड दे सकते हैं?"
+        }
+      ]
+    }
+  }
+}
