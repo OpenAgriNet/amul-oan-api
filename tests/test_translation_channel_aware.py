@@ -63,3 +63,19 @@ def test_standalone_society_injected_into_translation_prompt():
         _FARMER_PROFILE_SOCIETY_LINE, "english", "gujarati", mini_glossary=glossary
     )
     assert "'Society' must be translated as 'સોસાયટી'" in prompt
+
+
+def test_milk_collection_injected_as_sampadan():
+    glossary = get_mini_glossary_for_text(
+        "Based on last 7 days of milk collection statistics.",
+        threshold=0.90,
+        max_terms=40,
+    )
+    assert "Milk Collection -> દુધ સંપાદન" in glossary
+    prompt = _format_translation_prompt(
+        "Based on last 7 days of milk collection statistics.",
+        "english",
+        "gujarati",
+        mini_glossary=glossary,
+    )
+    assert "'Milk Collection' must be translated as 'દુધ સંપાદન'" in prompt
