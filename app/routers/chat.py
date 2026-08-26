@@ -47,6 +47,7 @@ async def chat_endpoint(
     # this is the same bit-compatible sha256 bucket assignment as before.
     pipeline_profile = await _llm_split.resolve_profile(session_id)
 
+    artifacts: list[dict] = []
     message_stream = stream_chat_messages(
         query=request.query,
         session_id=session_id,
@@ -61,6 +62,8 @@ async def chat_endpoint(
         pipeline_profile=pipeline_profile,
         requested_persona=request.persona,
         history_session_id=history_session_id,
+        artifact_sink=artifacts,
+        emit_artifact_frames=request.stream is not False,
     )
 
     if request.stream is False:
@@ -69,6 +72,7 @@ async def chat_endpoint(
             content={
                 "session_id": session_id,
                 "response": full_response,
+                "artifacts": artifacts,
                 "stream": False,
             }
         )

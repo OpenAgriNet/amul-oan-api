@@ -1,5 +1,5 @@
 from contextlib import nullcontext
-from typing import AsyncGenerator
+from typing import Any, AsyncGenerator
 from functools import lru_cache
 import os
 import regex
@@ -39,6 +39,7 @@ from app.services.identity_profile import (
     is_identity_query,
 )
 from app.personas import ChatPersona, resolve_chat_persona
+from app.chat_artifacts import encode_chat_artifacts
 
 
 class SentenceSegmenter:
@@ -248,6 +249,8 @@ async def stream_chat_messages(
     pipeline_profile: str = "managed",
     requested_persona: ChatPersona | None = None,
     history_session_id: str | None = None,
+    artifact_sink: list[dict[str, Any]] | None = None,
+    emit_artifact_frames: bool = True,
 ) -> AsyncGenerator[str, None]:
     """Async generator for streaming chat messages."""
     persona = resolve_chat_persona(user_info, requested_persona)
@@ -598,6 +601,7 @@ async def stream_chat_messages(
                 farmer_state=farmer_location.get("state") or None,
                 use_translation_pipeline=use_translation_pipeline,
                 response_max_chars=profile.response_max_chars,
+                supports_rich_artifacts=(channel or "web").lower() == "web",
                 mobile=loan_mobile,
                 persona=persona,
             )
@@ -944,6 +948,15 @@ async def stream_chat_messages(
                                 logger.warning("Langfuse: served_tier score failed: %s", e)
                     except Exception as e:
                         logger.warning(f"Langfuse: failed to record trace output: {e}")
+
+            # Rich provider documents are deliberately emitted only after the
+            # model/translation/trace pipeline is finished. They are not model
+            # output and must never enter TTS, prompt history, or trace bodies.
+            chat_artifacts = deps.take_chat_artifacts()
+            if artifact_sink is not None:
+                artifact_sink.extend(chat_artifacts)
+            if emit_artifact_frames and chat_artifacts:
+                yield encode_chat_artifacts(chat_artifacts)
 
             # Post-processing happens AFTER streaming is complete
             messages = [

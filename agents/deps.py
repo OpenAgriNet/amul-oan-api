@@ -1,5 +1,5 @@
 import asyncio
-from typing import Optional, Literal
+from typing import Any, Optional, Literal
 from pydantic import BaseModel, Field, PrivateAttr
 
 
@@ -64,6 +64,7 @@ class FarmerContext(BaseModel):
     )
     use_translation_pipeline: bool = Field(default=False, description="When True, use English-only prompt; response is translated externally (chat).")
     response_max_chars: Optional[int] = Field(default=None, description="Optional channel-specific final response character guidance (chat).")
+    supports_rich_artifacts: bool = Field(default=False, description="Whether this channel can render private rich documents such as SHC HTML.")
     persona: Literal['farmer', 'doctor'] = Field(default='farmer', description="Resolved chat persona for this turn.")
 
     # Handle to the per-turn content-moderation task, which runs concurrently with
@@ -71,10 +72,31 @@ class FarmerContext(BaseModel):
     # await it via ensure_in_scope() so a rejected query can never produce a write,
     # even though the agent executes optimistically before the verdict is known.
     _moderation_task: Optional["asyncio.Task"] = PrivateAttr(default=None)
+    # Rich documents returned by trusted tools travel to the web client outside
+    # the model transcript.  Keeping them on the per-turn deps object prevents
+    # provider HTML from entering prompts, translation, TTS, or chat history.
+    _chat_artifacts: list[dict[str, Any]] = PrivateAttr(default_factory=list)
 
     def set_moderation_task(self, task: Optional["asyncio.Task"]) -> None:
         """Attach the concurrently-running moderation task for tool self-gating."""
         self._moderation_task = task
+
+    def add_chat_artifact(self, artifact: dict[str, Any]) -> None:
+        """Attach a validated rich document to this turn, deduplicated by id."""
+        artifact_id = str(artifact.get("id") or "")
+        if not artifact_id:
+            raise ValueError("chat artifact id is required")
+        self._chat_artifacts = [
+            existing for existing in self._chat_artifacts
+            if existing.get("id") != artifact_id
+        ]
+        self._chat_artifacts.append(dict(artifact))
+
+    def take_chat_artifacts(self) -> list[dict[str, Any]]:
+        """Return and clear artifacts so a retry cannot emit them twice."""
+        artifacts = self._chat_artifacts
+        self._chat_artifacts = []
+        return artifacts
 
     async def ensure_in_scope(self) -> bool:
         """Block until the concurrent moderation verdict is known.

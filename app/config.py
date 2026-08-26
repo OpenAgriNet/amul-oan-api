@@ -462,6 +462,55 @@ class Settings(BaseSettings):
     amul_booking_bpp_url: str = os.getenv("AMUL_BOOKING_BPP_URL", "http://amul-net-bpp-booking:6002")
     # Timeout (seconds) for network calls from the agent tools.
     amul_network_timeout_s: float = float(os.getenv("AMUL_NETWORK_TIMEOUT_S", "35"))
+    # Durable callback-mode transactions. This is a separate, default-off gate:
+    # ENABLE_NETWORK continues to preserve the deployed synchronous booking
+    # adapter until ONIX has directed confirm/on_confirm routes and the booking
+    # BPP has been upgraded to ACK + callback semantics.
+    beckn_callback_transactions_enabled: bool = _get_bool_env(
+        "BECKN_CALLBACK_TRANSACTIONS_ENABLED", default=False
+    )
+    # ONIX BAP caller base, e.g. http://amul-onix:3001/bap/caller. The client
+    # appends /confirm/ or /status/.
+    beckn_bap_caller_url: str = os.getenv("BECKN_BAP_CALLER_URL", "").rstrip("/")
+    beckn_bap_id: str = os.getenv("BECKN_BAP_ID", "bap.amul-net.internal")
+    # Public ONIX callback receiver base; ONIX validates/signature-routes the
+    # callback to this application's /api/beckn/on_* ingress.
+    beckn_bap_uri: str = os.getenv("BECKN_BAP_URI", "")
+    beckn_booking_bpp_id: str = os.getenv("BECKN_BOOKING_BPP_ID", "bpp-booking.amul-net.internal")
+    beckn_booking_bpp_uri: str = os.getenv("BECKN_BOOKING_BPP_URI", "")
+    beckn_booking_domain: str = os.getenv("BECKN_BOOKING_DOMAIN", "services:amul-vet-booking")
+    beckn_country_code: str = os.getenv("BECKN_COUNTRY_CODE", "IND")
+    beckn_city_code: str = os.getenv("BECKN_CITY_CODE", "std:079")
+    beckn_message_ttl: str = os.getenv("BECKN_MESSAGE_TTL", "PT30S")
+    # The HTTP/voice turn may stop waiting after this budget, while the durable
+    # Redis record remains alive for late on_confirm/on_status recovery.
+    beckn_callback_wait_seconds: float = Field(default=30.0, validation_alias="BECKN_CALLBACK_WAIT_SECONDS")
+    beckn_callback_poll_interval_seconds: float = Field(
+        default=0.1, validation_alias="BECKN_CALLBACK_POLL_INTERVAL_SECONDS"
+    )
+    # Only connection-establishment failures are retried, with the exact same
+    # transaction/message IDs and payload. Read/write/HTTP failures are
+    # ambiguous and are never blindly replayed.
+    beckn_forward_connect_attempts: int = Field(
+        default=2, validation_alias="BECKN_FORWARD_CONNECT_ATTEMPTS"
+    )
+    beckn_forward_retry_delay_seconds: float = Field(
+        default=0.2, validation_alias="BECKN_FORWARD_RETRY_DELAY_SECONDS"
+    )
+    beckn_operation_ttl_seconds: int = Field(
+        default=60 * 60 * 24, validation_alias="BECKN_OPERATION_TTL_SECONDS"
+    )
+    beckn_callback_max_body_bytes: int = Field(
+        default=2 * 1024 * 1024, validation_alias="BECKN_CALLBACK_MAX_BODY_BYTES"
+    )
+    # SHC on_init carries a private base64 HTML report. Bound both its decoded
+    # size and its durable Redis retention independently of ordinary operations.
+    shc_html_max_bytes: int = Field(default=1024 * 1024, validation_alias="SHC_HTML_MAX_BYTES")
+    shc_artifact_ttl_seconds: int = Field(default=10 * 60, validation_alias="SHC_ARTIFACT_TTL_SECONDS")
+    # Optional defense in depth for the internal app ingress. Signature
+    # verification remains ONIX's responsibility; when set, its reverse proxy
+    # must inject X-Beckn-Callback-Token.
+    beckn_callback_token: Optional[str] = os.getenv("BECKN_CALLBACK_TOKEN")
     # Bharat Vistaar network settings used by tool layer.
     vistaar_bap_url: str = os.getenv("VISTAAR_BAP_URL", "https://bap-client-playground-sandbox-vistaar.da.gov.in").rstrip("/")
     vistaar_default_lat: float = Field(default=22.55, validation_alias="VISTAAR_DEFAULT_LAT")
@@ -512,6 +561,11 @@ class Settings(BaseSettings):
         "vistaar_max_items": ("VISTAAR_MAX_ITEMS", 20, 1, None),
         "farmer_refresh_lock_ttl_seconds": ("FARMER_REFRESH_LOCK_TTL_SECONDS", 60 * 5, 1, None),
         "farmer_refresh_queue_batch_size": ("FARMER_REFRESH_QUEUE_BATCH_SIZE", 20, 1, None),
+        "beckn_operation_ttl_seconds": ("BECKN_OPERATION_TTL_SECONDS", 60 * 60 * 24, 60, None),
+        "beckn_callback_max_body_bytes": ("BECKN_CALLBACK_MAX_BODY_BYTES", 2 * 1024 * 1024, 1024, 5 * 1024 * 1024),
+        "shc_html_max_bytes": ("SHC_HTML_MAX_BYTES", 1024 * 1024, 1024, 2 * 1024 * 1024),
+        "shc_artifact_ttl_seconds": ("SHC_ARTIFACT_TTL_SECONDS", 10 * 60, 60, 60 * 60),
+        "beckn_forward_connect_attempts": ("BECKN_FORWARD_CONNECT_ATTEMPTS", 2, 1, 5),
     }
     _SAFE_FLOAT_FIELDS: ClassVar[dict[str, tuple[str, float, float | None, float | None]]] = {
         "marqo_hybrid_alpha": ("MARQO_HYBRID_ALPHA", 0.6, 0.0, 1.0),
@@ -522,6 +576,9 @@ class Settings(BaseSettings):
         "vistaar_default_lon": ("VISTAAR_DEFAULT_LON", 72.93, -180.0, 180.0),
         "farmer_backend_http_timeout_seconds": ("FARMER_BACKEND_HTTP_TIMEOUT_SECONDS", 30.0, 0.001, None),
         "farmer_cold_fetch_timeout_seconds": ("FARMER_COLD_FETCH_TIMEOUT_SECONDS", 4.0, 0.001, None),
+        "beckn_callback_wait_seconds": ("BECKN_CALLBACK_WAIT_SECONDS", 30.0, 0.1, 300.0),
+        "beckn_callback_poll_interval_seconds": ("BECKN_CALLBACK_POLL_INTERVAL_SECONDS", 0.1, 0.01, 5.0),
+        "beckn_forward_retry_delay_seconds": ("BECKN_FORWARD_RETRY_DELAY_SECONDS", 0.2, 0.0, 5.0),
     }
     _SAFE_BOOL_FIELDS: ClassVar[dict[str, tuple[str, bool]]] = {
         "marqo_use_e5_query_prefix": ("MARQO_USE_E5_QUERY_PREFIX", True),
@@ -552,6 +609,11 @@ class Settings(BaseSettings):
         "vistaar_max_items",
         "farmer_refresh_lock_ttl_seconds",
         "farmer_refresh_queue_batch_size",
+        "beckn_operation_ttl_seconds",
+        "beckn_callback_max_body_bytes",
+        "shc_html_max_bytes",
+        "shc_artifact_ttl_seconds",
+        "beckn_forward_connect_attempts",
         mode="before",
     )
     @classmethod
@@ -574,6 +636,9 @@ class Settings(BaseSettings):
         "vistaar_default_lon",
         "farmer_backend_http_timeout_seconds",
         "farmer_cold_fetch_timeout_seconds",
+        "beckn_callback_wait_seconds",
+        "beckn_callback_poll_interval_seconds",
+        "beckn_forward_retry_delay_seconds",
         mode="before",
     )
     @classmethod

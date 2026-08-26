@@ -266,6 +266,9 @@ async def network_create_ai_call_result(
     farmer_code: str,
     user_id: str,
     species: str,
+    *,
+    session_id: Optional[str] = None,
+    tool_call_id: Optional[str] = None,
 ) -> NetworkBookingResult:
     """AI-call booking via the network (services:amul-vet-booking) — POSTs a
     Beckn confirm to the booking BPP, which calls PashuGPT CreateAICall.
@@ -273,6 +276,22 @@ async def network_create_ai_call_result(
     Raises on transport/HTTP errors (raise_for_status), exactly as before; the
     caller decides how to surface them.
     """
+    if settings.beckn_callback_transactions_enabled:
+        return await _network_callback_booking_result(
+            service="ai-call",
+            union_code=union_code,
+            society_code=society_code,
+            farmer_code=farmer_code,
+            species=species,
+            session_id=session_id,
+            tool_call_id=tool_call_id,
+            technician_id=user_id,
+        )
+
+    # Legacy synchronous adapter. Kept behind the new callback feature gate so
+    # ENABLE_NETWORK alone remains a no-op deployment-wise until ONIX and the
+    # booking BPP have the directed confirm/on_confirm routes described in the
+    # integration contract.
     order = {
         "provider": {"id": "amul-ai-service"},
         "items": [{"id": f"ait:{user_id}"}],
@@ -339,6 +358,108 @@ async def network_create_ai_call_result(
         ok=True,
         ticket=ticket,
         message=f"Artificial insemination call booked successfully via the Beckn network. Ticket: {ticket}",
+    )
+
+
+async def network_create_health_call_result(
+    union_code: str,
+    society_code: str,
+    farmer_code: str,
+    species: str,
+    case_type: str,
+    remark: Optional[str],
+    *,
+    session_id: Optional[str] = None,
+    tool_call_id: Optional[str] = None,
+) -> NetworkBookingResult:
+    """Health-call booking through the durable confirm/on_confirm facade."""
+    if not settings.beckn_callback_transactions_enabled:
+        raise RuntimeError("Health-call Beckn callbacks are not enabled")
+    return await _network_callback_booking_result(
+        service="health-call",
+        union_code=union_code,
+        society_code=society_code,
+        farmer_code=farmer_code,
+        species=species,
+        session_id=session_id,
+        tool_call_id=tool_call_id,
+        case_type=case_type,
+        remark=remark,
+    )
+
+
+async def _network_callback_booking_result(
+    *,
+    service: str,
+    union_code: str,
+    society_code: str,
+    farmer_code: str,
+    species: str,
+    session_id: Optional[str],
+    tool_call_id: Optional[str],
+    technician_id: Optional[str] = None,
+    case_type: Optional[str] = None,
+    remark: Optional[str] = None,
+) -> NetworkBookingResult:
+    from app.services.beckn_operations import OperationState, get_beckn_operation_client
+
+    action_result = await get_beckn_operation_client().confirm_booking(
+        service=service,
+        union_code=union_code,
+        society_code=society_code,
+        farmer_code=farmer_code,
+        species=species,
+        session_id=session_id,
+        tool_call_id=tool_call_id,
+        technician_id=technician_id,
+        case_type=case_type,
+        remark=remark,
+    )
+    operation = action_result.operation
+    label = "Artificial insemination call" if service == "ai-call" else "Health call"
+
+    if operation.state is OperationState.NACKED:
+        error = (action_result.payload or {}).get("error") or {}
+        return NetworkBookingResult(
+            ok=False,
+            ticket=None,
+            message=f"{label} booking failed on the network: {error.get('message', 'request rejected')}",
+            authoritative_no_booking=True,
+        )
+    if operation.state is OperationState.BUSINESS_FAILED:
+        error = (action_result.payload or {}).get("error") or {}
+        return NetworkBookingResult(
+            ok=False,
+            ticket=None,
+            message=f"{label} booking could not be completed: {error.get('message', 'provider error')}",
+            # Conservative: an accepted confirm that later errors is not enough
+            # evidence to automatically submit another irreversible booking.
+            authoritative_no_booking=False,
+        )
+    if operation.state is OperationState.TIMED_OUT_PENDING:
+        return NetworkBookingResult(
+            ok=False,
+            ticket=None,
+            message=(
+                f"{label} booking is still pending confirmation. Please check with your "
+                "society before trying again."
+            ),
+            authoritative_no_booking=False,
+        )
+
+    order = ((action_result.payload or {}).get("message") or {}).get("order") or {}
+    ticket = order.get("id")
+    if operation.state is not OperationState.SUCCEEDED or not ticket:
+        return NetworkBookingResult(
+            ok=False,
+            ticket=None,
+            message=f"{label} booking callback did not contain a provider ticket.",
+            authoritative_no_booking=False,
+        )
+    return NetworkBookingResult(
+        ok=True,
+        ticket=str(ticket),
+        message=f"{label} booked successfully via the Beckn network. Ticket: {ticket}",
     )
 
 
