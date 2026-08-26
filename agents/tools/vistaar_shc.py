@@ -213,6 +213,14 @@ def _extract_agent_context(html: str, cycle: str) -> str:
     return context[:_AGENT_CONTEXT_MAX_CHARS]
 
 
+def _no_card_for_cycle(cycle: str) -> str:
+    return (
+        f"NO_CARD_FOR_CYCLE. Definitive result: No Soil Health Card is available for "
+        f"cycle {cycle} for this registered mobile number. Answer with this fact and "
+        "do not offer a future attempt."
+    )
+
+
 async def prepare_get_vistaar_soil_health_card(
     ctx: RunContext[FarmerContext], tool_def: ToolDefinition
 ) -> ToolDefinition | None:
@@ -365,9 +373,13 @@ async def get_vistaar_soil_health_card(
         logger.info("soil health card init rejected code=%s", error.get("code"))
         return "The Soil Health Card request was rejected by the provider. Please check the cycle and try again."
     if result.operation.state is OperationState.BUSINESS_FAILED:
-        return "No Soil Health Card was returned for that cycle."
+        return _no_card_for_cycle(normalized_cycle)
     if result.operation.state is OperationState.TIMED_OUT_PENDING:
-        return "The Soil Health Card request is taking longer than expected. Please try again shortly."
+        # BV ACKs valid SHC lookups but currently emits no on_init when the
+        # registered mobile has no report for the requested cycle. Treat this
+        # provider-specific completed wait as absence, not a transient outage.
+        logger.info("soil health card not available after provider ACK cycle=%s", normalized_cycle)
+        return _no_card_for_cycle(normalized_cycle)
     if not result.ok or not isinstance(result.payload, Mapping):
         return "The Soil Health Card service is temporarily unavailable. Please try again later."
 
@@ -377,7 +389,7 @@ async def get_vistaar_soil_health_card(
         logger.warning("soil health card media rejected cycle=%s reason=%s", normalized_cycle, exc)
         return "The Soil Health Card was returned in an unreadable format. Please try again later."
     if not html:
-        return "No Soil Health Card was found for that registered mobile number and cycle."
+        return _no_card_for_cycle(normalized_cycle)
 
     ctx.deps.add_chat_artifact(
         {

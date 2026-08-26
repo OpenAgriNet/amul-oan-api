@@ -172,6 +172,34 @@ def test_agent_context_extracts_only_agronomic_report_data():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "state",
+    [OperationState.BUSINESS_FAILED, OperationState.TIMED_OUT_PENDING],
+)
+async def test_provider_no_card_outcomes_are_definitive(monkeypatch, state):
+    client = FakeClient(BecknActionResult(_operation(state), None))
+    monkeypatch.setattr(shc, "get_beckn_operation_client", lambda: client)
+
+    result = await shc.get_vistaar_soil_health_card(_ctx(), "2025-26")
+
+    assert result.startswith("NO_CARD_FOR_CYCLE.")
+    assert "No Soil Health Card is available for cycle 2025-26" in result
+    assert "retry" not in result.casefold()
+    assert "retrieval problem" not in result.casefold()
+
+
+@pytest.mark.asyncio
+async def test_success_without_html_is_definitive_no_card(monkeypatch):
+    client = FakeClient(BecknActionResult(_operation(), {"message": {"order": {}}}))
+    monkeypatch.setattr(shc, "get_beckn_operation_client", lambda: client)
+
+    result = await shc.get_vistaar_soil_health_card(_ctx(), "2025-26")
+
+    assert result.startswith("NO_CARD_FOR_CYCLE.")
+    assert "retry" not in result.casefold()
+
+
+@pytest.mark.asyncio
 async def test_missing_profile_never_asks_for_a_phone_or_calls_network(monkeypatch):
     monkeypatch.setattr(
         shc,
