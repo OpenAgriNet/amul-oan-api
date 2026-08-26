@@ -184,8 +184,9 @@ class CallbackDuringPostClient:
         self.store = store
         self.payload = None
 
-    async def post(self, url, json=None):
+    async def post(self, url, json=None, headers=None):
         self.payload = json
+        self.headers = headers
         ctx = json["context"]
         callback = {
             "context": {
@@ -208,9 +209,10 @@ class ShcCallbackDuringPostClient:
         self.payload = None
         self.url = None
 
-    async def post(self, url, json=None):
+    async def post(self, url, json=None, headers=None):
         self.url = url
         self.payload = json
+        self.headers = headers
         ctx = json["context"]
         callback = {
             "context": {**ctx, "action": "on_init"},
@@ -229,6 +231,7 @@ async def test_confirm_builds_directed_core_order_and_correlates_fast_callback(m
     from app.services import beckn_operations as module
 
     monkeypatch.setattr(module.settings, "beckn_bap_caller_url", "http://onix/bap/caller")
+    monkeypatch.setattr(module.settings, "beckn_transaction_bridge_token", "transaction-secret")
     monkeypatch.setattr(module.settings, "beckn_bap_uri", "https://bap.example/bap/receiver")
     monkeypatch.setattr(module.settings, "beckn_booking_bpp_uri", "https://bpp.example/bpp/receiver")
     monkeypatch.setattr(module.settings, "beckn_callback_wait_seconds", 0.2)
@@ -256,6 +259,7 @@ async def test_confirm_builds_directed_core_order_and_correlates_fast_callback(m
     assert "fulfillments" in sent["message"]["order"]
     assert "fulfillment" not in sent["message"]["order"]
     assert json.loads(json.dumps(sent))["message"]["order"]["items"][0]["id"] == "ait:TECH-1"
+    assert http_client.headers == {"Authorization": f"Bearer {module.settings.beckn_transaction_bridge_token}"}
 
 
 @pytest.mark.asyncio
@@ -263,6 +267,7 @@ async def test_health_confirm_uses_health_provider_and_veterinary_fulfillment(mo
     from app.services import beckn_operations as module
 
     monkeypatch.setattr(module.settings, "beckn_bap_caller_url", "http://onix/bap/caller")
+    monkeypatch.setattr(module.settings, "beckn_transaction_bridge_token", "transaction-secret")
     monkeypatch.setattr(module.settings, "beckn_bap_uri", "https://bap.example/bap/receiver")
     monkeypatch.setattr(module.settings, "beckn_booking_bpp_uri", "https://bpp.example/bpp/receiver")
     monkeypatch.setattr(module.settings, "beckn_callback_wait_seconds", 0.2)
@@ -295,6 +300,7 @@ async def test_shc_init_is_directed_and_waits_for_on_init(monkeypatch):
     from app.services import beckn_operations as module
 
     monkeypatch.setattr(module.settings, "beckn_bap_caller_url", "http://onix/bap/caller")
+    monkeypatch.setattr(module.settings, "beckn_transaction_bridge_token", "transaction-secret")
     monkeypatch.setattr(module.settings, "beckn_bap_uri", "https://bap.example/bap/receiver")
     monkeypatch.setattr(module.settings, "vistaar_bpp_id", "provider-network-vistaar.da.gov.in")
     monkeypatch.setattr(module.settings, "vistaar_bpp_uri", "https://provider-network-vistaar.da.gov.in")
@@ -364,7 +370,7 @@ async def test_shc_callback_gate_does_not_enable_booking_callbacks(monkeypatch):
 
     monkeypatch.setattr(router_module.settings, "beckn_callback_transactions_enabled", False)
     monkeypatch.setattr(router_module.settings, "vistaar_shc_enabled", True)
-    monkeypatch.setattr(router_module.settings, "beckn_callback_token", None)
+    monkeypatch.setattr(router_module.settings, "beckn_callback_token", "secret")
     monkeypatch.setattr(router_module, "get_beckn_operation_store", lambda: Store())
 
     booking = await router_module.receive_callback("on_confirm", _callback(), None)
@@ -372,7 +378,7 @@ async def test_shc_callback_gate_does_not_enable_booking_callbacks(monkeypatch):
 
     payload = _callback()
     payload["context"].update({"domain": "schemes:vistaar", "action": "on_init"})
-    shc_callback = await router_module.receive_callback("on_init", payload, None)
+    shc_callback = await router_module.receive_callback("on_init", payload, "secret")
     assert shc_callback.status_code == 200
     assert json.loads(shc_callback.body)["message"]["ack"]["status"] == "ACK"
     assert calls["n"] == 1
@@ -391,11 +397,25 @@ async def test_callback_router_returns_protocol_nack_without_transport_failure(m
             )
 
     monkeypatch.setattr(router_module.settings, "beckn_callback_transactions_enabled", True)
-    monkeypatch.setattr(router_module.settings, "beckn_callback_token", None)
+    monkeypatch.setattr(router_module.settings, "beckn_callback_token", "secret")
     monkeypatch.setattr(router_module, "get_beckn_operation_store", lambda: Store())
-    rejected = await router_module.receive_callback("on_confirm", _callback(), None)
+    rejected = await router_module.receive_callback("on_confirm", _callback(), "secret")
 
     assert rejected.status_code == 200
     body = json.loads(rejected.body)
     assert body["message"]["ack"]["status"] == "NACK"
     assert body["error"]["code"] == "UNKNOWN_TRANSACTION"
+
+
+@pytest.mark.asyncio
+async def test_enabled_callback_ingress_fails_closed_without_token(monkeypatch):
+    from app.routers import beckn as router_module
+
+    monkeypatch.setattr(router_module.settings, "beckn_callback_transactions_enabled", True)
+    monkeypatch.setattr(router_module.settings, "beckn_callback_token", None)
+    response = await router_module.receive_callback("on_confirm", _callback(), None)
+
+    assert response.status_code == 503
+    body = json.loads(response.body)
+    assert body["message"]["ack"]["status"] == "NACK"
+    assert body["error"]["code"] == "CALLBACK_AUTH_NOT_CONFIGURED"

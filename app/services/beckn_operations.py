@@ -560,6 +560,8 @@ class BecknOperationClient:
         }
 
     async def _send(self, operation: BecknOperation, payload: Mapping[str, Any]) -> None:
+        if not settings.beckn_transaction_bridge_token:
+            raise RuntimeError("BECKN_TRANSACTION_BRIDGE_TOKEN is required for Beckn transactions")
         await self.store.mark_sent(operation)
         # ONIX derives the action from the final path segment. A trailing slash
         # changes that segment to e.g. ``init/`` and fails route matching.
@@ -569,7 +571,13 @@ class BecknOperationClient:
         try:
             for attempt in range(1, settings.beckn_forward_connect_attempts + 1):
                 try:
-                    response = await client.post(url, json=payload)
+                    response = await client.post(
+                        url,
+                        json=payload,
+                        headers={
+                            "Authorization": f"Bearer {settings.beckn_transaction_bridge_token}",
+                        },
+                    )
                     response.raise_for_status()
                     body = response.json()
                     break
