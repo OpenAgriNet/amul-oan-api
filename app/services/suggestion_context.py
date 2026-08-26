@@ -202,11 +202,17 @@ def extract_returned_docs(
                 # Split the full tool return first, then truncate each selected
                 # chunk. Truncating the whole payload first can erase later hits
                 # when the first document alone exceeds max_chars.
-                search_chunks = _extract_search_chunks(
-                    raw_content,
-                    max_chunks=max_search_chunks,
-                    max_chars=max_chars,
-                )
+                # Accumulate across multiple search_documents returns in this turn
+                # and cap the final list at max_search_chunks.
+                if len(search_chunks) < max_search_chunks:
+                    remaining = max_search_chunks - len(search_chunks)
+                    search_chunks.extend(
+                        _extract_search_chunks(
+                            raw_content,
+                            max_chunks=remaining,
+                            max_chars=max_chars,
+                        )
+                    )
                 continue
             content = _truncate(raw_content, max_chars=max_chars)
             if tool_name in _SCHEME_TOOLS:

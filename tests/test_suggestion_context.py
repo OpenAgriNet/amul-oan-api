@@ -141,6 +141,19 @@ def test_extract_search_chunks_splits_before_truncating():
     assert extracted["search_chunks"][1] == second
 
 
+def test_extract_search_chunks_accumulates_across_multiple_returns():
+    history = [
+        _Msg(parts=[_user("q")]),
+        _Msg(parts=[_tool_call("a", "search_documents")]),
+        _Msg(parts=[_tool_return("a", "hit_a1\n\n----\n\nhit_a2")]),
+        _Msg(parts=[_tool_call("b", "search_documents")]),
+        _Msg(parts=[_tool_return("b", "hit_b1\n\n----\n\nhit_b2")]),
+    ]
+
+    extracted = extract_returned_docs(history, max_search_chunks=3, max_chars=200)
+    assert extracted["search_chunks"] == ["hit_a1", "hit_a2", "hit_b1"]
+
+
 def test_load_union_scheme_catalog_requires_scheme_tool(monkeypatch):
     async def fake_records(_union):
         return [{"scheme_title": "Cattle Insurance", "scheme_url": "https://example.com/a"}]
