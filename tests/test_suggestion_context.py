@@ -123,6 +123,24 @@ def test_extract_returned_docs_from_latest_turn():
     ]
 
 
+def test_extract_search_chunks_splits_before_truncating():
+    # First hit alone exceeds max_chars; splitting after truncate would drop hit 2.
+    first = "A" * 1500
+    second = "second_hit_content"
+    payload = f"{first}\n\n----\n\n{second}"
+    history = [
+        _Msg(parts=[_user("q")]),
+        _Msg(parts=[_tool_call("a", "search_documents")]),
+        _Msg(parts=[_tool_return("a", payload)]),
+    ]
+    extracted = extract_returned_docs(history, max_search_chunks=2, max_chars=1200)
+    assert len(extracted["search_chunks"]) == 2
+    assert extracted["search_chunks"][0].startswith("A")
+    assert extracted["search_chunks"][0].endswith("…")
+    assert len(extracted["search_chunks"][0]) == 1201  # 1200 chars + ellipsis
+    assert extracted["search_chunks"][1] == second
+
+
 def test_load_union_scheme_catalog_requires_scheme_tool(monkeypatch):
     async def fake_records(_union):
         return [{"scheme_title": "Cattle Insurance", "scheme_url": "https://example.com/a"}]

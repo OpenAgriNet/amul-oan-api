@@ -197,10 +197,18 @@ def extract_returned_docs(
             if not tool_name:
                 continue
 
-            content = _truncate(str(getattr(part, "content", "")), max_chars=max_chars)
+            raw_content = str(getattr(part, "content", "") or "")
             if tool_name == "search_documents":
-                search_chunks = _extract_search_chunks(content, max_chunks=max_search_chunks, max_chars=max_chars)
+                # Split the full tool return first, then truncate each selected
+                # chunk. Truncating the whole payload first can erase later hits
+                # when the first document alone exceeds max_chars.
+                search_chunks = _extract_search_chunks(
+                    raw_content,
+                    max_chunks=max_search_chunks,
+                    max_chars=max_chars,
+                )
                 continue
+            content = _truncate(raw_content, max_chars=max_chars)
             if tool_name in _SCHEME_TOOLS:
                 scheme_tool_returns.append({"tool_name": tool_name, "content": content})
             if tool_name in _CONTEXTUAL_TOOLS:

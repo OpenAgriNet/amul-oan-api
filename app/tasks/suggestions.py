@@ -34,6 +34,7 @@ except ImportError:
     get_langfuse_client = None
 
 def _lang_field_for_questions(target_lang: str) -> str:
+    """Pick the closest curated bank language; final output is still target_lang."""
     code = (target_lang or "").strip().lower()
     if code.startswith("gu"):
         return "gu"
@@ -79,6 +80,73 @@ def _format_named_payloads(title: str, payloads: list[dict[str, str]]) -> str:
     if not lines:
         return ""
     return f"**{title}**\n" + "\n".join(lines) + "\n\n"
+
+
+def _has_returned_grounding(
+    returned_docs: dict,
+    scheme_catalog: list[str],
+) -> bool:
+    return bool(
+        returned_docs.get("search_chunks")
+        or returned_docs.get("scheme_tool_returns")
+        or returned_docs.get("contextual_tool_returns")
+        or scheme_catalog
+    )
+
+
+def _build_suggestions_message(
+    *,
+    message_pairs: str,
+    candidates: list[dict],
+    capability_domains: list[str],
+    returned_docs: dict,
+    scheme_catalog: list[str],
+    lang_field: str,
+    target_lang_name: str,
+) -> str:
+    has_candidates = bool(candidates)
+    has_docs = _has_returned_grounding(returned_docs, scheme_catalog)
+    use_conversation_fallback = not has_candidates and not has_docs
+
+    parts = [
+        f"**Conversation**\n\n{message_pairs or '- None'}\n\n",
+        f"**Candidate questions (capability-approved bank; may be en/gu/hi):**\n"
+        f"{_format_candidates(candidates, lang_field=lang_field)}\n\n",
+        f"**Capability allowlist:**\n"
+        f"- {', '.join(capability_domains) if capability_domains else 'none'}\n\n",
+        _format_docs(
+            "Retrieved documents (doc-grounded questions only from these):",
+            returned_docs.get("search_chunks", []),
+        ),
+        _format_named_payloads(
+            "Scheme information (doc-grounded questions only from these):",
+            returned_docs.get("scheme_tool_returns", []),
+        ),
+        _format_docs(
+            "Union scheme catalog (cached; doc-grounded questions only from these):",
+            scheme_catalog,
+        ),
+        _format_named_payloads(
+            "Other returned tool data (optional context; bank candidates remain valid):",
+            returned_docs.get("contextual_tool_returns", []),
+        ),
+    ]
+
+    if use_conversation_fallback:
+        parts.append(
+            f"**Conversation fallback:** No tool candidates or returned docs this turn. "
+            f"Suggest 3-5 follow-up questions in {target_lang_name} grounded in the "
+            f"conversation and limited to the capability allowlist.\n"
+        )
+    else:
+        parts.append(
+            f"Suggest 3-5 questions the farmer can ask in {target_lang_name}. "
+            f"Prefer candidate-bank questions when present (rewrite into {target_lang_name} "
+            f"if needed). You may also add questions grounded only in returned docs/catalog. "
+            f"Bank candidates do not need to be answerable from returned tool docs.\n"
+        )
+
+    return "".join(parts)
 
 
 async def create_suggestions(
@@ -136,17 +204,14 @@ async def create_suggestions(
         )
 
         target_lang_name = Language.get(target_lang).display_name(target_lang)
-        message = (
-            f"**Conversation**\n\n{message_pairs or '- None'}\n\n"
-            f"**Candidate questions (use only these domains/questions):**\n"
-            f"{_format_candidates(candidates, lang_field=lang_field)}\n\n"
-            f"**Capability allowlist:**\n"
-            f"- {', '.join(capability_domains) if capability_domains else 'none'}\n\n"
-            f"{_format_docs('Retrieved documents (answer only from these if used):', returned_docs.get('search_chunks', []))}"
-            f"{_format_named_payloads('Scheme information (answer only from these if used):', returned_docs.get('scheme_tool_returns', []))}"
-            f"{_format_docs('Union scheme catalog (cached; answer only from these if used):', scheme_catalog)}"
-            f"{_format_named_payloads('Other returned tool data (answer only from these if used):', returned_docs.get('contextual_tool_returns', []))}"
-            f"Suggest 3-5 questions the farmer can ask in {target_lang_name} using ONLY the above."
+        message = _build_suggestions_message(
+            message_pairs=message_pairs,
+            candidates=candidates,
+            capability_domains=capability_domains,
+            returned_docs=returned_docs,
+            scheme_catalog=scheme_catalog,
+            lang_field=lang_field,
+            target_lang_name=target_lang_name,
         )
         
         session_id_safe = (session_id or "")[:200]
