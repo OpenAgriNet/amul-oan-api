@@ -501,8 +501,12 @@ class Settings(BaseSettings):
         default=60 * 60 * 24, validation_alias="BECKN_OPERATION_TTL_SECONDS"
     )
     beckn_callback_max_body_bytes: int = Field(
-        default=512 * 1024, validation_alias="BECKN_CALLBACK_MAX_BODY_BYTES"
+        default=2 * 1024 * 1024, validation_alias="BECKN_CALLBACK_MAX_BODY_BYTES"
     )
+    # SHC on_init carries a private base64 HTML report. Bound both its decoded
+    # size and its durable Redis retention independently of ordinary operations.
+    shc_html_max_bytes: int = Field(default=1024 * 1024, validation_alias="SHC_HTML_MAX_BYTES")
+    shc_artifact_ttl_seconds: int = Field(default=10 * 60, validation_alias="SHC_ARTIFACT_TTL_SECONDS")
     # Optional defense in depth for the internal app ingress. Signature
     # verification remains ONIX's responsibility; when set, its reverse proxy
     # must inject X-Beckn-Callback-Token.
@@ -558,7 +562,9 @@ class Settings(BaseSettings):
         "farmer_refresh_lock_ttl_seconds": ("FARMER_REFRESH_LOCK_TTL_SECONDS", 60 * 5, 1, None),
         "farmer_refresh_queue_batch_size": ("FARMER_REFRESH_QUEUE_BATCH_SIZE", 20, 1, None),
         "beckn_operation_ttl_seconds": ("BECKN_OPERATION_TTL_SECONDS", 60 * 60 * 24, 60, None),
-        "beckn_callback_max_body_bytes": ("BECKN_CALLBACK_MAX_BODY_BYTES", 512 * 1024, 1024, 5 * 1024 * 1024),
+        "beckn_callback_max_body_bytes": ("BECKN_CALLBACK_MAX_BODY_BYTES", 2 * 1024 * 1024, 1024, 5 * 1024 * 1024),
+        "shc_html_max_bytes": ("SHC_HTML_MAX_BYTES", 1024 * 1024, 1024, 2 * 1024 * 1024),
+        "shc_artifact_ttl_seconds": ("SHC_ARTIFACT_TTL_SECONDS", 10 * 60, 60, 60 * 60),
         "beckn_forward_connect_attempts": ("BECKN_FORWARD_CONNECT_ATTEMPTS", 2, 1, 5),
     }
     _SAFE_FLOAT_FIELDS: ClassVar[dict[str, tuple[str, float, float | None, float | None]]] = {
@@ -605,6 +611,8 @@ class Settings(BaseSettings):
         "farmer_refresh_queue_batch_size",
         "beckn_operation_ttl_seconds",
         "beckn_callback_max_body_bytes",
+        "shc_html_max_bytes",
+        "shc_artifact_ttl_seconds",
         "beckn_forward_connect_attempts",
         mode="before",
     )

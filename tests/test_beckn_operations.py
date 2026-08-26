@@ -153,6 +153,32 @@ async def test_callback_correlation_checks_action_domain_and_participants():
     assert result.code == "CORRELATION_MISMATCH"
 
 
+@pytest.mark.asyncio
+async def test_unknown_shc_callback_orphan_redacts_private_report(monkeypatch):
+    from app.services import beckn_operations as module
+
+    monkeypatch.setattr(module.settings, "shc_artifact_ttl_seconds", 600)
+    redis = MemoryRedis()
+    store = BecknOperationStore(redis, ttl_seconds=3600)
+    payload = {
+        "context": {
+            "domain": "schemes:vistaar",
+            "action": "on_init",
+            "transaction_id": "unknown-txn",
+            "message_id": "unknown-msg",
+        },
+        "message": {"order": {"private_html": "farmer report"}},
+    }
+
+    result = await store.record_callback(payload)
+
+    assert result.code == "UNKNOWN_TRANSACTION"
+    orphan = json.loads(redis.values[store._orphan_key("unknown-txn", "unknown-msg")])
+    assert "payload" not in orphan
+    assert "payload_hash" in orphan
+    assert "farmer report" not in json.dumps(orphan)
+
+
 class CallbackDuringPostClient:
     def __init__(self, store: BecknOperationStore):
         self.store = store
@@ -167,6 +193,26 @@ class CallbackDuringPostClient:
                 "action": "on_confirm",
             },
             "message": {"order": {"id": "BOOK-42", "status": "ACTIVE"}},
+        }
+        assert (await self.store.record_callback(callback)).accepted
+        return httpx.Response(
+            200,
+            json={"message": {"ack": {"status": "ACK"}}},
+            request=httpx.Request("POST", url),
+        )
+
+
+class ShcCallbackDuringPostClient:
+    def __init__(self, store: BecknOperationStore):
+        self.store = store
+        self.payload = None
+
+    async def post(self, url, json=None):
+        self.payload = json
+        ctx = json["context"]
+        callback = {
+            "context": {**ctx, "action": "on_init"},
+            "message": {"order": {"providers": []}},
         }
         assert (await self.store.record_callback(callback)).accepted
         return httpx.Response(
@@ -240,6 +286,39 @@ async def test_health_confirm_uses_health_provider_and_veterinary_fulfillment(mo
     assert order["items"] == [{"id": "health-call"}]
     assert order["fulfillments"][0]["type"] == "VETERINARY_VISIT"
     assert order["fulfillments"][0]["tags"][0]["descriptor"]["code"] == "health-call-details"
+
+
+@pytest.mark.asyncio
+async def test_shc_init_is_directed_and_waits_for_on_init(monkeypatch):
+    from app.services import beckn_operations as module
+
+    monkeypatch.setattr(module.settings, "beckn_bap_caller_url", "http://onix/bap/caller")
+    monkeypatch.setattr(module.settings, "beckn_bap_uri", "https://bap.example/bap/receiver")
+    monkeypatch.setattr(module.settings, "vistaar_bpp_id", "provider-network-vistaar.da.gov.in")
+    monkeypatch.setattr(module.settings, "vistaar_bpp_uri", "https://provider-network-vistaar.da.gov.in")
+    monkeypatch.setattr(module.settings, "beckn_callback_wait_seconds", 0.2)
+    monkeypatch.setattr(module.settings, "shc_artifact_ttl_seconds", 600)
+
+    store = BecknOperationStore(MemoryRedis(), ttl_seconds=3600)
+    http_client = ShcCallbackDuringPostClient(store)
+    client = BecknOperationClient(store, http_client=http_client)
+    result = await client.init_soil_health_card(
+        mobile="+919924457046",
+        cycle="2024-25",
+        session_id="session-1",
+        tool_call_id="tool-shc",
+    )
+
+    assert result.ok
+    sent = http_client.payload
+    assert sent["context"]["action"] == "init"
+    assert sent["context"]["domain"] == "schemes:vistaar"
+    assert sent["context"]["bpp_id"] == "provider-network-vistaar.da.gov.in"
+    order = sent["message"]["order"]
+    assert order["provider"] == {"id": "shc-discovery"}
+    assert order["items"] == [{"id": "soil-health-card"}]
+    assert order["fulfillments"][0]["customer"]["contact"]["phone"] == "+919924457046"
+    assert order["fulfillments"][0]["customer"]["person"]["tags"][0]["value"] == "2024-25"
 
 
 @pytest.mark.asyncio

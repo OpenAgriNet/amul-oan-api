@@ -19,6 +19,10 @@ from agents.tools.vistaar import (
     get_vistaar_mandi_prices,
     get_vistaar_scheme_info,
 )
+from agents.tools.vistaar_shc import (
+    get_vistaar_soil_health_card,
+    prepare_get_vistaar_soil_health_card,
+)
 
 TOOLS = [
     # # Search Terms
@@ -132,6 +136,13 @@ if settings.enable_network:
             docstring_format='auto',
             require_parameter_descriptions=True,
         ),
+        Tool(
+            get_vistaar_soil_health_card,
+            takes_ctx=True,
+            docstring_format='auto',
+            require_parameter_descriptions=True,
+            prepare=prepare_get_vistaar_soil_health_card,
+        ),
     ])
 
 # ── Voice agent tool registries (Inc 7.2) ────────────────────────────────────
@@ -143,4 +154,3 @@ if settings.enable_network:
 #   - the milk-collection AND union-scheme prepare-guards are applied to voice too
 #   - get_union_scheme_data stays signed-in-only
 #   - the profile/herd/tags tools stay disabled (redundant with runtime context)
-

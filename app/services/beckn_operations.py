@@ -137,14 +137,16 @@ class BecknOperationStore:
         idempotency_key: str,
         session_id: Optional[str] = None,
         tool_call_id: Optional[str] = None,
+        retention_seconds: Optional[int] = None,
     ) -> CreateOperationResult:
         key = self._key(transaction_id, message_id)
         idem_key = self._idempotency_key(domain, idempotency_key)
+        retention = retention_seconds or self._ttl
 
         # Claim the business idempotency key before any forward action is sent.
         # Redis failure is deliberately not swallowed: a side effect must not be
         # submitted when its durable correlation/idempotency record is absent.
-        claimed = await self._redis.set(idem_key, key, ex=self._ttl, nx=True)
+        claimed = await self._redis.set(idem_key, key, ex=retention, nx=True)
         if not claimed:
             existing_key = await self._redis.get(idem_key)
             if existing_key:
@@ -169,10 +171,11 @@ class BecknOperationStore:
             "idempotency_key": idempotency_key,
             "created_at": created_at,
             "updated_at": created_at,
+            "retention_seconds": str(retention),
         }
         try:
             await self._redis.hset(key, mapping=mapping)
-            await self._redis.expire(key, self._ttl)
+            await self._redis.expire(key, retention)
         except Exception:
             # The action has not been sent yet, so releasing our incomplete
             # idempotency claim is safe and lets an operator retry after Redis
@@ -273,8 +276,28 @@ class BecknOperationStore:
         key = self._key(transaction_id, message_id)
         row = await self._redis.hgetall(key)
         if not row:
-            orphan = {"received_at": _now(), "payload": payload}
-            await self._redis.set(self._orphan_key(transaction_id, message_id), _json(orphan), ex=self._ttl, nx=True)
+            is_private_shc = context.get("domain") == "schemes:vistaar" and action == "on_init"
+            orphan = (
+                {
+                    "received_at": _now(),
+                    "payload_hash": _hash(payload),
+                    "context": {
+                        "domain": context.get("domain"),
+                        "action": action,
+                        "transaction_id": transaction_id,
+                        "message_id": message_id,
+                    },
+                }
+                if is_private_shc
+                else {"received_at": _now(), "payload": payload}
+            )
+            orphan_ttl = settings.shc_artifact_ttl_seconds if is_private_shc else self._ttl
+            await self._redis.set(
+                self._orphan_key(transaction_id, message_id),
+                _json(orphan),
+                ex=orphan_ttl,
+                nx=True,
+            )
             return CallbackRecordResult(False, code="UNKNOWN_TRANSACTION", message="No matching Beckn operation")
 
         checks = {
@@ -291,9 +314,10 @@ class BecknOperationStore:
         inserted = await self._redis.hsetnx(key, "callback_record", _json(callback_record))
         if inserted:
             await self._redis.hset(key, mapping={"updated_at": _now()})
-            await self._redis.expire(key, self._ttl)
+            retention = int(row.get("retention_seconds") or self._ttl)
+            await self._redis.expire(key, retention)
             await self._redis.expire(
-                self._idempotency_key(row["domain"], row["idempotency_key"]), self._ttl
+                self._idempotency_key(row["domain"], row["idempotency_key"]), retention
             )
             return CallbackRecordResult(True)
 
@@ -446,9 +470,79 @@ class BecknOperationClient:
             await self._send(created.operation, payload)
         return await self._finish(created.operation)
 
-    def _context(self, *, action: str, transaction_id: str, message_id: str) -> dict[str, Any]:
+    async def init_soil_health_card(
+        self,
+        *,
+        mobile: str,
+        cycle: str,
+        session_id: Optional[str],
+        tool_call_id: Optional[str],
+    ) -> BecknActionResult:
+        """Submit a private directed SHC init and await its on_init callback."""
+        self._validate_shc_configuration()
+        operation_id = str(uuid.uuid4())
+        transaction_id = str(uuid.uuid4())
+        message_id = str(uuid.uuid4())
+        invocation_id = tool_call_id or secrets.token_urlsafe(18)
+        idempotency_key = f"{session_id or 'no-session'}:{invocation_id}:shc:{cycle}"
+        order = {
+            "provider": {"id": "shc-discovery"},
+            "items": [{"id": "soil-health-card"}],
+            "fulfillments": [
+                {
+                    "customer": {
+                        "person": {
+                            "tags": [
+                                {"descriptor": {"code": "cycle"}, "value": cycle}
+                            ]
+                        },
+                        "contact": {"phone": mobile},
+                    }
+                }
+            ],
+        }
+        context = self._context(
+            action="init",
+            transaction_id=transaction_id,
+            message_id=message_id,
+            domain="schemes:vistaar",
+            bpp_id=settings.vistaar_bpp_id,
+            bpp_uri=settings.vistaar_bpp_uri,
+        )
+        payload = {"context": context, "message": {"order": order}}
+        created = await self.store.create(
+            operation_id=operation_id,
+            transaction_id=transaction_id,
+            message_id=message_id,
+            action="init",
+            expected_callback="on_init",
+            domain="schemes:vistaar",
+            bap_id=settings.beckn_bap_id,
+            bpp_id=settings.vistaar_bpp_id,
+            request_payload=payload,
+            idempotency_key=idempotency_key,
+            session_id=session_id,
+            tool_call_id=tool_call_id,
+            # The callback contains a private farmer report, unlike booking
+            # metadata. Retain it only long enough for the chat turn/retry.
+            retention_seconds=settings.shc_artifact_ttl_seconds,
+        )
+        if created.created:
+            await self._send(created.operation, payload)
+        return await self._finish(created.operation)
+
+    def _context(
+        self,
+        *,
+        action: str,
+        transaction_id: str,
+        message_id: str,
+        domain: Optional[str] = None,
+        bpp_id: Optional[str] = None,
+        bpp_uri: Optional[str] = None,
+    ) -> dict[str, Any]:
         return {
-            "domain": settings.beckn_booking_domain,
+            "domain": domain or settings.beckn_booking_domain,
             "location": {
                 "country": {"code": settings.beckn_country_code},
                 "city": {"code": settings.beckn_city_code},
@@ -457,8 +551,8 @@ class BecknOperationClient:
             "version": "1.1.0",
             "bap_id": settings.beckn_bap_id,
             "bap_uri": settings.beckn_bap_uri,
-            "bpp_id": settings.beckn_booking_bpp_id,
-            "bpp_uri": settings.beckn_booking_bpp_uri,
+            "bpp_id": bpp_id or settings.beckn_booking_bpp_id,
+            "bpp_uri": bpp_uri or settings.beckn_booking_bpp_uri,
             "transaction_id": transaction_id,
             "message_id": message_id,
             "timestamp": _now(),
@@ -499,7 +593,7 @@ class BecknOperationClient:
             return
         if ack_status != "ACK":
             await self.store.mark_transport_error(operation, "Invalid Beckn ACK response")
-            raise RuntimeError("Booking network did not return a Beckn ACK/NACK")
+            raise RuntimeError("Beckn network did not return an ACK/NACK")
         await self.store.mark_ack(operation, body)
 
     async def _finish(self, operation: BecknOperation) -> BecknActionResult:
@@ -529,6 +623,19 @@ class BecknOperationClient:
         missing = [name for name, value in required.items() if not value]
         if missing:
             raise RuntimeError("Beckn callback transactions are missing configuration: " + ", ".join(missing))
+
+    @staticmethod
+    def _validate_shc_configuration() -> None:
+        required = {
+            "BECKN_BAP_CALLER_URL": settings.beckn_bap_caller_url,
+            "BECKN_BAP_ID": settings.beckn_bap_id,
+            "BECKN_BAP_URI": settings.beckn_bap_uri,
+            "VISTAAR_BPP_ID": settings.vistaar_bpp_id,
+            "VISTAAR_BPP_URI": settings.vistaar_bpp_uri,
+        }
+        missing = [name for name, value in required.items() if not value]
+        if missing:
+            raise RuntimeError("Soil Health Card callbacks are missing configuration: " + ", ".join(missing))
 
 
 _operation_store = BecknOperationStore()

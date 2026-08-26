@@ -14,7 +14,7 @@ from app.services.beckn_operations import get_beckn_operation_store
 
 router = APIRouter(prefix="/beckn", tags=["beckn-internal"])
 
-_SUPPORTED_CALLBACKS = {"on_confirm", "on_status"}
+_SUPPORTED_CALLBACKS = {"on_init", "on_confirm", "on_status"}
 
 
 def _ack() -> dict[str, Any]:
