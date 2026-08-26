@@ -1,4 +1,5 @@
 import base64
+import inspect
 from types import SimpleNamespace
 
 import pytest
@@ -69,8 +70,24 @@ class FakeClient:
 
 
 def _ctx(mobile="9924457046"):
-    deps = FarmerContext(query="show my card", mobile=mobile, session_id="session-1")
+    deps = FarmerContext(
+        query="show my card",
+        mobile=mobile,
+        session_id="session-1",
+        supports_rich_artifacts=True,
+    )
     return SimpleNamespace(deps=deps, tool_call_id="tool-1")
+
+
+@pytest.mark.asyncio
+async def test_tool_uses_independent_shc_feature_gate(monkeypatch):
+    tool_def = SimpleNamespace(name="get_vistaar_soil_health_card")
+    monkeypatch.setattr(shc.settings, "beckn_callback_transactions_enabled", False)
+    monkeypatch.setattr(shc.settings, "vistaar_shc_enabled", True)
+    assert await shc.prepare_get_vistaar_soil_health_card(_ctx(), tool_def) is tool_def
+
+    monkeypatch.setattr(shc.settings, "vistaar_shc_enabled", False)
+    assert await shc.prepare_get_vistaar_soil_health_card(_ctx(), tool_def) is None
 
 
 def test_decodes_html_from_callback_and_sync_wrapper():
@@ -84,13 +101,14 @@ def test_rejects_invalid_cycle_and_phone_is_not_a_model_argument():
     assert shc._normalize_cycle("2024-25") == "2024-25"
     assert shc._normalize_cycle("2024-26") is None
     assert shc._registered_mobile("+91 99244 57046") == "+919924457046"
-    schema = Tool(
+    Tool(
         shc.get_vistaar_soil_health_card,
         takes_ctx=True,
         docstring_format="auto",
         require_parameter_descriptions=True,
-    ).function_schema.json_schema
-    assert set(schema["properties"]) == {"cycle"}
+    )
+    model_arguments = list(inspect.signature(shc.get_vistaar_soil_health_card).parameters)[1:]
+    assert model_arguments == ["cycle"]
 
 
 @pytest.mark.asyncio

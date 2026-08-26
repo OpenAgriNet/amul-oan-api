@@ -326,6 +326,7 @@ async def test_callback_router_is_default_off_and_acks_only_after_store(monkeypa
     from app.routers import beckn as router_module
 
     monkeypatch.setattr(router_module.settings, "beckn_callback_transactions_enabled", False)
+    monkeypatch.setattr(router_module.settings, "vistaar_shc_enabled", False)
     disabled = await router_module.receive_callback("on_confirm", _callback(), None)
     assert disabled.status_code == 503
     assert json.loads(disabled.body)["message"]["ack"]["status"] == "NACK"
@@ -344,6 +345,33 @@ async def test_callback_router_is_default_off_and_acks_only_after_store(monkeypa
 
     assert accepted.status_code == 200
     assert json.loads(accepted.body)["message"]["ack"]["status"] == "ACK"
+    assert calls["n"] == 1
+
+
+@pytest.mark.asyncio
+async def test_shc_callback_gate_does_not_enable_booking_callbacks(monkeypatch):
+    from app.routers import beckn as router_module
+
+    calls = {"n": 0}
+
+    class Store:
+        async def record_callback(self, payload):
+            calls["n"] += 1
+            return CallbackRecordResult(True)
+
+    monkeypatch.setattr(router_module.settings, "beckn_callback_transactions_enabled", False)
+    monkeypatch.setattr(router_module.settings, "vistaar_shc_enabled", True)
+    monkeypatch.setattr(router_module.settings, "beckn_callback_token", None)
+    monkeypatch.setattr(router_module, "get_beckn_operation_store", lambda: Store())
+
+    booking = await router_module.receive_callback("on_confirm", _callback(), None)
+    assert booking.status_code == 503
+
+    payload = _callback()
+    payload["context"].update({"domain": "schemes:vistaar", "action": "on_init"})
+    shc_callback = await router_module.receive_callback("on_init", payload, None)
+    assert shc_callback.status_code == 200
+    assert json.loads(shc_callback.body)["message"]["ack"]["status"] == "ACK"
     assert calls["n"] == 1
 
 

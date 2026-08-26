@@ -28,7 +28,7 @@ async def prepare_get_vistaar_soil_health_card(
     ctx: RunContext[FarmerContext], tool_def: ToolDefinition
 ) -> ToolDefinition | None:
     """Expose SHC only when the callback transaction path is enabled."""
-    if not settings.beckn_callback_transactions_enabled or not ctx.deps.supports_rich_artifacts:
+    if not settings.vistaar_shc_enabled or not ctx.deps.supports_rich_artifacts:
         return None
     return tool_def
 
@@ -138,6 +138,7 @@ async def get_vistaar_soil_health_card(
     question for it before calling this tool.
 
     Args:
+        ctx: Authenticated farmer context supplied by the agent runtime.
         cycle: Soil Health Card cycle, e.g. "2024-25" or "2025-26".
 
     Returns:
