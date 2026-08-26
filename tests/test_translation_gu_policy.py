@@ -67,6 +67,15 @@ def test_strip_outer_trims_whitespace():
     assert out == out.strip() and not out.startswith(" ")
 
 
+def test_milk_collection_sangrah_replaced_with_sampadan():
+    out = _post_normalize_gu_translation(
+        "છેલ્લા 7 દિવસના દૂધના સંગ્રહના આંકડાના આધારે",
+        "gujarati",
+    )
+    assert "દુધ સંપાદનના આંકડાના આધારે" in out
+    assert "દૂધના સંગ્રહ" not in out
+
+
 def test_collapses_extra_spaces_after_removal():
     # red-colour removal leaves double spaces; they should collapse to one
     out = _post_normalize_gu_translation("ગાય  red colour  દૂધ", "gujarati")

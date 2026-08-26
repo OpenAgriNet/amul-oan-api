@@ -18,7 +18,8 @@
   "fat (dairy)": "ફેટ",
   "SNF": "એસ.એન.એફ.",
   "bacteria": "બેક્ટેરિયા",
-  "herd": "ધણ"
+  "herd": "ધણ",
+  "milk collection": "દુધ સંપાદન"
  },
  "allowed_aliases": {
   "heifer": [
@@ -121,6 +122,11 @@
   "appetite and milk production support nutrients": [
    "plants that improve appetite and milk production",
    "ingredients that improve appetite and milk production"
+  ],
+  "milk collection": [
+   "milk collections",
+   "milk collection details",
+   "milk-collection"
   ]
  },
  "forbidden": {
@@ -211,6 +217,9 @@
   "સબર ડેરી": "સાબર ડેરી",
   "સબર યુનિયન": "સાબર યુનિયન",
   "સબર મિલ્ક યુનિયન": "સાબર મિલ્ક યુનિયન",
-  "સબર દૂધ સંઘ": "સાબર દૂધ સંઘ"
+  "સબર દૂધ સંઘ": "સાબર દૂધ સંઘ",
+  "દૂધના સંગ્રહ": "દુધ સંપાદન",
+  "દૂધનો સંગ્રહ": "દુધ સંપાદન",
+  "દૂધ સંગ્રહ": "દુધ સંપાદન"
  }
 }
