@@ -188,13 +188,14 @@ async def create_suggestions(
             loan_feature_enabled=settings.loan_feature_enabled,
             banks=banks,
         )
+        returned_docs = extract_returned_docs(raw_history, max_search_chunks=2, max_chars=1200)
         candidates = pick_candidates(
             open_domains,
             banks,
             tools_called=tools_called,
+            tool_outcomes=returned_docs.get("tool_outcomes", {}),
             max_candidates=10,
         )
-        returned_docs = extract_returned_docs(raw_history, max_search_chunks=2, max_chars=1200)
         scheme_catalog = await load_union_scheme_catalog(tools_called, farmer_unions)
         lang_field = _lang_field_for_questions(target_lang)
         capability_domains = capability_allowlist(

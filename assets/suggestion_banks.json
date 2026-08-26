@@ -8,13 +8,15 @@
           "id": "animal_health_doctor_arrival",
           "en": "When will my doctor arrive?",
           "gu": "મારા ડોક્ટર ક્યારે આવશે?",
-          "hi": "मेरा डॉक्टर कब आएगा?"
+          "hi": "मेरा डॉक्टर कब आएगा?",
+          "requires_outcomes": ["success"]
         },
         {
           "id": "animal_health_doctor_charge",
           "en": "How much does the doctor charge?",
           "gu": "ડોક્ટરનું ચાર્જ કેટલું છે?",
-          "hi": "डॉक्टर का शुल्क कितना है?"
+          "hi": "डॉक्टर का शुल्क कितना है?",
+          "requires_outcomes": ["success"]
         },
         {
           "id": "animal_health_other_species",
@@ -66,19 +68,22 @@
           "id": "ai_call_technician_arrival",
           "en": "When will the AI technician arrive?",
           "gu": "કૃત્રિમ બીજદાનના ટેકનિશિયન ક્યારે આવશે?",
-          "hi": "एआई तकनीशियन कब आएंगे?"
+          "hi": "एआई तकनीशियन कब आएंगे?",
+          "requires_outcomes": ["success"]
         },
         {
           "id": "ai_call_insemination_charge",
           "en": "What will be the charge of insemination?",
           "gu": "કૃત્રિમ બીજદાનનો ચાર્જ કેટલો થશે?",
-          "hi": "कृत्रिम गर्भाधान का शुल्क कितना होगा?"
+          "hi": "कृत्रिम गर्भाधान का शुल्क कितना होगा?",
+          "requires_outcomes": ["success"]
         },
         {
           "id": "ai_call_choose_timing",
           "en": "Can I decide when I want the artificial insemination to be done after booking?",
           "gu": "બુકિંગ પછી શું હું કૃત્રિમ બીજદાન ક્યારે કરાવવું તે નક્કી કરી શકું?",
-          "hi": "बुकिंग के बाद क्या मैं तय कर सकता हूँ कि कृत्रिम गर्भाधान कब करवाना है?"
+          "hi": "बुकिंग के बाद क्या मैं तय कर सकता हूँ कि कृत्रिम गर्भाधान कब करवाना है?",
+          "requires_outcomes": ["success"]
         },
         {
           "id": "ai_call_another",
@@ -160,7 +165,8 @@
           "id": "loan_confirm",
           "en": "Can you confirm my micro loan so I can get the approval code?",
           "gu": "શું તમે મારી માઇક્રો લોન કન્ફર્મ કરીને મને મંજૂરી કોડ આપી શકો?",
-          "hi": "क्या आप मेरा माइक्रो लोन कन्फर्म करके मुझे अप्रूवल कोड दे सकते हैं?"
+          "hi": "क्या आप मेरा माइक्रो लोन कन्फर्म करके मुझे अप्रूवल कोड दे सकते हैं?",
+          "requires_outcomes": ["eligible_offer"]
         }
       ]
     }

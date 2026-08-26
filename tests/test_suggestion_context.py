@@ -121,6 +121,10 @@ def test_extract_returned_docs_from_latest_turn():
     assert extracted["contextual_tool_returns"] == [
         {"tool_name": "check_loan_eligibility", "content": "loan result payload"}
     ]
+    assert extracted["tool_outcomes"] == {
+        "get_union_scheme_data": "unknown",
+        "check_loan_eligibility": "unknown",
+    }
 
 
 def test_extract_search_chunks_splits_before_truncating():
@@ -152,6 +156,62 @@ def test_extract_search_chunks_accumulates_across_multiple_returns():
 
     extracted = extract_returned_docs(history, max_search_chunks=3, max_chars=200)
     assert extracted["search_chunks"] == ["hit_a1", "hit_a2", "hit_b1"]
+
+
+def test_failed_booking_hides_success_only_candidates():
+    banks = load_suggestion_banks()
+    tools_called = ["create_health_call"]
+
+    # Success should include success-gated questions.
+    success_candidates = pick_candidates(
+        ["animal_health"],
+        banks,
+        tools_called=tools_called,
+        tool_outcomes={"create_health_call": "success"},
+        max_candidates=10,
+    )
+    success_ids = {c["id"] for c in success_candidates}
+    assert "animal_health_doctor_arrival" in success_ids
+    assert "animal_health_doctor_charge" in success_ids
+
+    # Failed booking should hide success-only questions.
+    failed_candidates = pick_candidates(
+        ["animal_health"],
+        banks,
+        tools_called=tools_called,
+        tool_outcomes={"create_health_call": "failed"},
+        max_candidates=10,
+    )
+    failed_ids = {c["id"] for c in failed_candidates}
+    assert "animal_health_doctor_arrival" not in failed_ids
+    assert "animal_health_doctor_charge" not in failed_ids
+    assert "animal_health_other_species" in failed_ids
+
+
+def test_loan_confirm_hidden_for_ineligible_or_unavailable():
+    banks = load_suggestion_banks()
+    tools_called = ["check_loan_eligibility"]
+
+    for outcome in ("not_eligible", "no_profile", "unavailable"):
+        candidates = pick_candidates(
+            ["loan_eligibility"],
+            banks,
+            tools_called=tools_called,
+            tool_outcomes={"check_loan_eligibility": outcome},
+            max_candidates=10,
+        )
+        ids = {c["id"] for c in candidates}
+        assert "loan_confirm" not in ids
+
+    offer_candidates = pick_candidates(
+        ["loan_eligibility"],
+        banks,
+        tools_called=tools_called,
+        tool_outcomes={"check_loan_eligibility": "eligible_offer"},
+        max_candidates=10,
+    )
+    offer_ids = {c["id"] for c in offer_candidates}
+    assert "loan_confirm" in offer_ids
 
 
 def test_load_union_scheme_catalog_requires_scheme_tool(monkeypatch):

@@ -26,6 +26,13 @@ _SUPPORTED_SCHEME_CACHE_UNIONS = {
     UnionName.SURENDRANAGAR.value,
 }
 _MAX_SCHEME_CATALOG_ENTRIES = 20
+_LOAN_OUTCOME_MARKERS: list[tuple[str, str]] = [
+    ("ELIGIBLE — OFFER ONLY", "eligible_offer"),
+    ("APPROVED.", "approved"),
+    ("ALREADY ISSUED.", "already_issued"),
+    ("NOT ELIGIBLE.", "not_eligible"),
+    ("NO PROFILE.", "no_profile"),
+]
 
 logger = get_logger(__name__)
 
@@ -122,17 +129,22 @@ def pick_candidates(
     banks: dict[str, Any],
     *,
     tools_called: list[str],
+    tool_outcomes: dict[str, str] | None = None,
     max_candidates: int = 10,
 ) -> list[dict[str, Any]]:
     """Pick candidate questions only from opened domains."""
     selected: list[dict[str, Any]] = []
     called = set(tools_called or [])
     domains = banks.get("domains", {})
+    outcomes = tool_outcomes or {}
 
     for domain_name in open_domains:
         domain_meta = domains.get(domain_name)
         if not domain_meta:
             continue
+        opens_on_tools = list(domain_meta.get("opens_on_tools", []))
+        domain_tool = next((tool for tool in opens_on_tools if tool in called), None)
+        domain_outcome = outcomes.get(domain_tool or "", "unknown")
         questions = domain_meta.get("questions", [])
         if domain_name == "vistaar":
             allow_weather = "get_vistaar_weather" in called
@@ -149,6 +161,10 @@ def pick_candidates(
             else:
                 questions = []
         for question in questions:
+            required_outcomes = question.get("requires_outcomes")
+            if required_outcomes:
+                if domain_outcome not in set(required_outcomes):
+                    continue
             selected.append(
                 {
                     "domain": domain_name,
@@ -177,6 +193,7 @@ def extract_returned_docs(
     search_chunks: list[str] = []
     scheme_tool_returns: list[dict[str, str]] = []
     contextual_tool_returns: list[dict[str, str]] = []
+    tool_outcomes: dict[str, str] = {}
 
     for message in turn:
         for part in getattr(message, "parts", []):
@@ -215,6 +232,9 @@ def extract_returned_docs(
                     )
                 continue
             content = _truncate(raw_content, max_chars=max_chars)
+            outcome = _classify_tool_outcome(tool_name, raw_content)
+            if outcome:
+                tool_outcomes[tool_name] = outcome
             if tool_name in _SCHEME_TOOLS:
                 scheme_tool_returns.append({"tool_name": tool_name, "content": content})
             if tool_name in _CONTEXTUAL_TOOLS:
@@ -224,6 +244,7 @@ def extract_returned_docs(
         "search_chunks": search_chunks,
         "scheme_tool_returns": scheme_tool_returns,
         "contextual_tool_returns": contextual_tool_returns,
+        "tool_outcomes": tool_outcomes,
     }
 
 
@@ -321,3 +342,47 @@ def _truncate(value: str, *, max_chars: int) -> str:
     if len(text) <= max_chars:
         return text
     return text[:max_chars].rstrip() + "…"
+
+
+def _classify_tool_outcome(tool_name: str, raw_content: str) -> str:
+    """Infer a coarse outcome label from a tool-return payload."""
+    text = (raw_content or "").strip()
+    lower = text.lower()
+    if not text:
+        return "unknown"
+
+    if tool_name == "check_loan_eligibility":
+        for marker, outcome in _LOAN_OUTCOME_MARKERS:
+            if text.startswith(marker):
+                return outcome
+        if "temporarily unavailable" in lower:
+            return "unavailable"
+        return "unknown"
+
+    if tool_name == "create_health_call":
+        if "booked successfully" in lower:
+            return "success"
+        if "already has an active health call booking" in lower:
+            return "already_booked"
+        if "failed" in lower or "unable to create" in lower:
+            return "failed"
+        if "only handles dairy farming" in lower:
+            return "blocked"
+        return "unknown"
+
+    if tool_name == "create_ai_call":
+        if "ticket number" in lower or "booked successfully" in lower:
+            return "success"
+        if "already has an active artificial insemination booking" in lower:
+            return "already_booked"
+        if "booking could not be confirmed" in lower:
+            return "unconfirmed"
+        if "booking failed" in lower:
+            return "failed"
+        if "only handles dairy farming" in lower:
+            return "blocked"
+        if "milk society" in lower:
+            return "blocked"
+        return "unknown"
+
+    return "unknown"
