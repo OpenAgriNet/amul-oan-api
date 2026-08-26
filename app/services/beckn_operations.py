@@ -561,7 +561,9 @@ class BecknOperationClient:
 
     async def _send(self, operation: BecknOperation, payload: Mapping[str, Any]) -> None:
         await self.store.mark_sent(operation)
-        url = f"{settings.beckn_bap_caller_url.rstrip('/')}/{operation.action}/"
+        # ONIX derives the action from the final path segment. A trailing slash
+        # changes that segment to e.g. ``init/`` and fails route matching.
+        url = f"{settings.beckn_bap_caller_url.rstrip('/')}/{operation.action}"
         owns_client = self._http_client is None
         client = self._http_client or httpx.AsyncClient(timeout=settings.amul_network_timeout_s)
         try:
