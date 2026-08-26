@@ -206,8 +206,10 @@ class ShcCallbackDuringPostClient:
     def __init__(self, store: BecknOperationStore):
         self.store = store
         self.payload = None
+        self.url = None
 
     async def post(self, url, json=None):
+        self.url = url
         self.payload = json
         ctx = json["context"]
         callback = {
@@ -310,6 +312,7 @@ async def test_shc_init_is_directed_and_waits_for_on_init(monkeypatch):
     )
 
     assert result.ok
+    assert http_client.url == "http://onix/bap/caller/init"
     sent = http_client.payload
     assert sent["context"]["action"] == "init"
     assert sent["context"]["domain"] == "schemes:vistaar"
