@@ -28,6 +28,18 @@ def _nack(code: str, message: str) -> dict[str, Any]:
     }
 
 
+def _is_enabled_callback(callback_action: str, payload: dict[str, Any]) -> bool:
+    if settings.beckn_callback_transactions_enabled:
+        return True
+    context = payload.get("context") or {}
+    return (
+        settings.vistaar_shc_enabled
+        and callback_action == "on_init"
+        and context.get("action") == "on_init"
+        and context.get("domain") == "schemes:vistaar"
+    )
+
+
 @router.post("/{callback_action}")
 async def receive_callback(
     callback_action: str,
@@ -41,7 +53,7 @@ async def receive_callback(
     The default-off feature gate prevents an accidentally exposed application
     route from becoming an unsigned callback bypass during rollout.
     """
-    if not settings.beckn_callback_transactions_enabled:
+    if not _is_enabled_callback(callback_action, payload):
         return JSONResponse(
             status_code=503,
             content=_nack("CALLBACK_INGRESS_DISABLED", "Beckn callback transactions are disabled"),

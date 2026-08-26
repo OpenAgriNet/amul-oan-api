@@ -469,6 +469,10 @@ class Settings(BaseSettings):
     beckn_callback_transactions_enabled: bool = _get_bool_env(
         "BECKN_CALLBACK_TRANSACTIONS_ENABLED", default=False
     )
+    # SHC has its own rollout gate because enabling its init/on_init flow must
+    # not switch unrelated booking tools away from their deployed synchronous
+    # adapters before those BPPs emit durable callbacks.
+    vistaar_shc_enabled: bool = _get_bool_env("VISTAAR_SHC_ENABLED", default=False)
     # ONIX BAP caller base, e.g. http://amul-onix:3001/bap/caller. The client
     # appends /confirm/ or /status/.
     beckn_bap_caller_url: str = os.getenv("BECKN_BAP_CALLER_URL", "").rstrip("/")
