@@ -24,6 +24,7 @@ from app.core.cache import cache
 from agents.deps import FarmerContext
 from agents.farmer_context import get_farmer_context_bundle_by_mobile
 from agents.tools.farmer import normalize_phone_to_mobile
+from agents.tools.session_shc import get_session_shc_context
 from app.services.translation import (
     translate_text,
     translate_to_english_pretranslation,
@@ -698,8 +699,17 @@ async def stream_chat_messages(
                 yield fail_closed_message
                 return
 
+            if persona == "farmer":
+                deps.soil_health_card_context = (
+                    await get_session_shc_context(session_id, loan_mobile)
+                ) or ""
             user_message = deps.get_user_message()
-            logger.info("request_id=%s running_agent=True user_message=%s", request_id, user_message)
+            logger.info(
+                "request_id=%s running_agent=True user_query=%s private_shc_context=%s",
+                request_id,
+                deps.query,
+                bool(deps.soil_health_card_context),
+            )
 
             # Run the main agent
             # Strip prior-turn tool calls + their search_documents results from the

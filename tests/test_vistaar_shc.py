@@ -79,6 +79,26 @@ def _ctx(mobile="9924457046"):
     return SimpleNamespace(deps=deps, tool_call_id="tool-1")
 
 
+def _report_html() -> str:
+    return """
+    <html><body>
+      <div>Farmer Name</div><div>Private Person</div>
+      <div>Plot Address</div><div>Private Address</div>
+      <div>Soil Type</div><div>: Black Cotton Soil</div>
+      <h2>Soil Sample Details</h2>
+      <div>Available Nitrogen</div><span>(N)</span><b>175.53</b><span>kg/ha</span><span>Range :</span><span>280 – 560</span>
+      <div>Available Phosphorus</div><span>(P)</span><b>45.10</b><span>kg/ha</span><span>Range :</span><span>10 – 25</span>
+      <div>pH</div><span>(pH)</span><b>7.65</b><span>Range :</span><span>5.5 - 8.5</span>
+      <h2>MEASURED SCALE</h2>
+      <h2>Recommendation</h2>
+      <table>
+        <tr><th>Crop</th><th>Fertilizer Combination-1</th></tr>
+        <tr><td>Wheat</td><td>Urea 100 kg/ha</td></tr>
+      </table>
+    </body></html>
+    """
+
+
 @pytest.mark.asyncio
 async def test_tool_uses_independent_shc_feature_gate(monkeypatch):
     tool_def = SimpleNamespace(name="get_vistaar_soil_health_card")
@@ -112,21 +132,43 @@ def test_rejects_invalid_cycle_and_phone_is_not_a_model_argument():
 
 
 @pytest.mark.asyncio
-async def test_success_attaches_html_outside_the_tool_text(monkeypatch):
-    html = "<html><body><h1>Soil Health Card</h1><p>Private report</p></body></html>"
+async def test_success_attaches_html_and_gives_agronomic_data_to_agent(monkeypatch):
+    html = _report_html()
     client = FakeClient(BecknActionResult(_operation(), _callback(html)))
     monkeypatch.setattr(shc, "get_beckn_operation_client", lambda: client)
+    stored = {}
+
+    async def fake_store(session_id, mobile, context):
+        stored.update(session_id=session_id, mobile=mobile, context=context)
+
+    monkeypatch.setattr(shc, "set_session_shc_context", fake_store)
     ctx = _ctx()
 
     result = await shc.get_vistaar_soil_health_card(ctx, "2024-25")
 
     assert "attached" in result
-    assert "Private report" not in result
+    assert "Available Nitrogen (N): 175.53 kg/ha" in result
+    assert "Wheat" in result
+    assert "Private Person" not in result
+    assert "Private Address" not in result
     assert client.kwargs["mobile"] == "+919924457046"
+    assert stored["session_id"] == "session-1"
+    assert stored["mobile"] == "+919924457046"
+    assert "Available Phosphorus (P): 45.10 kg/ha" in stored["context"]
     artifact = ctx.deps.take_chat_artifacts()[0]
     assert artifact["kind"] == "soil_health_card"
     assert artifact["content"] == html
     assert artifact["cycle"] == "2024-25"
+
+
+def test_agent_context_extracts_only_agronomic_report_data():
+    context = shc._extract_agent_context(_report_html(), "2024-25")
+    assert "Soil type: Black Cotton Soil" in context
+    assert "Available Nitrogen (N): 175.53 kg/ha" in context
+    assert "card reference range: 280 – 560" in context
+    assert "Crop: Wheat" in context
+    assert "Private Person" not in context
+    assert "Private Address" not in context
 
 
 @pytest.mark.asyncio
