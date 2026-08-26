@@ -5,12 +5,14 @@ from __future__ import annotations
 import base64
 import binascii
 import re
+from html.parser import HTMLParser
 from typing import Any, Iterable, Mapping
 
 from pydantic_ai import RunContext
 from pydantic_ai.tools import ToolDefinition
 
 from agents.deps import FarmerContext
+from agents.tools.session_shc import set_session_shc_context
 from app.config import settings
 from app.services.beckn_operations import OperationState, get_beckn_operation_client
 from helpers.utils import get_logger
@@ -22,6 +24,193 @@ _DATA_HTML_RE = re.compile(
     r"^data:text/html(?:\s*;\s*charset=[^;,]+)?\s*;\s*base64,(.*)$",
     flags=re.IGNORECASE | re.DOTALL,
 )
+_REPORT_FIELDS = {
+    "available nitrogen",
+    "available phosphorus",
+    "available potassium",
+    "ph",
+    "ec",
+    "organic carbon",
+    "available sulphur",
+    "available zinc",
+    "available boron",
+    "available iron",
+    "available manganese",
+    "available copper",
+}
+_REPORT_SECTION_ENDS = {"measured scale", "recommendation"}
+_AGENT_CONTEXT_MAX_CHARS = 6_000
+
+
+class _ReportHTMLParser(HTMLParser):
+    """Collect visible report text and recommendation-table rows.
+
+    The provider owns the presentation HTML, so extraction deliberately relies
+    on semantic labels rather than classes or layout.  Script/style bodies are
+    never included in model context.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.text: list[str] = []
+        self.rows: list[list[str]] = []
+        self._skip_depth = 0
+        self._row: list[str] | None = None
+        self._cell: list[str] | None = None
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        del attrs
+        tag = tag.casefold()
+        if tag in {"script", "style", "noscript"}:
+            self._skip_depth += 1
+        elif tag == "tr":
+            self._row = []
+        elif tag in {"td", "th"} and self._row is not None:
+            self._cell = []
+        elif tag == "br" and self._cell is not None:
+            self._cell.append(" ")
+
+    def handle_endtag(self, tag: str) -> None:
+        tag = tag.casefold()
+        if tag in {"script", "style", "noscript"} and self._skip_depth:
+            self._skip_depth -= 1
+        elif tag in {"td", "th"} and self._cell is not None and self._row is not None:
+            self._row.append(_clean_text("".join(self._cell)))
+            self._cell = None
+        elif tag == "tr" and self._row is not None:
+            if any(self._row):
+                self.rows.append(self._row)
+            self._row = None
+            self._cell = None
+
+    def handle_data(self, data: str) -> None:
+        if self._skip_depth:
+            return
+        value = _clean_text(data)
+        if value:
+            self.text.append(value)
+            if self._cell is not None:
+                self._cell.append(data)
+
+
+def _clean_text(value: str) -> str:
+    return re.sub(r"\s+", " ", value).strip()
+
+
+def _soil_type(tokens: list[str]) -> str | None:
+    for index, token in enumerate(tokens[:-1]):
+        folded = token.casefold().rstrip(":")
+        if folded != "soil type":
+            continue
+        value = tokens[index + 1].lstrip(": ").strip()
+        if value:
+            return value
+    return None
+
+
+def _sample_detail_tokens(tokens: list[str]) -> list[str]:
+    start = next(
+        (index + 1 for index, token in enumerate(tokens) if token.casefold() == "soil sample details"),
+        0,
+    )
+    end = next(
+        (
+            index
+            for index, token in enumerate(tokens[start:], start=start)
+            if token.casefold() in _REPORT_SECTION_ENDS
+        ),
+        len(tokens),
+    )
+    return tokens[start:end]
+
+
+def _nutrient_lines(tokens: list[str]) -> list[str]:
+    details = _sample_detail_tokens(tokens)
+    lines: list[str] = []
+    index = 0
+    while index < len(details):
+        label = details[index]
+        if label.casefold() not in _REPORT_FIELDS:
+            index += 1
+            continue
+
+        cursor = index + 1
+        symbol = ""
+        if cursor < len(details) and re.fullmatch(r"\([^()]{1,8}\)", details[cursor]):
+            symbol = f" {details[cursor]}"
+            cursor += 1
+        if cursor >= len(details):
+            break
+        value = details[cursor]
+        cursor += 1
+        unit = ""
+        if cursor < len(details) and not details[cursor].casefold().startswith("range"):
+            unit = f" {details[cursor]}"
+            cursor += 1
+
+        reference = ""
+        if cursor < len(details) and details[cursor].casefold().startswith("range"):
+            cursor += 1
+            if cursor < len(details):
+                reference = details[cursor]
+                cursor += 1
+
+        line = f"- {label}{symbol}: {value}{unit}"
+        if reference:
+            line += f" (card reference range: {reference})"
+        lines.append(line)
+        index = max(cursor, index + 1)
+    return lines
+
+
+def _recommendation_lines(rows: list[list[str]]) -> list[str]:
+    if not rows:
+        return []
+    header_index = next(
+        (
+            index
+            for index, row in enumerate(rows)
+            if any(cell.casefold() == "crop" for cell in row)
+            and any("fertilizer" in cell.casefold() for cell in row)
+        ),
+        None,
+    )
+    if header_index is None:
+        return []
+    header = rows[header_index]
+    lines: list[str] = []
+    for row in rows[header_index + 1 :]:
+        cells = [_clean_text(cell) for cell in row]
+        if not any(cells):
+            continue
+        pairs = [
+            f"{header[index] if index < len(header) else f'Column {index + 1}'}: {value}"
+            for index, value in enumerate(cells)
+            if value
+        ]
+        if pairs:
+            lines.append("- " + "; ".join(pairs))
+    return lines
+
+
+def _extract_agent_context(html: str, cycle: str) -> str:
+    """Return bounded agronomic facts for the model, excluding farmer identity."""
+    parser = _ReportHTMLParser()
+    parser.feed(html)
+    nutrient_lines = _nutrient_lines(parser.text)
+    recommendation_lines = _recommendation_lines(parser.rows)
+    parts = [f"Soil Health Card cycle: {cycle}"]
+    soil_type = _soil_type(parser.text)
+    if soil_type:
+        parts.append(f"Soil type: {soil_type}")
+    if nutrient_lines:
+        parts.extend(["Measured soil values:", *nutrient_lines])
+    if recommendation_lines:
+        parts.extend(["Card fertilizer recommendations:", *recommendation_lines])
+    else:
+        parts.append("Card fertilizer recommendations: no crop-specific recommendation row is listed.")
+    context = "\n".join(parts)
+    return context[:_AGENT_CONTEXT_MAX_CHARS]
 
 
 async def prepare_get_vistaar_soil_health_card(
@@ -142,8 +331,8 @@ async def get_vistaar_soil_health_card(
         cycle: Soil Health Card cycle, e.g. "2024-25" or "2025-26".
 
     Returns:
-        A short status for the assistant. The report itself is attached to the
-        web response outside model text and must not be reproduced as HTML.
+        A bounded agronomic summary for the assistant. The raw report remains a
+        web artifact and must not be reproduced as HTML.
     """
     normalized_cycle = _normalize_cycle(cycle)
     if normalized_cycle is None:
@@ -201,6 +390,12 @@ async def get_vistaar_soil_health_card(
             "cycle": normalized_cycle,
         }
     )
+    agent_context = _extract_agent_context(html, normalized_cycle)
+    await set_session_shc_context(
+        ctx.deps.session_id,
+        mobile,
+        agent_context,
+    )
     logger.info(
         "soil health card attached cycle=%s transaction_id=%s bytes=%d",
         normalized_cycle,
@@ -209,5 +404,9 @@ async def get_vistaar_soil_health_card(
     )
     return (
         f"FOUND. The farmer's Soil Health Card for cycle {normalized_cycle} is attached "
-        "below the reply. Tell them it is ready to view; do not reproduce raw HTML."
+        "below the reply. Use the exact card data below to answer directly and summarize "
+        "the important nutrient findings. Do not tell the farmer merely to inspect the "
+        "attachment, and do not reproduce raw HTML. If no crop-specific recommendation "
+        "is listed, say so and ask which crop they plan to grow before suggesting a dose.\n\n"
+        f"{agent_context}"
     )

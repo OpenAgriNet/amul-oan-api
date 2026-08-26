@@ -65,6 +65,7 @@ class FarmerContext(BaseModel):
     use_translation_pipeline: bool = Field(default=False, description="When True, use English-only prompt; response is translated externally (chat).")
     response_max_chars: Optional[int] = Field(default=None, description="Optional channel-specific final response character guidance (chat).")
     supports_rich_artifacts: bool = Field(default=False, description="Whether this channel can render private rich documents such as SHC HTML.")
+    soil_health_card_context: str = Field(default="", description="Bounded agronomic facts from this signed-in session's latest Soil Health Card.")
     persona: Literal['farmer', 'doctor'] = Field(default='farmer', description="Resolved chat persona for this turn.")
 
     # Handle to the per-turn content-moderation task, which runs concurrently with
@@ -159,4 +160,14 @@ class FarmerContext(BaseModel):
 
     def get_user_message(self):
         """Get the user message for the agrinet agent."""
-        return self._query_string()
+        query = self._query_string()
+        context = self.soil_health_card_context.strip()
+        if not context:
+            return query
+        return (
+            "**Private Soil Health Card context for this signed-in session:**\n"
+            f"{context}\n\n"
+            "Use these exact values when the user refers to their soil, card, nutrient "
+            "levels, or fertilizer needs. Answer directly instead of telling them to "
+            f"inspect the attachment.\n\n{query}"
+        )
