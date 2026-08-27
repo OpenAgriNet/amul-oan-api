@@ -1,13 +1,21 @@
 """
 Tool for fetching farmer milk collection and deduction details.
 """
+import asyncio
 import os
 
 from pydantic_ai import RunContext
 from pydantic_ai.tools import ToolDefinition
 
 from agents.deps import FarmerContext
+from agents.services.beckn_amul import (
+    authenticated_accounts,
+    fetch_authenticated_farmers,
+    fetch_milk_collection,
+)
 from agents.tools.farmer_animal_backends import get_farmer_milk_collection_details_api
+from agents.tools.farmer import get_farmer_data_by_mobile
+from app.config import settings
 from app.models.milk_collection import FarmerMilkCollectionRequestModel
 from helpers.utils import get_logger
 
@@ -31,7 +39,10 @@ async def prepare_get_farmer_milk_collection_details(
         for cleaned in ((u or "").strip().lower() for u in (ctx.deps.farmer_unions or []))
         if cleaned
     ]
-    if farmer_unions:
+    # The lookup is keyed exclusively by the authenticated mobile in deps. A
+    # visible farmer context without that identity is insufficient because the
+    # model must never be trusted to supply union/society/farmer identifiers.
+    if farmer_unions and (getattr(ctx.deps, "mobile", None) or "").strip():
         return tool_def
     logger.info(
         "Hiding get_farmer_milk_collection_details tool because farmer_unions is "
@@ -138,9 +149,7 @@ def _format_milk_collection_markdown(response) -> str:
 
 
 async def get_farmer_milk_collection_details(
-    union_code: str,
-    society_code: str,
-    farmer_code: str,
+    ctx: RunContext[FarmerContext],
     fromdate: str,
     todate: str,
 ) -> str:
@@ -148,9 +157,7 @@ async def get_farmer_milk_collection_details(
     Retrieve farmer milk collection records and deduction entries for a date range.
 
     Args:
-        union_code: Union code for the farmer from farmer context.
-        society_code: Society code for the farmer from farmer context.
-        farmer_code: Farmer code for the farmer from farmer context.
+        ctx: Authenticated farmer context supplied by the agent runtime.
         fromdate: Start date in YYYY-MM-DD format.
         todate: End date in YYYY-MM-DD format.
 
@@ -158,69 +165,108 @@ async def get_farmer_milk_collection_details(
         str: Deterministic markdown tables for milk and deductions, or a clear failure message.
     """
     logger.info(
-        "Farmer milk collection tool invoked for union=%s society=%s farmer=%s from=%s to=%s",
-        union_code,
-        society_code,
-        farmer_code,
+        "Farmer milk collection tool invoked from=%s to=%s",
         fromdate,
         todate,
     )
 
-    token = os.getenv("PASHUGPT_TOKEN")
-    if not token:
-        logger.error("PASHUGPT_TOKEN is not set")
-        return "Milk collection lookup failed.\n\nPASHUGPT_TOKEN is not configured."
-
-    missing = [
-        name
-        for name, value in (
-            ("union_code", union_code),
-            ("society_code", society_code),
-            ("farmer_code", farmer_code),
-        )
-        if _is_missing_code(value)
-    ]
-    if missing:
-        logger.info(
-            "Farmer milk collection tool refused: missing/placeholder codes %s "
-            "(union=%s society=%s farmer=%s)",
-            missing,
-            union_code,
-            society_code,
-            farmer_code,
-        )
+    mobile = (ctx.deps.mobile or "").strip() if ctx and ctx.deps else ""
+    if not mobile:
+        logger.info("Farmer milk collection tool refused: no authenticated mobile")
         return (
             "Milk collection lookup failed.\n\n"
-            "Could not determine your union, society, and farmer codes from the "
-            "current farmer context, so milk collection details can't be fetched."
+            "Your signed-in farmer profile is not available, so milk collection "
+            "details can't be fetched."
         )
 
     try:
-        request = FarmerMilkCollectionRequestModel(
-            unionCode=union_code,
-            societyCode=society_code,
-            farmerCode=farmer_code,
+        validation_request = FarmerMilkCollectionRequestModel(
+            unionCode="1",
+            societyCode="1",
+            farmerCode="1",
             fromdate=fromdate,
             todate=todate,
         )
-        request.validate_date_range()
+        validation_request.validate_date_range()
     except ValueError as exc:
         logger.info(
-            "Farmer milk collection validation failed for union=%s society=%s farmer=%s: %s",
-            union_code,
-            society_code,
-            farmer_code,
-            str(exc),
+            "Farmer milk collection validation failed: %s", str(exc)
         )
         return f"Milk collection lookup failed.\n\n{str(exc)}"
 
-    response = await get_farmer_milk_collection_details_api(request, token)
-    if response is None:
+    use_amul_bpp = settings.enable_network and settings.beckn_callback_transactions_enabled
+    session_id = ctx.deps.session_id if ctx and ctx.deps else None
+    tool_call_id = getattr(ctx, "tool_call_id", None)
+    try:
+        farmers = (
+            await fetch_authenticated_farmers(
+                mobile,
+                session_id=session_id,
+                tool_call_id=tool_call_id,
+            )
+            if use_amul_bpp
+            else await get_farmer_data_by_mobile(mobile)
+        )
+    except Exception as exc:
+        logger.warning("Farmer profile lookup for milk collection failed: %s", exc)
+        return (
+            "Milk collection lookup failed.\n\n"
+            "Unable to fetch milk collection details at the moment."
+        )
+
+    accounts = authenticated_accounts(farmers or [])
+    if not accounts:
+        return (
+            "Milk collection lookup failed.\n\n"
+            "No union, society, and farmer account was found for your signed-in mobile."
+        )
+
+    if use_amul_bpp:
+        outcomes = await asyncio.gather(
+            *(
+                fetch_milk_collection(
+                    account,
+                    fromdate=fromdate,
+                    todate=todate,
+                    session_id=session_id,
+                    # One tool invocation may fan out across several owned
+                    # accounts. Keep each durable operation distinct without
+                    # putting farmer identifiers into its correlation key.
+                    tool_call_id=(f"{tool_call_id}:account-{index}" if tool_call_id else None),
+                )
+                for index, account in enumerate(accounts)
+            ),
+            return_exceptions=True,
+        )
+    else:
+        token = os.getenv("PASHUGPT_TOKEN")
+        if not token:
+            logger.error("PASHUGPT_TOKEN is not set")
+            return "Milk collection lookup failed.\n\nProvider access is not configured."
+        outcomes = await asyncio.gather(
+            *(
+                get_farmer_milk_collection_details_api(
+                    FarmerMilkCollectionRequestModel(
+                        unionCode=account.union_code,
+                        societyCode=account.society_code,
+                        farmerCode=account.farmer_code,
+                        fromdate=fromdate,
+                        todate=todate,
+                    ),
+                    token,
+                )
+                for account in accounts
+            ),
+            return_exceptions=True,
+        )
+
+    responses = [
+        response for response in outcomes
+        if response is not None and not isinstance(response, BaseException)
+    ]
+    if not responses:
         logger.info(
-            "Farmer milk collection lookup failed for union=%s society=%s farmer=%s from=%s to=%s",
-            union_code,
-            society_code,
-            farmer_code,
+            "Farmer milk collection lookup failed for all authenticated accounts from=%s to=%s",
             fromdate,
             todate,
         )
@@ -229,17 +275,21 @@ async def get_farmer_milk_collection_details(
             "Unable to fetch milk collection details at the moment."
         )
 
+    from app.models.milk_collection import FarmerMilkCollectionResponseModel
+
+    response = FarmerMilkCollectionResponseModel(
+        result="success",
+        milk=[record for result in responses for record in result.milk],
+        deduction=[record for result in responses for record in result.deduction],
+    )
+
     formatted = _format_milk_collection_markdown(response)
     logger.info(
-        "Farmer milk collection lookup succeeded for union=%s society=%s farmer=%s from=%s to=%s milk_records=%s deductions=%s",
-        union_code,
-        society_code,
-        farmer_code,
+        "Farmer milk collection lookup succeeded accounts=%s from=%s to=%s milk_records=%s deductions=%s",
+        len(accounts),
         fromdate,
         todate,
         len(response.milk),
         len(response.deduction),
     )
     return f"Farmer milk collection details fetched successfully:\n\n{formatted}"
-
-

@@ -52,7 +52,7 @@ TOOLS = [
     
     Tool(
         get_farmer_milk_collection_details,
-        takes_ctx=False,
+        takes_ctx=True,  # identity and account codes come only from signed-in deps
         docstring_format='auto',
         require_parameter_descriptions=True,
         prepare=prepare_get_farmer_milk_collection_details,  # hide unless a farmer is resolved

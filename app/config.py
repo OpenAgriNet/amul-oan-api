@@ -3,7 +3,7 @@ import logging
 import math
 from pathlib import Path
 from typing import ClassVar, List, Optional
-from pydantic import Field, ValidationInfo, field_validator
+from pydantic import Field, ValidationInfo, field_validator, model_validator
 from pydantic_settings import BaseSettings
 from dotenv import load_dotenv
 
@@ -481,13 +481,22 @@ class Settings(BaseSettings):
     # ONIX BAP caller base, e.g. http://amul-onix:3001/bap/caller. The client
     # appends /confirm/ or /status/.
     beckn_bap_caller_url: str = os.getenv("BECKN_BAP_CALLER_URL", "").rstrip("/")
+    # Bearer credential for the private VM6 transaction bridge. This is
+    # separate from the reverse callback credential and from ONIX signing keys.
+    beckn_transaction_bridge_token: Optional[str] = os.getenv("BECKN_TRANSACTION_BRIDGE_TOKEN")
     beckn_bap_id: str = os.getenv("BECKN_BAP_ID", "bap.amul-net.internal")
     # Public ONIX callback receiver base; ONIX validates/signature-routes the
     # callback to this application's /api/beckn/on_* ingress.
     beckn_bap_uri: str = os.getenv("BECKN_BAP_URI", "")
-    beckn_booking_bpp_id: str = os.getenv("BECKN_BOOKING_BPP_ID", "bpp-booking.amul-net.internal")
-    beckn_booking_bpp_uri: str = os.getenv("BECKN_BOOKING_BPP_URI", "")
+    # Every Amul-owned domain is exposed by one registered BPP participant.
+    # The public receiver URI is injected per environment; raw upstream hosts
+    # remain private to the application-BPP adapters.
+    beckn_amul_bpp_id: str = os.getenv("BECKN_AMUL_BPP_ID", "bpp-amul.amul-net.internal")
+    beckn_amul_bpp_uri: str = os.getenv("BECKN_AMUL_BPP_URI", "")
     beckn_booking_domain: str = os.getenv("BECKN_BOOKING_DOMAIN", "services:amul-vet-booking")
+    beckn_milk_domain: str = "services:amul-milk-collection"
+    beckn_farmer_domain: str = "data:amul-farmer-profile"
+    beckn_animal_domain: str = "data:amul-animal-profile"
     beckn_country_code: str = os.getenv("BECKN_COUNTRY_CODE", "IND")
     beckn_city_code: str = os.getenv("BECKN_CITY_CODE", "std:079")
     beckn_message_ttl: str = os.getenv("BECKN_MESSAGE_TTL", "PT30S")
@@ -675,6 +684,31 @@ class Settings(BaseSettings):
         if value is None:
             return ""
         return str(value).rstrip("/")
+
+    @model_validator(mode="after")
+    def _require_beckn_transport_credentials_when_enabled(self):
+        if not (self.beckn_callback_transactions_enabled or self.vistaar_shc_enabled):
+            return self
+        required = {
+            "BECKN_BAP_CALLER_URL": self.beckn_bap_caller_url,
+            "BECKN_BAP_URI": self.beckn_bap_uri,
+            "BECKN_TRANSACTION_BRIDGE_TOKEN": self.beckn_transaction_bridge_token,
+            "BECKN_CALLBACK_TOKEN": self.beckn_callback_token,
+        }
+        if self.beckn_callback_transactions_enabled:
+            required.update(
+                {
+                    "BECKN_AMUL_BPP_ID": self.beckn_amul_bpp_id,
+                    "BECKN_AMUL_BPP_URI": self.beckn_amul_bpp_uri,
+                }
+            )
+        missing = [name for name, value in required.items() if not str(value or "").strip()]
+        if missing:
+            raise ValueError(
+                "Beckn callback transactions require non-empty transport settings: "
+                + ", ".join(missing)
+            )
+        return self
 
     class Config:
         env_file = ".env"

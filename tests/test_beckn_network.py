@@ -168,6 +168,30 @@ async def test_vet_search_formats_items_with_source():
 
 
 @pytest.mark.asyncio
+async def test_vet_search_reads_core_tag_groups():
+    items = [
+        {
+            **VET_ITEMS[0],
+            "tags": [
+                {
+                    "descriptor": {"code": "attributes"},
+                    "list": [
+                        {
+                            "descriptor": {"code": "source"},
+                            "value": "Canonical source",
+                        }
+                    ],
+                }
+            ],
+        }
+    ]
+    fake = _FakeAsyncClient(_seeker_payload("amulvet", items))
+    with patch.object(bn.httpx, "AsyncClient", return_value=fake):
+        out = await bn.network_search_documents("mastitis")
+    assert "source: Canonical source" in out
+
+
+@pytest.mark.asyncio
 async def test_vet_search_empty():
     fake = _FakeAsyncClient(_seeker_payload("amulvet", []))
     with patch.object(bn.httpx, "AsyncClient", return_value=fake):
@@ -194,6 +218,21 @@ async def test_union_schemes_filters_by_union():
     parsed = json.loads(out)
     assert all(s["union"] == "banas" for s in parsed)
     assert parsed[0]["scheme_title"] == "Cattle Insurance"
+    intent = fake.calls[0][1]["intent"]
+    assert intent["provider"]["id"] == "banas-union"
+    assert intent["tags"][0]["descriptor"]["code"] == "filter"
+    assert intent["tags"][0]["list"][0] == {
+        "descriptor": {"code": "union"},
+        "value": "banas",
+    }
+
+
+@pytest.mark.asyncio
+async def test_union_provider_mismatch_does_not_fall_back_to_other_union():
+    fake = _FakeAsyncClient(_seeker_payload("amulschemes", [SCHEME_ITEMS[1]]))
+    with patch.object(bn.httpx, "AsyncClient", return_value=fake):
+        out = await bn.network_union_schemes("mineral", union="banas")
+    assert "No scheme data was found" in out
 
 
 @pytest.mark.asyncio
@@ -294,6 +333,24 @@ async def test_dead_leg_with_no_error_entry_is_still_flagged():
     with patch.object(bn.httpx, "AsyncClient", return_value=fake):
         out = await bn.network_union_schemes("crop insurance")
     assert "temporarily unavailable" in out.lower()
+
+
+@pytest.mark.asyncio
+async def test_signed_beckn_error_callback_is_flagged_unavailable():
+    fake = _FakeAsyncClient(
+        {
+            "results": {
+                "amulschemes": {
+                    "context": {"action": "on_search"},
+                    "error": {"code": "AMUL_SOURCE_UNAVAILABLE", "message": "source unavailable"},
+                }
+            }
+        }
+    )
+    with patch.object(bn.httpx, "AsyncClient", return_value=fake):
+        out = await bn.network_union_schemes("insurance")
+    assert "temporarily unavailable" in out.lower()
+    assert "No scheme data was found" not in out
 
 
 @pytest.mark.asyncio

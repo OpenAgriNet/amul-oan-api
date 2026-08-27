@@ -145,16 +145,13 @@ async def create_ai_call(
         str: Formatted result with assigned AIT details and ticket number,
              or a message if booking fails.
     """
+    session_id = ctx.deps.session_id if ctx and ctx.deps else None
+    tool_call_id = getattr(ctx, "tool_call_id", None)
     logger.info(
-        "Create AI call tool invoked for union=%s society=%s farmer=%s user_id=%s species=%s",
-        union_code,
-        society_code,
-        farmer_code,
-        user_id,
+        "Create AI call tool invoked session=%s species=%s",
+        session_id,
         species.value,
     )
-
-    session_id = ctx.deps.session_id if ctx and ctx.deps else None
 
     # Booking idempotency is a PRODUCT TRADE-OFF, so it is a config flag rather
     # than a code decision — the two branches disagreed about it and kept
@@ -197,6 +194,61 @@ async def create_ai_call(
         lang_code = getattr(ctx.deps, "lang_code", None) if ctx and ctx.deps else None
         return union_banned_message(lang_code)
 
+    if settings.enable_network and settings.beckn_callback_transactions_enabled:
+        # Re-resolve the account and technician through signed, directed Beckn
+        # reads immediately before the irreversible confirm. Tool arguments only
+        # select among owned records; canonical callback values are forwarded.
+        from agents.services.beckn_amul import (
+            resolve_authenticated_account,
+            search_ai_technicians,
+        )
+
+        mobile = (getattr(ctx.deps, "mobile", None) or "").strip()
+        if not mobile:
+            return (
+                "Artificial insemination call booking failed.\n\n"
+                "Your signed-in farmer profile is not available."
+            )
+        try:
+            account = await resolve_authenticated_account(
+                mobile,
+                union_code=union_code,
+                society_code=society_code,
+                farmer_code=farmer_code,
+                session_id=session_id,
+                tool_call_id=tool_call_id,
+            )
+            if account is None:
+                return (
+                    "Artificial insemination call booking failed.\n\n"
+                    "The selected farmer account does not belong to your signed-in profile."
+                )
+            technicians = await search_ai_technicians(
+                union_code=account.union_code,
+                society_code=account.society_code,
+                session_id=session_id,
+                tool_call_id=tool_call_id,
+            )
+            technician = next(
+                (candidate for candidate in technicians if candidate.userId == user_id),
+                None,
+            )
+            if technician is None or not technician.userId:
+                return (
+                    "Artificial insemination call booking failed.\n\n"
+                    "The selected technician is not available for your society."
+                )
+        except Exception as exc:
+            logger.warning("AI booking identity verification failed: %s", exc)
+            return (
+                "Artificial insemination call booking failed.\n\n"
+                "Unable to verify your farmer and technician details at the moment."
+            )
+        union_code = account.union_code
+        society_code = account.society_code
+        farmer_code = account.farmer_code
+        user_id = technician.userId
+
     _ai_tool_input = {
         "union_code": union_code,
         "society_code": society_code,
@@ -216,7 +268,7 @@ async def create_ai_call(
             species,
             session_id,
             _ai_tool_input,
-            tool_call_id=getattr(ctx, "tool_call_id", None),
+            tool_call_id=tool_call_id,
         )
 
     return await _book_direct(
