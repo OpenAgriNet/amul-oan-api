@@ -79,10 +79,28 @@ SARHAD_SOURCE = SchemeSource(
     content_type="html",
 )
 
-SCHEME_SOURCES: tuple[SchemeSource, ...] = (BANAS_SOURCE, SARHAD_SOURCE)
+SUMUL_SOURCE = SchemeSource(
+    source_name="sumul",
+    union_name=UnionName.SUMUL.value,
+    source_url="https://www.sumul.com/farmer-section.html",
+    cache_key="sumul.com/farmer-section",
+    content_type="pdf",
+)
+
+SURSAGAR_SOURCE = SchemeSource(
+    source_name="sursagar",
+    union_name=UnionName.SURENDRANAGAR.value,
+    source_url="https://sursagardairy.com/Farmer/MilkProducers",
+    cache_key="sursagardairy.com/farmer/milkproducers",
+    content_type="pdf",
+)
+
+SCHEME_SOURCES: tuple[SchemeSource, ...] = (BANAS_SOURCE, SARHAD_SOURCE, SUMUL_SOURCE, SURSAGAR_SOURCE)
 SUPPORTED_UNION_SOURCE_MAP = {
     UnionName.BANAS.value: (BANAS_SOURCE,),
     UnionName.KUTCH.value: (SARHAD_SOURCE,),
+    UnionName.SUMUL.value: (SUMUL_SOURCE,),
+    UnionName.SURENDRANAGAR.value: (SURSAGAR_SOURCE,),
 }
 
 _WHITESPACE_RE = re.compile(r"\s+")
@@ -473,6 +491,111 @@ def parse_banas_scheme_links(html: str) -> list[dict[str, str]]:
     return records
 
 
+def parse_sumul_scheme_links(html: str) -> list[dict[str, str]]:
+    """Extract PDF links and titles from the Sumul farmer-section accordion page.
+
+    Each ``sumul-farmer-short__item`` block contains a ``<strong>`` title inside
+    ``sumul-farmer-short__titles`` and one or more ``<a href="...pdf">`` links
+    in the content area.
+    """
+    logger.info("Parsing Sumul scheme links from HTML content_length=%s", len(html))
+
+    items = re.findall(
+        r'<div[^>]*class="[^"]*\bsumul-farmer-short__item\b[^"]*"[^>]*>(.*?)</div>\s*</div>\s*</div>',
+        html,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    if not items:
+        logger.warning("No Sumul accordion items found; falling back to PDF anchor scan")
+        items = [html]
+
+    seen: set[tuple[str, str]] = set()
+    records: list[dict[str, str]] = []
+    for item_html in items:
+        title_match = re.search(
+            r'<span[^>]*class="[^"]*\bsumul-farmer-short__titles\b[^"]*"[^>]*>.*?<strong>(.*?)</strong>',
+            item_html,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        if not title_match:
+            title_match = re.search(r"<strong>(.*?)</strong>", item_html, flags=re.IGNORECASE | re.DOTALL)
+        raw_title = _strip_html(title_match.group(1)) if title_match else ""
+        scheme_title = _normalize_title(raw_title) if raw_title else ""
+
+        pdf_matches = re.findall(
+            r'<a[^>]*href="([^"]+\.pdf[^"]*)"[^>]*>',
+            item_html,
+            flags=re.IGNORECASE,
+        )
+        for href in pdf_matches:
+            scheme_url = urljoin("https://www.sumul.com/", _normalize_text(href))
+            title = scheme_title or scheme_url.rsplit("/", 1)[-1]
+            dedupe_key = (scheme_url, title.casefold())
+            if dedupe_key in seen:
+                continue
+            seen.add(dedupe_key)
+            records.append({"scheme_title": title, "scheme_url": scheme_url})
+
+    logger.info("Parsed Sumul scheme links deduplicated_count=%s", len(records))
+    return records
+
+
+def parse_sursagar_scheme_links(html: str) -> list[dict[str, str]]:
+    """Extract PDF links and titles from the Sursagar milk-producers page.
+
+    Each scheme card has a ``<h6 class="... producer-title" title="...">`` with
+    the Gujarati title, followed by one or more ``DownloadMilkProducerFile``
+    PDF links.
+    """
+    logger.info("Parsing Sursagar scheme links from HTML content_length=%s", len(html))
+
+    card_pattern = re.compile(
+        r'<h6[^>]*class="[^"]*\bproducer-title\b[^"]*"[^>]*title="([^"]*)"[^>]*>'
+        r'(.*?)'
+        r'(?=<h6[^>]*class="[^"]*\bproducer-title\b|$)',
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+
+    seen: set[tuple[str, str]] = set()
+    records: list[dict[str, str]] = []
+
+    for title_attr, card_html in card_pattern.findall(html):
+        scheme_title = _normalize_title(title_attr)
+        if not scheme_title:
+            continue
+
+        pdf_matches = re.findall(
+            r'<a[^>]*href="(/Farmer/DownloadMilkProducerFile\?file=[^"]+)"[^>]*>',
+            card_html,
+            flags=re.IGNORECASE,
+        )
+        for href in pdf_matches:
+            scheme_url = urljoin("https://sursagardairy.com", href)
+            dedupe_key = (scheme_url, scheme_title.casefold())
+            if dedupe_key in seen:
+                continue
+            seen.add(dedupe_key)
+            records.append({"scheme_title": scheme_title, "scheme_url": scheme_url})
+
+    if not records:
+        logger.warning("No Sursagar producer-title cards found; falling back to PDF anchor scan")
+        fallback_matches = re.findall(
+            r'<a[^>]*href="(/Farmer/DownloadMilkProducerFile\?file=[^"]+)"[^>]*>',
+            html,
+            flags=re.IGNORECASE,
+        )
+        for href in fallback_matches:
+            scheme_url = urljoin("https://sursagardairy.com", href)
+            dedupe_key = (scheme_url, "")
+            if dedupe_key in seen:
+                continue
+            seen.add(dedupe_key)
+            records.append({"scheme_title": scheme_url.rsplit("=", 1)[-1], "scheme_url": scheme_url})
+
+    logger.info("Parsed Sursagar scheme links deduplicated_count=%s", len(records))
+    return records
+
+
 def parse_sarhad_scheme_sections(html: str) -> list[dict[str, str]]:
     logger.info("Parsing Sarhad scheme sections from HTML content_length=%s", len(html))
     content_match = re.search(
@@ -698,33 +821,34 @@ async def extract_text_from_pdf_bytes(client: httpx.AsyncClient, pdf_bytes: byte
     return combined_text
 
 
-async def _build_banas_record(
+async def _build_pdf_record(
     client: httpx.AsyncClient,
     source: SchemeSource,
     scheme_title: str,
     scheme_url: str,
     last_refreshed_at: str,
 ) -> dict[str, Any] | None:
-    logger.info("Building Banas scheme record title=%s url=%s", scheme_title, scheme_url)
+    """Download a single PDF, OCR it, and return a scheme record dict (or None on failure)."""
+    logger.info("Building PDF scheme record source=%s title=%s url=%s", source.source_name, scheme_title, scheme_url)
     try:
         pdf_bytes = await fetch_bytes(client, scheme_url)
         content = await extract_text_from_pdf_bytes(client, pdf_bytes)
     except SchemeDependencyError:
         raise
     except SchemeFetchError as exc:
-        logger.warning("Skipping Banas scheme due to fetch error title=%s url=%s error=%s", scheme_title, scheme_url, exc)
+        logger.warning("Skipping scheme PDF due to fetch error source=%s title=%s url=%s error=%s", source.source_name, scheme_title, scheme_url, exc)
         return None
     except SchemeParseError as exc:
-        logger.warning("Skipping Banas scheme due to parse error title=%s url=%s error=%s", scheme_title, scheme_url, exc)
+        logger.warning("Skipping scheme PDF due to parse error source=%s title=%s url=%s error=%s", source.source_name, scheme_title, scheme_url, exc)
         return None
     except Exception as exc:
-        logger.exception("Unexpected error while building Banas scheme record title=%s url=%s", scheme_title, scheme_url)
+        logger.exception("Unexpected error while building scheme PDF record source=%s title=%s url=%s", source.source_name, scheme_title, scheme_url)
         return None
     if not content:
-        logger.warning("Skipping Banas scheme due to empty extracted PDF content title=%s url=%s", scheme_title, scheme_url)
+        logger.warning("Skipping scheme PDF due to empty extracted content source=%s title=%s url=%s", source.source_name, scheme_title, scheme_url)
         return None
 
-    logger.info("Built Banas scheme record title=%s content_length=%s", scheme_title, len(content))
+    logger.info("Built PDF scheme record source=%s title=%s content_length=%s", source.source_name, scheme_title, len(content))
     return {
         "union_name": source.union_name,
         "source_url": source.source_url,
@@ -735,6 +859,10 @@ async def _build_banas_record(
         "source_name": source.source_name,
         "last_refreshed_at": last_refreshed_at,
     }
+
+
+# Keep backward-compatible alias used by tests.
+_build_banas_record = _build_pdf_record
 
 
 async def _ingest_banas_source(
@@ -780,6 +908,70 @@ async def _ingest_banas_source(
     return final_records
 
 
+async def _ingest_pdf_source(
+    source: SchemeSource,
+    link_records: list[dict[str, str]],
+    client: httpx.AsyncClient,
+    lock_token: str | None = None,
+    redis_client=None,
+) -> list[dict[str, Any]]:
+    """Generic PDF-based ingestion shared by Sumul, Sursagar, and any future PDF source."""
+    if not link_records:
+        raise SchemeParseError(f"no {source.source_name} scheme links parsed")
+    last_refreshed_at = _utcnow_iso()
+    logger.info(
+        "Processing %s PDFs sequentially source=%s record_count=%s",
+        source.source_name,
+        source.cache_key,
+        len(link_records),
+    )
+    final_records: list[dict[str, Any]] = []
+    for record in link_records:
+        built_record = await _build_pdf_record(
+            client=client,
+            source=source,
+            scheme_title=record["scheme_title"],
+            scheme_url=record["scheme_url"],
+            last_refreshed_at=last_refreshed_at,
+        )
+        if built_record:
+            final_records.append(built_record)
+        if lock_token is not None:
+            await extend_refresh_lock(source.cache_key, lock_token, redis_client=redis_client)
+    record_coverage_ratio = len(final_records) / len(link_records)
+    if record_coverage_ratio < SCHEME_BANAS_MIN_RECORD_COVERAGE_RATIO:
+        raise SchemeParseError(
+            f"insufficient {source.source_name} ingestion coverage "
+            f"built={len(final_records)}/{len(link_records)} ratio={record_coverage_ratio:.2f}"
+        )
+    logger.info("Completed %s scheme ingestion source=%s record_count=%s", source.source_name, source.cache_key, len(final_records))
+    return final_records
+
+
+async def _ingest_sumul_source(
+    source: SchemeSource,
+    client: httpx.AsyncClient,
+    lock_token: str | None = None,
+    redis_client=None,
+) -> list[dict[str, Any]]:
+    logger.info("Starting Sumul scheme ingestion source=%s url=%s", source.cache_key, source.source_url)
+    html = await fetch_html(client, source.source_url)
+    link_records = parse_sumul_scheme_links(html)
+    return await _ingest_pdf_source(source, link_records, client, lock_token=lock_token, redis_client=redis_client)
+
+
+async def _ingest_sursagar_source(
+    source: SchemeSource,
+    client: httpx.AsyncClient,
+    lock_token: str | None = None,
+    redis_client=None,
+) -> list[dict[str, Any]]:
+    logger.info("Starting Sursagar scheme ingestion source=%s url=%s", source.cache_key, source.source_url)
+    html = await fetch_html(client, source.source_url)
+    link_records = parse_sursagar_scheme_links(html)
+    return await _ingest_pdf_source(source, link_records, client, lock_token=lock_token, redis_client=redis_client)
+
+
 async def _ingest_sarhad_source(source: SchemeSource, client: httpx.AsyncClient) -> list[dict[str, Any]]:
     logger.info("Starting Sarhad scheme ingestion source=%s url=%s", source.cache_key, source.source_url)
     html = await fetch_html(client, source.source_url)
@@ -822,8 +1014,14 @@ async def refresh_scheme_source(source: SchemeSource, redis_client=None, client:
         client = httpx.AsyncClient(timeout=HTTP_TIMEOUT_SECONDS)
 
     try:
-        if source.source_name == BANAS_SOURCE.source_name:
-            records = await _ingest_banas_source(source, client, lock_token=lock_token, redis_client=redis_client)
+        _PDF_INGEST_MAP = {
+            BANAS_SOURCE.source_name: _ingest_banas_source,
+            SUMUL_SOURCE.source_name: _ingest_sumul_source,
+            SURSAGAR_SOURCE.source_name: _ingest_sursagar_source,
+        }
+        ingest_fn = _PDF_INGEST_MAP.get(source.source_name)
+        if ingest_fn is not None:
+            records = await ingest_fn(source, client, lock_token=lock_token, redis_client=redis_client)
         else:
             records = await _ingest_sarhad_source(source, client)
 

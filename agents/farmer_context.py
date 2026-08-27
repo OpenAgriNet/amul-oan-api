@@ -45,6 +45,8 @@ logger = get_logger(__name__)
 SUPPORTED_SCHEME_CONTEXT_UNIONS = {
     UnionName.BANAS.value,
     UnionName.KUTCH.value,
+    UnionName.SUMUL.value,
+    UnionName.SURENDRANAGAR.value,
 }
 
 
