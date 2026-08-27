@@ -57,10 +57,18 @@ def _items(on_search: Any) -> list[dict]:
 
 
 def _tag_map(item: dict) -> dict[str, str]:
+    """Read canonical Beckn TagGroups and legacy flat tags during cutover."""
     out: dict[str, str] = {}
     for t in item.get("tags", []) or []:
         if "code" in t and "value" in t:
             out[t["code"]] = t["value"]
+        descriptor = t.get("descriptor") or {}
+        if descriptor.get("code") and "value" in t:
+            out[descriptor["code"]] = t["value"]
+        for member in t.get("list", []) or []:
+            code = member.get("code") or (member.get("descriptor") or {}).get("code")
+            if code and "value" in member:
+                out[code] = member["value"]
     return out
 
 
@@ -70,7 +78,10 @@ async def _seeker_search(query: str, leg: str, user_id: Optional[str] = None) ->
 
 
 async def _seeker_search_legs(
-    query: str, legs: list[str], user_id: Optional[str] = None
+    query: str,
+    legs: list[str],
+    user_id: Optional[str] = None,
+    intent: Optional[dict[str, Any]] = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """POST the seeker BAP for one or more legs sharing ONE query string.
 
@@ -84,6 +95,8 @@ async def _seeker_search_legs(
     payload: dict[str, Any] = {"query": query, "legs": legs}
     if user_id:
         payload["user_id"] = user_id
+    if intent:
+        payload["intent"] = intent
     async with httpx.AsyncClient(timeout=settings.amul_network_timeout_s) as client:
         r = await client.post(url, json=payload)
         r.raise_for_status()
@@ -92,7 +105,9 @@ async def _seeker_search_legs(
 
 
 async def _seeker_search_per_leg(
-    queries: dict[str, str], user_id: Optional[str] = None
+    queries: dict[str, str],
+    user_id: Optional[str] = None,
+    intents: Optional[dict[str, dict[str, Any]]] = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Search several legs, each with its OWN query string.
 
@@ -105,7 +120,15 @@ async def _seeker_search_per_leg(
     """
     legs = list(queries)
     outcomes = await asyncio.gather(
-        *(_seeker_search_legs(queries[leg], [leg], user_id) for leg in legs),
+        *(
+            _seeker_search_legs(
+                queries[leg],
+                [leg],
+                user_id,
+                (intents or {}).get(leg),
+            )
+            for leg in legs
+        ),
         return_exceptions=True,
     )
     results: dict[str, Any] = {}
@@ -126,7 +149,8 @@ async def network_search_documents(query: str, top_k: int = 12) -> str:
     """Vet-KB discovery via the network (advisory:amul-vet). Formats items the
     same way the direct Marqo tool does: numbered snippets with source."""
     results, errors = await _seeker_search_per_leg({VET_LEG: query})
-    if errors.get(VET_LEG) or not isinstance(results.get(VET_LEG), dict):
+    result = results.get(VET_LEG)
+    if errors.get(VET_LEG) or not isinstance(result, dict) or result.get("error"):
         # Same distinction as everywhere else: a dead leg is not an empty KB.
         logger.warning("network vet search leg failed error=%s", errors.get(VET_LEG))
         return "The document search is temporarily unavailable. Please try again shortly."
@@ -163,20 +187,43 @@ async def network_union_schemes(query: str, union: Optional[str] = None) -> str:
     union_query = (query or "").strip() or "schemes"
     scheme_code = resolve_scheme_code(query)
     queries = {SCHEMES_LEG: union_query}
+    intents: dict[str, dict[str, Any]] = {}
+    if union:
+        normalized_union = union.strip().lower()
+        intents[SCHEMES_LEG] = {
+            "provider": {"id": f"{normalized_union}-union"},
+            "item": {"descriptor": {"name": union_query}},
+            "tags": [
+                {
+                    "descriptor": {"code": "filter"},
+                    "list": [
+                        {
+                            "descriptor": {"code": "union"},
+                            "value": normalized_union,
+                        }
+                    ],
+                }
+            ],
+        }
     if scheme_code:
         queries[VISTAAR_LEG] = scheme_code
     logger.info(
         "network scheme discovery union_query=%r vistaar_code=%s legs=%s",
         union_query, scheme_code, list(queries),
     )
-    results, errors = await _seeker_search_per_leg(queries)
+    results, errors = await _seeker_search_per_leg(queries, intents=intents)
 
     def _leg_failed(leg: str) -> bool:
         """A leg failed if the seeker said so, or if it answered with no
         on_search body at all. Only a leg we never asked for is 'not failed'."""
         if leg not in queries:
             return False
-        return bool(errors.get(leg)) or not isinstance(results.get(leg), dict)
+        result = results.get(leg)
+        return (
+            bool(errors.get(leg))
+            or not isinstance(result, dict)
+            or bool(result.get("error"))
+        )
 
     union_failed = _leg_failed(SCHEMES_LEG)
     vistaar_failed = _leg_failed(VISTAAR_LEG)
@@ -184,7 +231,7 @@ async def network_union_schemes(query: str, union: Optional[str] = None) -> str:
     union_items = _items(results.get(SCHEMES_LEG))
     if union:
         u = union.strip().lower()
-        union_items = [it for it in union_items if _tag_map(it).get("union", "").lower() == u] or union_items
+        union_items = [it for it in union_items if _tag_map(it).get("union", "").lower() == u]
     vistaar_items = _items(results.get(VISTAAR_LEG))
 
     out: list[dict] = []

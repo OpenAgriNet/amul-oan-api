@@ -13,6 +13,14 @@ from agents.tools.farmer_animal_backends import (
     get_ai_technicians_by_society_api,
     normalize_phone,
 )
+from agents.services.beckn_amul import (
+    fetch_authenticated_farmers,
+    fetch_animal_profile,
+    fetch_banas_visits,
+    fetch_cvcc_health,
+    search_ai_technicians,
+)
+from app.config import settings
 from app.models.animal import AnimalModel
 from app.models.banas_visit import (
     BanasLabReportModel,
@@ -203,16 +211,28 @@ async def _get_ai_technicians_for_farmer(
     if not farmer.union_code or not farmer.society_code:
         return None, "AI technician lookup skipped because union code or society code is missing."
 
-    # get_ai_technicians_by_society_api logs internally and returns None on error
-    # (graceful — no raise), or a (possibly empty) list on success. None = lookup
-    # failed; [] = no technicians found.
-    technicians = await get_ai_technicians_by_society_api(
-        GetAITechniciansBySocietyQueryParams(
-            unionCode=farmer.union_code,
-            societyCode=farmer.society_code,
-        ),
-        os.getenv("PASHUGPT_TOKEN"),
-    )
+    # In callback mode this is a directed search/on_search transaction to the
+    # single Amul BPP. The union and society values came from the authenticated
+    # farmer callback above, never from a model tool argument.
+    if settings.enable_network and settings.beckn_callback_transactions_enabled:
+        try:
+            technicians = await search_ai_technicians(
+                union_code=farmer.union_code,
+                society_code=farmer.society_code,
+            )
+        except Exception as exc:
+            logger.warning("AI technician Beckn lookup failed: %s", exc)
+            technicians = None
+    else:
+        # Compatibility path for environments that have not enabled the Amul
+        # callback transactions yet.
+        technicians = await get_ai_technicians_by_society_api(
+            GetAITechniciansBySocietyQueryParams(
+                unionCode=farmer.union_code,
+                societyCode=farmer.society_code,
+            ),
+            os.getenv("PASHUGPT_TOKEN"),
+        )
     if technicians is None:
         return None, "AI technician details could not be fetched right now."
 
@@ -500,17 +520,36 @@ async def _get_animal_context_bundle(
     include_banas_visit: bool,
     include_cvcc_health: bool,
     union_name: str | None,
+    union_code: str | None,
 ) -> tuple[
     str,
     AnimalModel | None,
     list[BanasOperatedVisitModel] | None,
     CvccHealthResponseModel | None,
 ]:
-    tasks: list[CoroutineType[Any, Any, AnimalModel | list[BanasOperatedVisitModel] | CvccHealthResponseModel | None]] = [get_animal_data_by_tag(tag)]
-    if include_banas_visit:
-        tasks.append(fetch_banas_operated_visit(tag))
-    if include_cvcc_health:
-        tasks.append(get_cvcc_health_data_by_tag(tag, union_name=union_name))
+    use_amul_bpp = settings.enable_network and settings.beckn_callback_transactions_enabled
+    if use_amul_bpp:
+        tasks: list[CoroutineType[Any, Any, AnimalModel | list[BanasOperatedVisitModel] | CvccHealthResponseModel | None]] = [
+            fetch_animal_profile(
+                tag,
+                union_name=union_name,
+                union_code=union_code,
+            )
+        ]
+        if include_banas_visit and union_code:
+            tasks.append(fetch_banas_visits(tag, union_code=union_code))
+        else:
+            include_banas_visit = False
+        if include_cvcc_health and union_code:
+            tasks.append(fetch_cvcc_health(tag, union_code=union_code))
+        else:
+            include_cvcc_health = False
+    else:
+        tasks = [get_animal_data_by_tag(tag)]
+        if include_banas_visit:
+            tasks.append(fetch_banas_operated_visit(tag))
+        if include_cvcc_health:
+            tasks.append(get_cvcc_health_data_by_tag(tag, union_name=union_name))
 
     results = await asyncio.gather(*tasks)
     animal = results[0]
@@ -534,8 +573,11 @@ async def get_farmer_context_bundle_by_mobile(
     so tools can read the farmer's location. It is deliberately NOT parsed back
     out of the markdown: the markdown is a prompt, not an API.
     """
-    farmers = await get_farmer_data_by_mobile(mobile_number)
     mobile = normalize_phone(mobile_number) or mobile_number
+    if settings.enable_network and settings.beckn_callback_transactions_enabled:
+        farmers = await fetch_authenticated_farmers(mobile)
+    else:
+        farmers = await get_farmer_data_by_mobile(mobile)
 
     if farmers is None:
         return (
@@ -556,7 +598,11 @@ async def get_farmer_context_bundle_by_mobile(
         f"- **Requested mobile number:** `{mobile}`",
         f"- **Matched farmer records:** {len(farmers)}",
     ]
-    await _append_union_scheme_summary_markdown(lines, farmer_unions)
+    # Union scheme discovery is already an on_search tool in network mode.
+    # Do not bypass the BPP by preloading the same Redis catalog directly into
+    # context; the agent fetches it only when the farmer actually asks.
+    if not (settings.enable_network and settings.beckn_callback_transactions_enabled):
+        await _append_union_scheme_summary_markdown(lines, farmer_unions)
 
     for index, farmer in enumerate(farmers, start=1):
         _append_farmer_markdown(lines, farmer, index)
@@ -579,6 +625,7 @@ async def get_farmer_context_bundle_by_mobile(
                     include_banas_visit,
                     include_cvcc_health,
                     farmer.union_name,
+                    farmer.union_code,
                 )
                 for tag in tags
             )

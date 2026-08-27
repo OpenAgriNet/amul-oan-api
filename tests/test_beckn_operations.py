@@ -61,7 +61,7 @@ def _create(store: BecknOperationStore, *, idem="tool-call-1"):
         expected_callback="on_confirm",
         domain="services:amul-vet-booking",
         bap_id="bap.amul-net.internal",
-        bpp_id="bpp-booking.amul-net.internal",
+        bpp_id="bpp-amul.amul-net.internal",
         request_payload={"context": {"action": "confirm"}, "message": {}},
         idempotency_key=idem,
         session_id="session-1",
@@ -76,8 +76,9 @@ def _callback(ticket="T-1") -> dict[str, Any]:
             "action": "on_confirm",
             "version": "1.1.0",
             "bap_id": "bap.amul-net.internal",
-            "bpp_id": "bpp-booking.amul-net.internal",
+            "bpp_id": "bpp-amul.amul-net.internal",
             "transaction_id": "11111111-1111-4111-8111-111111111111",
+            # Beckn Core 1.1 paired callbacks echo the request message_id.
             "message_id": "22222222-2222-4222-8222-222222222222",
         },
         "message": {"order": {"id": ticket, "status": "ACTIVE"}},
@@ -184,13 +185,15 @@ class CallbackDuringPostClient:
         self.store = store
         self.payload = None
 
-    async def post(self, url, json=None):
+    async def post(self, url, json=None, headers=None):
         self.payload = json
+        self.headers = headers
         ctx = json["context"]
         callback = {
             "context": {
                 **ctx,
                 "action": "on_confirm",
+                "message_id": "33333333-3333-4333-8333-333333333333",
             },
             "message": {"order": {"id": "BOOK-42", "status": "ACTIVE"}},
         }
@@ -208,12 +211,17 @@ class ShcCallbackDuringPostClient:
         self.payload = None
         self.url = None
 
-    async def post(self, url, json=None):
+    async def post(self, url, json=None, headers=None):
         self.url = url
         self.payload = json
+        self.headers = headers
         ctx = json["context"]
         callback = {
-            "context": {**ctx, "action": "on_init"},
+            "context": {
+                **ctx,
+                "action": "on_init",
+                "message_id": "33333333-3333-4333-8333-333333333333",
+            },
             "message": {"order": {"providers": []}},
         }
         assert (await self.store.record_callback(callback)).accepted
@@ -224,13 +232,52 @@ class ShcCallbackDuringPostClient:
         )
 
 
+class ActionCallbackDuringPostClient:
+    def __init__(self, store: BecknOperationStore, callback_action: str):
+        self.store = store
+        self.callback_action = callback_action
+        self.payload = None
+        self.url = None
+
+    async def post(self, url, json=None, headers=None):
+        self.url = url
+        self.payload = json
+        context = json["context"]
+        callback = {
+            "context": {
+                **context,
+                "action": self.callback_action,
+                "message_id": "44444444-4444-4444-8444-444444444444",
+            },
+            "message": {"order": {"state": "COMPLETED"}}
+            if self.callback_action == "on_init"
+            else {"catalog": {"providers": []}},
+        }
+        assert (await self.store.record_callback(callback)).accepted
+        return httpx.Response(
+            200,
+            json={"message": {"ack": {"status": "ACK"}}},
+            request=httpx.Request("POST", url),
+        )
+
+
+def _configure_amul(monkeypatch, module):
+    monkeypatch.setattr(module.settings, "beckn_bap_caller_url", "http://onix/bap/caller")
+    monkeypatch.setattr(module.settings, "beckn_transaction_bridge_token", "transaction-secret")
+    monkeypatch.setattr(module.settings, "beckn_bap_uri", "https://bap.example/bap/receiver")
+    monkeypatch.setattr(module.settings, "beckn_amul_bpp_id", "bpp.example")
+    monkeypatch.setattr(module.settings, "beckn_amul_bpp_uri", "https://bpp.example/bpp/receiver")
+    monkeypatch.setattr(module.settings, "beckn_callback_wait_seconds", 0.2)
+
+
 @pytest.mark.asyncio
 async def test_confirm_builds_directed_core_order_and_correlates_fast_callback(monkeypatch):
     from app.services import beckn_operations as module
 
     monkeypatch.setattr(module.settings, "beckn_bap_caller_url", "http://onix/bap/caller")
+    monkeypatch.setattr(module.settings, "beckn_transaction_bridge_token", "transaction-secret")
     monkeypatch.setattr(module.settings, "beckn_bap_uri", "https://bap.example/bap/receiver")
-    monkeypatch.setattr(module.settings, "beckn_booking_bpp_uri", "https://bpp.example/bpp/receiver")
+    monkeypatch.setattr(module.settings, "beckn_amul_bpp_uri", "https://bpp.example/bpp/receiver")
     monkeypatch.setattr(module.settings, "beckn_callback_wait_seconds", 0.2)
 
     store = BecknOperationStore(MemoryRedis(), ttl_seconds=3600)
@@ -251,11 +298,12 @@ async def test_confirm_builds_directed_core_order_and_correlates_fast_callback(m
     assert result.payload["message"]["order"]["id"] == "BOOK-42"
     sent = http_client.payload
     assert sent["context"]["action"] == "confirm"
-    assert sent["context"]["bpp_id"] == "bpp-booking.amul-net.internal"
+    assert sent["context"]["bpp_id"] == module.settings.beckn_amul_bpp_id
     assert "bpp_uri" in sent["context"]
     assert "fulfillments" in sent["message"]["order"]
     assert "fulfillment" not in sent["message"]["order"]
     assert json.loads(json.dumps(sent))["message"]["order"]["items"][0]["id"] == "ait:TECH-1"
+    assert http_client.headers == {"Authorization": f"Bearer {module.settings.beckn_transaction_bridge_token}"}
 
 
 @pytest.mark.asyncio
@@ -263,8 +311,9 @@ async def test_health_confirm_uses_health_provider_and_veterinary_fulfillment(mo
     from app.services import beckn_operations as module
 
     monkeypatch.setattr(module.settings, "beckn_bap_caller_url", "http://onix/bap/caller")
+    monkeypatch.setattr(module.settings, "beckn_transaction_bridge_token", "transaction-secret")
     monkeypatch.setattr(module.settings, "beckn_bap_uri", "https://bap.example/bap/receiver")
-    monkeypatch.setattr(module.settings, "beckn_booking_bpp_uri", "https://bpp.example/bpp/receiver")
+    monkeypatch.setattr(module.settings, "beckn_amul_bpp_uri", "https://bpp.example/bpp/receiver")
     monkeypatch.setattr(module.settings, "beckn_callback_wait_seconds", 0.2)
 
     store = BecknOperationStore(MemoryRedis(), ttl_seconds=3600)
@@ -295,6 +344,7 @@ async def test_shc_init_is_directed_and_waits_for_on_init(monkeypatch):
     from app.services import beckn_operations as module
 
     monkeypatch.setattr(module.settings, "beckn_bap_caller_url", "http://onix/bap/caller")
+    monkeypatch.setattr(module.settings, "beckn_transaction_bridge_token", "transaction-secret")
     monkeypatch.setattr(module.settings, "beckn_bap_uri", "https://bap.example/bap/receiver")
     monkeypatch.setattr(module.settings, "vistaar_bpp_id", "provider-network-vistaar.da.gov.in")
     monkeypatch.setattr(module.settings, "vistaar_bpp_uri", "https://provider-network-vistaar.da.gov.in")
@@ -305,7 +355,7 @@ async def test_shc_init_is_directed_and_waits_for_on_init(monkeypatch):
     http_client = ShcCallbackDuringPostClient(store)
     client = BecknOperationClient(store, http_client=http_client)
     result = await client.init_soil_health_card(
-        mobile="+919924457046",
+        mobile="+910000000000",
         cycle="2024-25",
         session_id="session-1",
         tool_call_id="tool-shc",
@@ -320,8 +370,118 @@ async def test_shc_init_is_directed_and_waits_for_on_init(monkeypatch):
     order = sent["message"]["order"]
     assert order["provider"] == {"id": "shc-discovery"}
     assert order["items"] == [{"id": "soil-health-card"}]
-    assert order["fulfillments"][0]["customer"]["contact"]["phone"] == "+919924457046"
+    assert order["fulfillments"][0]["customer"]["contact"]["phone"] == "+910000000000"
     assert order["fulfillments"][0]["customer"]["person"]["tags"][0]["value"] == "2024-25"
+
+
+@pytest.mark.asyncio
+async def test_private_farmer_and_animal_init_match_bpp_contracts(monkeypatch):
+    from app.services import beckn_operations as module
+
+    _configure_amul(monkeypatch, module)
+    farmer_store = BecknOperationStore(MemoryRedis(), ttl_seconds=3600)
+    farmer_http = ActionCallbackDuringPostClient(farmer_store, "on_init")
+    farmer = await BecknOperationClient(farmer_store, farmer_http).init_farmer_profile(
+        provider_id="herdman",
+        mobile="+910000000000",
+        session_id="session",
+        tool_call_id="farmer-call",
+    )
+    assert farmer.ok
+    farmer_order = farmer_http.payload["message"]["order"]
+    assert farmer_http.url.endswith("/init")
+    assert farmer_http.payload["context"]["domain"] == "data:amul-farmer-profile"
+    assert farmer_order["provider"] == {"id": "herdman"}
+    assert farmer_order["items"][0]["id"] == "farmer-profile"
+    assert farmer_order["fulfillments"][0]["customer"]["contact"]["phone"] == "+910000000000"
+
+    animal_store = BecknOperationStore(MemoryRedis(), ttl_seconds=3600)
+    animal_http = ActionCallbackDuringPostClient(animal_store, "on_init")
+    animal = await BecknOperationClient(animal_store, animal_http).init_animal_profile(
+        provider_id="amuldairy",
+        tag_id="TEST-TAG",
+        union_code="TEST-UNION",
+        session_id="session",
+        tool_call_id="animal-call",
+    )
+    assert animal.ok
+    animal_order = animal_http.payload["message"]["order"]
+    assert animal_http.payload["context"]["domain"] == "data:amul-animal-profile"
+    assert animal_order["items"][0]["id"] == "animal-health-history"
+    assert animal_order["items"][0]["tags"][0]["value"] == "TEST-TAG"
+    assert animal_order["fulfillments"][0]["customer"]["person"]["tags"][0]["value"] == "TEST-UNION"
+
+
+@pytest.mark.asyncio
+async def test_milk_init_and_directed_ait_search_match_bpp_contracts(monkeypatch):
+    from app.services import beckn_operations as module
+
+    _configure_amul(monkeypatch, module)
+    milk_store = BecknOperationStore(MemoryRedis(), ttl_seconds=3600)
+    milk_http = ActionCallbackDuringPostClient(milk_store, "on_init")
+    milk = await BecknOperationClient(milk_store, milk_http).init_milk_collection(
+        union_code="TEST-UNION",
+        society_code="TEST-SOCIETY",
+        farmer_code="TEST-FARMER",
+        fromdate="2026-08-01",
+        todate="2026-08-10",
+        session_id="session",
+        tool_call_id="milk-call",
+    )
+    assert milk.ok
+    milk_order = milk_http.payload["message"]["order"]
+    assert milk_http.payload["context"]["domain"] == "services:amul-milk-collection"
+    assert milk_order["provider"] == {"id": "amul-milk-collection"}
+    assert milk_order["items"] == [{"id": "milk-collection-details"}]
+    assert milk_order["fulfillments"][0]["stops"][0]["location"]["descriptor"]["code"] == "society:TEST-SOCIETY"
+    assert milk_order["tags"][0]["descriptor"]["code"] == "client-reference"
+
+    ait_store = BecknOperationStore(MemoryRedis(), ttl_seconds=3600)
+    ait_http = ActionCallbackDuringPostClient(ait_store, "on_search")
+    ait = await BecknOperationClient(ait_store, ait_http).search_ai_technicians(
+        union_code="TEST-UNION",
+        society_code="TEST-SOCIETY",
+        session_id="session",
+        tool_call_id="ait-call",
+    )
+    assert ait.ok
+    intent = ait_http.payload["message"]["intent"]
+    assert ait_http.url.endswith("/search")
+    assert intent["provider"] == {"id": "amul-ai-service"}
+    assert intent["fulfillment"]["stops"][0]["location"]["descriptor"]["code"] == "society:TEST-SOCIETY"
+    assert intent["fulfillment"]["tags"][0]["list"][0]["value"] == "TEST-UNION"
+
+
+@pytest.mark.asyncio
+async def test_milk_idempotency_is_scoped_to_each_farmer_account(monkeypatch):
+    from app.services import beckn_operations as module
+
+    _configure_amul(monkeypatch, module)
+    store = BecknOperationStore(MemoryRedis(), ttl_seconds=3600)
+    first_http = ActionCallbackDuringPostClient(store, "on_init")
+    first = await BecknOperationClient(store, first_http).init_milk_collection(
+        union_code="UNION-A",
+        society_code="SOCIETY-A",
+        farmer_code="FARMER-A",
+        fromdate="2026-08-01",
+        todate="2026-08-10",
+        session_id="session",
+        tool_call_id="one-multi-account-tool-call",
+    )
+    second_http = ActionCallbackDuringPostClient(store, "on_init")
+    second = await BecknOperationClient(store, second_http).init_milk_collection(
+        union_code="UNION-B",
+        society_code="SOCIETY-B",
+        farmer_code="FARMER-B",
+        fromdate="2026-08-01",
+        todate="2026-08-10",
+        session_id="session",
+        tool_call_id="one-multi-account-tool-call",
+    )
+
+    assert first.ok and second.ok
+    assert first.operation.transaction_id != second.operation.transaction_id
+    assert second_http.payload["message"]["order"]["fulfillments"][0]["stops"][0]["location"]["descriptor"]["code"] == "society:SOCIETY-B"
 
 
 @pytest.mark.asyncio
@@ -364,7 +524,7 @@ async def test_shc_callback_gate_does_not_enable_booking_callbacks(monkeypatch):
 
     monkeypatch.setattr(router_module.settings, "beckn_callback_transactions_enabled", False)
     monkeypatch.setattr(router_module.settings, "vistaar_shc_enabled", True)
-    monkeypatch.setattr(router_module.settings, "beckn_callback_token", None)
+    monkeypatch.setattr(router_module.settings, "beckn_callback_token", "secret")
     monkeypatch.setattr(router_module, "get_beckn_operation_store", lambda: Store())
 
     booking = await router_module.receive_callback("on_confirm", _callback(), None)
@@ -372,7 +532,7 @@ async def test_shc_callback_gate_does_not_enable_booking_callbacks(monkeypatch):
 
     payload = _callback()
     payload["context"].update({"domain": "schemes:vistaar", "action": "on_init"})
-    shc_callback = await router_module.receive_callback("on_init", payload, None)
+    shc_callback = await router_module.receive_callback("on_init", payload, "secret")
     assert shc_callback.status_code == 200
     assert json.loads(shc_callback.body)["message"]["ack"]["status"] == "ACK"
     assert calls["n"] == 1
@@ -391,11 +551,45 @@ async def test_callback_router_returns_protocol_nack_without_transport_failure(m
             )
 
     monkeypatch.setattr(router_module.settings, "beckn_callback_transactions_enabled", True)
-    monkeypatch.setattr(router_module.settings, "beckn_callback_token", None)
+    monkeypatch.setattr(router_module.settings, "beckn_callback_token", "secret")
     monkeypatch.setattr(router_module, "get_beckn_operation_store", lambda: Store())
-    rejected = await router_module.receive_callback("on_confirm", _callback(), None)
+    rejected = await router_module.receive_callback("on_confirm", _callback(), "secret")
 
     assert rejected.status_code == 200
     body = json.loads(rejected.body)
     assert body["message"]["ack"]["status"] == "NACK"
     assert body["error"]["code"] == "UNKNOWN_TRANSACTION"
+
+
+@pytest.mark.asyncio
+async def test_callback_router_accepts_directed_on_search(monkeypatch):
+    from app.routers import beckn as router_module
+
+    class Store:
+        async def record_callback(self, payload):
+            return CallbackRecordResult(True)
+
+    payload = _callback()
+    payload["context"]["action"] = "on_search"
+    payload["message"] = {"catalog": {"providers": []}}
+    monkeypatch.setattr(router_module.settings, "beckn_callback_transactions_enabled", True)
+    monkeypatch.setattr(router_module.settings, "beckn_callback_token", "secret")
+    monkeypatch.setattr(router_module, "get_beckn_operation_store", lambda: Store())
+
+    response = await router_module.receive_callback("on_search", payload, "secret")
+    assert response.status_code == 200
+    assert json.loads(response.body)["message"]["ack"]["status"] == "ACK"
+
+
+@pytest.mark.asyncio
+async def test_enabled_callback_ingress_fails_closed_without_token(monkeypatch):
+    from app.routers import beckn as router_module
+
+    monkeypatch.setattr(router_module.settings, "beckn_callback_transactions_enabled", True)
+    monkeypatch.setattr(router_module.settings, "beckn_callback_token", None)
+    response = await router_module.receive_callback("on_confirm", _callback(), None)
+
+    assert response.status_code == 503
+    body = json.loads(response.body)
+    assert body["message"]["ack"]["status"] == "NACK"
+    assert body["error"]["code"] == "CALLBACK_AUTH_NOT_CONFIGURED"

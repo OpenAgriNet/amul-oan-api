@@ -48,18 +48,16 @@ async def create_health_call(
     Returns:
         str: Success message containing the ticket number, or a clear failure message.
     """
-    logger.info(
-        "Create health call tool invoked for union=%s society=%s farmer=%s species=%s case_type=%s",
-        union_code,
-        society_code,
-        farmer_code,
-        species.value,
-        case_type.value,
-    )
-
     # Per-session id for the atomic booking reservation (placed just before the
     # write call below).
     session_id = ctx.deps.session_id if ctx and ctx.deps else None
+    tool_call_id = getattr(ctx, "tool_call_id", None)
+    logger.info(
+        "Create health call tool invoked session=%s species=%s case_type=%s",
+        session_id,
+        species.value,
+        case_type.value,
+    )
 
     # A booking is IRREVERSIBLE, so block on the moderation verdict before writing.
     # On voice, moderation runs concurrently with the agent; this refuses the
@@ -68,6 +66,33 @@ async def create_health_call(
     if not await ctx.deps.ensure_in_scope():
         logger.info("Health call blocked: query failed moderation; session=%s", session_id)
         return "This helpline only handles dairy farming and animal husbandry questions."
+
+    if settings.enable_network and settings.beckn_callback_transactions_enabled:
+        from agents.services.beckn_amul import resolve_authenticated_account
+
+        mobile = (getattr(ctx.deps, "mobile", None) or "").strip()
+        if not mobile:
+            return "Health call booking failed. Your signed-in farmer profile is not available."
+        try:
+            account = await resolve_authenticated_account(
+                mobile,
+                union_code=union_code,
+                society_code=society_code,
+                farmer_code=farmer_code,
+                session_id=session_id,
+                tool_call_id=tool_call_id,
+            )
+        except Exception as exc:
+            logger.warning("Health booking identity verification failed: %s", exc)
+            return "Health call booking failed. Unable to verify your farmer details at the moment."
+        if account is None:
+            return (
+                "Health call booking failed. The selected farmer account does not "
+                "belong to your signed-in profile."
+            )
+        union_code = account.union_code
+        society_code = account.society_code
+        farmer_code = account.farmer_code
 
     _health_tool_input = {
         "union_code": union_code,
@@ -87,7 +112,7 @@ async def create_health_call(
             case_type=case_type,
             remark=remark,
             session_id=session_id,
-            tool_call_id=getattr(ctx, "tool_call_id", None),
+            tool_call_id=tool_call_id,
             tool_input=_health_tool_input,
         )
 

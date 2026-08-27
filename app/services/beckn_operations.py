@@ -119,6 +119,15 @@ class BecknOperationStore:
         digest = hashlib.sha256(f"{domain}:{idempotency_key}".encode("utf-8")).hexdigest()
         return f"{self._prefix}:idem:{digest}"
 
+    def _callback_key(self, transaction_id: str, callback_action: str) -> str:
+        """Index a paired callback for compatibility with external providers.
+
+        Beckn Core 1.1 paired callbacks echo the request ``message_id`` and use
+        the operation's direct key. This short-lived transaction/action index
+        accepts providers that still issue a fresh callback id during cutover.
+        """
+        return f"{self._prefix}:callback:{transaction_id}:{callback_action}"
+
     def _orphan_key(self, transaction_id: str, message_id: str) -> str:
         return f"{self._prefix}:orphan:{transaction_id}:{message_id}"
 
@@ -176,6 +185,11 @@ class BecknOperationStore:
         try:
             await self._redis.hset(key, mapping=mapping)
             await self._redis.expire(key, retention)
+            await self._redis.set(
+                self._callback_key(transaction_id, expected_callback),
+                key,
+                ex=retention,
+            )
         except Exception:
             # The action has not been sent yet, so releasing our incomplete
             # idempotency claim is safe and lets an operator retry after Redis
@@ -273,8 +287,16 @@ class BecknOperationStore:
                 message="transaction_id, message_id and action are required",
             )
 
+        # Beckn Core 1.1 paired callbacks echo the request message_id, so the
+        # direct key is canonical. The transaction/action index is retained for
+        # external providers that still issue a fresh id during cutover.
         key = self._key(transaction_id, message_id)
         row = await self._redis.hgetall(key)
+        if not row:
+            indexed_key = await self._redis.get(self._callback_key(transaction_id, action))
+            if indexed_key:
+                key = indexed_key
+                row = await self._redis.hgetall(key)
         if not row:
             is_private_shc = context.get("domain") == "schemes:vistaar" and action == "on_init"
             orphan = (
@@ -319,6 +341,9 @@ class BecknOperationStore:
             await self._redis.expire(
                 self._idempotency_key(row["domain"], row["idempotency_key"]), retention
             )
+            await self._redis.expire(
+                self._callback_key(transaction_id, action), retention
+            )
             return CallbackRecordResult(True)
 
         existing = await self._redis.hget(key, "callback_record")
@@ -349,6 +374,351 @@ class BecknOperationClient:
     def __init__(self, store: BecknOperationStore, http_client: Optional[httpx.AsyncClient] = None):
         self.store = store
         self._http_client = http_client
+
+    async def init_private_data(
+        self,
+        *,
+        domain: str,
+        provider_id: str,
+        item_id: str,
+        tags: Mapping[str, str],
+        fulfillments: Optional[list[Mapping[str, Any]]] = None,
+        session_id: Optional[str],
+        tool_call_id: Optional[str],
+        retention_seconds: Optional[int] = None,
+    ) -> BecknActionResult:
+        """Retrieve a private Amul record through directed init/on_init.
+
+        The caller supplies only identifiers already resolved from the signed-in
+        session. Provider credentials and legacy encrypted identifiers are owned
+        by the BPP and never cross this boundary.
+        """
+        self._validate_amul_configuration()
+        operation_id = str(uuid.uuid4())
+        transaction_id = str(uuid.uuid4())
+        message_id = str(uuid.uuid4())
+        invocation_id = tool_call_id or secrets.token_urlsafe(18)
+        request_fingerprint = _hash(
+            {
+                "provider": provider_id,
+                "item": item_id,
+                "tags": tags,
+                "fulfillments": fulfillments or [],
+            }
+        )[:24]
+        idempotency_key = (
+            f"{session_id or 'no-session'}:{invocation_id}:init:{domain}:"
+            f"{request_fingerprint}"
+        )
+        item_tags = [
+            {"descriptor": {"code": code}, "value": str(value)}
+            for code, value in sorted(tags.items())
+            if str(value).strip()
+        ]
+        order = {
+            "provider": {"id": provider_id},
+            "items": [{"id": item_id, "tags": item_tags}],
+        }
+        if fulfillments:
+            order["fulfillments"] = list(fulfillments)
+        context = self._context(
+            action="init",
+            transaction_id=transaction_id,
+            message_id=message_id,
+            domain=domain,
+            bpp_id=settings.beckn_amul_bpp_id,
+            bpp_uri=settings.beckn_amul_bpp_uri,
+        )
+        payload = {"context": context, "message": {"order": order}}
+        created = await self.store.create(
+            operation_id=operation_id,
+            transaction_id=transaction_id,
+            message_id=message_id,
+            action="init",
+            expected_callback="on_init",
+            domain=domain,
+            bap_id=settings.beckn_bap_id,
+            bpp_id=settings.beckn_amul_bpp_id,
+            request_payload=payload,
+            idempotency_key=idempotency_key,
+            session_id=session_id,
+            tool_call_id=tool_call_id,
+            retention_seconds=retention_seconds,
+        )
+        if created.created:
+            await self._send(created.operation, payload)
+        return await self._finish(created.operation)
+
+    async def init_farmer_profile(
+        self,
+        *,
+        provider_id: str,
+        mobile: str,
+        session_id: Optional[str],
+        tool_call_id: Optional[str],
+    ) -> BecknActionResult:
+        """Resolve a farmer profile using the authenticated session phone."""
+        if provider_id not in {"amulpashudhan", "herdman"}:
+            raise ValueError(f"Unsupported farmer provider: {provider_id}")
+        return await self.init_private_data(
+            domain=settings.beckn_farmer_domain,
+            provider_id=provider_id,
+            item_id="farmer-profile",
+            tags={},
+            fulfillments=[{"customer": {"contact": {"phone": mobile}}}],
+            session_id=session_id,
+            tool_call_id=tool_call_id,
+        )
+
+    async def init_animal_profile(
+        self,
+        *,
+        provider_id: str,
+        tag_id: str,
+        session_id: Optional[str],
+        tool_call_id: Optional[str],
+        union_code: Optional[str] = None,
+    ) -> BecknActionResult:
+        """Resolve an owned animal record from one Amul provider adapter."""
+        item_by_provider = {
+            "amulpashudhan": "animal-profile",
+            "herdman": "animal-profile",
+            "amuldairy": "animal-health-history",
+            "banasmobileapi": "operated-visit-history",
+        }
+        item_id = item_by_provider.get(provider_id)
+        if item_id is None:
+            raise ValueError(f"Unsupported animal provider: {provider_id}")
+        if provider_id in {"amuldairy", "banasmobileapi"} and not union_code:
+            raise ValueError(f"union_code is required for provider: {provider_id}")
+        fulfillments = None
+        if union_code:
+            fulfillments = [
+                {
+                    "customer": {
+                        "person": {
+                            "tags": [
+                                {"descriptor": {"code": "union_code"}, "value": union_code}
+                            ]
+                        }
+                    }
+                }
+            ]
+        return await self.init_private_data(
+            domain=settings.beckn_animal_domain,
+            provider_id=provider_id,
+            item_id=item_id,
+            tags={"tag_id": tag_id},
+            fulfillments=fulfillments,
+            session_id=session_id,
+            tool_call_id=tool_call_id,
+        )
+
+    async def init_milk_collection(
+        self,
+        *,
+        union_code: str,
+        society_code: str,
+        farmer_code: str,
+        fromdate: str,
+        todate: str,
+        session_id: Optional[str],
+        tool_call_id: Optional[str],
+    ) -> BecknActionResult:
+        """Create a bounded private milk report through init/on_init."""
+        operation_id = str(uuid.uuid4())
+        transaction_id = str(uuid.uuid4())
+        message_id = str(uuid.uuid4())
+        invocation_id = tool_call_id or secrets.token_urlsafe(18)
+        account_fingerprint = _hash(
+            {
+                "union_code": union_code,
+                "society_code": society_code,
+                "farmer_code": farmer_code,
+            }
+        )[:24]
+        idempotency_key = (
+            f"{session_id or 'no-session'}:{invocation_id}:milk:"
+            f"{account_fingerprint}:{fromdate}:{todate}"
+        )
+        detail_tags = [
+            {"descriptor": {"code": "union_code"}, "value": union_code},
+            {"descriptor": {"code": "farmer_code"}, "value": farmer_code},
+            {"descriptor": {"code": "fromdate"}, "value": fromdate},
+            {"descriptor": {"code": "todate"}, "value": todate},
+        ]
+        order = {
+            "provider": {"id": "amul-milk-collection"},
+            "items": [{"id": "milk-collection-details"}],
+            "fulfillments": [
+                {
+                    "id": "fulfillment-1",
+                    "customer": {"person": {"id": f"farmer:{farmer_code}"}},
+                    "stops": [
+                        {"location": {"descriptor": {"code": f"society:{society_code}"}}}
+                    ],
+                    "tags": [
+                        {
+                            "descriptor": {"code": "milk-collection-details"},
+                            "list": detail_tags,
+                        }
+                    ],
+                }
+            ],
+            "tags": [
+                {
+                    "descriptor": {"code": "client-reference"},
+                    "list": [
+                        {
+                            "descriptor": {"code": "idempotency_key"},
+                            "value": operation_id,
+                        }
+                    ],
+                }
+            ],
+        }
+        context = self._context(
+            action="init",
+            transaction_id=transaction_id,
+            message_id=message_id,
+            domain=settings.beckn_milk_domain,
+        )
+        payload = {"context": context, "message": {"order": order}}
+        created = await self.store.create(
+            operation_id=operation_id,
+            transaction_id=transaction_id,
+            message_id=message_id,
+            action="init",
+            expected_callback="on_init",
+            domain=settings.beckn_milk_domain,
+            bap_id=settings.beckn_bap_id,
+            bpp_id=settings.beckn_amul_bpp_id,
+            request_payload=payload,
+            idempotency_key=idempotency_key,
+            session_id=session_id,
+            tool_call_id=tool_call_id,
+        )
+        if created.created:
+            await self._send(created.operation, payload)
+        return await self._finish(created.operation)
+
+    async def search_private_catalog(
+        self,
+        *,
+        domain: str,
+        provider_id: str,
+        item_code: str,
+        tags: Mapping[str, str],
+        session_id: Optional[str],
+        tool_call_id: Optional[str],
+    ) -> BecknActionResult:
+        """Run a directed, non-fan-out search for session-bound catalog data."""
+        self._validate_amul_configuration()
+        operation_id = str(uuid.uuid4())
+        transaction_id = str(uuid.uuid4())
+        message_id = str(uuid.uuid4())
+        invocation_id = tool_call_id or secrets.token_urlsafe(18)
+        request_fingerprint = _hash({"provider": provider_id, "item": item_code, "tags": tags})[:24]
+        idempotency_key = (
+            f"{session_id or 'no-session'}:{invocation_id}:search:{domain}:"
+            f"{request_fingerprint}"
+        )
+        intent = {
+            "provider": {"id": provider_id},
+            "item": {
+                "descriptor": {"code": item_code},
+                "tags": [
+                    {"descriptor": {"code": code}, "value": str(value)}
+                    for code, value in sorted(tags.items())
+                    if str(value).strip()
+                ],
+            },
+        }
+        context = self._context(
+            action="search",
+            transaction_id=transaction_id,
+            message_id=message_id,
+            domain=domain,
+            bpp_id=settings.beckn_amul_bpp_id,
+            bpp_uri=settings.beckn_amul_bpp_uri,
+        )
+        payload = {"context": context, "message": {"intent": intent}}
+        created = await self.store.create(
+            operation_id=operation_id,
+            transaction_id=transaction_id,
+            message_id=message_id,
+            action="search",
+            expected_callback="on_search",
+            domain=domain,
+            bap_id=settings.beckn_bap_id,
+            bpp_id=settings.beckn_amul_bpp_id,
+            request_payload=payload,
+            idempotency_key=idempotency_key,
+            session_id=session_id,
+            tool_call_id=tool_call_id,
+        )
+        if created.created:
+            await self._send(created.operation, payload)
+        return await self._finish(created.operation)
+
+    async def search_ai_technicians(
+        self,
+        *,
+        union_code: str,
+        society_code: str,
+        session_id: Optional[str],
+        tool_call_id: Optional[str],
+    ) -> BecknActionResult:
+        """Run a directed AIT lookup and await its on_search catalog."""
+        self._validate_amul_configuration()
+        operation_id = str(uuid.uuid4())
+        transaction_id = str(uuid.uuid4())
+        message_id = str(uuid.uuid4())
+        invocation_id = tool_call_id or secrets.token_urlsafe(18)
+        idempotency_key = (
+            f"{session_id or 'no-session'}:{invocation_id}:ait:{union_code}:{society_code}"
+        )
+        intent = {
+            "provider": {"id": "amul-ai-service"},
+            "item": {"descriptor": {"code": "ai-call"}},
+            "fulfillment": {
+                "stops": [
+                    {"location": {"descriptor": {"code": f"society:{society_code}"}}}
+                ],
+                "tags": [
+                    {
+                        "descriptor": {"code": "booking-details"},
+                        "list": [
+                            {"descriptor": {"code": "union_code"}, "value": union_code}
+                        ],
+                    }
+                ],
+            },
+        }
+        context = self._context(
+            action="search",
+            transaction_id=transaction_id,
+            message_id=message_id,
+            domain=settings.beckn_booking_domain,
+        )
+        payload = {"context": context, "message": {"intent": intent}}
+        created = await self.store.create(
+            operation_id=operation_id,
+            transaction_id=transaction_id,
+            message_id=message_id,
+            action="search",
+            expected_callback="on_search",
+            domain=settings.beckn_booking_domain,
+            bap_id=settings.beckn_bap_id,
+            bpp_id=settings.beckn_amul_bpp_id,
+            request_payload=payload,
+            idempotency_key=idempotency_key,
+            session_id=session_id,
+            tool_call_id=tool_call_id,
+        )
+        if created.created:
+            await self._send(created.operation, payload)
+        return await self._finish(created.operation)
 
     async def confirm_booking(
         self,
@@ -427,7 +797,7 @@ class BecknOperationClient:
             expected_callback="on_confirm",
             domain=settings.beckn_booking_domain,
             bap_id=settings.beckn_bap_id,
-            bpp_id=settings.beckn_booking_bpp_id,
+            bpp_id=settings.beckn_amul_bpp_id,
             request_payload=payload,
             idempotency_key=idempotency_key,
             session_id=session_id,
@@ -551,8 +921,8 @@ class BecknOperationClient:
             "version": "1.1.0",
             "bap_id": settings.beckn_bap_id,
             "bap_uri": settings.beckn_bap_uri,
-            "bpp_id": bpp_id or settings.beckn_booking_bpp_id,
-            "bpp_uri": bpp_uri or settings.beckn_booking_bpp_uri,
+            "bpp_id": bpp_id or settings.beckn_amul_bpp_id,
+            "bpp_uri": bpp_uri or settings.beckn_amul_bpp_uri,
             "transaction_id": transaction_id,
             "message_id": message_id,
             "timestamp": _now(),
@@ -560,6 +930,8 @@ class BecknOperationClient:
         }
 
     async def _send(self, operation: BecknOperation, payload: Mapping[str, Any]) -> None:
+        if not settings.beckn_transaction_bridge_token:
+            raise RuntimeError("BECKN_TRANSACTION_BRIDGE_TOKEN is required for Beckn transactions")
         await self.store.mark_sent(operation)
         # ONIX derives the action from the final path segment. A trailing slash
         # changes that segment to e.g. ``init/`` and fails route matching.
@@ -569,7 +941,13 @@ class BecknOperationClient:
         try:
             for attempt in range(1, settings.beckn_forward_connect_attempts + 1):
                 try:
-                    response = await client.post(url, json=payload)
+                    response = await client.post(
+                        url,
+                        json=payload,
+                        headers={
+                            "Authorization": f"Bearer {settings.beckn_transaction_bridge_token}",
+                        },
+                    )
                     response.raise_for_status()
                     body = response.json()
                     break
@@ -615,12 +993,22 @@ class BecknOperationClient:
 
     @staticmethod
     def _validate_configuration() -> None:
+        BecknOperationClient._validate_amul_configuration()
+        required = {
+            "BECKN_BOOKING_DOMAIN": settings.beckn_booking_domain,
+        }
+        missing = [name for name, value in required.items() if not value]
+        if missing:
+            raise RuntimeError("Beckn callback transactions are missing configuration: " + ", ".join(missing))
+
+    @staticmethod
+    def _validate_amul_configuration() -> None:
         required = {
             "BECKN_BAP_CALLER_URL": settings.beckn_bap_caller_url,
             "BECKN_BAP_ID": settings.beckn_bap_id,
             "BECKN_BAP_URI": settings.beckn_bap_uri,
-            "BECKN_BOOKING_BPP_ID": settings.beckn_booking_bpp_id,
-            "BECKN_BOOKING_BPP_URI": settings.beckn_booking_bpp_uri,
+            "BECKN_AMUL_BPP_ID": settings.beckn_amul_bpp_id,
+            "BECKN_AMUL_BPP_URI": settings.beckn_amul_bpp_uri,
         }
         missing = [name for name, value in required.items() if not value]
         if missing:

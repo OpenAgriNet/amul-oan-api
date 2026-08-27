@@ -477,6 +477,7 @@ async def get_vistaar_weather(
     are — pass that back to the farmer instead of guessing another location.
 
     Args:
+        ctx: authenticated farmer context used to resolve the default district.
         location: optional district or town in Gujarat the farmer explicitly
             named, e.g. "Junagadh", "Bhuj", "Banaskantha". Omit it to use the
             farmer's own district. Pass a place NAME only — never coordinates.
@@ -527,6 +528,7 @@ async def get_vistaar_mandi_prices(
     are. Pass that back to the farmer; do not retry with a different location.
 
     Args:
+        ctx: authenticated farmer context used to resolve the default district.
         commodity_name: the commodity to price, e.g. "Tomato", "Onion", "Wheat".
             Use the English Agmarknet name; invented variants ("Onion Big")
             return nothing.

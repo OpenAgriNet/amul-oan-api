@@ -142,7 +142,7 @@ async def fetch_farmer_amulpashudhan(
         return None
     try:
         return [
-            FarmerModel.model_validate(data, extra="ignore", by_alias=True)
+            FarmerModel.model_validate(data)
             for data in raw
         ]
     except Exception as e:
@@ -156,7 +156,7 @@ async def fetch_farmer_amulpashudhan(
             return None
         try:
             return [
-                FarmerModel.model_validate(data, extra="ignore", by_alias=True)
+                FarmerModel.model_validate(data)
                 for data in raw
             ]
         except Exception as e2:
@@ -183,7 +183,7 @@ async def fetch_farmer_herdman(mobile: str, token: str) -> list[FarmerModel] | N
         else:
             try:
                 data = FarmerHerdmanModel.model_validate(
-                    cached_payload, extra="ignore", by_alias=True
+                    cached_payload
                 )
                 return data.farmers
             except Exception as e:
@@ -215,7 +215,7 @@ async def fetch_farmer_herdman(mobile: str, token: str) -> list[FarmerModel] | N
                 response_json = response.json()
                 await set_cached_api_response(cache_key, response_json)
                 data = FarmerHerdmanModel.model_validate(
-                    response_json, extra="ignore", by_alias=True
+                    response_json
                 )
                 return data.farmers
     except httpx.HTTPStatusError as e:
@@ -362,7 +362,7 @@ async def fetch_animal_amulpashudhan(tag_no: str, token: str) -> AnimalModel | N
                     cached_data["tagNumber"] = cached_data["tagNo"]
                 if cached_data.get("tagNumber") or cached_data.get("tagNo"):
                     return AnimalModel.model_validate(
-                        cached_data, extra="ignore", by_alias=True
+                        cached_data
                     )
                 logger.warning(
                     "[Cache(%s)] :: Cached animal payload missing tag number, refetching.",
@@ -407,7 +407,7 @@ async def fetch_animal_amulpashudhan(tag_no: str, token: str) -> AnimalModel | N
             data["tagNumber"] = data["tagNo"]
         if data.get("tagNumber") or data.get("tagNo"):
             await set_cached_api_response(cache_key, data)
-            return AnimalModel.model_validate(data, extra="ignore", by_alias=True)
+            return AnimalModel.model_validate(data)
         raise Exception("Animal response did not contain a tag number.")
     except httpx.HTTPStatusError as e:
         logger.error(
@@ -449,7 +449,7 @@ async def fetch_banas_operated_visit(
             try:
                 return [
                     BanasOperatedVisitModel.model_validate(
-                        data, extra="ignore", by_alias=True
+                        data
                     )
                     for data in cached_payload
                 ]
@@ -479,7 +479,7 @@ async def fetch_banas_operated_visit(
         await set_cached_api_response(cache_key, response_json)
         return [
             BanasOperatedVisitModel.model_validate(
-                data, extra="ignore", by_alias=True
+                data
             )
             for data in response_json
         ]
@@ -519,7 +519,7 @@ async def fetch_cvcc_health_details(
         else:
             try:
                 return CvccHealthResponseModel.model_validate(
-                    cached_payload, extra="ignore", by_alias=True
+                    cached_payload
                 )
             except Exception as e:
                 logger.warning(
@@ -549,7 +549,7 @@ async def fetch_cvcc_health_details(
             raise Exception("Not a valid dict provided in the response.")
         await set_cached_api_response(cache_key, response_json)
         return CvccHealthResponseModel.model_validate(
-            response_json, extra="ignore", by_alias=True
+            response_json
         )
     except httpx.HTTPStatusError as e:
         logger.error(
@@ -610,7 +610,7 @@ async def create_ai_call_api(
             if not isinstance(response_json, dict):
                 raise Exception("Not a valid dict provided in the response.")
             parsed = AICallResponseModel.model_validate(
-                response_json, extra="ignore", by_alias=True
+                response_json
             )
             if ai_obs is not None:
                 ai_obs.update(
@@ -698,7 +698,7 @@ async def create_health_call_api(
         if not isinstance(response_json, dict):
             raise Exception("Not a valid dict provided in the response.")
         return HealthCallResponseModel.model_validate(
-            response_json, extra="ignore", by_alias=True
+            response_json
         )
     except httpx.HTTPStatusError as e:
         logger.error(
@@ -767,7 +767,7 @@ async def get_farmer_milk_collection_details_api(
         if not isinstance(response_json, dict):
             raise Exception("Not a valid dict provided in the response.")
         return FarmerMilkCollectionResponseModel.model_validate(
-            response_json, extra="ignore", by_alias=True
+            response_json
         )
     except httpx.HTTPStatusError as e:
         logger.error(
