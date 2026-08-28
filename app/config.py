@@ -235,9 +235,15 @@ class Settings(BaseSettings):
     # served like an unsupported language — English passthrough) without
     # touching Gujarati.
     hindi_chat_enabled: bool = _get_bool_env("HINDI_CHAT_ENABLED", default=True)
+    # Master kill switch for the doctor persona. When false, every chat request
+    # is routed through the farmer persona regardless of JWT claims or request
+    # overrides. Keep default-off until the doctor experience is approved for
+    # the target environment.
+    doctor_persona_enabled: bool = _get_bool_env("DOCTOR_PERSONA_ENABLED", default=False)
     # Allows the feature-flagged chat UI to exercise a persona different from
-    # the signed JWT. Keep off outside controlled testing; JWT user_type remains
-    # authoritative when disabled.
+    # the signed JWT, but only while the master doctor-persona gate is enabled.
+    # Keep off outside controlled testing; JWT user_type remains authoritative
+    # when the override is disabled.
     chat_persona_override_enabled: bool = _get_bool_env("CHAT_PERSONA_OVERRIDE_ENABLED", default=False)
     openai_pretranslation_timeout_seconds: float = float(os.getenv("OPENAI_PRETRANSLATION_TIMEOUT_SECONDS", "10.0"))
     # RETRIEVAL_AUDIT_LOG: log intent/retrieval_called/query per turn for replay analysis

@@ -132,6 +132,7 @@ def test_doctor_identity_short_circuit_bypasses_both_moderation_and_rag(monkeypa
     chat = import_module("app.services.chat")
     recorded = {"history_key": None}
 
+    monkeypatch.setattr(settings, "doctor_persona_enabled", True)
     monkeypatch.setattr(settings, "chat_persona_override_enabled", True)
     monkeypatch.setattr(chat, "propagate_attributes", None)
     monkeypatch.setattr(chat, "get_langfuse_client", None)

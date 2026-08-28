@@ -10,11 +10,15 @@ def resolve_chat_persona(
     user_info: dict | None,
     requested_persona: ChatPersona | None = None,
 ) -> ChatPersona:
-    """Resolve the persona without allowing an unflagged client override.
+    """Resolve the persona behind the master and client-override gates.
 
-    Signed JWTs remain authoritative in normal operation. The request override
-    exists only for the feature-flagged chat UI used to test both paths.
+    With the master gate off, even a signed doctor JWT is routed as a farmer.
+    Once enabled, signed JWTs are authoritative in normal operation. The
+    request override exists only for the separately flagged test UI.
     """
+    if not settings.doctor_persona_enabled:
+        return "farmer"
+
     jwt_persona = str((user_info or {}).get("user_type") or "").strip().lower()
     resolved: ChatPersona = "doctor" if jwt_persona == "doctor" else "farmer"
 

@@ -6,6 +6,7 @@ from helpers.utils import get_prompt
 
 
 def test_signed_doctor_claim_selects_doctor_persona(monkeypatch):
+    monkeypatch.setattr(settings, "doctor_persona_enabled", True)
     monkeypatch.setattr(settings, "chat_persona_override_enabled", False)
 
     assert resolve_chat_persona({"user_type": "doctor"}) == "doctor"
@@ -14,12 +15,22 @@ def test_signed_doctor_claim_selects_doctor_persona(monkeypatch):
 
 
 def test_request_override_is_guarded_by_backend_flag(monkeypatch):
+    monkeypatch.setattr(settings, "doctor_persona_enabled", True)
     monkeypatch.setattr(settings, "chat_persona_override_enabled", False)
     assert resolve_chat_persona({"user_type": "farmer"}, "doctor") == "farmer"
 
     monkeypatch.setattr(settings, "chat_persona_override_enabled", True)
     assert resolve_chat_persona({"user_type": "farmer"}, "doctor") == "doctor"
     assert resolve_chat_persona({"user_type": "doctor"}, "farmer") == "farmer"
+
+
+def test_master_gate_forces_farmer_for_jwt_and_request_override(monkeypatch):
+    monkeypatch.setattr(settings, "doctor_persona_enabled", False)
+    monkeypatch.setattr(settings, "chat_persona_override_enabled", True)
+
+    assert resolve_chat_persona({"user_type": "doctor"}) == "farmer"
+    assert resolve_chat_persona({"user_type": "farmer"}, "doctor") == "farmer"
+    assert resolve_chat_persona({"user_type": "doctor"}, "doctor") == "farmer"
 
 
 def test_doctor_agent_exposes_only_document_search():

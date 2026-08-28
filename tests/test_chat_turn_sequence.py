@@ -227,6 +227,7 @@ def test_blocked_moderation_never_reaches_the_agent(monkeypatch, fallback_enable
 
 
 def test_doctor_jwt_routes_to_doctor_agent_without_farmer_context(monkeypatch):
+    monkeypatch.setattr(chat_service.settings, "doctor_persona_enabled", True)
     output, stages = _drive(
         monkeypatch,
         source_lang="en",
@@ -244,3 +245,24 @@ def test_doctor_jwt_routes_to_doctor_agent_without_farmer_context(monkeypatch):
     assert "moderation" not in stages
     assert "agent" not in stages
     assert "farmer_context" not in stages
+
+
+def test_disabled_doctor_gate_routes_doctor_jwt_through_farmer_path(monkeypatch):
+    monkeypatch.setattr(chat_service.settings, "doctor_persona_enabled", False)
+    output, stages = _drive(
+        monkeypatch,
+        source_lang="en",
+        target_lang="en",
+        user_info={
+            "phone": "9375028676",
+            "user_type": "doctor",
+            "auth_type": "jwt",
+        },
+    )
+
+    assert output
+    assert "agent" in stages
+    assert "moderation" in stages
+    assert "farmer_context" in stages
+    assert "doctor_agent" not in stages
+    assert "doctor_moderation" not in stages
