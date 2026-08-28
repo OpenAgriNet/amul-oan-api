@@ -62,6 +62,10 @@ def get_agrinet_instructions(ctx: RunContext):
         # round-trips on every turn, which is already pushing turns to 10-19 s
         # where it happens today.
         'network_tools_enabled': settings.enable_network,
+        # SHC has a narrower rollout gate than the other Vistaar tools. Keep
+        # its prompt contract aligned with the per-turn tool prepare hook so the
+        # model never sees instructions for a hidden private-report tool.
+        'vistaar_shc_enabled': settings.enable_network and settings.vistaar_shc_enabled,
     }
 
     if ctx.deps.use_translation_pipeline:

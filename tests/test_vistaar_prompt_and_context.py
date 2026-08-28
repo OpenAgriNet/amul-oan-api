@@ -80,12 +80,13 @@ class TestPromptGuidance:
     PROMPTS = ("agrinet_system.md", "agrinet_system_translation_pipeline.md")
 
     @staticmethod
-    def _render(name, network):
+    def _render(name, network, shc=False):
         return get_prompt(name, context={
             "today_date": "13-08-2026", "today_datetime": "13-08-2026 10:00",
             "farmer_context": None, "ambiguity_hints": None,
             "response_max_chars": None, "loan_max_amount": "5,000",
             "loan_interest_rate_pct": "7", "network_tools_enabled": network,
+            "vistaar_shc_enabled": shc,
         })
 
     @pytest.mark.parametrize("name", PROMPTS)
@@ -129,3 +130,21 @@ class TestPromptGuidance:
         # and the whole guidance silently does nothing.
         source = (ROOT / "agents" / "agrinet.py").read_text()
         assert "'network_tools_enabled': settings.enable_network" in source
+        assert "'vistaar_shc_enabled': settings.enable_network and settings.vistaar_shc_enabled" in source
+
+    @pytest.mark.parametrize("name", PROMPTS)
+    def test_shc_guidance_matches_the_narrower_feature_gate(self, name):
+        disabled = self._render(name, True, shc=False)
+        enabled = self._render(name, True, shc=True)
+
+        assert "get_vistaar_soil_health_card" not in disabled
+        assert "## Soil Health Card Rules" not in disabled
+        assert "get_vistaar_soil_health_card" in enabled
+        assert "## Soil Health Card Rules" in enabled
+
+    @pytest.mark.parametrize("name", PROMPTS)
+    def test_milk_collection_prompt_uses_authenticated_context_signature(self, name):
+        rendered = self._render(name, True)
+
+        assert "get_farmer_milk_collection_details(fromdate, todate)" in rendered
+        assert "get_farmer_milk_collection_details(union_code" not in rendered
