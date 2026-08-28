@@ -1,13 +1,5 @@
-"""Booking-tool contracts.
-
-HEALTH booking is idempotent per session — an agent re-run (the OSS->managed
-streaming fallback re-executes tool calls) must not double-book a health visit.
-
-AI booking is DELIBERATELY NOT deduped: a farmer may book multiple artificial
-insemination visits in one session, including the same species with the same
-technician (e.g. two cows in heat). Every invocation reaches the upstream API;
-the trade-off (a fallback re-run can create a duplicate) is accepted, with the
-API as the backstop. See the comment in agents/tools/ai_call.py."""
+"""Booking tools must be idempotent per session so an agent re-run (the
+OSS->managed streaming fallback re-executes tool calls) cannot double-book."""
 
 import os
 
@@ -15,6 +7,8 @@ os.environ.setdefault("OPENAI_API_KEY", "test-key")
 
 import asyncio
 from types import SimpleNamespace
+
+import pytest
 
 from agents.tools import ai_call as ai_mod
 from agents.tools import health_call as hc_mod
@@ -24,8 +18,8 @@ from app.models.health_call import HealthCaseType
 
 async def _in_scope():
     # Chat-path semantics: ensure_in_scope() returns True when no moderation task
-    # is attached (deps.ensure_in_scope, agents/deps.py). Booking tools gate on it,
-    # so the deps stub must provide it.
+    # is attached (deps.ensure_in_scope, agents/deps.py). Booking tools now gate on
+    # it (ai_call/health_call), so the deps stub must provide it.
     return True
 
 
@@ -33,10 +27,15 @@ def _ctx(session_id):
     return SimpleNamespace(deps=SimpleNamespace(session_id=session_id, ensure_in_scope=_in_scope))
 
 
+def _enable_guard(monkeypatch, mod):
+    """The guard defaults OFF (main's product decision: a farmer may book twice in
+    one session). These tests are ABOUT the guard, so they turn it on explicitly."""
+    monkeypatch.setattr(mod.settings, "ai_call_booking_guard_enabled", True)
+
+
 def _patch_cache(monkeypatch, module):
     """In-memory cache simulating Redis: add() is atomic SET-NX (raises if key
-    exists), shared by try_reserve/release_reservation and the tool's set/get.
-    Used by the HEALTH tests (health_call keeps a per-session guard)."""
+    exists), shared by try_reserve/release_reservation and the tool's set/get."""
     store = {}
 
     async def fake_add(key, value, ttl=None, namespace=None):
@@ -63,17 +62,14 @@ def _patch_cache(monkeypatch, module):
     return store
 
 
-# ── AI booking: multiple bookings allowed, no client-side dedup ──────────────
-
-def test_ai_call_allows_repeat_same_species_and_technician(monkeypatch):
-    """Same species + same technician, booked twice in one session -> BOTH book.
-    AI booking has no idempotency guard by design (multiple visits per session)."""
-    monkeypatch.setenv("PASHUGPT_TOKEN", "tok")
+def test_ai_call_idempotent_on_rerun(monkeypatch):
+    _enable_guard(monkeypatch, ai_mod)
+    _patch_cache(monkeypatch, ai_mod)
     calls = {"n": 0}
 
     async def fake_api(request, token):
         calls["n"] += 1
-        return SimpleNamespace(ticket_number=f"T{calls['n']}", ait_name="AIT", model_dump=lambda: {})
+        return SimpleNamespace(ticket_number="T1", ait_name="AIT", model_dump=lambda: {"ticket_number": "T1"})
 
     monkeypatch.setattr(ai_mod, "create_ai_call_api", fake_api)
     species = next(iter(AISpecies))
@@ -81,71 +77,10 @@ def test_ai_call_allows_repeat_same_species_and_technician(monkeypatch):
     r1 = asyncio.run(ai_mod.create_ai_call(_ctx("s1"), "U", "S", "F", "tech1", species))
     r2 = asyncio.run(ai_mod.create_ai_call(_ctx("s1"), "U", "S", "F", "tech1", species))
 
-    assert calls["n"] == 2
+    assert calls["n"] == 1                 # booking API hit exactly once across the re-run
     assert "booked successfully" in r1
-    assert "booked successfully" in r2
+    assert "already" in r2.lower()         # second call short-circuited
 
-
-def test_ai_call_allows_distinct_species_in_same_session(monkeypatch):
-    """A farmer can also book AI for a cow AND a buffalo in one session."""
-    monkeypatch.setenv("PASHUGPT_TOKEN", "tok")
-    calls = {"n": 0}
-
-    async def fake_api(request, token):
-        calls["n"] += 1
-        return SimpleNamespace(ticket_number=f"T{calls['n']}", ait_name="AIT", model_dump=lambda: {})
-
-    monkeypatch.setattr(ai_mod, "create_ai_call_api", fake_api)
-    species = list(AISpecies)
-    assert len(species) >= 2  # cow + buffalo
-
-    r1 = asyncio.run(ai_mod.create_ai_call(_ctx("s1"), "U", "S", "F", "tech1", species[0]))
-    r2 = asyncio.run(ai_mod.create_ai_call(_ctx("s1"), "U", "S", "F", "tech1", species[1]))
-
-    assert calls["n"] == 2
-    assert "booked successfully" in r1
-    assert "booked successfully" in r2
-
-
-def test_ai_call_concurrent_submits_both_book(monkeypatch):
-    """Concurrent submits for the same species both reach the API (no guard)."""
-    monkeypatch.setenv("PASHUGPT_TOKEN", "tok")
-    calls = {"n": 0}
-
-    async def fake_api(request, token):
-        calls["n"] += 1
-        await asyncio.sleep(0.02)
-        return SimpleNamespace(ticket_number=f"T{calls['n']}", ait_name="AIT", model_dump=lambda: {})
-
-    monkeypatch.setattr(ai_mod, "create_ai_call_api", fake_api)
-    species = next(iter(AISpecies))
-
-    async def go():
-        return await asyncio.gather(
-            ai_mod.create_ai_call(_ctx("sX"), "U", "S", "F", "t", species),
-            ai_mod.create_ai_call(_ctx("sX"), "U", "S", "F", "t", species),
-        )
-
-    r1, r2 = asyncio.run(go())
-    assert calls["n"] == 2
-    assert "booked successfully" in r1
-    assert "booked successfully" in r2
-
-
-def test_no_session_id_does_not_crash(monkeypatch):
-    """Defensive: missing session_id (e.g. None deps) must not raise."""
-    monkeypatch.setenv("PASHUGPT_TOKEN", "tok")
-
-    async def fake_api(request, token):
-        return SimpleNamespace(ticket_number="T1", ait_name="AIT", model_dump=lambda: {})
-
-    monkeypatch.setattr(ai_mod, "create_ai_call_api", fake_api)
-    species = next(iter(AISpecies))
-    r = asyncio.run(ai_mod.create_ai_call(_ctx(None), "U", "S", "F", "tech1", species))
-    assert "booked successfully" in r
-
-
-# ── Health booking: still idempotent per session ─────────────────────────────
 
 def test_health_call_idempotent_on_rerun(monkeypatch):
     _patch_cache(monkeypatch, hc_mod)
@@ -166,6 +101,49 @@ def test_health_call_idempotent_on_rerun(monkeypatch):
     assert calls["n"] == 1
     assert "booked successfully" in r1
     assert "already" in r2.lower()
+
+
+def test_ai_call_concurrent_submits_book_once(monkeypatch):
+    """Two concurrent submits for the same session (double-tap / retry) must
+    result in exactly ONE booking — the atomic reservation closes the
+    check-then-set race."""
+    _enable_guard(monkeypatch, ai_mod)
+    _patch_cache(monkeypatch, ai_mod)
+    calls = {"n": 0}
+
+    async def fake_api(request, token):
+        calls["n"] += 1
+        await asyncio.sleep(0.02)  # booking latency — the window two requests race in
+        return SimpleNamespace(ticket_number=f"T{calls['n']}", ait_name="AIT", model_dump=lambda: {})
+
+    monkeypatch.setattr(ai_mod, "create_ai_call_api", fake_api)
+    species = next(iter(AISpecies))
+
+    async def go():
+        return await asyncio.gather(
+            ai_mod.create_ai_call(_ctx("sX"), "U", "S", "F", "t", species),
+            ai_mod.create_ai_call(_ctx("sX"), "U", "S", "F", "t", species),
+        )
+
+    r1, r2 = asyncio.run(go())
+    assert calls["n"] == 1  # booking API hit exactly once despite the race
+    assert any("booked successfully" in r for r in (r1, r2))
+    assert any("already" in r.lower() for r in (r1, r2))
+
+
+def test_no_session_id_does_not_crash(monkeypatch):
+    """Defensive: missing session_id (e.g. None deps) must not raise; it just
+    skips the guard (no dedup, but no crash)."""
+    _enable_guard(monkeypatch, ai_mod)
+    _patch_cache(monkeypatch, ai_mod)
+
+    async def fake_api(request, token):
+        return SimpleNamespace(ticket_number="T1", ait_name="AIT", model_dump=lambda: {})
+
+    monkeypatch.setattr(ai_mod, "create_ai_call_api", fake_api)
+    species = next(iter(AISpecies))
+    r = asyncio.run(ai_mod.create_ai_call(_ctx(None), "U", "S", "F", "tech1", species))
+    assert "booked successfully" in r
 
 
 # --- §13 Part B: tools route observability through the centralized helpers ---
@@ -199,6 +177,8 @@ def _patch_obs(monkeypatch, module):
 
 def test_ai_call_annotates_its_own_span_and_never_the_turn(monkeypatch):
     monkeypatch.setenv("PASHUGPT_TOKEN", "tok")
+    _enable_guard(monkeypatch, ai_mod)
+    _patch_cache(monkeypatch, ai_mod)
     obs_names, trace_io = _patch_obs(monkeypatch, ai_mod)
 
     async def fake_api(request, token):
