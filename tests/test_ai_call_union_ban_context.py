@@ -183,6 +183,80 @@ def test_cache_dedupes_lookup_for_same_union_and_society(monkeypatch):
     assert groups[1]["technicians"][0]["userId"] == "ait-1"
 
 
+def test_cache_fetches_unique_pairs_concurrently(monkeypatch):
+    records = [
+        FarmerRecord(
+            unionName="kaira", unionCode="1", societyCode="S1", farmerCode="F-1", farmerName="Farmer One"
+        ),
+        FarmerRecord(
+            unionName="kaira", unionCode="2", societyCode="S2", farmerCode="F-2", farmerName="Farmer Two"
+        ),
+    ]
+    state = {"inflight": 0, "max_inflight": 0}
+    seen_pairs = set()
+    both_started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def fake_api(query, token):
+        pair = (query.union_code, query.society_code)
+        seen_pairs.add(pair)
+        state["inflight"] += 1
+        state["max_inflight"] = max(state["max_inflight"], state["inflight"])
+        if len(seen_pairs) == 2:
+            both_started.set()
+        await release.wait()
+        state["inflight"] -= 1
+        return [_tech()]
+
+    async def _run():
+        task = asyncio.create_task(farmer_cache._fetch_ai_technicians(records))
+        await asyncio.wait_for(both_started.wait(), timeout=0.5)
+        release.set()
+        return await task
+
+    monkeypatch.setenv("PASHUGPT_TOKEN", "tok")
+    monkeypatch.setattr(farmer_cache, "get_ai_technicians_by_society_cached", fake_api)
+    groups = asyncio.run(_run())
+
+    assert state["max_inflight"] == 2
+    assert seen_pairs == {("1", "S1"), ("2", "S2")}
+    assert len(groups) == 2
+
+
+def test_cache_isolates_failure_to_only_failed_pair(monkeypatch):
+    records = [
+        FarmerRecord(
+            unionName="kaira", unionCode="1", societyCode="S1", farmerCode="F-1", farmerName="Farmer One"
+        ),
+        FarmerRecord(
+            unionName="kaira", unionCode="2", societyCode="S2", farmerCode="F-2", farmerName="Farmer Two"
+        ),
+        FarmerRecord(
+            unionName="kaira", unionCode="1", societyCode="S1", farmerCode="F-3", farmerName="Farmer Three"
+        ),
+    ]
+
+    async def fake_api(query, token):
+        if (query.union_code, query.society_code) == ("2", "S2"):
+            raise RuntimeError("upstream timeout")
+        return [
+            AITechnicianBySocietyRecord(
+                userId="ait-s1",
+                fullName="S1 Technician",
+                mobileNumber="9000000001",
+            )
+        ]
+
+    monkeypatch.setenv("PASHUGPT_TOKEN", "tok")
+    monkeypatch.setattr(farmer_cache, "get_ai_technicians_by_society_cached", fake_api)
+    groups = asyncio.run(farmer_cache._fetch_ai_technicians(records))
+
+    by_farmer = {group["farmerCode"]: group for group in groups}
+    assert by_farmer["F-1"]["technicians"][0]["userId"] == "ait-s1"
+    assert by_farmer["F-3"]["technicians"][0]["userId"] == "ait-s1"
+    assert by_farmer["F-2"]["technicians"] == []
+
+
 @pytest.mark.parametrize("name", PROMPTS)
 def test_prompts_put_union_ban_ahead_of_technician_selection(name):
     rendered = _render_prompt(name)

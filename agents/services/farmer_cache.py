@@ -353,17 +353,18 @@ async def _fetch_ai_technicians(records: list[FarmerRecord]) -> list[dict]:
     if not eligible_rows:
         return []
 
-    pair_to_technicians: dict[tuple[str, str], Optional[list]] = {}
     unique_pairs = sorted({(union_code, society_code) for _, union_code, society_code in eligible_rows})
-    for union_code, society_code in unique_pairs:
+
+    async def _lookup_pair(union_code: str, society_code: str) -> tuple[tuple[str, str], Optional[list]]:
         try:
-            pair_to_technicians[(union_code, society_code)] = await get_ai_technicians_by_society_cached(
+            technicians = await get_ai_technicians_by_society_cached(
                 GetAITechniciansBySocietyQueryParams(
                     unionCode=union_code,
                     societyCode=society_code,
                 ),
                 token,
             )
+            return (union_code, society_code), technicians
         except Exception as e:
             logger.warning(
                 "AI technician lookup failed for union=%s society=%s: %s",
@@ -371,7 +372,12 @@ async def _fetch_ai_technicians(records: list[FarmerRecord]) -> list[dict]:
                 society_code,
                 e,
             )
-            pair_to_technicians[(union_code, society_code)] = None
+            return (union_code, society_code), None
+
+    pair_results = await asyncio.gather(
+        *(_lookup_pair(union_code, society_code) for union_code, society_code in unique_pairs)
+    )
+    pair_to_technicians: dict[tuple[str, str], Optional[list]] = dict(pair_results)
 
     groups: list[dict] = []
     for data, union_code, society_code in eligible_rows:
