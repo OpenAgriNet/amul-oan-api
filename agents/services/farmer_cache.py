@@ -41,16 +41,21 @@ logger = get_logger(__name__)
 
 FARMER_CACHE_TTL = settings.farmer_cache_retention_seconds  # hard retention in Redis (deletion), default 7d
 FARMER_REFRESH_INTERVAL = settings.farmer_refresh_interval_seconds  # soft expiry: refresh a "found" record, default 12h
-FARMER_NEGATIVE_REFRESH_INTERVAL = settings.farmer_negative_refresh_interval_seconds  # not_found refreshes sooner, default 2h
+FARMER_NEGATIVE_REFRESH_INTERVAL = settings.farmer_negative_refresh_interval_seconds  # not_found/unknown refreshes sooner, default 2h
 FARMER_REFRESH_LOCK_TTL = settings.farmer_refresh_lock_ttl_seconds  # dedupe concurrent refreshes
 FARMER_COLD_FETCH_TIMEOUT = settings.farmer_cold_fetch_timeout_seconds  # bounded cold/never-cached miss
 FARMER_REFRESH_QUEUE_BATCH_SIZE = settings.farmer_refresh_queue_batch_size
+# Minimum delay between enqueue attempts for the same phone during stale-read
+# loops. This avoids one refresh queue insertion per request when upstream keeps
+# returning empty/failing.
+FARMER_REFRESH_REENQUEUE_BACKOFF_SECONDS = 60
 # Beyond this age a cached record is too stale to serve: the read blocks on a
 # bounded API call instead (falls back to the stale record only if that fails).
 FARMER_MAX_SERVE_STALE_SECONDS = settings.farmer_max_serve_stale_seconds
 FARMER_CACHE_NAMESPACE = "farmer"
 FARMER_REFRESH_LOCK_NAMESPACE = "farmer-refresh"
 FARMER_REFRESH_QUEUE_NAMESPACE = "farmer-refresh-queue"
+FARMER_REFRESH_BACKOFF_NAMESPACE = "farmer-refresh-backoff"
 # Single Redis set holding raw phone numbers awaiting a background refresh.
 FARMER_REFRESH_QUEUE_KEY = build_cache_key("pending", namespace=FARMER_REFRESH_QUEUE_NAMESPACE)
 
@@ -76,6 +81,10 @@ def _refresh_lock_key(phone: str) -> str:
     return build_cache_key(_cache_key(phone), namespace=FARMER_REFRESH_LOCK_NAMESPACE)
 
 
+def _refresh_backoff_key(phone: str) -> str:
+    return build_cache_key(_cache_key(phone), namespace=FARMER_REFRESH_BACKOFF_NAMESPACE)
+
+
 def _compute_freshness(envelope: FarmerDataEnvelope) -> tuple[bool, Optional[str], Optional[str]]:
     if not envelope.fetchedAt:
         return True, "missing_fetched_at", None
@@ -86,7 +95,7 @@ def _compute_freshness(envelope: FarmerDataEnvelope) -> tuple[bool, Optional[str
 
     interval = (
         FARMER_NEGATIVE_REFRESH_INTERVAL
-        if envelope.lookupStatus == "not_found"
+        if envelope.lookupStatus in {"not_found", "unknown"}
         else FARMER_REFRESH_INTERVAL
     )
     refresh_after = fetched_at + timedelta(seconds=interval)
@@ -238,7 +247,10 @@ async def refresh_farmer_data(phone: str) -> Optional[FarmerDataEnvelope]:
                 await _restamp_kept_record(phone, existing)
             return existing
 
-        envelope = FarmerDataEnvelope.not_found(source="api")
+        # Empty/None from upstream is ambiguous here: both hard misses and
+        # provider failures map to "no records" today. Cache as unknown so the
+        # Layer 2 consumer can decide whether to fall back to legacy reads.
+        envelope = FarmerDataEnvelope.unknown(source="api")
         await set_cached_farmer_data(phone, envelope)
         return envelope
     except Exception as e:
@@ -263,6 +275,19 @@ async def enqueue_farmer_refresh(phone: str) -> None:
     if not phone:
         return
     try:
+        if FARMER_REFRESH_REENQUEUE_BACKOFF_SECONDS > 0:
+            first_enqueue_in_window = await redis_client.set(
+                _refresh_backoff_key(phone),
+                "1",
+                ex=FARMER_REFRESH_REENQUEUE_BACKOFF_SECONDS,
+                nx=True,
+            )
+            if not first_enqueue_in_window:
+                logger.debug(
+                    "Skipping duplicate farmer refresh enqueue within backoff window for phone hash %s...",
+                    _phone_log_hash(phone),
+                )
+                return
         await redis_client.sadd(FARMER_REFRESH_QUEUE_KEY, phone)
     except Exception as e:
         logger.warning("Failed to enqueue farmer refresh: %s", e)
@@ -350,8 +375,7 @@ async def get_or_fetch_farmer_data(phone: str) -> Optional[FarmerDataEnvelope]:
         "Farmer cache read: cold_fetch phone_hash=%s reason=cache_miss",
         _phone_log_hash(phone),
     )
-    with fetch_reason("cold_fetch"):
-        return await refresh_farmer_data(phone)
+    return await refresh_farmer_data_bounded(phone)
 
 
 async def refresh_farmer_data_bounded(

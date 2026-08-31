@@ -60,6 +60,9 @@ def test_freshness_intervals_found_vs_not_found():
     # not_found: shorter soft expiry at 2h
     assert fc._compute_freshness(_Env("not_found", 1))[0] is False
     assert fc._compute_freshness(_Env("not_found", 3))[0] is True
+    # unknown: same negative-refresh interval as not_found
+    assert fc._compute_freshness(_Env("unknown", 1))[0] is False
+    assert fc._compute_freshness(_Env("unknown", 3))[0] is True
 
 
 def test_interval_constants():
@@ -71,8 +74,10 @@ def test_interval_constants():
 
 def test_enqueue_pushes_phone_to_redis_set():
     fake_redis = AsyncMock()
+    fake_redis.set = AsyncMock(return_value=True)
     with patch.object(fc, "redis_client", fake_redis):
         asyncio.run(fc.enqueue_farmer_refresh("9999999999"))
+    fake_redis.set.assert_awaited_once()
     fake_redis.sadd.assert_awaited_once_with(fc.FARMER_REFRESH_QUEUE_KEY, "9999999999")
 
 
@@ -80,7 +85,17 @@ def test_enqueue_ignores_empty_phone():
     fake_redis = AsyncMock()
     with patch.object(fc, "redis_client", fake_redis):
         asyncio.run(fc.enqueue_farmer_refresh(""))
+    fake_redis.set.assert_not_called()
     fake_redis.sadd.assert_not_called()
+
+
+def test_enqueue_skips_duplicate_within_backoff_window():
+    fake_redis = AsyncMock()
+    fake_redis.set = AsyncMock(side_effect=[True, None])
+    with patch.object(fc, "redis_client", fake_redis):
+        asyncio.run(fc.enqueue_farmer_refresh("9999999999"))
+        asyncio.run(fc.enqueue_farmer_refresh("9999999999"))
+    fake_redis.sadd.assert_awaited_once_with(fc.FARMER_REFRESH_QUEUE_KEY, "9999999999")
 
 
 def test_drain_pops_batch_and_refreshes_each():
@@ -299,13 +314,27 @@ def test_get_or_fetch_max_serve_stale_fallback_returns_stale_and_enqueues():
     enqueue.assert_awaited_once_with("9999999999")
 
 
-def test_get_or_fetch_cache_miss_calls_refresh():
+def test_get_or_fetch_cache_miss_calls_bounded_refresh():
     sentinel = _Env("found", 0)
     with patch.object(fc, "get_cached_farmer_data", new=AsyncMock(return_value=None)), \
-         patch.object(fc, "refresh_farmer_data", new=AsyncMock(return_value=sentinel)) as refresh:
+         patch.object(fc, "refresh_farmer_data_bounded", new=AsyncMock(return_value=sentinel)) as refresh:
         result = asyncio.run(fc.get_or_fetch_farmer_data("9999999999"))
     assert result is sentinel
     refresh.assert_awaited_once_with("9999999999")
+
+
+def test_refresh_ambiguous_empty_sets_unknown_when_no_existing():
+    fake_redis = AsyncMock()
+    fake_redis.set = AsyncMock(return_value=True)
+    fake_redis.delete = AsyncMock()
+    with patch.object(fc, "redis_client", fake_redis), \
+         patch.object(fc, "fetch_farmer_info_raw", new=AsyncMock(return_value=[])), \
+         patch.object(fc, "get_cached_farmer_data", new=AsyncMock(return_value=None)), \
+         patch.object(fc, "set_cached_farmer_data", new=AsyncMock()) as set_cache:
+        result = asyncio.run(fc.refresh_farmer_data("9999999999"))
+    assert result is not None
+    assert result.lookupStatus == "unknown"
+    set_cache.assert_awaited_once()
 
 
 def test_cached_only_soft_stale_enqueues_without_block_fetch():

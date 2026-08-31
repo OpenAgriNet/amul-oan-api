@@ -236,20 +236,12 @@ async def _get_ai_technicians_for_farmer(
         )
         token = os.getenv("PASHUGPT_TOKEN")
 
-        # force_refresh: always hit upstream. Otherwise use cache-first, but do
-        # not trust a cached empty list — verify with a refresh so legacy and
-        # Layer 2 share the same empty/untrusted semantics.
+        # force_refresh: always hit upstream. Otherwise use cache-first and
+        # trust successful cached responses, including an empty list.
         if force_refresh:
             technicians = await get_ai_technicians_by_society_refresh(query, token)
         else:
             technicians = await get_ai_technicians_by_society_cached(query, token)
-            if technicians is not None and not technicians:
-                logger.info(
-                    "Cached AI technician list is empty; verifying live lookup union=%s society=%s",
-                    farmer.union_code,
-                    farmer.society_code,
-                )
-                technicians = await get_ai_technicians_by_society_refresh(query, token)
     if technicians is None:
         return None, "AI technician details could not be fetched right now."
 
@@ -307,18 +299,26 @@ async def _append_ai_technicians_markdown(lines: list[str], farmer: FarmerModel)
 def _technician_group_for_farmer(farmer: FarmerModel, ai_groups: list[dict]) -> dict | None:
     # Prefer exact farmer-code mapping if present; only fall back to
     # society/union when no exact match exists across all groups.
-    for group in ai_groups:
-        group_code = group.get("farmerCode")
-        if farmer.farmer_code and group_code and str(farmer.farmer_code) == str(group_code):
-            return group
-
-    for group in ai_groups:
-        if (
+    def _same_union_society(group: dict) -> bool:
+        return (
             farmer.society_code
             and farmer.union_code
             and str(farmer.society_code) == str(group.get("societyCode"))
             and str(farmer.union_code) == str(group.get("unionCode"))
+        )
+
+    for group in ai_groups:
+        group_code = group.get("farmerCode")
+        if (
+            farmer.farmer_code
+            and group_code
+            and str(farmer.farmer_code) == str(group_code)
+            and _same_union_society(group)
         ):
+            return group
+
+    for group in ai_groups:
+        if _same_union_society(group):
             return group
     return None
 
@@ -374,18 +374,12 @@ async def _append_ai_technicians_markdown_with_cache(
                     lines.extend(technician_lines)
                     return
 
-            # If cached list is empty or previously failed, verify live before
-            # emitting a hard "none found" message.
-            force_refresh = True
+            # Retry live only for previously failed/unavailable cached lookups.
+            # A cached empty list is a successful response and should be trusted.
             if cached_failed or cached_technicians is None:
+                force_refresh = True
                 logger.info(
                     "Cached AI technician lookup was unavailable; retrying live lookup union=%s society=%s",
-                    farmer.union_code,
-                    farmer.society_code,
-                )
-            else:
-                logger.info(
-                    "Cached AI technician list is empty; verifying live lookup union=%s society=%s",
                     farmer.union_code,
                     farmer.society_code,
                 )
@@ -478,6 +472,7 @@ async def _build_farmer_context_bundle_from_farmers(
                     include_banas_visit,
                     include_cvcc_health,
                     farmer.union_name,
+                    farmer.union_code,
                 )
                 for tag in tags
             )
@@ -511,8 +506,16 @@ async def _get_farmer_context_bundle_layer2(
     if envelope is None:
         return None
 
-    if envelope.lookupStatus == "not_found" or not envelope.farmers:
+    if envelope.lookupStatus == "unknown":
+        # Layer 2 could not establish an authoritative result; let caller
+        # decide fallback behavior.
+        return None
+
+    if envelope.lookupStatus == "not_found":
         return _not_found_context(mobile)
+
+    if not envelope.farmers:
+        return None
 
     farmers = _farmer_records_to_models(envelope.farmers)
     if not farmers:
@@ -525,6 +528,62 @@ async def _get_farmer_context_bundle_layer2(
     )
 
 
+async def _get_farmer_context_bundle_beckn(
+    mobile_number: str,
+) -> tuple[str, list[str], dict[str, str]]:
+    """Build farmer context via Beckn callback transactions (network mode)."""
+    mobile = normalize_phone(mobile_number) or mobile_number
+    farmers = await fetch_authenticated_farmers(mobile)
+
+    if farmers is None:
+        return _not_found_context(mobile)
+
+    farmer_unions = _collect_farmer_unions(farmers)
+    farmer_location = _collect_farmer_location(farmers)
+
+    lines = [
+        "# Farmer Context",
+        "",
+        "This context is built from farmer records fetched by mobile number and animal records fetched by each farmer tag number.",
+        "",
+        f"- **Requested mobile number:** `{mobile}`",
+        f"- **Matched farmer records:** {len(farmers)}",
+    ]
+    # Union scheme discovery is already an on_search tool in network mode.
+    # Do not bypass the BPP by preloading the same Redis catalog directly into
+    # context; the agent fetches it only when the farmer actually asks.
+
+    for index, farmer in enumerate(farmers, start=1):
+        _append_farmer_markdown(lines, farmer, index)
+        await _append_ai_technicians_markdown(lines, farmer)
+
+        tags = farmer.animal_tags or []
+        include_banas_visit = is_from_union([farmer], UnionName.BANAS)
+        include_cvcc_health = is_from_union([farmer], UnionName.KAIRA)
+        lines.append("")
+        lines.append("### Animal tags")
+        if not tags:
+            lines.append("- No animal tags found for this farmer.")
+            continue
+
+        lines.append(f"- **Animal tags:** {', '.join(tags)}")
+        animal_contexts = await asyncio.gather(
+            *(
+                _get_animal_context_bundle(
+                    tag,
+                    include_banas_visit,
+                    include_cvcc_health,
+                    farmer.union_name,
+                    farmer.union_code,
+                )
+                for tag in tags
+            )
+        )
+        for tag, animal, banas_visits, cvcc_health in animal_contexts:
+            _append_animal_markdown(lines, tag, animal, banas_visits, cvcc_health)
+
+    return "\n".join(lines), farmer_unions, farmer_location
+
 async def get_farmer_context_bundle_by_mobile(
     mobile_number: str,
 ) -> tuple[str, list[str], dict[str, str]]:
@@ -534,6 +593,9 @@ async def get_farmer_context_bundle_by_mobile(
     so tools can read the farmer's location. It is deliberately NOT parsed back
     out of the markdown: the markdown is a prompt, not an API.
     """
+    if settings.enable_network and settings.beckn_callback_transactions_enabled:
+        return await _get_farmer_context_bundle_beckn(mobile_number)
+
     if not settings.farmer_layer2_chat_context_enabled:
         return await _get_farmer_context_bundle_legacy(mobile_number)
 
@@ -842,80 +904,3 @@ async def _get_animal_context_bundle(
     if include_cvcc_health:
         cvcc_health = results[result_index]
     return tag, animal, banas_visits, cvcc_health  # ty: ignore
-
-
-async def get_farmer_context_bundle_by_mobile(
-    mobile_number: str,
-) -> tuple[str, list[str], dict[str, str]]:
-    """Return (prompt markdown, union names, structured location).
-
-    The third element is {district, village, state} (possibly empty) and exists
-    so tools can read the farmer's location. It is deliberately NOT parsed back
-    out of the markdown: the markdown is a prompt, not an API.
-    """
-    mobile = normalize_phone(mobile_number) or mobile_number
-    if settings.enable_network and settings.beckn_callback_transactions_enabled:
-        farmers = await fetch_authenticated_farmers(mobile)
-    else:
-        farmers = await get_farmer_data_by_mobile(mobile)
-
-    if farmers is None:
-        return (
-            "# Farmer Context\n\n"
-            f"No farmer information found for mobile number `{mobile}`.",
-            [],
-            {},
-        )
-
-    farmer_unions = _collect_farmer_unions(farmers)
-    farmer_location = _collect_farmer_location(farmers)
-
-    lines = [
-        "# Farmer Context",
-        "",
-        "This context is built from farmer records fetched by mobile number and animal records fetched by each farmer tag number.",
-        "",
-        f"- **Requested mobile number:** `{mobile}`",
-        f"- **Matched farmer records:** {len(farmers)}",
-    ]
-    # Union scheme discovery is already an on_search tool in network mode.
-    # Do not bypass the BPP by preloading the same Redis catalog directly into
-    # context; the agent fetches it only when the farmer actually asks.
-    if not (settings.enable_network and settings.beckn_callback_transactions_enabled):
-        await _append_union_scheme_summary_markdown(lines, farmer_unions)
-
-    for index, farmer in enumerate(farmers, start=1):
-        _append_farmer_markdown(lines, farmer, index)
-        await _append_ai_technicians_markdown(lines, farmer)
-
-        tags = farmer.animal_tags or []
-        include_banas_visit = is_from_union([farmer], UnionName.BANAS)
-        include_cvcc_health = is_from_union([farmer], UnionName.KAIRA)
-        lines.append("")
-        lines.append("### Animal tags")
-        if not tags:
-            lines.append("- No animal tags found for this farmer.")
-            continue
-
-        lines.append(f"- **Animal tags:** {', '.join(tags)}")
-        animal_contexts = await asyncio.gather(
-            *(
-                _get_animal_context_bundle(
-                    tag,
-                    include_banas_visit,
-                    include_cvcc_health,
-                    farmer.union_name,
-                    farmer.union_code,
-                )
-                for tag in tags
-            )
-        )
-        for tag, animal, banas_visits, cvcc_health in animal_contexts:
-            _append_animal_markdown(lines, tag, animal, banas_visits, cvcc_health)
-
-    return "\n".join(lines), farmer_unions, farmer_location
-
-
-async def get_farmer_full_data_by_mobile(mobile_number: str) -> str:
-    farmer_context, _, _ = await get_farmer_context_bundle_by_mobile(mobile_number)
-    return farmer_context

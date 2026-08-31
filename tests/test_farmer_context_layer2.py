@@ -22,6 +22,14 @@ def _layer2_flags_off(monkeypatch):
         "agents.farmer_context.settings.farmer_layer2_fallback_to_legacy_enabled",
         True,
     )
+    monkeypatch.setattr(
+        "agents.farmer_context.settings.enable_network",
+        False,
+    )
+    monkeypatch.setattr(
+        "agents.farmer_context.settings.beckn_callback_transactions_enabled",
+        False,
+    )
 
 
 def _envelope_found(**farmer_fields) -> FarmerDataEnvelope:
@@ -203,6 +211,39 @@ def test_layer2_passes_normalized_phone_to_cache_fetch(monkeypatch):
     fetch.assert_awaited_once_with("9876543210")
 
 
+def test_layer2_unknown_lookup_status_returns_none(monkeypatch):
+    import agents.farmer_context as fc
+
+    envelope = FarmerDataEnvelope.unknown(source="api")
+    monkeypatch.setattr(
+        "agents.services.farmer_cache.get_or_fetch_farmer_data",
+        AsyncMock(return_value=envelope),
+    )
+
+    result = asyncio.run(fc._get_farmer_context_bundle_layer2("9876543210"))
+    assert result is None
+
+
+def test_beckn_callback_priority_over_layer2_flag(monkeypatch):
+    """When both Beckn callbacks and Layer 2 are enabled, callback routing wins."""
+    import agents.farmer_context as fc
+
+    monkeypatch.setattr(fc.settings, "enable_network", True)
+    monkeypatch.setattr(fc.settings, "beckn_callback_transactions_enabled", True)
+    monkeypatch.setattr(fc.settings, "farmer_layer2_chat_context_enabled", True)
+
+    beckn = AsyncMock(return_value=("beckn-md", ["kaira"], {"district": "anand"}))
+    layer2 = AsyncMock(return_value=("layer2-md", ["kaira"], {}))
+    monkeypatch.setattr(fc, "_get_farmer_context_bundle_beckn", beckn)
+    monkeypatch.setattr(fc, "_get_farmer_context_bundle_layer2", layer2)
+
+    result = asyncio.run(fc.get_farmer_context_bundle_by_mobile("9876543210"))
+
+    assert result == ("beckn-md", ["kaira"], {"district": "anand"})
+    beckn.assert_awaited_once_with("9876543210")
+    layer2.assert_not_called()
+
+
 def test_technician_group_prefers_exact_farmer_code_over_earlier_society_match():
     """Regression: same society/union groups must not steal an exact farmerCode match.
 
@@ -272,6 +313,34 @@ def test_technician_group_falls_back_to_society_union_when_no_farmer_code_match(
     assert selected["technicians"][0]["userId"] == "ait-fallback"
 
 
+def test_technician_group_exact_farmer_code_requires_same_union_society():
+    import agents.farmer_context as fc
+
+    farmer = FarmerModel(
+        farmerName="Target Farmer",
+        unionName="kaira",
+        unionCode="2",
+        societyCode="S2",
+        farmerCode="1",
+    )
+    wrong_scope_same_code = {
+        "farmerCode": "1",
+        "societyCode": "S1",
+        "unionCode": "1",
+        "technicians": [{"userId": "ait-wrong"}],
+    }
+    right_scope_same_code = {
+        "farmerCode": "1",
+        "societyCode": "S2",
+        "unionCode": "2",
+        "technicians": [{"userId": "ait-correct"}],
+    }
+
+    selected = fc._technician_group_for_farmer(farmer, [wrong_scope_same_code, right_scope_same_code])
+    assert selected is right_scope_same_code
+    assert selected["technicians"][0]["userId"] == "ait-correct"
+
+
 def test_cached_technician_failure_does_not_emit_hard_none_found(monkeypatch):
     import agents.farmer_context as fc
 
@@ -328,10 +397,9 @@ def test_live_verify_bypasses_cached_technician_helper(monkeypatch):
     refresh_lookup.assert_awaited_once()
 
 
-def test_legacy_empty_cache_triggers_refresh_verification(monkeypatch):
-    """Legacy/default path must not trust a cached empty technician list."""
+def test_legacy_empty_cache_does_not_trigger_refresh_verification(monkeypatch):
+    """Legacy/default path trusts cached empty technician results."""
     import agents.farmer_context as fc
-    from agents.tools.farmer_animal_backends import AITechnicianBySocietyRecord
 
     farmer = FarmerModel(
         farmerName="Target Farmer",
@@ -340,30 +408,20 @@ def test_legacy_empty_cache_triggers_refresh_verification(monkeypatch):
         societyCode="S1",
     )
     cached_lookup = AsyncMock(return_value=[])
-    refresh_lookup = AsyncMock(
-        return_value=[
-            AITechnicianBySocietyRecord(
-                userId="ait-recovered",
-                fullName="Recovered Tech",
-                mobileNumber="9000000003",
-            )
-        ]
-    )
+    refresh_lookup = AsyncMock(return_value=[])
     monkeypatch.setattr(fc, "get_ai_technicians_by_society_cached", cached_lookup)
     monkeypatch.setattr(fc, "get_ai_technicians_by_society_refresh", refresh_lookup)
 
     lines, error = asyncio.run(fc._get_ai_technicians_for_farmer(farmer))
 
     assert error is None
-    assert lines is not None
-    assert any("ait-recovered" in line for line in lines)
+    assert lines == []
     cached_lookup.assert_awaited_once()
-    refresh_lookup.assert_awaited_once()
+    refresh_lookup.assert_not_called()
 
 
 def test_legacy_markdown_does_not_hard_none_found_on_stale_empty_cache(monkeypatch):
     import agents.farmer_context as fc
-    from agents.tools.farmer_animal_backends import AITechnicianBySocietyRecord
 
     farmer = FarmerModel(
         farmerName="Target Farmer",
@@ -375,24 +433,14 @@ def test_legacy_markdown_does_not_hard_none_found_on_stale_empty_cache(monkeypat
     monkeypatch.setattr(
         fc,
         "get_ai_technicians_by_society_refresh",
-        AsyncMock(
-            return_value=[
-                AITechnicianBySocietyRecord(
-                    userId="ait-recovered",
-                    fullName="Recovered Tech",
-                    mobileNumber="9000000003",
-                )
-            ]
-        ),
+        AsyncMock(side_effect=AssertionError("refresh should not be used for cached empty list")),
     )
 
     lines: list[str] = []
     asyncio.run(fc._append_ai_technicians_markdown(lines, farmer))
     markdown = "\n".join(lines)
 
-    assert "Recovered Tech" in markdown
-    assert "ait-recovered" in markdown
-    assert "No AI technicians were found for this society." not in markdown
+    assert "No AI technicians were found for this society." in markdown
 
 
 def test_layer2_records_preserve_legacy_merge_behavior(monkeypatch):
