@@ -344,7 +344,8 @@ async def test_shc_init_is_directed_and_waits_for_on_init(monkeypatch):
     from app.services import beckn_operations as module
 
     monkeypatch.setattr(module.settings, "beckn_bap_caller_url", "http://onix/bap/caller")
-    monkeypatch.setattr(module.settings, "beckn_transaction_bridge_token", "transaction-secret")
+    monkeypatch.setattr(module.settings, "beckn_transaction_bridge_token", None)
+    monkeypatch.setattr(module.settings, "beckn_callback_transactions_enabled", False)
     monkeypatch.setattr(module.settings, "beckn_bap_uri", "https://bap.example/bap/receiver")
     monkeypatch.setattr(module.settings, "vistaar_bpp_id", "provider-network-vistaar.da.gov.in")
     monkeypatch.setattr(module.settings, "vistaar_bpp_uri", "https://provider-network-vistaar.da.gov.in")
@@ -363,6 +364,7 @@ async def test_shc_init_is_directed_and_waits_for_on_init(monkeypatch):
 
     assert result.ok
     assert http_client.url == "http://onix/bap/caller/init"
+    assert http_client.headers == {}
     sent = http_client.payload
     assert sent["context"]["action"] == "init"
     assert sent["context"]["domain"] == "schemes:vistaar"
@@ -524,7 +526,7 @@ async def test_shc_callback_gate_does_not_enable_booking_callbacks(monkeypatch):
 
     monkeypatch.setattr(router_module.settings, "beckn_callback_transactions_enabled", False)
     monkeypatch.setattr(router_module.settings, "vistaar_shc_enabled", True)
-    monkeypatch.setattr(router_module.settings, "beckn_callback_token", "secret")
+    monkeypatch.setattr(router_module.settings, "beckn_callback_token", None)
     monkeypatch.setattr(router_module, "get_beckn_operation_store", lambda: Store())
 
     booking = await router_module.receive_callback("on_confirm", _callback(), None)
@@ -532,7 +534,7 @@ async def test_shc_callback_gate_does_not_enable_booking_callbacks(monkeypatch):
 
     payload = _callback()
     payload["context"].update({"domain": "schemes:vistaar", "action": "on_init"})
-    shc_callback = await router_module.receive_callback("on_init", payload, "secret")
+    shc_callback = await router_module.receive_callback("on_init", payload, None)
     assert shc_callback.status_code == 200
     assert json.loads(shc_callback.body)["message"]["ack"]["status"] == "ACK"
     assert calls["n"] == 1
