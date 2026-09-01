@@ -487,8 +487,8 @@ class Settings(BaseSettings):
     # ONIX BAP caller base, e.g. http://amul-onix:3001/bap/caller. The client
     # appends /confirm/ or /status/.
     beckn_bap_caller_url: str = os.getenv("BECKN_BAP_CALLER_URL", "").rstrip("/")
-    # Bearer credential for the private VM6 transaction bridge. This is
-    # separate from the reverse callback credential and from ONIX signing keys.
+    # Bearer credential for a private transaction bridge. Direct, in-network
+    # ONIX callers (including the dev SHC path) do not require this credential.
     beckn_transaction_bridge_token: Optional[str] = os.getenv("BECKN_TRANSACTION_BRIDGE_TOKEN")
     beckn_bap_id: str = os.getenv("BECKN_BAP_ID", "bap.amul-net.internal")
     # Public ONIX callback receiver base; ONIX validates/signature-routes the
@@ -698,12 +698,12 @@ class Settings(BaseSettings):
         required = {
             "BECKN_BAP_CALLER_URL": self.beckn_bap_caller_url,
             "BECKN_BAP_URI": self.beckn_bap_uri,
-            "BECKN_TRANSACTION_BRIDGE_TOKEN": self.beckn_transaction_bridge_token,
-            "BECKN_CALLBACK_TOKEN": self.beckn_callback_token,
         }
         if self.beckn_callback_transactions_enabled:
             required.update(
                 {
+                    "BECKN_TRANSACTION_BRIDGE_TOKEN": self.beckn_transaction_bridge_token,
+                    "BECKN_CALLBACK_TOKEN": self.beckn_callback_token,
                     "BECKN_AMUL_BPP_ID": self.beckn_amul_bpp_id,
                     "BECKN_AMUL_BPP_URI": self.beckn_amul_bpp_uri,
                 }
