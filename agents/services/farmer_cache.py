@@ -42,7 +42,7 @@ logger = get_logger(__name__)
 
 FARMER_CACHE_TTL = settings.farmer_cache_retention_seconds  # hard retention in Redis (deletion), default 7d
 FARMER_REFRESH_INTERVAL = settings.farmer_refresh_interval_seconds  # soft expiry: refresh a "found" record, default 12h
-FARMER_NEGATIVE_REFRESH_INTERVAL = settings.farmer_negative_refresh_interval_seconds  # not_found/unknown refreshes sooner, default 2h
+FARMER_NEGATIVE_REFRESH_INTERVAL = settings.farmer_negative_refresh_interval_seconds  # not_found refreshes sooner, default 2h
 FARMER_REFRESH_LOCK_TTL = settings.farmer_refresh_lock_ttl_seconds  # dedupe concurrent refreshes
 FARMER_COLD_FETCH_TIMEOUT = settings.farmer_cold_fetch_timeout_seconds  # bounded cold/never-cached miss
 FARMER_REFRESH_QUEUE_BATCH_SIZE = settings.farmer_refresh_queue_batch_size
@@ -338,23 +338,6 @@ async def refresh_farmer_data(phone: str) -> Optional[FarmerDataEnvelope]:
         if outcome == FarmerFetchOutcome.FOUND and records:
             envelope = FarmerDataEnvelope.from_records(records, source="api", lookup_status="found")
             envelope.aiTechnicians = await _fetch_ai_technicians(records)
-            await set_cached_farmer_data(phone, envelope)
-            await _clear_refresh_attempt_state(phone)
-            return envelope
-
-        if outcome == FarmerFetchOutcome.AUTHORITATIVE_NOT_FOUND:
-            existing = await get_cached_farmer_data(phone)
-            if existing is not None and existing.lookupStatus == "found":
-                logger.info(
-                    "Skipping not_found overwrite of good cached farmer data (phone hash %s...)",
-                    _cache_key(phone)[:8],
-                )
-                if exceeds_max_serve_stale(existing):
-                    await _restamp_kept_record(phone, existing)
-                await _record_refresh_failure(phone, outcome="ambiguous_empty")
-                return existing
-
-            envelope = FarmerDataEnvelope.not_found(source="api")
             await set_cached_farmer_data(phone, envelope)
             await _clear_refresh_attempt_state(phone)
             return envelope

@@ -378,26 +378,6 @@ def test_refresh_error_without_existing_returns_none_and_does_not_cache():
     record_failure.assert_awaited_once()
 
 
-def test_refresh_authoritative_not_found_caches_not_found():
-    fake_redis = AsyncMock()
-    fake_redis.set = AsyncMock(return_value=True)
-    fake_redis.delete = AsyncMock()
-    with patch.object(fc, "redis_client", fake_redis), \
-         patch.object(
-             fc,
-             "fetch_farmer_info_with_outcome",
-             new=AsyncMock(return_value=(None, FarmerFetchOutcome.AUTHORITATIVE_NOT_FOUND)),
-         ), \
-         patch.object(fc, "get_cached_farmer_data", new=AsyncMock(return_value=None)), \
-         patch.object(fc, "set_cached_farmer_data", new=AsyncMock()) as set_cache, \
-         patch.object(fc, "_clear_refresh_attempt_state", new=AsyncMock()) as clear_state:
-        result = asyncio.run(fc.refresh_farmer_data("9999999999"))
-    assert result is not None
-    assert result.lookupStatus == "not_found"
-    set_cache.assert_awaited_once()
-    clear_state.assert_awaited_once()
-
-
 def test_get_or_fetch_legacy_unknown_normalizes_to_none():
     unknown = _Env("unknown", 0)
     enqueue = AsyncMock()

@@ -24,10 +24,9 @@ logger = get_logger(__name__)
 
 
 class FarmerFetchOutcome(str, Enum):
-    """Tri-state result for the SWR cache ingestion path."""
+    """Fetch outcome for the SWR cache ingestion path."""
 
     FOUND = "found"
-    AUTHORITATIVE_NOT_FOUND = "authoritative_not_found"
     ERROR = "error"
 
 

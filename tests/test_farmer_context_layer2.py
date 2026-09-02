@@ -211,13 +211,12 @@ def test_layer2_passes_normalized_phone_to_cache_fetch(monkeypatch):
     fetch.assert_awaited_once_with("9876543210")
 
 
-def test_layer2_unknown_lookup_status_returns_none(monkeypatch):
+def test_layer2_get_or_fetch_none_returns_none(monkeypatch):
     import agents.farmer_context as fc
 
-    envelope = FarmerDataEnvelope.unknown(source="api")
     monkeypatch.setattr(
         "agents.services.farmer_cache.get_or_fetch_farmer_data",
-        AsyncMock(return_value=envelope),
+        AsyncMock(return_value=None),
     )
 
     result = asyncio.run(fc._get_farmer_context_bundle_layer2("9876543210"))

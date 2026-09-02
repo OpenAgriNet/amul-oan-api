@@ -49,7 +49,6 @@ from app.services.scheme_ingestion import (
     SchemeDependencyError,
     get_cached_scheme_records_for_union,
 )
-from app.config import settings
 from helpers.utils import get_logger, is_from_union
 
 
