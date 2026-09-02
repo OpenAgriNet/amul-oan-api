@@ -173,6 +173,11 @@ class Settings(BaseSettings):
     history_cache_ttl_seconds: int = int(os.getenv("HISTORY_CACHE_TTL_SECONDS", str(60 * 60 * 2)))
     suggestions_cache_ttl: int = 60 * 30    # 30 minutes
     farmer_animal_api_cache_ttl: int = 60 * 60 * 24 * 17  # 17 days
+    # AI technician list cache: keyed by (union_code, society_code), not per farmer.
+    # Shared across farmer SWR refresh and prompt context; API called only on miss.
+    ai_technician_cache_ttl_seconds: int = int(
+        os.getenv("AI_TECHNICIAN_CACHE_TTL_SECONDS", str(60 * 60 * 24))
+    )
     # Session-ownership locking (voice call concurrency) — consumed by app/utils.py
     # once the voice surface folds in; inert on the chat path.
     session_owner_ttl_seconds: int = int(os.getenv("SESSION_OWNER_TTL_SECONDS", "120"))

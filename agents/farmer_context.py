@@ -10,7 +10,7 @@ from agents.tools.farmer import get_farmer_data_by_mobile
 from agents.tools.farmer_animal_backends import (
     GetAITechniciansBySocietyQueryParams,
     fetch_banas_operated_visit,
-    get_ai_technicians_by_society_api,
+    get_ai_technicians_by_society_cached,
     normalize_phone,
 )
 from agents.services.beckn_amul import (
@@ -225,8 +225,9 @@ async def _get_ai_technicians_for_farmer(
             technicians = None
     else:
         # Compatibility path for environments that have not enabled the Amul
-        # callback transactions yet.
-        technicians = await get_ai_technicians_by_society_api(
+        # callback transactions yet: keep society lookup cache-first.
+        # None = lookup failed, [] = successful lookup with no technicians.
+        technicians = await get_ai_technicians_by_society_cached(
             GetAITechniciansBySocietyQueryParams(
                 unionCode=farmer.union_code,
                 societyCode=farmer.society_code,
