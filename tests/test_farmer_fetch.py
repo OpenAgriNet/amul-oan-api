@@ -345,6 +345,29 @@ def _patch_herdman_raw(monkeypatch, value):
     monkeypatch.setattr(farmer_mod, "_fetch_farmer_herdman_raw", fake)
 
 
+def test_fetch_farmer_info_with_outcome_empty_payload_is_error(monkeypatch):
+    monkeypatch.setenv("PASHUGPT_TOKEN", "tok1")
+    monkeypatch.delenv("PASHUGPT_TOKEN_3", raising=False)
+    _patch_raw(monkeypatch, [])
+
+    records, outcome = asyncio.run(farmer_mod.fetch_farmer_info_with_outcome("9999999999"))
+
+    assert records is None
+    assert outcome == farmer_mod.FarmerFetchOutcome.ERROR
+
+
+def test_fetch_farmer_info_with_outcome_found_payload_is_found(monkeypatch):
+    monkeypatch.setenv("PASHUGPT_TOKEN", "tok1")
+    monkeypatch.delenv("PASHUGPT_TOKEN_3", raising=False)
+    _patch_raw(monkeypatch, [dict(_AMUL_ROW)])
+
+    records, outcome = asyncio.run(farmer_mod.fetch_farmer_info_with_outcome("9999999999"))
+
+    assert outcome == farmer_mod.FarmerFetchOutcome.FOUND
+    assert records is not None and len(records) == 1
+    assert records[0].farmerName == "Ramesh"
+
+
 def test_fetch_farmer_info_raw_calls_herdman_for_mehsana(monkeypatch):
     monkeypatch.setenv("PASHUGPT_TOKEN", "tok1")
     monkeypatch.setenv("PASHUGPT_TOKEN_3", "tok3")

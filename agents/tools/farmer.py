@@ -132,9 +132,8 @@ async def fetch_farmer_info_with_outcome(
     """Raw farmer fetch with an explicit provider outcome for the SWR cache.
 
     Returns RAW camelCase ``FarmerRecord`` objects when ``outcome`` is ``FOUND``.
-    ``AUTHORITATIVE_NOT_FOUND`` is returned only when upstream responds successfully
-    with an explicit empty payload (HTTP 200 + ``[]``). HTTP/token failures and
-    ambiguous empties (e.g. 204 mapped to ``None``) map to ``ERROR``.
+    Empty payloads are treated as non-authoritative and map to ``ERROR`` until
+    upstream exposes a reliable explicit miss/error split.
     """
     mobile = normalize_phone(mobile_number)
     if not mobile:
@@ -147,27 +146,19 @@ async def fetch_farmer_info_with_outcome(
         return None, FarmerFetchOutcome.ERROR
 
     rows: list[dict] = []
-    saw_authoritative_empty = False
-
     if token1:
         raw = await _fetch_farmer_amulpashudhan_raw(mobile, token1)
         if raw is not None:
-            if len(raw) == 0:
-                saw_authoritative_empty = True
-            else:
+            if len(raw) > 0:
                 rows.extend(r for r in raw if isinstance(r, dict))
 
     if token3 and _rows_include_mehsana(rows):
         raw_h = await _fetch_farmer_herdman_raw(mobile, token3)
         if raw_h is not None:
-            if len(raw_h) == 0:
-                saw_authoritative_empty = True
-            else:
+            if len(raw_h) > 0:
                 rows.extend(r for r in raw_h if isinstance(r, dict))
 
     if not rows:
-        if saw_authoritative_empty:
-            return None, FarmerFetchOutcome.AUTHORITATIVE_NOT_FOUND
         return None, FarmerFetchOutcome.ERROR
 
     kept = [r for r in rows if _record_has_content(r)] or rows
