@@ -20,9 +20,10 @@ cache key), which is cross-service and out of scope for the merge.
 """
 import asyncio
 import hashlib
+import json
 import os
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import Any, Optional
 
 from app.core.cache import cache, redis_client, build_cache_key
 from app.config import settings
@@ -33,6 +34,7 @@ from agents.tools.farmer_animal_backends import (
     GetAITechniciansBySocietyQueryParams,
     get_ai_technicians_by_society_cached,
     fetch_reason,
+    normalize_phone,
 )
 from helpers.utils import get_logger
 
@@ -44,14 +46,25 @@ FARMER_NEGATIVE_REFRESH_INTERVAL = settings.farmer_negative_refresh_interval_sec
 FARMER_REFRESH_LOCK_TTL = settings.farmer_refresh_lock_ttl_seconds  # dedupe concurrent refreshes
 FARMER_COLD_FETCH_TIMEOUT = settings.farmer_cold_fetch_timeout_seconds  # bounded cold/never-cached miss
 FARMER_REFRESH_QUEUE_BATCH_SIZE = settings.farmer_refresh_queue_batch_size
+FARMER_REFRESH_RETRY_BASE_SECONDS = settings.farmer_refresh_retry_base_seconds
+FARMER_REFRESH_RETRY_MAX_SECONDS = settings.farmer_refresh_retry_max_seconds
 # Beyond this age a cached record is too stale to serve: the read blocks on a
 # bounded API call instead (falls back to the stale record only if that fails).
 FARMER_MAX_SERVE_STALE_SECONDS = settings.farmer_max_serve_stale_seconds
 FARMER_CACHE_NAMESPACE = "farmer"
 FARMER_REFRESH_LOCK_NAMESPACE = "farmer-refresh"
 FARMER_REFRESH_QUEUE_NAMESPACE = "farmer-refresh-queue"
+FARMER_REFRESH_ATTEMPT_NAMESPACE = "farmer-refresh-attempt"
 # Single Redis set holding raw phone numbers awaiting a background refresh.
 FARMER_REFRESH_QUEUE_KEY = build_cache_key("pending", namespace=FARMER_REFRESH_QUEUE_NAMESPACE)
+
+
+def _normalize_cache_phone(phone: str) -> str:
+    """Canonical phone for cache keys and queue membership."""
+    if not phone:
+        return phone
+    normalized = normalize_phone(phone)
+    return normalized or phone
 
 
 def _cache_key(phone: str) -> str:
@@ -59,8 +72,129 @@ def _cache_key(phone: str) -> str:
     return hashlib.sha256(phone.encode()).hexdigest()
 
 
+def _phone_log_hash(phone: str) -> str:
+    return _cache_key(phone)[:8]
+
+
 def _refresh_lock_key(phone: str) -> str:
     return build_cache_key(_cache_key(phone), namespace=FARMER_REFRESH_LOCK_NAMESPACE)
+
+
+def _refresh_attempt_key(phone: str) -> str:
+    return build_cache_key(_cache_key(phone), namespace=FARMER_REFRESH_ATTEMPT_NAMESPACE)
+
+
+def _is_authoritative_envelope(envelope: Optional[FarmerDataEnvelope]) -> bool:
+    """Only ``found`` and ``not_found`` may be served to downstream consumers."""
+    if envelope is None:
+        return False
+    return envelope.lookupStatus in {"found", "not_found"}
+
+
+def _compute_backoff_seconds(attempt_count: int) -> int:
+    """Exponential backoff capped at FARMER_REFRESH_RETRY_MAX_SECONDS."""
+    if attempt_count <= 0:
+        return FARMER_REFRESH_RETRY_BASE_SECONDS
+    delay = FARMER_REFRESH_RETRY_BASE_SECONDS * (2 ** (attempt_count - 1))
+    return min(delay, FARMER_REFRESH_RETRY_MAX_SECONDS)
+
+
+async def _get_refresh_attempt_state(phone: str) -> dict[str, Any]:
+    try:
+        raw = await redis_client.get(_refresh_attempt_key(phone))
+        if not raw:
+            return {}
+        if isinstance(raw, bytes):
+            raw = raw.decode()
+        if isinstance(raw, str):
+            return json.loads(raw)
+        if isinstance(raw, dict):
+            return raw
+    except Exception as e:
+        logger.debug("Failed to read farmer refresh attempt state: %s", e)
+    return {}
+
+
+async def _set_refresh_attempt_state(phone: str, state: dict[str, Any]) -> None:
+    try:
+        ttl = max(FARMER_REFRESH_RETRY_MAX_SECONDS * 2, FARMER_CACHE_TTL)
+        await redis_client.set(
+            _refresh_attempt_key(phone),
+            json.dumps(state),
+            ex=ttl,
+        )
+    except Exception as e:
+        logger.warning("Failed to write farmer refresh attempt state: %s", e)
+
+
+async def _clear_refresh_attempt_state(phone: str) -> None:
+    try:
+        await redis_client.delete(_refresh_attempt_key(phone))
+    except Exception:
+        pass
+
+
+async def _enqueue_backoff_active(phone: str) -> bool:
+    """True when we should skip enqueue because next_retry_at is still in the future."""
+    state = await _get_refresh_attempt_state(phone)
+    next_retry_at = state.get("next_retry_at")
+    if not next_retry_at:
+        return False
+    try:
+        retry_after = datetime.fromisoformat(str(next_retry_at).replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    return datetime.now(timezone.utc) < retry_after.astimezone(timezone.utc)
+
+
+async def _record_refresh_enqueue_backoff(phone: str) -> None:
+    """Schedule the next allowed enqueue after a successful queue insert."""
+    state = await _get_refresh_attempt_state(phone)
+    attempt_count = int(state.get("attempt_count") or 0)
+    delay = _compute_backoff_seconds(max(attempt_count, 1))
+    next_retry_at = (datetime.now(timezone.utc) + timedelta(seconds=delay)).isoformat()
+    await _set_refresh_attempt_state(
+        phone,
+        {
+            "attempt_count": attempt_count,
+            "next_retry_at": next_retry_at,
+            "last_outcome": state.get("last_outcome"),
+        },
+    )
+
+
+async def _record_refresh_failure(phone: str, *, outcome: str = "error") -> None:
+    """Increment attempt count after a failed refresh and extend retry window."""
+    state = await _get_refresh_attempt_state(phone)
+    attempt_count = int(state.get("attempt_count") or 0) + 1
+    delay = _compute_backoff_seconds(attempt_count)
+    next_retry_at = (datetime.now(timezone.utc) + timedelta(seconds=delay)).isoformat()
+    await _set_refresh_attempt_state(
+        phone,
+        {
+            "attempt_count": attempt_count,
+            "next_retry_at": next_retry_at,
+            "last_outcome": outcome,
+        },
+    )
+
+
+async def _normalize_for_consumer(
+    phone: str,
+    envelope: Optional[FarmerDataEnvelope],
+) -> Optional[FarmerDataEnvelope]:
+    """Return only authoritative envelopes; non-authoritative rows become None."""
+    if envelope is None:
+        return None
+    if _is_authoritative_envelope(envelope):
+        return envelope
+    logger.info(
+        "Farmer cache read: non_authoritative phone_hash=%s lookup_status=%s",
+        _phone_log_hash(phone),
+        envelope.lookupStatus,
+    )
+    await enqueue_farmer_refresh(phone)
+    return None
 
 
 def _compute_freshness(envelope: FarmerDataEnvelope) -> tuple[bool, Optional[str], Optional[str]]:
@@ -76,6 +210,8 @@ def _compute_freshness(envelope: FarmerDataEnvelope) -> tuple[bool, Optional[str
         if envelope.lookupStatus == "not_found"
         else FARMER_REFRESH_INTERVAL
     )
+    if envelope.lookupStatus == "unknown":
+        return True, "non_authoritative", None
     refresh_after = fetched_at + timedelta(seconds=interval)
     refresh_after_iso = refresh_after.astimezone(timezone.utc).isoformat()
     is_stale = datetime.now(timezone.utc) >= refresh_after.astimezone(timezone.utc)
@@ -132,7 +268,7 @@ async def set_cached_farmer_data(phone: str, data: FarmerDataEnvelope) -> None:
         logger.warning(f"Failed to write farmer cache: {e}")
 
 
-from agents.tools.farmer import fetch_farmer_info_raw
+from agents.tools.farmer import FarmerFetchOutcome, fetch_farmer_info_with_outcome
 
 
 async def _restamp_kept_record(phone: str, envelope: FarmerDataEnvelope) -> None:
@@ -178,6 +314,7 @@ async def refresh_farmer_data(phone: str) -> Optional[FarmerDataEnvelope]:
     Returns the refreshed envelope, or the in-flight refresh's result when the
     lock is busy and clears in time, or None on actual failure / lock-still-busy.
     """
+    phone = _normalize_cache_phone(phone)
     lock_key = _refresh_lock_key(phone)
     acquired = False
     try:
@@ -197,38 +334,31 @@ async def refresh_farmer_data(phone: str) -> Optional[FarmerDataEnvelope]:
             await enqueue_farmer_refresh(phone)
             return None
 
-        records = await fetch_farmer_info_raw(phone)
-        if records:
+        records, outcome = await fetch_farmer_info_with_outcome(phone)
+        if outcome == FarmerFetchOutcome.FOUND and records:
             envelope = FarmerDataEnvelope.from_records(records, source="api", lookup_status="found")
             envelope.aiTechnicians = await _fetch_ai_technicians(records)
             await set_cached_farmer_data(phone, envelope)
+            await _clear_refresh_attempt_state(phone)
             return envelope
 
-        # Upstream returned nothing. Never let a transient empty response wipe
-        # known-good data — keep the "found" record regardless of age (it stays
-        # stale and is retried). We cannot distinguish a genuine "not found" from
-        # a transient failure here, so genuine removal is left to the hard Redis
-        # TTL rather than an ambiguous empty response. (A confident not_found
-        # signal is a follow-up in the provider-interface PR.)
+        # ERROR or ambiguous empty while upstream cannot distinguish miss vs failure.
         existing = await get_cached_farmer_data(phone)
         if existing is not None and existing.lookupStatus == "found":
             logger.info(
                 "Skipping not_found overwrite of good cached farmer data (phone hash %s...)",
                 _cache_key(phone)[:8],
             )
-            # If it had already aged past the serve ceiling, a persistently-empty
-            # upstream would otherwise force a blocking re-fetch on EVERY turn.
-            # Restamp fetchedAt so reads serve it without blocking, while
-            # PRESERVING the hard TTL so a genuinely removed farmer still expires.
             if exceeds_max_serve_stale(existing):
                 await _restamp_kept_record(phone, existing)
+            await _record_refresh_failure(phone, outcome="error")
             return existing
 
-        envelope = FarmerDataEnvelope.not_found(source="api")
-        await set_cached_farmer_data(phone, envelope)
-        return envelope
+        await _record_refresh_failure(phone, outcome="error")
+        return None
     except Exception as e:
         logger.warning("Farmer refresh failed for phone hash %s...: %s", _cache_key(phone)[:8], e)
+        await _record_refresh_failure(phone, outcome="exception")
         return None
     finally:
         if acquired:
@@ -238,9 +368,88 @@ async def refresh_farmer_data(phone: str) -> Optional[FarmerDataEnvelope]:
                 pass
 
 
+async def enqueue_farmer_refresh(phone: str) -> None:
+    """Queue a phone for background refresh (stale-while-revalidate).
+
+    Pushes the raw phone onto a Redis set so a dedicated worker can refresh it
+    off the request path. Outcome-based exponential backoff prevents hot phones
+    from being re-enqueued every read when upstream keeps failing.
+    """
+    phone = _normalize_cache_phone(phone)
+    if not phone:
+        return
+    try:
+        if await _enqueue_backoff_active(phone):
+            logger.debug(
+                "Skipping farmer refresh enqueue within backoff window for phone hash %s...",
+                _phone_log_hash(phone),
+            )
+            return
+        await redis_client.sadd(FARMER_REFRESH_QUEUE_KEY, phone)
+        await _record_refresh_enqueue_backoff(phone)
+    except Exception as e:
+        logger.warning("Failed to enqueue farmer refresh: %s", e)
+
+
+async def _revalidate_stale_read(
+    phone: str,
+    envelope: FarmerDataEnvelope,
+    *,
+    allow_block_fetch: bool,
+) -> FarmerDataEnvelope:
+    """SWR read policy for a cached envelope: return immediately; refresh off-path
+    when soft-stale. When ``allow_block_fetch`` is True and the record exceeds
+    max-serve-stale, block briefly on a bounded upstream fetch before falling
+    back to the stale envelope."""
+    phone_hash = _phone_log_hash(phone)
+
+    if not envelope.stale:
+        logger.info(
+            "Farmer cache read: cache_hit_fresh phone_hash=%s lookup_status=%s",
+            phone_hash,
+            envelope.lookupStatus,
+        )
+        return envelope
+
+    if allow_block_fetch and exceeds_max_serve_stale(envelope):
+        logger.info(
+            "Farmer cache read: cold_fetch phone_hash=%s lookup_status=%s reason=max_serve_stale",
+            phone_hash,
+            envelope.lookupStatus,
+        )
+        refreshed = await refresh_farmer_data_bounded(phone)
+        if refreshed is not None:
+            logger.info(
+                "Farmer cache read: cold_fetch_success phone_hash=%s lookup_status=%s",
+                phone_hash,
+                refreshed.lookupStatus,
+            )
+            return refreshed
+        logger.warning(
+            "Farmer cache read: cold_fetch_fallback_stale phone_hash=%s lookup_status=%s",
+            phone_hash,
+            envelope.lookupStatus,
+        )
+        await enqueue_farmer_refresh(phone)
+        return envelope
+
+    await enqueue_farmer_refresh(phone)
+    logger.info(
+        "Farmer cache read: cache_hit_stale_enqueued phone_hash=%s lookup_status=%s stale_reason=%s",
+        phone_hash,
+        envelope.lookupStatus,
+        envelope.staleReason,
+    )
+    return envelope
+
+
 async def get_farmer_data_cached_only(phone: str) -> Optional[FarmerDataEnvelope]:
     """Read farmer context from Redis only; never block on upstream APIs."""
-    return await get_cached_farmer_data(phone)
+    phone = _normalize_cache_phone(phone)
+    cached = await get_cached_farmer_data(phone)
+    if cached is None:
+        return None
+    return await _revalidate_stale_read(phone, cached, allow_block_fetch=False)
 
 
 def should_refresh_farmer_data(envelope: Optional[FarmerDataEnvelope]) -> bool:
@@ -250,28 +459,27 @@ def should_refresh_farmer_data(envelope: Optional[FarmerDataEnvelope]) -> bool:
 
 
 async def get_or_fetch_farmer_data(phone: str) -> Optional[FarmerDataEnvelope]:
-    """Cache-first retrieval used by the /user endpoint. Returns cached data if
-    present, else does a full refresh (raw fetch + AI-technician enrichment)."""
+    """Cache-first retrieval used by the /user endpoint and loan tool.
+
+    Fresh cache hits return immediately. Soft-stale hits are served immediately
+    and enqueued for background refresh. Records older than max-serve-stale
+    trigger a bounded blocking fetch; cold misses do a full refresh.
+
+    Only authoritative envelopes (``found``, ``not_found``) are returned.
+    Legacy/non-authoritative ``unknown`` rows normalize to ``None``.
+    """
+    phone = _normalize_cache_phone(phone)
     cached = await get_cached_farmer_data(phone)
     if cached:
-        return cached
+        result = await _revalidate_stale_read(phone, cached, allow_block_fetch=True)
+        return await _normalize_for_consumer(phone, result)
 
-    return await refresh_farmer_data(phone)
-
-
-async def enqueue_farmer_refresh(phone: str) -> None:
-    """Queue a phone for background refresh (stale-while-revalidate).
-
-    Pushes the raw phone onto a Redis set so a dedicated worker can refresh it
-    off the request path. The set dedupes naturally, and refresh_farmer_data
-    self-dedupes via its NX lock, so enqueuing the same phone repeatedly is safe.
-    """
-    if not phone:
-        return
-    try:
-        await redis_client.sadd(FARMER_REFRESH_QUEUE_KEY, phone)
-    except Exception as e:
-        logger.warning("Failed to enqueue farmer refresh: %s", e)
+    logger.info(
+        "Farmer cache read: cold_fetch phone_hash=%s reason=cache_miss",
+        _phone_log_hash(phone),
+    )
+    refreshed = await refresh_farmer_data_bounded(phone)
+    return await _normalize_for_consumer(phone, refreshed)
 
 
 async def refresh_farmer_data_bounded(
@@ -382,6 +590,7 @@ async def _fetch_ai_technicians(records: list[FarmerRecord]) -> list[dict]:
     groups: list[dict] = []
     for data, union_code, society_code in eligible_rows:
         technicians = pair_to_technicians.get((union_code, society_code))
+        lookup_failed = technicians is None
         groups.append(
             {
                 "farmerName": data.get("farmerName"),
@@ -389,7 +598,13 @@ async def _fetch_ai_technicians(records: list[FarmerRecord]) -> list[dict]:
                 "societyName": data.get("societyName"),
                 "societyCode": society_code,
                 "unionCode": union_code,
-                "technicians": [technician.model_dump() for technician in (technicians or [])],
+                # Preserve fetch failure distinctly from a true empty list.
+                "technicians": (
+                    None
+                    if lookup_failed
+                    else [technician.model_dump() for technician in technicians]
+                ),
+                "techniciansLookupFailed": lookup_failed,
             }
         )
     return groups

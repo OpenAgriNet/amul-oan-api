@@ -16,6 +16,7 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, patch
 
 import agents.services.farmer_cache as fc
+from agents.tools.farmer import FarmerFetchOutcome
 
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -46,6 +47,8 @@ class _Env:
     def __init__(self, lookup_status, age_hours):
         self.lookupStatus = lookup_status
         self.fetchedAt = (datetime.now(timezone.utc) - timedelta(hours=age_hours)).isoformat()
+        self.stale, self.staleReason, self.refreshAfter = fc._compute_freshness(self)
+        self.farmers = [{}] if lookup_status == "found" else []
 
     def model_dump(self):
         return {"lookupStatus": self.lookupStatus, "fetchedAt": self.fetchedAt}
@@ -58,6 +61,15 @@ def test_freshness_intervals_found_vs_not_found():
     # not_found: shorter soft expiry at 2h
     assert fc._compute_freshness(_Env("not_found", 1))[0] is False
     assert fc._compute_freshness(_Env("not_found", 3))[0] is True
+    # unknown: always treated as non-authoritative / immediately stale
+    assert fc._compute_freshness(_Env("unknown", 0))[0] is True
+    assert fc._compute_freshness(_Env("unknown", 3))[0] is True
+
+
+def test_compute_backoff_exponential_with_cap():
+    assert fc._compute_backoff_seconds(1) == fc.FARMER_REFRESH_RETRY_BASE_SECONDS
+    assert fc._compute_backoff_seconds(2) == fc.FARMER_REFRESH_RETRY_BASE_SECONDS * 2
+    assert fc._compute_backoff_seconds(99) == fc.FARMER_REFRESH_RETRY_MAX_SECONDS
 
 
 def test_interval_constants():
@@ -69,16 +81,40 @@ def test_interval_constants():
 
 def test_enqueue_pushes_phone_to_redis_set():
     fake_redis = AsyncMock()
+    fake_redis.get = AsyncMock(return_value=None)
     with patch.object(fc, "redis_client", fake_redis):
         asyncio.run(fc.enqueue_farmer_refresh("9999999999"))
     fake_redis.sadd.assert_awaited_once_with(fc.FARMER_REFRESH_QUEUE_KEY, "9999999999")
+    fake_redis.set.assert_awaited()
 
 
 def test_enqueue_ignores_empty_phone():
     fake_redis = AsyncMock()
     with patch.object(fc, "redis_client", fake_redis):
         asyncio.run(fc.enqueue_farmer_refresh(""))
+    fake_redis.get.assert_not_called()
     fake_redis.sadd.assert_not_called()
+
+
+def test_enqueue_skips_duplicate_within_backoff_window():
+    fake_redis = AsyncMock()
+    fake_redis.get = AsyncMock(return_value=None)
+    backoff = AsyncMock(side_effect=[False, True])
+    with patch.object(fc, "redis_client", fake_redis), \
+         patch.object(fc, "_enqueue_backoff_active", new=backoff):
+        asyncio.run(fc.enqueue_farmer_refresh("9999999999"))
+        asyncio.run(fc.enqueue_farmer_refresh("9999999999"))
+    fake_redis.sadd.assert_awaited_once_with(fc.FARMER_REFRESH_QUEUE_KEY, "9999999999")
+
+
+def test_enqueue_failed_sadd_does_not_write_backoff_state():
+    fake_redis = AsyncMock()
+    fake_redis.get = AsyncMock(return_value=None)
+    fake_redis.sadd = AsyncMock(side_effect=RuntimeError("queue down"))
+    with patch.object(fc, "redis_client", fake_redis), \
+         patch.object(fc, "_record_refresh_enqueue_backoff", new=AsyncMock()) as record:
+        asyncio.run(fc.enqueue_farmer_refresh("9999999999"))
+    record.assert_not_called()
 
 
 def test_drain_pops_batch_and_refreshes_each():
@@ -134,12 +170,18 @@ def test_refresh_keeps_found_on_transient_not_found():
     fake_redis.set = AsyncMock(return_value=True)   # lock acquired
     fake_redis.delete = AsyncMock()
     with patch.object(fc, "redis_client", fake_redis), \
-         patch.object(fc, "fetch_farmer_info_raw", new=AsyncMock(return_value=[])), \
+         patch.object(
+             fc,
+             "fetch_farmer_info_with_outcome",
+             new=AsyncMock(return_value=(None, FarmerFetchOutcome.ERROR)),
+         ), \
          patch.object(fc, "get_cached_farmer_data", new=AsyncMock(return_value=existing)), \
-         patch.object(fc, "set_cached_farmer_data", new=AsyncMock()) as set_cache:
+         patch.object(fc, "set_cached_farmer_data", new=AsyncMock()) as set_cache, \
+         patch.object(fc, "_record_refresh_failure", new=AsyncMock()) as record_failure:
         result = asyncio.run(fc.refresh_farmer_data("9999999999"))
     assert result is existing
     set_cache.assert_not_called()  # did NOT downgrade to not_found
+    record_failure.assert_awaited()
 
 
 def test_refresh_keeps_old_found_past_ceiling_on_transient_not_found():
@@ -153,9 +195,14 @@ def test_refresh_keeps_old_found_past_ceiling_on_transient_not_found():
     fake_cache = AsyncMock()
     with patch.object(fc, "redis_client", fake_redis), \
          patch.object(fc, "cache", fake_cache), \
-         patch.object(fc, "fetch_farmer_info_raw", new=AsyncMock(return_value=[])), \
+         patch.object(
+             fc,
+             "fetch_farmer_info_with_outcome",
+             new=AsyncMock(return_value=(None, FarmerFetchOutcome.ERROR)),
+         ), \
          patch.object(fc, "get_cached_farmer_data", new=AsyncMock(return_value=existing)), \
-         patch.object(fc, "set_cached_farmer_data", new=AsyncMock()) as set_cache:
+         patch.object(fc, "set_cached_farmer_data", new=AsyncMock()) as set_cache, \
+         patch.object(fc, "_record_refresh_failure", new=AsyncMock()):
         result = asyncio.run(fc.refresh_farmer_data("9999999999"))
     assert result is existing
     set_cache.assert_not_called()
@@ -183,11 +230,12 @@ def test_bounded_timeout_releases_lock_on_cancel():
 
     async def _slow(_phone):
         await asyncio.sleep(5)
-        return []
+        return None, FarmerFetchOutcome.ERROR
 
     with patch.object(fc, "redis_client", fake_redis), \
-         patch.object(fc, "fetch_farmer_info_raw", new=_slow), \
-         patch.object(fc, "enqueue_farmer_refresh", new=AsyncMock()):
+         patch.object(fc, "fetch_farmer_info_with_outcome", new=_slow), \
+         patch.object(fc, "enqueue_farmer_refresh", new=AsyncMock()), \
+         patch.object(fc, "_record_refresh_failure", new=AsyncMock()):
         result = asyncio.run(fc.refresh_farmer_data_bounded("111", timeout=0.05))
     assert result is None
     fake_redis.delete.assert_awaited()  # lock released on cancellation
@@ -239,10 +287,140 @@ def test_restamp_kept_record_preserves_ttl():
     fake_cache = AsyncMock()
     with patch.object(fc, "redis_client", fake_redis), \
          patch.object(fc, "cache", fake_cache), \
-         patch.object(fc, "fetch_farmer_info_raw", new=AsyncMock(return_value=[])), \
-         patch.object(fc, "get_cached_farmer_data", new=AsyncMock(return_value=existing)):
+         patch.object(
+             fc,
+             "fetch_farmer_info_with_outcome",
+             new=AsyncMock(return_value=(None, FarmerFetchOutcome.ERROR)),
+         ), \
+         patch.object(fc, "get_cached_farmer_data", new=AsyncMock(return_value=existing)), \
+         patch.object(fc, "_record_refresh_failure", new=AsyncMock()):
         result = asyncio.run(fc.refresh_farmer_data("9999999999"))
     assert result is existing
     assert existing.fetchedAt != orig_fetched           # restamped
     fake_cache.set.assert_awaited()
     assert fake_cache.set.call_args.kwargs.get("ttl") == 100000  # hard TTL preserved, not reset
+
+
+def test_get_or_fetch_fresh_hit_does_not_enqueue():
+    fresh = _Env("found", 1)
+    enqueue = AsyncMock()
+    with patch.object(fc, "get_cached_farmer_data", new=AsyncMock(return_value=fresh)), \
+         patch.object(fc, "enqueue_farmer_refresh", new=enqueue), \
+         patch.object(fc, "refresh_farmer_data", new=AsyncMock()) as refresh:
+        result = asyncio.run(fc.get_or_fetch_farmer_data("9999999999"))
+    assert result is fresh
+    enqueue.assert_not_called()
+    refresh.assert_not_called()
+
+
+def test_get_or_fetch_soft_stale_enqueues_and_returns_cached():
+    stale = _Env("found", 13)
+    enqueue = AsyncMock()
+    with patch.object(fc, "get_cached_farmer_data", new=AsyncMock(return_value=stale)), \
+         patch.object(fc, "enqueue_farmer_refresh", new=enqueue), \
+         patch.object(fc, "refresh_farmer_data_bounded", new=AsyncMock()) as bounded:
+        result = asyncio.run(fc.get_or_fetch_farmer_data("9999999999"))
+    assert result is stale
+    enqueue.assert_awaited_once_with("9999999999")
+    bounded.assert_not_called()
+
+
+def test_get_or_fetch_max_serve_stale_blocks_then_returns_fresh():
+    ancient = _Env("found", 1000)
+    fresh = _Env("found", 0)
+    enqueue = AsyncMock()
+    bounded = AsyncMock(return_value=fresh)
+    with patch.object(fc, "get_cached_farmer_data", new=AsyncMock(return_value=ancient)), \
+         patch.object(fc, "enqueue_farmer_refresh", new=enqueue), \
+         patch.object(fc, "refresh_farmer_data_bounded", new=bounded):
+        result = asyncio.run(fc.get_or_fetch_farmer_data("9999999999"))
+    assert result is fresh
+    bounded.assert_awaited_once_with("9999999999")
+    enqueue.assert_not_called()
+
+
+def test_get_or_fetch_max_serve_stale_fallback_returns_stale_and_enqueues():
+    ancient = _Env("found", 1000)
+    enqueue = AsyncMock()
+    with patch.object(fc, "get_cached_farmer_data", new=AsyncMock(return_value=ancient)), \
+         patch.object(fc, "enqueue_farmer_refresh", new=enqueue), \
+         patch.object(fc, "refresh_farmer_data_bounded", new=AsyncMock(return_value=None)):
+        result = asyncio.run(fc.get_or_fetch_farmer_data("9999999999"))
+    assert result is ancient
+    enqueue.assert_awaited_once_with("9999999999")
+
+
+def test_get_or_fetch_cache_miss_calls_bounded_refresh():
+    sentinel = _Env("found", 0)
+    with patch.object(fc, "get_cached_farmer_data", new=AsyncMock(return_value=None)), \
+         patch.object(fc, "refresh_farmer_data_bounded", new=AsyncMock(return_value=sentinel)) as refresh:
+        result = asyncio.run(fc.get_or_fetch_farmer_data("9999999999"))
+    assert result is sentinel
+    refresh.assert_awaited_once_with("9999999999")
+
+
+def test_refresh_error_without_existing_returns_none_and_does_not_cache():
+    fake_redis = AsyncMock()
+    fake_redis.set = AsyncMock(return_value=True)
+    fake_redis.delete = AsyncMock()
+    with patch.object(fc, "redis_client", fake_redis), \
+         patch.object(
+             fc,
+             "fetch_farmer_info_with_outcome",
+             new=AsyncMock(return_value=(None, FarmerFetchOutcome.ERROR)),
+         ), \
+         patch.object(fc, "get_cached_farmer_data", new=AsyncMock(return_value=None)), \
+         patch.object(fc, "set_cached_farmer_data", new=AsyncMock()) as set_cache, \
+         patch.object(fc, "_record_refresh_failure", new=AsyncMock()) as record_failure:
+        result = asyncio.run(fc.refresh_farmer_data("9999999999"))
+    assert result is None
+    set_cache.assert_not_called()
+    record_failure.assert_awaited_once()
+
+
+def test_get_or_fetch_legacy_unknown_normalizes_to_none():
+    unknown = _Env("unknown", 0)
+    enqueue = AsyncMock()
+    with patch.object(fc, "get_cached_farmer_data", new=AsyncMock(return_value=unknown)), \
+         patch.object(fc, "enqueue_farmer_refresh", new=enqueue), \
+         patch.object(fc, "refresh_farmer_data_bounded", new=AsyncMock()) as bounded:
+        result = asyncio.run(fc.get_or_fetch_farmer_data("9999999999"))
+    assert result is None
+    bounded.assert_not_called()
+    assert enqueue.await_count >= 1
+
+
+def test_cached_only_soft_stale_enqueues_without_block_fetch():
+    stale = _Env("found", 13)
+    enqueue = AsyncMock()
+    with patch.object(fc, "get_cached_farmer_data", new=AsyncMock(return_value=stale)), \
+         patch.object(fc, "enqueue_farmer_refresh", new=enqueue), \
+         patch.object(fc, "refresh_farmer_data_bounded", new=AsyncMock()) as bounded:
+        result = asyncio.run(fc.get_farmer_data_cached_only("9999999999"))
+    assert result is stale
+    enqueue.assert_awaited_once_with("9999999999")
+    bounded.assert_not_called()
+
+
+def test_cached_only_max_serve_stale_still_does_not_block():
+    ancient = _Env("found", 1000)
+    enqueue = AsyncMock()
+    with patch.object(fc, "get_cached_farmer_data", new=AsyncMock(return_value=ancient)), \
+         patch.object(fc, "enqueue_farmer_refresh", new=enqueue), \
+         patch.object(fc, "refresh_farmer_data_bounded", new=AsyncMock()) as bounded:
+        result = asyncio.run(fc.get_farmer_data_cached_only("9999999999"))
+    assert result is ancient
+    enqueue.assert_awaited_once_with("9999999999")
+    bounded.assert_not_called()
+
+
+def test_get_or_fetch_normalizes_equivalent_phone_formats():
+    fresh = _Env("found", 1)
+    cache_get = AsyncMock(return_value=fresh)
+    with patch.object(fc, "get_cached_farmer_data", new=cache_get):
+        asyncio.run(fc.get_or_fetch_farmer_data("+91 9876543210"))
+        asyncio.run(fc.get_or_fetch_farmer_data("9876543210"))
+    assert cache_get.await_count == 2
+    assert cache_get.await_args_list[0].args[0] == "9876543210"
+    assert cache_get.await_args_list[1].args[0] == "9876543210"
+    assert fc._normalize_cache_phone("+91 9876543210") == "9876543210"
