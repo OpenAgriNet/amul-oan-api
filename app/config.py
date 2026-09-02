@@ -589,6 +589,14 @@ class Settings(BaseSettings):
     farmer_refresh_lock_ttl_seconds: int = Field(default=60 * 5, validation_alias="FARMER_REFRESH_LOCK_TTL_SECONDS")
     farmer_cold_fetch_timeout_seconds: float = Field(default=4.0, validation_alias="FARMER_COLD_FETCH_TIMEOUT_SECONDS")
     farmer_refresh_queue_batch_size: int = Field(default=20, validation_alias="FARMER_REFRESH_QUEUE_BATCH_SIZE")
+    farmer_refresh_retry_base_seconds: int = Field(
+        default=60,
+        validation_alias="FARMER_REFRESH_RETRY_BASE_SECONDS",
+    )
+    farmer_refresh_retry_max_seconds: int = Field(
+        default=60 * 60,
+        validation_alias="FARMER_REFRESH_RETRY_MAX_SECONDS",
+    )
 
     # Config hardening policy: malformed numeric env values warn and fall back to
     # defaults; parseable but out-of-range values are clamped to safe bounds.
@@ -607,6 +615,8 @@ class Settings(BaseSettings):
         "vistaar_max_items": ("VISTAAR_MAX_ITEMS", 20, 1, None),
         "farmer_refresh_lock_ttl_seconds": ("FARMER_REFRESH_LOCK_TTL_SECONDS", 60 * 5, 1, None),
         "farmer_refresh_queue_batch_size": ("FARMER_REFRESH_QUEUE_BATCH_SIZE", 20, 1, None),
+        "farmer_refresh_retry_base_seconds": ("FARMER_REFRESH_RETRY_BASE_SECONDS", 60, 1, None),
+        "farmer_refresh_retry_max_seconds": ("FARMER_REFRESH_RETRY_MAX_SECONDS", 60 * 60, 1, None),
         "beckn_operation_ttl_seconds": ("BECKN_OPERATION_TTL_SECONDS", 60 * 60 * 24, 60, None),
         "beckn_callback_max_body_bytes": ("BECKN_CALLBACK_MAX_BODY_BYTES", 2 * 1024 * 1024, 1024, 5 * 1024 * 1024),
         "shc_html_max_bytes": ("SHC_HTML_MAX_BYTES", 1024 * 1024, 1024, 2 * 1024 * 1024),
@@ -662,6 +672,8 @@ class Settings(BaseSettings):
         "vistaar_max_items",
         "farmer_refresh_lock_ttl_seconds",
         "farmer_refresh_queue_batch_size",
+        "farmer_refresh_retry_base_seconds",
+        "farmer_refresh_retry_max_seconds",
         "beckn_operation_ttl_seconds",
         "beckn_callback_max_body_bytes",
         "shc_html_max_bytes",
