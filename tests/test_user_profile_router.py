@@ -65,6 +65,16 @@ def test_user_profile_not_found_when_cache_service_returns_none(monkeypatch):
     assert out == {"status": "not_found", "farmer": None}
 
 
+def test_user_profile_not_found_on_authoritative_not_found_envelope(monkeypatch):
+    monkeypatch.setattr(
+        user_router,
+        "get_or_fetch_farmer_data",
+        AsyncMock(return_value=FarmerDataEnvelope.not_found(source="api")),
+    )
+    out = asyncio.run(user_router.get_user_profile(user_info={"phone": "9876543210"}))
+    assert out == {"status": "not_found", "farmer": None}
+
+
 def test_user_profile_error_when_cache_service_raises(monkeypatch):
     async def boom(_phone):
         raise RuntimeError("cache down")

@@ -38,9 +38,9 @@ async def get_user_profile(user_info: dict = Depends(get_current_user)) -> Any:
 
     try:
         data = await get_or_fetch_farmer_data(phone)
-        if data:
-            return {"status": "ok", "farmer": data.model_dump()}
-        return {"status": "not_found", "farmer": None}
+        if data is None or data.lookupStatus == "not_found":
+            return {"status": "not_found", "farmer": None}
+        return {"status": "ok", "farmer": data.model_dump()}
     except Exception as e:
         logger.error(f"Error fetching farmer profile for phone: {e}")
         return {"status": "error", "farmer": None}
