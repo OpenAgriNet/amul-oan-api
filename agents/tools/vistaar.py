@@ -361,6 +361,43 @@ async def _search_candidates(
     return [], tried
 
 
+async def _search_candidates_for_yard(
+    build_intent: Callable[[Candidate], dict],
+    where: SearchLocation,
+    requested_market_name: str,
+) -> tuple[list[dict], list[dict], Candidate]:
+    """Walk candidates until one returns rows matching the requested yard.
+
+    Like _search_candidates but yard-aware: a candidate that returns rows from
+    *nearby* markets but not the farmer's named yard is not "good enough" — the
+    walk continues.  Nearby items are accumulated across all candidates so the
+    miss message can list every market that *did* have data.
+
+    Returns (matched_items, all_nearby_items, last_tried_candidate).
+    """
+    candidates = where.location.candidates[:MANDI_MAX_CANDIDATES] or (
+        DEFAULT_LOCATION.primary,
+    )
+    all_nearby: list[dict] = []
+    tried = candidates[0]
+    for candidate in candidates:
+        tried = candidate
+        items = await _vistaar_search(build_intent(candidate))
+        if items:
+            matched, nearby = _partition_items_by_requested_market(
+                items, requested_market_name
+            )
+            all_nearby.extend(nearby)
+            if matched:
+                return matched, all_nearby, candidate
+        if candidate is not candidates[-1]:
+            logger.info(
+                "vistaar: yard %r not in %s (%s) rows, trying next candidate",
+                requested_market_name, candidate.town, where.location.display,
+            )
+    return [], all_nearby, tried
+
+
 def _fmt_tag_group(tag: dict) -> str:
     header = (tag.get("descriptor", {}) or {}).get("code") or (tag.get("descriptor", {}) or {}).get("name") or ""
     rows = []
@@ -727,7 +764,14 @@ async def get_vistaar_mandi_prices(
         }
 
     try:
-        items, used = await _search_candidates(build, where)
+        if where.explicit_yard:
+            assert where.requested_market_name is not None
+            items, nearby, used = await _search_candidates_for_yard(
+                build, where, where.requested_market_name
+            )
+        else:
+            items, used = await _search_candidates(build, where)
+            nearby = []
     except VistaarLegUnavailable:
         # A failed leg is NOT an empty market. Never fall through to the
         # "No mandi prices were found…" line below on infrastructure failure.
@@ -741,31 +785,24 @@ async def get_vistaar_mandi_prices(
     place = _location_phrase(where, used)
 
     matched_count = len(items)
-    nearby_count = 0
-    if where.explicit_yard:
-        assert where.requested_market_name is not None
-        matched, nearby = _partition_items_by_requested_market(
-            items, where.requested_market_name
+    nearby_count = len(nearby)
+    if where.explicit_yard and not items:
+        logger.info(
+            "vistaar mandi yard miss commodity=%s requested_market=%s "
+            "nearby_markets=%d from=%s to=%s",
+            commodity_name,
+            where.requested_market_name,
+            nearby_count,
+            from_date,
+            to_date,
         )
-        matched_count, nearby_count = len(matched), len(nearby)
-        if not matched:
-            logger.info(
-                "vistaar mandi yard miss commodity=%s requested_market=%s "
-                "nearby_markets=%d from=%s to=%s",
-                commodity_name,
-                where.requested_market_name,
-                nearby_count,
-                from_date,
-                to_date,
-            )
-            return _explicit_yard_miss_message(
-                commodity_name=commodity_name,
-                requested_market_name=where.requested_market_name,
-                from_date=from_date,
-                to_date=to_date,
-                nearby_items=nearby,
-            )
-        items = matched
+        return _explicit_yard_miss_message(
+            commodity_name=commodity_name,
+            requested_market_name=where.requested_market_name,
+            from_date=from_date,
+            to_date=to_date,
+            nearby_items=nearby,
+        )
 
     logger.info(
         "vistaar mandi commodity=%s place=%s source=%s requested_market=%s "

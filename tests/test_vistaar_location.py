@@ -423,6 +423,59 @@ class TestExplicitYardFiltering:
         assert "at Anand APMC" not in out
 
     @pytest.mark.asyncio
+    async def test_yard_match_found_on_second_candidate_is_not_a_false_miss(
+        self, bpp, fake_cache
+    ):
+        """Multi-candidate walk: candidate 1 returns nearby rows but NOT the
+        requested yard.  Candidate 2 returns the requested yard.  The old code
+        would stop at candidate 1 (non-empty), filter to zero matched rows, and
+        report a false miss.  The fix should continue to candidate 2."""
+
+        # Kutch has candidates: Bhuj (23.247, 69.668), Bhachau (23.298, 70.346).
+        # Rapar APMC (23.571, 70.645) is 106 km from Bhuj (outside 50 km) but
+        # 43 km from Bhachau (inside 50 km).
+        # We add a fake "Gandhidham APMC" near Bhuj that trades Wheat so that
+        # candidate 1 returns rows but NOT Rapar APMC.
+        class _MultiCandidateBpp(_FakeBpp):
+            async def post(self, url, json=None):
+                intent = json["intent"]
+                category = (intent.get("category") or {}).get("descriptor", {}).get("code")
+                if category != "price-discovery":
+                    return await super().post(url, json)
+
+                location = intent["fulfillment"]["end"]["location"]
+                lat, lon = (float(v) for v in location["gps"].split(","))
+                commodity = intent["item"]["descriptor"]["name"]
+                self.searches.append(
+                    (lat, lon, commodity, (location.get("descriptor") or {}).get("name"))
+                )
+                tags = {t["code"]: t["value"] for t in intent.get("tags", [])}
+
+                # Extra market near Bhuj that trades Wheat — within Bhuj's radius.
+                gandhidham = _Market(
+                    "Gandhidham APMC", "Kutch", "Gujarat", 23.22, 69.72, ["Wheat"]
+                )
+                all_markets = list(MARKETS) + [gandhidham]
+                hits = [
+                    m for m in all_markets
+                    if commodity.casefold() in m.commodities
+                    and _haversine_km(lat, lon, m.lat, m.lon) <= RADIUS_KM
+                ]
+                rows = [
+                    self._item(commodity, m, tags["to_date"]) for m in hits
+                ]
+                return _FakeResponse(self._wrap(rows[:ROW_CAP]))
+
+        with patch.object(vistaar.httpx, "AsyncClient", return_value=_MultiCandidateBpp()):
+            out = await vistaar.get_vistaar_mandi_prices(
+                ctx(district="kutch"), "Wheat", "Rapar APMC"
+            )
+        # Must find Rapar via candidate 2 (Bhachau), NOT report a false miss.
+        assert "Rapar APMC" in out
+        assert "modal 2000" in out
+        assert "No rates were reported" not in out
+
+    @pytest.mark.asyncio
     async def test_plain_district_ask_still_allows_nearby_markets(self, bpp, fake_cache):
         # Without yard intent, cross-district rows remain valid answers.
         class _PadraOnly(_FakeBpp):
