@@ -319,6 +319,8 @@ class TestExplicitYardFiltering:
         assert vistaar._market_match_key("Anand APMC") == "anand"
         assert vistaar._market_match_key("anand apmc") == "anand"
         assert vistaar._market_match_key("Anand mandi") == "anand"
+        assert vistaar._market_match_key("APMC HALVAD") == "halvad"
+        assert vistaar._market_match_key("Deesa Veg Yard") == "deesa"
         assert vistaar._markets_match("Anand APMC", "Anand APMC")
         assert vistaar._markets_match("Anand mandi", "ANAND APMC")
         assert not vistaar._markets_match("Anand APMC", "Padra APMC")
@@ -332,8 +334,32 @@ class TestExplicitYardFiltering:
         assert vistaar._markets_match("Nadiad mandi", "Nadiad APMC")
         # Different town despite prefix overlap — must NOT match.
         assert not vistaar._markets_match("Anand APMC", "Anandpur APMC")
-        # Different spelling of the town — legitimately a different match key.
-        assert not vistaar._markets_match("Nadiad APMC", "Nadiyad(Piplag) APMC")
+
+    def test_format_and_spelling_aliases_match_same_yard(self):
+        # Prefix "APMC …" form from live BPP.
+        assert vistaar._markets_match("Halvad APMC", "APMC HALVAD")
+        assert vistaar._markets_match("APMC Halvad", "Halvad APMC")
+        # Spelling / transliteration variants of the SAME yard.
+        assert vistaar._markets_match("Nadiad APMC", "Nadiyad(Piplag) APMC")
+        assert vistaar._markets_match("Nadiad APMC", "Nadiyad(Chaklasi) APMC")
+        assert vistaar._markets_match("Bodeli APMC", "Bodeliu APMC")
+        assert vistaar._markets_match("Dhrangadhra APMC", "Dhragradhra APMC")
+        assert vistaar._markets_match("Khambhalia APMC", "Jam Khambalia APMC")
+        assert vistaar._markets_match("Sanand APMC", "Sanad APMC")
+        assert vistaar._markets_match("Wadhwan APMC", "Vadhvan APMC")
+        assert vistaar._markets_match("Wankaner APMC", "Vankaner APMC")
+        assert vistaar._markets_match("Deesa Veg Yard", "Deesa(Deesa Veg Yard) APMC")
+
+    def test_district_names_are_not_aliased_to_yard_towns(self):
+        # Explicit yard safety: district ≠ yard town must stay a miss.
+        assert not vistaar._markets_match("Sabarkantha APMC", "Himatnagar APMC")
+        assert not vistaar._markets_match("Kheda APMC", "Nadiad APMC")
+        assert not vistaar._markets_match("Kutch APMC", "Bhuj APMC")
+        assert not vistaar._markets_match("Banaskantha APMC", "Deesa APMC")
+        assert not vistaar._markets_match("Aravalli APMC", "Modasa APMC")
+        assert not vistaar._markets_match("Gir Somnath APMC", "Veraval APMC")
+        assert not vistaar._markets_match("Panchmahal APMC", "Gogamba APMC")
+        assert not vistaar._markets_match("Bharuch APMC", "Sendhwa APMC")
 
     @pytest.mark.asyncio
     async def test_matching_yard_rows_are_kept(self, bpp, fake_cache):
