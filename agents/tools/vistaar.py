@@ -510,53 +510,68 @@ def _market_label(t: dict[str, str]) -> str:
     return ", ".join(parts)
 
 
+# BPP market names often carry a parenthetical qualifier after the town:
+#   "Anand(Veg,Yard,Anand) APMC", "Khambhat(Veg Yard Khambhat) APMC".
+_PAREN_RE = re.compile(r"\(.*?\)")
+# Whole-word filler removed before squeezing so "APMC HALVAD" / "Deesa Veg Yard"
+# collapse to the town, not "apmchalvad" / "deesaveg".
+_MARKET_FILLER = re.compile(
+    r"(?i)\b(apmc|mandi|yard|veg|vegetable|market)\b"
+)
+# Glued tokens still need prefix/suffix stripping after non-alnum collapse
+# ("AnandAPMC", "APMCHALVAD").
+_GLUED_YARD_TOKENS = _YARD_SUFFIXES + ("veg", "vegetable", "market")
+
+# Same-yard spelling / transliteration variants only. NEVER map a district name
+# onto a yard town (e.g. sabarkantha↛himatnagar, kheda↛nadiad) — that would
+# reintroduce nearby-price substitution for explicit yard asks.
+_MARKET_SPELLING_ALIASES: dict[str, str] = {
+    "nadiyad": "nadiad",
+    "bodeliu": "bodeli",
+    "dhragradhra": "dhrangadhra",
+    "khambalia": "khambhalia",
+    "jamkhambalia": "khambhalia",
+    "jamkhambhalia": "khambhalia",
+    "sanad": "sanand",
+    "vadhvan": "wadhwan",
+    "vankaner": "wankaner",
+}
+
+
 def _market_match_key(text: str) -> str:
     """Collapse a market/yard phrase for equality checks.
 
-    "Anand APMC", "anand apmc", "AnandAPMC" → "anand". Yard suffixes are stripped
-    so "Anand mandi" still matches a BPP row labelled "Anand APMC".
+    Handles both farmer phrasing and live BPP label quirks:
+      "Anand APMC" / "AnandAPMC" / "Anand(Veg,Yard,Anand) APMC" → "anand"
+      "APMC HALVAD" / "Halvad APMC" → "halvad"
+      "Deesa Veg Yard" → "deesa"
+      "Nadiyad(Piplag) APMC" → "nadiad" (via spelling alias)
     """
-    squeezed = _NON_ALNUM.sub("", (text or "").casefold())
-    for suffix in _YARD_SUFFIXES:
-        if squeezed.endswith(suffix) and len(squeezed) > len(suffix):
-            squeezed = squeezed[: -len(suffix)]
-            break
-    return squeezed
-
-
-# BPP market names often carry a parenthetical qualifier after the town:
-#   "Anand(Veg,Yard,Anand) APMC", "Khambhat(Veg Yard Khambhat) APMC".
-# Strip that to get the base town for matching.
-_PAREN_RE = re.compile(r"\(.*?\)")
-
-
-def _market_base_town(market_tag: str) -> str:
-    """Extract the town portion before any parenthetical from a BPP Market tag.
-
-    "Anand(Veg,Yard,Anand) APMC" → "anand".
-    "Nadiad APMC"                → "nadiad".
-    "Padra APMC"                 → "padra".
-    """
-    stripped = _PAREN_RE.sub("", market_tag or "")
-    return _market_match_key(stripped)
+    no_paren = _PAREN_RE.sub(" ", text or "")
+    cleaned = _MARKET_FILLER.sub(" ", no_paren)
+    squeezed = _NON_ALNUM.sub("", cleaned.casefold())
+    changed = True
+    while changed and squeezed:
+        changed = False
+        for token in _GLUED_YARD_TOKENS:
+            if squeezed.startswith(token) and len(squeezed) > len(token):
+                squeezed = squeezed[len(token) :]
+                changed = True
+            if squeezed.endswith(token) and len(squeezed) > len(token):
+                squeezed = squeezed[: -len(token)]
+                changed = True
+    return _MARKET_SPELLING_ALIASES.get(squeezed, squeezed)
 
 
 def _markets_match(requested: str, market_tag: str) -> bool:
     """True when a BPP Market tag is the yard the farmer named.
 
-    Two-stage match:
-    1. Exact key match: "Anand APMC" == "Anand APMC".
-    2. Base-town match: strips BPP parenthetical qualifiers first, so "Anand
-       APMC" matches "Anand(Veg,Yard,Anand) APMC" without also matching
-       "Anandpur APMC" (a different town).
+    Compares canonical match keys after parenthetical / filler stripping and
+    same-yard spelling aliases. Does not map district names onto yard towns.
     """
     req = _market_match_key(requested)
     got = _market_match_key(market_tag)
-    if not req or not got:
-        return False
-    if req == got:
-        return True
-    return _market_base_town(market_tag) == req
+    return bool(req) and bool(got) and req == got
 
 
 def _partition_items_by_requested_market(
