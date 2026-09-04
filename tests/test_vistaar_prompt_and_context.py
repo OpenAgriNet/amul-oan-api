@@ -98,6 +98,14 @@ class TestPromptGuidance:
         assert "not covered" in rendered
 
     @pytest.mark.parametrize("name", PROMPTS)
+    def test_named_yard_guidance_forbids_nearby_price_substitution(self, name):
+        rendered = self._render(name, True)
+        assert "Anand APMC" in rendered
+        assert "no rates were reported" in rendered.lower()
+        assert "names only" in rendered.lower()
+        assert "nearby market's price as the requested yard's price" in rendered.lower()
+
+    @pytest.mark.parametrize("name", PROMPTS)
     def test_it_says_not_to_ask_the_farmer_where_they_are(self, name):
         assert "do **not** ask the farmer where they are" in self._render(name, True).lower()
 
