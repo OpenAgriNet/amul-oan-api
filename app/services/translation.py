@@ -289,6 +289,13 @@ GU_POST_REPLACEMENTS_BASE = [
 GU_TERM_POLICY = _load_gu_term_policy()
 GU_POLICY_REPLACEMENTS = _build_gu_policy_replacements(GU_TERM_POLICY)
 GU_POST_REPLACEMENTS = GU_POST_REPLACEMENTS_BASE + GU_POLICY_REPLACEMENTS
+CHAT_ONLY_GU_POST_REPLACEMENTS = [
+    # Canonicalize organic wording in chat output.
+    (r"(?i)\borganic\b", "જૈવિક"),
+    (r"ઓર્ગેનિક", "જૈવિક"),
+    (r"જવિૈ\s*ક", "જૈવિક"),
+    (r"ઓર્ગેનિર્ગે\s*ક", "જૈવિક"),
+]
 
 
 # ── Protected proper nouns: pin a fixed Gujarati rendering ──────────────────────
@@ -552,6 +559,9 @@ def _post_normalize_gu_translation(
     # policy runs; chat keeps the uniform gu_term_policy.json mapping (-> શરીર).
     if _is_voice_channel():
         out = _normalize_gu_body_terms(out)
+    else:
+        for pat, repl in CHAT_ONLY_GU_POST_REPLACEMENTS:
+            out = re.sub(pat, repl, out)
     for pat, repl in GU_POST_REPLACEMENTS:
         out = re.sub(pat, repl, out)
     # Keep assistant first-person Gujarati conjugation feminine on all channels.
