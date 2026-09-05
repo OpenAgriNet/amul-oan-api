@@ -10,6 +10,7 @@ from dotenv import load_dotenv
 # Load environment variables from .env file
 load_dotenv()
 _config_logger = logging.getLogger(__name__)
+_scheme_ocr_page_batch_size_deprecation_logged = False
 
 
 def _get_bool_env(name: str, default: bool = False) -> bool:
@@ -375,10 +376,12 @@ class Settings(BaseSettings):
     scheme_require_union_auth: bool = os.getenv("SCHEME_REQUIRE_UNION_AUTH", "true").strip().lower() in {
         "1", "true", "yes", "on"
     }
-    # Banas scheme PDF ingestion via Chandra OCR (see scheme_ingestion.py).
+    # Banas/Sumul/Sursagar scheme PDF ingestion via stock Chandra vLLM
+    # (OpenAI-compatible /v1/chat/completions; see scheme_ingestion.py).
+    # Base URL e.g. http://10.185.25.197:8011 (optional trailing /v1 is stripped).
     scheme_ocr_endpoint_url: Optional[str] = os.getenv("SCHEME_OCR_ENDPOINT_URL")
-    # Per-page OCR timeout budget. Each OCR POST is a small page batch (or a
-    # single-page fallback); HTTP timeout is this value times images in that request.
+    # Per-page OCR timeout budget. Each OCR POST is one page via stock Chandra
+    # /v1/chat/completions; HTTP timeout equals this value.
     scheme_ocr_timeout_seconds: float = float(os.getenv("SCHEME_OCR_TIMEOUT_SECONDS", "120"))
     scheme_pdf_render_dpi: int = int(os.getenv("SCHEME_PDF_RENDER_DPI", "200"))
     # Scheme ingestion operational tunables.
@@ -387,8 +390,11 @@ class Settings(BaseSettings):
     scheme_pdf_max_render_pages: int = Field(default=30, validation_alias="SCHEME_PDF_MAX_RENDER_PAGES")
     scheme_ocr_prompt_type: str = os.getenv("SCHEME_OCR_PROMPT_TYPE", "ocr_layout")
     scheme_ocr_max_output_tokens: int = Field(default=12284, validation_alias="SCHEME_OCR_MAX_OUTPUT_TOKENS")
-    # Pages per Chandra /v1/ocr/pages request. Small batches avoid 413/resets on
-    # whole-PDF bodies; failed batches retry one page at a time.
+    # Max in-flight one-page OCR chat-completions requests per PDF (latency knob).
+    # Prefer SCHEME_OCR_CONCURRENCY. When unset, falls back to SCHEME_OCR_PAGE_BATCH_SIZE.
+    scheme_ocr_concurrency: int = Field(default=4, validation_alias="SCHEME_OCR_CONCURRENCY")
+    # Deprecated alias for SCHEME_OCR_CONCURRENCY. No longer means "images per HTTP
+    # request" (stock Chandra is always one image per /v1/chat/completions call).
     scheme_ocr_page_batch_size: int = Field(default=4, validation_alias="SCHEME_OCR_PAGE_BATCH_SIZE")
     scheme_ocr_max_failed_page_ratio: float = Field(default=0.15, validation_alias="SCHEME_OCR_MAX_FAILED_PAGE_RATIO")
     scheme_banas_min_record_coverage_ratio: float = Field(default=0.85, validation_alias="SCHEME_BANAS_MIN_RECORD_COVERAGE_RATIO")
@@ -581,6 +587,7 @@ class Settings(BaseSettings):
         "scheme_lock_ttl_seconds": ("SCHEME_LOCK_TTL_SECONDS", 60 * 60, 1, None),
         "scheme_pdf_max_render_pages": ("SCHEME_PDF_MAX_RENDER_PAGES", 30, 1, None),
         "scheme_ocr_max_output_tokens": ("SCHEME_OCR_MAX_OUTPUT_TOKENS", 12284, 1, None),
+        "scheme_ocr_concurrency": ("SCHEME_OCR_CONCURRENCY", 4, 1, 8),
         "scheme_ocr_page_batch_size": ("SCHEME_OCR_PAGE_BATCH_SIZE", 4, 1, 8),
         "health_call_cooldown_ttl_seconds": ("HEALTH_CALL_COOLDOWN_TTL_SECONDS", 60 * 30, 1, None),
         "vistaar_max_items": ("VISTAAR_MAX_ITEMS", 20, 1, None),
@@ -630,6 +637,7 @@ class Settings(BaseSettings):
         "scheme_lock_ttl_seconds",
         "scheme_pdf_max_render_pages",
         "scheme_ocr_max_output_tokens",
+        "scheme_ocr_concurrency",
         "scheme_ocr_page_batch_size",
         "health_call_cooldown_ttl_seconds",
         "vistaar_max_items",
@@ -690,6 +698,28 @@ class Settings(BaseSettings):
         if value is None:
             return ""
         return str(value).rstrip("/")
+
+    @model_validator(mode="after")
+    def _resolve_scheme_ocr_concurrency(self):
+        """Prefer SCHEME_OCR_CONCURRENCY; else alias from deprecated PAGE_BATCH_SIZE."""
+        global _scheme_ocr_page_batch_size_deprecation_logged
+        concurrency_raw = os.getenv("SCHEME_OCR_CONCURRENCY")
+        concurrency_explicit = concurrency_raw is not None and str(concurrency_raw).strip() != ""
+        if concurrency_explicit:
+            return self
+
+        # Unset concurrency → use (already clamped) page_batch_size as concurrency.
+        self.scheme_ocr_concurrency = self.scheme_ocr_page_batch_size
+        batch_raw = os.getenv("SCHEME_OCR_PAGE_BATCH_SIZE")
+        batch_explicit = batch_raw is not None and str(batch_raw).strip() != ""
+        if batch_explicit and not _scheme_ocr_page_batch_size_deprecation_logged:
+            _config_logger.warning(
+                "SCHEME_OCR_PAGE_BATCH_SIZE is deprecated for OCR transport batching; "
+                "use SCHEME_OCR_CONCURRENCY=%s instead (aliased for now)",
+                self.scheme_ocr_concurrency,
+            )
+            _scheme_ocr_page_batch_size_deprecation_logged = True
+        return self
 
     @model_validator(mode="after")
     def _require_beckn_transport_credentials_when_enabled(self):

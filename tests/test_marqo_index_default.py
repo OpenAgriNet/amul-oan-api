@@ -76,6 +76,7 @@ def test_settings_clamp_operational_numeric_bounds(monkeypatch):
     monkeypatch.setenv("SCHEME_BANAS_MIN_RECORD_COVERAGE_RATIO", "-0.2")
     monkeypatch.setenv("SCHEME_HTTP_TIMEOUT_SECONDS", "0")
     monkeypatch.setenv("SCHEME_OCR_PAGE_BATCH_SIZE", "99")
+    monkeypatch.setenv("SCHEME_OCR_CONCURRENCY", "99")
 
     cfg = Settings()
     assert cfg.farmer_refresh_queue_batch_size == 1
@@ -83,6 +84,59 @@ def test_settings_clamp_operational_numeric_bounds(monkeypatch):
     assert cfg.scheme_banas_min_record_coverage_ratio == 0.0
     assert cfg.scheme_http_timeout_seconds == 0.001
     assert cfg.scheme_ocr_page_batch_size == 8
+    assert cfg.scheme_ocr_concurrency == 8
+
+
+def test_settings_scheme_ocr_concurrency_defaults_to_four(monkeypatch):
+    monkeypatch.delenv("SCHEME_OCR_CONCURRENCY", raising=False)
+    monkeypatch.delenv("SCHEME_OCR_PAGE_BATCH_SIZE", raising=False)
+
+    cfg = Settings()
+    assert cfg.scheme_ocr_concurrency == 4
+    assert cfg.scheme_ocr_page_batch_size == 4
+
+
+def test_settings_scheme_ocr_concurrency_aliases_from_page_batch_size(monkeypatch):
+    monkeypatch.delenv("SCHEME_OCR_CONCURRENCY", raising=False)
+    monkeypatch.setenv("SCHEME_OCR_PAGE_BATCH_SIZE", "2")
+
+    cfg = Settings()
+    assert cfg.scheme_ocr_page_batch_size == 2
+    assert cfg.scheme_ocr_concurrency == 2
+
+
+def test_settings_scheme_ocr_concurrency_explicit_wins_over_page_batch_size(monkeypatch):
+    monkeypatch.setenv("SCHEME_OCR_CONCURRENCY", "3")
+    monkeypatch.setenv("SCHEME_OCR_PAGE_BATCH_SIZE", "6")
+
+    cfg = Settings()
+    assert cfg.scheme_ocr_concurrency == 3
+    assert cfg.scheme_ocr_page_batch_size == 6
+
+
+def test_settings_scheme_ocr_concurrency_clamps_low(monkeypatch):
+    monkeypatch.setenv("SCHEME_OCR_CONCURRENCY", "0")
+
+    cfg = Settings()
+    assert cfg.scheme_ocr_concurrency == 1
+
+
+def test_settings_scheme_ocr_concurrency_empty_env_aliases_from_page_batch_size(monkeypatch):
+    monkeypatch.setenv("SCHEME_OCR_CONCURRENCY", "")
+    monkeypatch.setenv("SCHEME_OCR_PAGE_BATCH_SIZE", "5")
+
+    cfg = Settings()
+    assert cfg.scheme_ocr_page_batch_size == 5
+    assert cfg.scheme_ocr_concurrency == 5
+
+
+def test_settings_scheme_ocr_concurrency_aliases_clamped_batch_size(monkeypatch):
+    monkeypatch.delenv("SCHEME_OCR_CONCURRENCY", raising=False)
+    monkeypatch.setenv("SCHEME_OCR_PAGE_BATCH_SIZE", "99")
+
+    cfg = Settings()
+    assert cfg.scheme_ocr_page_batch_size == 8
+    assert cfg.scheme_ocr_concurrency == 8
 
 
 def test_settings_vistaar_coords_fallback_on_malformed_values(monkeypatch):

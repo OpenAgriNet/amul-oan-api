@@ -6,6 +6,7 @@ import asyncio
 import base64
 import json
 import re
+import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -31,6 +32,60 @@ SCHEME_OCR_PROMPT_TYPE = settings.scheme_ocr_prompt_type
 SCHEME_OCR_MAX_OUTPUT_TOKENS = settings.scheme_ocr_max_output_tokens
 SCHEME_OCR_MAX_FAILED_PAGE_RATIO = settings.scheme_ocr_max_failed_page_ratio
 SCHEME_BANAS_MIN_RECORD_COVERAGE_RATIO = settings.scheme_banas_min_record_coverage_ratio
+SCHEME_OCR_CONCURRENCY = settings.scheme_ocr_concurrency
+SCHEME_OCR_MODEL_NAME = "chandra"
+# Exact text of datalab-to/chandra PROMPT_MAPPING["ocr_layout"] (chandra/prompts.py).
+SCHEME_OCR_LAYOUT_PROMPT = (
+    "OCR this image to HTML, arranged as layout blocks.  Each layout block should be a div "
+    "with the data-bbox attribute representing the bounding box of the block in x0 y0 x1 y1 "
+    "format.  Bboxes are normalized 0-1000. The data-label attribute is the label for the block.\n"
+    "\n"
+    "Use the following labels:\n"
+    "- Caption\n"
+    "- Footnote\n"
+    "- Equation-Block\n"
+    "- List-Group\n"
+    "- Page-Header\n"
+    "- Page-Footer\n"
+    "- Image\n"
+    "- Section-Header\n"
+    "- Table\n"
+    "- Text\n"
+    "- Complex-Block\n"
+    "- Code-Block\n"
+    "- Form\n"
+    "- Table-Of-Contents\n"
+    "- Figure\n"
+    "- Chemical-Block\n"
+    "- Diagram\n"
+    "- Bibliography\n"
+    "- Blank-Page\n"
+    "\n"
+    "Only use these tags ['math', 'br', 'i', 'b', 'u', 'del', 'sup', 'sub', 'table', 'tr', 'td', "
+    "'p', 'th', 'div', 'pre', 'h1', 'h2', 'h3', 'h4', 'h5', 'ul', 'ol', 'li', 'input', 'a', "
+    "'span', 'img', 'hr', 'tbody', 'small', 'caption', 'strong', 'thead', 'big', 'code', 'chem'], "
+    "and these attributes ['class', 'colspan', 'rowspan', 'display', 'checked', 'type', 'border', "
+    "'value', 'style', 'href', 'alt', 'align', 'data-bbox', 'data-label'].\n"
+    "\n"
+    "Guidelines:\n"
+    "* Inline math: Surround math with <math>...</math> tags. Math expressions should be "
+    "rendered in KaTeX-compatible LaTeX. Use display for block math.\n"
+    "* Tables: Use colspan and rowspan attributes to match table structure.\n"
+    "* Formatting: Maintain consistent formatting with the image, including spacing, "
+    "indentation, subscripts/superscripts, and special characters.\n"
+    "* Images: Include a description of any images in the alt attribute of an <img> tag. Do not "
+    "fill out the src property. Describe in detail inside the div tag. Also convert charts to "
+    "high fidelity data, and convert diagrams to mermaid.\n"
+    "* Forms: Mark checkboxes and radio buttons properly.\n"
+    "* Text: join lines together properly into paragraphs using <p>...</p> tags.  Use <br> tags "
+    "for line breaks within paragraphs, but only when absolutely necessary to maintain meaning.\n"
+    "* Chemistry: Use <chem>...</chem> tags for chemical formulas with reactive SMILES.\n"
+    "* Lists: Preserve indents and proper list markers.\n"
+    "* Use the simplest possible HTML structure that accurately represents the content of the "
+    "block.\n"
+    "* Make sure the text is accurate and easy for a human to read and interpret.  Reading "
+    "order should be correct and natural."
+)
 _redis_client = None
 
 
@@ -310,10 +365,11 @@ async def release_refresh_lock(source_key: str, lock_token: str, redis_client=No
 async def extend_refresh_lock(source_key: str, lock_token: str, redis_client=None) -> bool:
     """Re-arm the lock TTL if we still own it.
 
-    A full Banas OCR batch (many PDFs, each OCR'd in small page batches that can
-    last SCHEME_OCR_TIMEOUT_SECONDS times pages in that request) can outlast a
-    single fixed TTL. Heartbeating after each PDF keeps the lock alive as long as
-    we are making progress, without inflating the TTL for the common fast case.
+    A full Banas OCR batch (many PDFs, each with up to SCHEME_PDF_MAX_RENDER_PAGES
+    pages OCR'd concurrently up to SCHEME_OCR_CONCURRENCY, each call lasting up to
+    SCHEME_OCR_TIMEOUT_SECONDS) can outlast a single fixed TTL. Heartbeating after
+    each PDF keeps the lock alive as long as we are making progress, without
+    inflating the TTL for the common fast case.
     Returns False if the lock was lost (expired or taken over) so the caller can
     decide whether to keep going.
     """
@@ -755,116 +811,229 @@ def render_pdf_to_base64_images(pdf_bytes: bytes, dpi: int, max_pages: int = SCH
     return rendered_images
 
 
-def _ocr_pages_payload(images: list[str]) -> dict[str, Any]:
+def _scheme_ocr_prompt_text() -> str:
+    """Resolve the Chandra prompt text for the configured prompt type.
+
+    Stock vLLM has no ``prompt_type`` field; we send the upstream prompt body
+    ourselves. ``ocr_layout`` is the supported/default mapping.
+    """
+    prompt_type = (SCHEME_OCR_PROMPT_TYPE or "ocr_layout").strip().casefold()
+    if prompt_type and prompt_type != "ocr_layout":
+        logger.warning(
+            "Unsupported SCHEME_OCR_PROMPT_TYPE=%r; using ocr_layout prompt",
+            SCHEME_OCR_PROMPT_TYPE,
+        )
+    return SCHEME_OCR_LAYOUT_PROMPT
+
+
+def _chandra_chat_completions_payload(image_b64: str) -> dict[str, Any]:
+    """Build a stock OpenAI-compatible chat-completions body for one page image."""
     return {
-        "images": images,
-        "prompt_type": SCHEME_OCR_PROMPT_TYPE,
-        # Chandra HF generate() uses max_new_tokens per sequence; vLLM uses
-        # max_tokens per page. This cap is per page, not for the whole batch.
-        "max_output_tokens": SCHEME_OCR_MAX_OUTPUT_TOKENS,
+        "model": SCHEME_OCR_MODEL_NAME,
+        "temperature": 0,
+        "top_p": 0.1,
+        "max_tokens": SCHEME_OCR_MAX_OUTPUT_TOKENS,
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": _scheme_ocr_prompt_text()},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/png;base64,{image_b64}"},
+                    },
+                ],
+            }
+        ],
     }
 
 
-def _page_results_from_ocr_payload(parsed: Any, expected_count: int) -> list[Any] | None:
+def _looks_like_html(value: str) -> bool:
+    return bool(_TAG_RE.search(value or ""))
+
+
+def _normalize_chandra_page_content(raw_content: str) -> str:
+    """Map Chandra HTML/raw page output into plain text for scheme records."""
+    text = raw_content or ""
+    if _looks_like_html(text):
+        return _strip_html(text)
+    return _normalize_text(text)
+
+
+def _page_result_from_chat_completion(parsed: Any) -> dict[str, Any] | None:
+    """Map a chat-completions JSON body into the pipeline's ``{markdown, error}`` shape."""
     if not isinstance(parsed, dict):
         return None
-    raw_pages = parsed.get("pages")
-    if not isinstance(raw_pages, list):
+    choices = parsed.get("choices")
+    if not isinstance(choices, list) or not choices:
         return None
-    results: list[Any] = []
-    for index in range(expected_count):
-        page = raw_pages[index] if index < len(raw_pages) else None
-        results.append(page if isinstance(page, dict) else None)
-    if not raw_pages:
-        logger.warning("Scheme OCR response had empty pages list expected_count=%s", expected_count)
-    return results
+    first = choices[0]
+    if not isinstance(first, dict):
+        return None
+    message = first.get("message")
+    if not isinstance(message, dict):
+        return None
+    content = message.get("content")
+    if content is None:
+        return {"markdown": "", "error": True}
+    if not isinstance(content, str):
+        # Some OpenAI-compatible servers return multimodal content lists.
+        if isinstance(content, list):
+            parts: list[str] = []
+            for item in content:
+                if isinstance(item, dict) and item.get("type") == "text":
+                    parts.append(str(item.get("text") or ""))
+                elif isinstance(item, str):
+                    parts.append(item)
+            content = "".join(parts)
+        else:
+            content = str(content)
+    markdown = _normalize_chandra_page_content(content)
+    finish_reason = first.get("finish_reason")
+    if not markdown:
+        return {"markdown": "", "error": True}
+    # Truncated generations are unreliable for scheme parsing; treat as failed.
+    if finish_reason == "length":
+        logger.warning(
+            "Scheme OCR page finished with length truncation; marking failed text_length=%s",
+            len(markdown),
+        )
+        return {"markdown": markdown, "error": True}
+    return {"markdown": markdown, "error": False}
 
 
-async def _post_ocr_images(
+def _normalize_ocr_endpoint(endpoint: str) -> str:
+    """Accept base host or ``.../v1``; always append ``/v1/chat/completions`` ourselves."""
+    base = (endpoint or "").strip().rstrip("/")
+    if base.endswith("/v1"):
+        base = base[:-3].rstrip("/")
+    return base
+
+
+async def _post_ocr_page(
     client: httpx.AsyncClient,
     ocr_endpoint: str,
-    images: list[str],
-) -> list[Any] | None:
-    timeout_seconds = settings.scheme_ocr_timeout_seconds * len(images)
+    image_b64: str,
+    *,
+    page_index: int | None = None,
+) -> dict[str, Any] | None:
+    """OCR one page via stock Chandra ``/v1/chat/completions``."""
+    timeout_seconds = settings.scheme_ocr_timeout_seconds
     logger.info(
-        "Sending scheme OCR request endpoint=%s page_count=%s timeout_seconds=%s",
+        "Sending scheme OCR chat request endpoint=%s page_index=%s timeout_seconds=%s",
         ocr_endpoint,
-        len(images),
+        page_index,
         timeout_seconds,
     )
+    started = time.perf_counter()
     try:
         response = await client.post(
-            f"{ocr_endpoint}/v1/ocr/pages",
-            json=_ocr_pages_payload(images),
+            f"{ocr_endpoint}/v1/chat/completions",
+            json=_chandra_chat_completions_payload(image_b64),
             timeout=timeout_seconds,
         )
         response.raise_for_status()
-        parsed_pages = _page_results_from_ocr_payload(response.json(), len(images))
-        if parsed_pages is None:
+        page_result = _page_result_from_chat_completion(response.json())
+        elapsed_seconds = time.perf_counter() - started
+        if page_result is None:
             logger.warning(
-                "Scheme OCR response missing pages list endpoint=%s page_count=%s",
+                "Scheme OCR chat response missing usable choices endpoint=%s page_index=%s elapsed_seconds=%.2f",
                 ocr_endpoint,
-                len(images),
+                page_index,
+                elapsed_seconds,
             )
-        return parsed_pages
+        else:
+            logger.info(
+                "Scheme OCR chat page completed endpoint=%s page_index=%s elapsed_seconds=%.2f page_error=%s text_length=%s",
+                ocr_endpoint,
+                page_index,
+                elapsed_seconds,
+                bool(page_result.get("error")),
+                len(str(page_result.get("markdown") or "")),
+            )
+        return page_result
     except httpx.HTTPStatusError as exc:
         logger.warning(
-            "Scheme OCR request returned non-success status endpoint=%s page_count=%s status_code=%s",
+            "Scheme OCR chat request returned non-success status endpoint=%s page_index=%s status_code=%s elapsed_seconds=%.2f",
             ocr_endpoint,
-            len(images),
+            page_index,
             exc.response.status_code,
+            time.perf_counter() - started,
         )
         return None
     except httpx.RequestError as exc:
         logger.warning(
-            "Scheme OCR request failed endpoint=%s page_count=%s error_type=%s error_repr=%r",
+            "Scheme OCR chat request failed endpoint=%s page_index=%s error_type=%s error_repr=%r elapsed_seconds=%.2f",
             ocr_endpoint,
-            len(images),
+            page_index,
             type(exc).__name__,
             exc,
+            time.perf_counter() - started,
         )
         return None
     except ValueError as exc:
         logger.warning(
-            "Scheme OCR response was not valid JSON endpoint=%s page_count=%s error_repr=%r",
+            "Scheme OCR chat response was not valid JSON endpoint=%s page_index=%s error_repr=%r elapsed_seconds=%.2f",
             ocr_endpoint,
-            len(images),
+            page_index,
             exc,
+            time.perf_counter() - started,
         )
         return None
     except Exception:
         logger.exception(
-            "Unexpected error while calling scheme OCR endpoint=%s page_count=%s",
+            "Unexpected error while calling scheme OCR chat endpoint=%s page_index=%s elapsed_seconds=%.2f",
             ocr_endpoint,
-            len(images),
+            page_index,
+            time.perf_counter() - started,
         )
         return None
 
 
-async def _ocr_image_chunk(
+async def _ocr_pages_concurrent(
     client: httpx.AsyncClient,
     ocr_endpoint: str,
     images: list[str],
+    *,
+    concurrency: int,
 ) -> list[Any]:
-    results = await _post_ocr_images(client, ocr_endpoint, images)
-    if results is not None:
-        return results
-    if len(images) == 1:
-        return [None]
-    logger.warning(
-        "Scheme OCR batch failed; retrying pages individually page_count=%s",
+    """OCR each page with at most ``concurrency`` in-flight chat-completions calls.
+
+    Results are returned in the original page order regardless of completion order.
+    """
+    limit = max(1, concurrency)
+    semaphore = asyncio.Semaphore(limit)
+
+    async def _one(index: int, image_b64: str) -> tuple[int, Any]:
+        async with semaphore:
+            result = await _post_ocr_page(client, ocr_endpoint, image_b64, page_index=index)
+            return index, result
+
+    logger.info(
+        "Dispatching scheme OCR pages concurrently endpoint=%s page_count=%s concurrency=%s",
+        ocr_endpoint,
         len(images),
+        limit,
     )
-    fallback: list[Any] = []
-    for image in images:
-        single = await _post_ocr_images(client, ocr_endpoint, [image])
-        fallback.append(None if not single else single[0])
-    return fallback
+    gathered = await asyncio.gather(
+        *(_one(index, image_b64) for index, image_b64 in enumerate(images)),
+        return_exceptions=True,
+    )
+    parsed_pages: list[Any] = [None] * len(images)
+    for item in gathered:
+        if isinstance(item, asyncio.CancelledError):
+            raise item
+        if isinstance(item, BaseException):
+            logger.error("Scheme OCR worker failed unexpectedly error=%s", item, exc_info=item)
+            continue
+        index, result = item
+        parsed_pages[index] = result
+    return parsed_pages
 
 
 async def extract_text_from_pdf_bytes(client: httpx.AsyncClient, pdf_bytes: bytes) -> str:
     logger.info("Extracting text from scheme PDF via OCR byte_count=%s", len(pdf_bytes))
-    ocr_endpoint = (settings.scheme_ocr_endpoint_url or "").strip().rstrip("/")
+    ocr_endpoint = _normalize_ocr_endpoint(settings.scheme_ocr_endpoint_url or "")
     if not ocr_endpoint:
         raise SchemeDependencyError("SCHEME_OCR_ENDPOINT_URL is not configured")
 
@@ -877,11 +1046,13 @@ async def extract_text_from_pdf_bytes(client: httpx.AsyncClient, pdf_bytes: byte
         max_pages=SCHEME_PDF_MAX_RENDER_PAGES,
     )
     total_pages = len(images)
-    batch_size = max(1, settings.scheme_ocr_page_batch_size)
-    parsed_pages: list[Any] = []
-    for start in range(0, total_pages, batch_size):
-        chunk = images[start : start + batch_size]
-        parsed_pages.extend(await _ocr_image_chunk(client, ocr_endpoint, chunk))
+    concurrency = max(1, int(settings.scheme_ocr_concurrency))
+    parsed_pages = await _ocr_pages_concurrent(
+        client,
+        ocr_endpoint,
+        images,
+        concurrency=concurrency,
+    )
 
     page_texts: list[str] = []
     failed_pages = 0
