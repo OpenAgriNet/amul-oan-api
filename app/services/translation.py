@@ -539,14 +539,64 @@ def _fix_dandas(text: str, target_lang: str = "gu") -> str:
     return text.replace("।", ".")
 
 
+# Numeral-script maps for chat post-translation. TranslateGemma often keeps
+# ASCII digits in Gujarati/Hindi output; these tables force target-script digits.
+# Char-level only — punctuation (. - / %) stays. No cross-Indic mapping
+# (Hindi Devanagari digits are not rewritten for Gujarati targets, and vice versa).
+_ASCII_DIGITS = "0123456789"
+_GUJARATI_DIGITS = "૦૧૨૩૪૫૬૭૮૯"
+_DEVANAGARI_DIGITS = "०१२३४५६७८९"
+
+_TO_GUJARATI_DIGITS = str.maketrans(_ASCII_DIGITS, _GUJARATI_DIGITS)
+_TO_DEVANAGARI_DIGITS = str.maketrans(_ASCII_DIGITS, _DEVANAGARI_DIGITS)
+
+
+def _normalize_digit_script_for_target(text: str, target_lang: str) -> str:
+    """Rewrite ASCII numeral characters to the script expected for ``target_lang``.
+
+    - ``gu`` / ``gujarati`` -> Gujarati digits (૦-૯)
+    - ``hi`` / ``hindi`` -> Devanagari digits (०-९)
+    - anything else -> unchanged
+
+    Only ASCII ``0-9`` are rewritten. Already-correct Gujarati/Devanagari digits
+    are left alone (no Hindi↔Gujarati digit conversion). Does not convert numbers
+    to words (that is voice TTS only via ``normalize_numbers_for_tts``).
+    """
+    if not text:
+        return text
+    lang = (target_lang or "").strip().lower()
+    if lang in ("gu", "gujarati"):
+        return text.translate(_TO_GUJARATI_DIGITS)
+    if lang in ("hi", "hindi"):
+        return text.translate(_TO_DEVANAGARI_DIGITS)
+    return text
+
+
 def _post_normalize_gu_translation(
     text: str,
     target_lang: str,
     *,
     strip_outer: bool = False,
 ) -> str:
-    if target_lang.lower() not in ("gujarati", "gu"):
+    """Post-translation cleanup for Gujarati (full) and Hindi (digit script).
+
+    Gujarati: term policy, feminine self-reference, optional voice TTS cleanups.
+    Hindi: chat-only ASCII→Devanagari digit rewrite (no Gujarati policy).
+    Digit-script rewrite is chat-only — voice TTS still needs ASCII digits for
+    ``normalize_numbers_for_tts`` (``int``/``float`` cannot parse Indic digits).
+    """
+    lang = (target_lang or "").strip().lower()
+
+    # Hindi: digit script only (chat). Leave dandas and other Devanagari intact.
+    if lang in ("hindi", "hi"):
+        out = text
+        if not _is_voice_channel():
+            out = _normalize_digit_script_for_target(out, target_lang)
+        return out.strip() if strip_outer else out
+
+    if lang not in ("gujarati", "gu"):
         return text
+
     out = text
     # Voice resolves body slang contextually (બૈડા પર -> પીઠ પર) BEFORE the shared
     # policy runs; chat keeps the uniform gu_term_policy.json mapping (-> શરીર).
@@ -576,6 +626,9 @@ def _post_normalize_gu_translation(
 
         # Voice parity: apply final output normalization here with slash retention.
         out = normalize_voice_output(out, target_lang, replace_slash=False)
+    else:
+        # Chat: force ASCII digits into Gujarati script after lexical cleanups.
+        out = _normalize_digit_script_for_target(out, target_lang)
 
     # collapse extra spaces introduced by removals
     out = re.sub(r"[ \t]{2,}", " ", out)
