@@ -83,19 +83,37 @@ def test_chandra_chat_completions_payload_shape():
     assert content[1]["image_url"]["url"] == "data:image/png;base64,img-a"
 
 
-def test_page_result_from_chat_completion_strips_html():
+def test_page_result_from_chat_completion_preserves_structured_html_content():
     parsed = {
         "choices": [
             {
                 "finish_reason": "stop",
                 "message": {
-                    "content": '<div data-label="Text"><p>First   page</p></div>',
+                    "content": (
+                        "<h2>Scheme Benefits</h2>"
+                        "<ul><li>Subsidy for cooler</li><li>Support for insurance</li></ul>"
+                        "<table><tr><th>Item</th><th>Amount</th></tr><tr><td>Cooler</td><td>10000</td></tr></table>"
+                        '<a href="https://example.com/rules">Read details</a>'
+                        '<img alt="Cooling system diagram" />'
+                        '<input type="checkbox" checked value="Eligible farmer" />'
+                    ),
                 },
             }
         ]
     }
     result = si._page_result_from_chat_completion(parsed)
-    assert result == {"markdown": "First page", "error": False}
+    assert result == {
+        "markdown": (
+            "Scheme Benefits\n"
+            "- Subsidy for cooler\n"
+            "- Support for insurance\n"
+            "Item | Amount\n"
+            "Cooler | 10000\n"
+            "Read details (https://example.com/rules) [Image: Cooling system diagram] "
+            "[checkbox checked] value: Eligible farmer"
+        ),
+        "error": False,
+    }
 
 
 def test_page_result_from_chat_completion_keeps_plain_text():
@@ -157,7 +175,7 @@ def test_page_result_from_chat_completion_multimodal_content_list():
         ]
     }
     result = si._page_result_from_chat_completion(parsed)
-    assert result == {"markdown": "Part A Part B", "error": False}
+    assert result == {"markdown": "Part A\nPart B", "error": False}
 
 
 def test_page_result_from_chat_completion_chandra_layout_fixture():
@@ -186,7 +204,7 @@ def test_page_result_from_chat_completion_chandra_layout_fixture():
     assert "Subsidy up to 50%" in result["markdown"]
     assert "Cooler" in result["markdown"]
     assert "10000" in result["markdown"]
-    assert "<" not in result["markdown"]
+    assert "Item | Amount" in result["markdown"]
 
 
 def test_extract_text_from_pdf_bytes_accepts_endpoint_with_v1_suffix(monkeypatch):
@@ -598,6 +616,7 @@ def test_extract_text_from_pdf_bytes_maps_html_page_content(monkeypatch):
                             "content": (
                                 '<div data-label="Section-Header"><p>Scheme Title</p></div>'
                                 '<div data-label="Text"><p>Eligibility details</p></div>'
+                                '<ul><li>Point one</li></ul>'
                             ),
                         },
                     }
@@ -609,7 +628,49 @@ def test_extract_text_from_pdf_bytes_maps_html_page_content(monkeypatch):
             return _FakeResponse()
 
     combined = asyncio.run(si.extract_text_from_pdf_bytes(_FakeClient(), b"pdf-bytes"))
-    assert combined == "Scheme Title Eligibility details"
+    assert combined == "Scheme Title\nEligibility details\n- Point one"
+
+
+def test_extract_text_from_pdf_bytes_retries_transient_page_failure(monkeypatch):
+    monkeypatch.setattr(si.settings, "scheme_ocr_endpoint_url", "http://ocr-host:8011")
+    monkeypatch.setattr(si.settings, "scheme_ocr_timeout_seconds", 45.0)
+    monkeypatch.setattr(si.settings, "scheme_ocr_concurrency", 1)
+    monkeypatch.setattr(si.settings, "scheme_pdf_render_dpi", 150)
+    monkeypatch.setattr(si, "render_pdf_to_base64_images", lambda *_args, **_kwargs: ["img-a"])
+    monkeypatch.setattr(si, "SCHEME_OCR_PAGE_MAX_ATTEMPTS", 3)
+    monkeypatch.setattr(si, "SCHEME_OCR_RETRY_BASE_DELAY_SECONDS", 0.0)
+    monkeypatch.setattr(si, "SCHEME_OCR_RETRY_MAX_DELAY_SECONDS", 0.0)
+
+    call_count = 0
+
+    class _FakeResponse:
+        def __init__(self, markdown: str) -> None:
+            self.markdown = markdown
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self):
+            return {
+                "choices": [
+                    {
+                        "finish_reason": "stop",
+                        "message": {"content": self.markdown},
+                    }
+                ]
+            }
+
+    class _FakeClient:
+        async def post(self, url, json, timeout):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise httpx.ConnectError("connection refused")
+            return _FakeResponse("Recovered page")
+
+    combined = asyncio.run(si.extract_text_from_pdf_bytes(_FakeClient(), b"pdf-bytes"))
+    assert combined == "Recovered page"
+    assert call_count == 2
 
 
 def test_build_banas_record_returns_none_on_parse_error(monkeypatch):

@@ -34,6 +34,16 @@ SCHEME_OCR_MAX_FAILED_PAGE_RATIO = settings.scheme_ocr_max_failed_page_ratio
 SCHEME_BANAS_MIN_RECORD_COVERAGE_RATIO = settings.scheme_banas_min_record_coverage_ratio
 SCHEME_OCR_CONCURRENCY = settings.scheme_ocr_concurrency
 SCHEME_OCR_MODEL_NAME = "chandra"
+SCHEME_OCR_PAGE_MAX_ATTEMPTS = max(1, int(getattr(settings, "scheme_ocr_page_max_attempts", 3)))
+SCHEME_OCR_RETRY_BASE_DELAY_SECONDS = max(
+    0.0,
+    float(getattr(settings, "scheme_ocr_retry_base_delay_seconds", 0.5)),
+)
+SCHEME_OCR_RETRY_MAX_DELAY_SECONDS = max(
+    SCHEME_OCR_RETRY_BASE_DELAY_SECONDS,
+    float(getattr(settings, "scheme_ocr_retry_max_delay_seconds", 2.0)),
+)
+_RETRYABLE_OCR_STATUS_CODES = {408, 409, 425, 429, 500, 502, 503, 504}
 # Exact text of datalab-to/chandra PROMPT_MAPPING["ocr_layout"] (chandra/prompts.py).
 SCHEME_OCR_LAYOUT_PROMPT = (
     "OCR this image to HTML, arranged as layout blocks.  Each layout block should be a div "
@@ -177,8 +187,134 @@ def _normalize_text(value: str) -> str:
     return _WHITESPACE_RE.sub(" ", unescape(value or "")).strip()
 
 
+def _normalize_multiline_text(value: str) -> str:
+    lines = [_normalize_text(line) for line in (value or "").splitlines()]
+    lines = [line for line in lines if line]
+    return "\n".join(lines).strip()
+
+
 def _strip_html(value: str) -> str:
     return _normalize_text(_TAG_RE.sub(" ", value))
+
+
+class _ChandraHtmlToTextParser(HTMLParser):
+    """Convert Chandra OCR HTML into structured plain text with key attributes."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.parts: list[str] = []
+        self._ordered_list_stack: list[int] = []
+        self._unordered_list_depth = 0
+        self._table_stack = 0
+        self._row_cell_count_stack: list[int] = []
+        self._active_links: list[str] = []
+
+    def _append(self, text: str) -> None:
+        if text:
+            self.parts.append(text)
+
+    def _append_inline_separator(self) -> None:
+        if self.parts and not self.parts[-1].endswith((" ", "\n")):
+            self._append(" ")
+
+    def _append_block_break(self) -> None:
+        if self.parts and not self.parts[-1].endswith("\n\n"):
+            self._append("\n\n")
+
+    def _append_line_break(self) -> None:
+        if self.parts and not self.parts[-1].endswith("\n"):
+            self._append("\n")
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        attrs_dict = dict(attrs)
+        if tag in {"h1", "h2", "h3", "h4", "h5", "h6", "p", "div", "section", "article"}:
+            self._append_block_break()
+        elif tag == "br":
+            self._append_line_break()
+        elif tag == "ul":
+            self._unordered_list_depth += 1
+            self._append_line_break()
+        elif tag == "ol":
+            self._ordered_list_stack.append(0)
+            self._append_line_break()
+        elif tag == "li":
+            self._append_line_break()
+            if self._ordered_list_stack:
+                next_index = self._ordered_list_stack[-1] + 1
+                self._ordered_list_stack[-1] = next_index
+                self._append(f"{next_index}. ")
+            else:
+                self._append("- ")
+        elif tag == "table":
+            self._table_stack += 1
+            self._append_block_break()
+        elif tag == "tr":
+            if self._table_stack:
+                self._append_line_break()
+                self._row_cell_count_stack.append(0)
+        elif tag in {"td", "th"}:
+            if self._row_cell_count_stack:
+                cell_count = self._row_cell_count_stack[-1]
+                if cell_count > 0:
+                    self._append(" | ")
+                self._row_cell_count_stack[-1] = cell_count + 1
+        elif tag == "a":
+            self._active_links.append(_normalize_text(attrs_dict.get("href") or ""))
+        elif tag == "img":
+            alt_text = _normalize_text(attrs_dict.get("alt") or "")
+            if alt_text:
+                self._append_inline_separator()
+                self._append(f"[Image: {alt_text}]")
+        elif tag == "input":
+            input_type = _normalize_text(attrs_dict.get("type") or "input").casefold()
+            value = _normalize_text(attrs_dict.get("value") or "")
+            checked = "checked" in attrs_dict
+            marker = f"[{input_type}{' checked' if checked else ''}]"
+            if value:
+                marker = f"{marker} value: {value}"
+            self._append_inline_separator()
+            self._append(marker)
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "a" and self._active_links:
+            href = self._active_links.pop()
+            if href:
+                self._append(f" ({href})")
+        elif tag == "tr" and self._row_cell_count_stack:
+            self._row_cell_count_stack.pop()
+        elif tag == "table":
+            if self._table_stack > 0:
+                self._table_stack -= 1
+            self._append_block_break()
+        elif tag == "ul":
+            self._unordered_list_depth = max(0, self._unordered_list_depth - 1)
+            self._append_line_break()
+        elif tag == "ol":
+            if self._ordered_list_stack:
+                self._ordered_list_stack.pop()
+            self._append_line_break()
+        elif tag in {"h1", "h2", "h3", "h4", "h5", "h6", "p", "div", "section", "article"}:
+            self._append_block_break()
+
+    def handle_data(self, data: str) -> None:
+        normalized = _normalize_text(data)
+        if normalized:
+            if self.parts and not self.parts[-1].endswith((" ", "\n")):
+                self._append(" ")
+            self._append(normalized)
+
+    def get_text(self) -> str:
+        raw = "".join(self.parts)
+        lines = [_WHITESPACE_RE.sub(" ", line).strip() for line in raw.splitlines()]
+        lines = [line for line in lines if line]
+        return "\n".join(lines).strip()
+
+
+def _convert_chandra_html_to_text(value: str) -> str:
+    parser = _ChandraHtmlToTextParser()
+    parser.feed(value or "")
+    parser.close()
+    return parser.get_text()
 
 
 def _normalize_title(value: str) -> str:
@@ -853,10 +989,10 @@ def _looks_like_html(value: str) -> bool:
 
 
 def _normalize_chandra_page_content(raw_content: str) -> str:
-    """Map Chandra HTML/raw page output into plain text for scheme records."""
+    """Map Chandra HTML/raw page output into structured plain text for scheme records."""
     text = raw_content or ""
     if _looks_like_html(text):
-        return _strip_html(text)
+        return _convert_chandra_html_to_text(text)
     return _normalize_text(text)
 
 
@@ -942,6 +1078,7 @@ async def _post_ocr_page(
                 page_index,
                 elapsed_seconds,
             )
+            return {"markdown": "", "error": True, "retryable": True}
         else:
             logger.info(
                 "Scheme OCR chat page completed endpoint=%s page_index=%s elapsed_seconds=%.2f page_error=%s text_length=%s",
@@ -953,14 +1090,17 @@ async def _post_ocr_page(
             )
         return page_result
     except httpx.HTTPStatusError as exc:
+        status_code = exc.response.status_code
+        retryable = status_code in _RETRYABLE_OCR_STATUS_CODES
         logger.warning(
-            "Scheme OCR chat request returned non-success status endpoint=%s page_index=%s status_code=%s elapsed_seconds=%.2f",
+            "Scheme OCR chat request returned non-success status endpoint=%s page_index=%s status_code=%s retryable=%s elapsed_seconds=%.2f",
             ocr_endpoint,
             page_index,
-            exc.response.status_code,
+            status_code,
+            retryable,
             time.perf_counter() - started,
         )
-        return None
+        return {"markdown": "", "error": True, "retryable": retryable}
     except httpx.RequestError as exc:
         logger.warning(
             "Scheme OCR chat request failed endpoint=%s page_index=%s error_type=%s error_repr=%r elapsed_seconds=%.2f",
@@ -970,7 +1110,7 @@ async def _post_ocr_page(
             exc,
             time.perf_counter() - started,
         )
-        return None
+        return {"markdown": "", "error": True, "retryable": True}
     except ValueError as exc:
         logger.warning(
             "Scheme OCR chat response was not valid JSON endpoint=%s page_index=%s error_repr=%r elapsed_seconds=%.2f",
@@ -979,7 +1119,7 @@ async def _post_ocr_page(
             exc,
             time.perf_counter() - started,
         )
-        return None
+        return {"markdown": "", "error": True, "retryable": True}
     except Exception:
         logger.exception(
             "Unexpected error while calling scheme OCR chat endpoint=%s page_index=%s elapsed_seconds=%.2f",
@@ -987,7 +1127,44 @@ async def _post_ocr_page(
             page_index,
             time.perf_counter() - started,
         )
-        return None
+        return {"markdown": "", "error": True, "retryable": False}
+
+
+async def _post_ocr_page_with_retries(
+    client: httpx.AsyncClient,
+    ocr_endpoint: str,
+    image_b64: str,
+    *,
+    page_index: int | None = None,
+) -> dict[str, Any] | None:
+    attempts = SCHEME_OCR_PAGE_MAX_ATTEMPTS
+    last_result: dict[str, Any] | None = None
+    for attempt in range(1, attempts + 1):
+        result = await _post_ocr_page(
+            client=client,
+            ocr_endpoint=ocr_endpoint,
+            image_b64=image_b64,
+            page_index=page_index,
+        )
+        last_result = result
+        if isinstance(result, dict) and not bool(result.get("error")):
+            return result
+        retryable = isinstance(result, dict) and bool(result.get("retryable", True))
+        if not retryable or attempt >= attempts:
+            return result
+        delay_seconds = min(
+            SCHEME_OCR_RETRY_MAX_DELAY_SECONDS,
+            SCHEME_OCR_RETRY_BASE_DELAY_SECONDS * (2 ** (attempt - 1)),
+        )
+        logger.warning(
+            "Retrying OCR page after retryable failure page_index=%s attempt=%s/%s backoff_seconds=%.2f",
+            page_index,
+            attempt + 1,
+            attempts,
+            delay_seconds,
+        )
+        await asyncio.sleep(delay_seconds)
+    return last_result
 
 
 async def _ocr_pages_concurrent(
@@ -1006,7 +1183,7 @@ async def _ocr_pages_concurrent(
 
     async def _one(index: int, image_b64: str) -> tuple[int, Any]:
         async with semaphore:
-            result = await _post_ocr_page(client, ocr_endpoint, image_b64, page_index=index)
+            result = await _post_ocr_page_with_retries(client, ocr_endpoint, image_b64, page_index=index)
             return index, result
 
     logger.info(
@@ -1067,7 +1244,7 @@ async def extract_text_from_pdf_bytes(client: httpx.AsyncClient, pdf_bytes: byte
             continue
 
         page_result = parsed_pages[index]
-        page_markdown = _normalize_text(str(page_result.get("markdown") or ""))
+        page_markdown = _normalize_multiline_text(str(page_result.get("markdown") or ""))
         page_error = bool(page_result.get("error"))
         logger.info(
             "Received scheme OCR page result page_index=%s page_error=%s text_length=%s",
