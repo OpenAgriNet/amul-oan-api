@@ -549,6 +549,57 @@ _DEVANAGARI_DIGITS = "०१२३४५६७८९"
 
 _TO_GUJARATI_DIGITS = str.maketrans(_ASCII_DIGITS, _GUJARATI_DIGITS)
 _TO_DEVANAGARI_DIGITS = str.maketrans(_ASCII_DIGITS, _DEVANAGARI_DIGITS)
+_INLINE_CODE_SPAN_RE = re.compile(r"`[^`\n]*`")
+_MARKDOWN_LINK_DEST_RE = re.compile(r"\[[^\]\n]*\]\(([^)\n]+)\)")
+_BARE_URL_RE = re.compile(r"https?://[^\s<>\")\]}]+")
+
+
+def _merge_spans(spans: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    if not spans:
+        return []
+    merged: list[tuple[int, int]] = []
+    for start, end in sorted(spans):
+        if not merged or start > merged[-1][1]:
+            merged.append((start, end))
+            continue
+        prev_start, prev_end = merged[-1]
+        merged[-1] = (prev_start, max(prev_end, end))
+    return merged
+
+
+def _digit_protected_spans(text: str) -> list[tuple[int, int]]:
+    """Ranges where machine-readable digits must remain ASCII.
+
+    Protect inline code, markdown link destinations, and bare URLs from script
+    localization so numeric identifiers and links stay executable.
+    """
+    spans: list[tuple[int, int]] = []
+    for match in _INLINE_CODE_SPAN_RE.finditer(text):
+        spans.append(match.span())
+    for match in _MARKDOWN_LINK_DEST_RE.finditer(text):
+        spans.append(match.span(1))
+    for match in _BARE_URL_RE.finditer(text):
+        spans.append(match.span())
+    return _merge_spans(spans)
+
+
+def _apply_digit_script_with_protected_spans(
+    text: str,
+    translation_table: dict[int, str] | dict[int, int],
+) -> str:
+    converted = text.translate(translation_table)
+    spans = _digit_protected_spans(text)
+    if not spans:
+        return converted
+
+    out: list[str] = []
+    cursor = 0
+    for start, end in spans:
+        out.append(converted[cursor:start])
+        out.append(text[start:end])
+        cursor = end
+    out.append(converted[cursor:])
+    return "".join(out)
 
 
 def _normalize_digit_script_for_target(text: str, target_lang: str) -> str:
@@ -561,14 +612,15 @@ def _normalize_digit_script_for_target(text: str, target_lang: str) -> str:
     Only ASCII ``0-9`` are rewritten. Already-correct Gujarati/Devanagari digits
     are left alone (no Hindi↔Gujarati digit conversion). Does not convert numbers
     to words (that is voice TTS only via ``normalize_numbers_for_tts``).
+    Link/code spans are preserved so machine-readable content remains valid.
     """
     if not text:
         return text
     lang = (target_lang or "").strip().lower()
     if lang in ("gu", "gujarati"):
-        return text.translate(_TO_GUJARATI_DIGITS)
+        return _apply_digit_script_with_protected_spans(text, _TO_GUJARATI_DIGITS)
     if lang in ("hi", "hindi"):
-        return text.translate(_TO_DEVANAGARI_DIGITS)
+        return _apply_digit_script_with_protected_spans(text, _TO_DEVANAGARI_DIGITS)
     return text
 
 

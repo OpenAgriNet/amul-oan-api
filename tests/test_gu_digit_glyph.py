@@ -75,6 +75,24 @@ def test_helper_non_target_passthrough():
     assert _normalize_digit_script_for_target("", "gu") == ""
 
 
+def test_helper_preserves_markdown_link_destinations():
+    raw = "યોજના [જુઓ](https://example.com/schemes/2026/form-1.pdf) 2 દિવસ"
+    out = _normalize_digit_script_for_target(raw, "gu")
+    assert out == "યોજના [જુઓ](https://example.com/schemes/2026/form-1.pdf) ૨ દિવસ"
+
+
+def test_helper_preserves_bare_urls():
+    raw = "Visit https://example.com/schemes/2026/form-1.pdf in 2 days"
+    out = _normalize_digit_script_for_target(raw, "hi")
+    assert out == "Visit https://example.com/schemes/2026/form-1.pdf in २ days"
+
+
+def test_helper_preserves_inline_code_spans():
+    raw = "Use `scheme-2026-v1` and wait 3 days"
+    out = _normalize_digit_script_for_target(raw, "gu")
+    assert out == "Use `scheme-2026-v1` and wait ૩ days"
+
+
 # ── Wired through _post_normalize_gu_translation (chat) ───────────────────────
 
 def test_chat_gujarati_post_normalize_converts_ascii_digits():
