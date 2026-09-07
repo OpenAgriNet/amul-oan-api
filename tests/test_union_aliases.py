@@ -242,3 +242,37 @@ def test_prepare_and_runtime_agree_for_sumul(monkeypatch):
 
     out = asyncio.run(us.get_union_scheme_data(_ctx(["sumul"]), None))
     assert "Sumul Test Scheme" in out
+
+
+def test_prepare_and_runtime_agree_for_sabar(monkeypatch):
+    monkeypatch.setattr(us.settings, "scheme_require_union_auth", True)
+    monkeypatch.setattr(us.settings, "enable_network", False)
+    sentinel = object()
+
+    async def fake_records(union_name):
+        assert union_name == UnionName.SABAR.value
+        return [{"scheme_title": "Sabar Test Scheme"}]
+
+    monkeypatch.setattr(us, "get_cached_scheme_records_for_union", fake_records)
+
+    prepared = asyncio.run(us.prepare_get_union_scheme_data(_ctx(["sabar"]), sentinel))
+    assert prepared is sentinel
+
+    out = asyncio.run(us.get_union_scheme_data(_ctx(["sabar"]), None))
+    assert "Sabar Test Scheme" in out
+
+
+def test_prepare_hides_tool_for_unsupported_union():
+    sentinel = object()
+    prepared = asyncio.run(us.prepare_get_union_scheme_data(_ctx(["dudhsagar"]), sentinel))
+    assert prepared is None
+
+
+def test_scheme_support_sets_stay_aligned_with_ingestion_map():
+    """Tool gating, farmer-context index, and ingestion sources must agree."""
+    from agents.farmer_context import SUPPORTED_SCHEME_CONTEXT_UNIONS
+    from app.services.scheme_ingestion import SUPPORTED_UNION_SOURCE_MAP
+
+    assert us.SUPPORTED_SCHEME_UNIONS == SUPPORTED_SCHEME_CONTEXT_UNIONS
+    assert us.SUPPORTED_SCHEME_UNIONS == set(SUPPORTED_UNION_SOURCE_MAP)
+    assert UnionName.SABAR.value in us.SUPPORTED_SCHEME_UNIONS
