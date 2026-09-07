@@ -254,7 +254,8 @@ def test_cache_isolates_failure_to_only_failed_pair(monkeypatch):
     by_farmer = {group["farmerCode"]: group for group in groups}
     assert by_farmer["F-1"]["technicians"][0]["userId"] == "ait-s1"
     assert by_farmer["F-3"]["technicians"][0]["userId"] == "ait-s1"
-    assert by_farmer["F-2"]["technicians"] == []
+    assert by_farmer["F-2"]["technicians"] is None
+    assert by_farmer["F-2"]["techniciansLookupFailed"] is True
 
 
 @pytest.mark.parametrize("name", PROMPTS)

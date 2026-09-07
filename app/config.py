@@ -205,6 +205,22 @@ class Settings(BaseSettings):
     # deep-debug), capped at FARMER_API_TRACE_BODY_CHARS.
     farmer_api_trace_body: bool = _get_bool_env("FARMER_API_TRACE_BODY", default=False)
     farmer_api_trace_body_chars: int = int(os.getenv("FARMER_API_TRACE_BODY_CHARS", "8000"))
+    # Farmer cache consolidation rollout (Layer 2-first for farmer-by-mobile).
+    # Defaults preserve current behavior until later steps wire these flags in:
+    #   chat stays on Layer 1; fallback is armed for Phase A; Layer 1 mobile
+    #   cache remains active until Phase C bypass.
+    farmer_layer2_chat_context_enabled: bool = Field(
+        default=False,
+        validation_alias="FARMER_LAYER2_CHAT_CONTEXT_ENABLED",
+    )
+    farmer_layer2_fallback_to_legacy_enabled: bool = Field(
+        default=True,
+        validation_alias="FARMER_LAYER2_FALLBACK_TO_LEGACY_ENABLED",
+    )
+    farmer_layer1_mobile_cache_bypass_enabled: bool = Field(
+        default=False,
+        validation_alias="FARMER_LAYER1_MOBILE_CACHE_BYPASS_ENABLED",
+    )
 
     # Logging Configuration
     log_level: str = "INFO"
@@ -573,6 +589,14 @@ class Settings(BaseSettings):
     farmer_refresh_lock_ttl_seconds: int = Field(default=60 * 5, validation_alias="FARMER_REFRESH_LOCK_TTL_SECONDS")
     farmer_cold_fetch_timeout_seconds: float = Field(default=4.0, validation_alias="FARMER_COLD_FETCH_TIMEOUT_SECONDS")
     farmer_refresh_queue_batch_size: int = Field(default=20, validation_alias="FARMER_REFRESH_QUEUE_BATCH_SIZE")
+    farmer_refresh_retry_base_seconds: int = Field(
+        default=60,
+        validation_alias="FARMER_REFRESH_RETRY_BASE_SECONDS",
+    )
+    farmer_refresh_retry_max_seconds: int = Field(
+        default=60 * 60,
+        validation_alias="FARMER_REFRESH_RETRY_MAX_SECONDS",
+    )
 
     # Config hardening policy: malformed numeric env values warn and fall back to
     # defaults; parseable but out-of-range values are clamped to safe bounds.
@@ -591,6 +615,8 @@ class Settings(BaseSettings):
         "vistaar_max_items": ("VISTAAR_MAX_ITEMS", 20, 1, None),
         "farmer_refresh_lock_ttl_seconds": ("FARMER_REFRESH_LOCK_TTL_SECONDS", 60 * 5, 1, None),
         "farmer_refresh_queue_batch_size": ("FARMER_REFRESH_QUEUE_BATCH_SIZE", 20, 1, None),
+        "farmer_refresh_retry_base_seconds": ("FARMER_REFRESH_RETRY_BASE_SECONDS", 60, 1, None),
+        "farmer_refresh_retry_max_seconds": ("FARMER_REFRESH_RETRY_MAX_SECONDS", 60 * 60, 1, None),
         "beckn_operation_ttl_seconds": ("BECKN_OPERATION_TTL_SECONDS", 60 * 60 * 24, 60, None),
         "beckn_callback_max_body_bytes": ("BECKN_CALLBACK_MAX_BODY_BYTES", 2 * 1024 * 1024, 1024, 5 * 1024 * 1024),
         "shc_html_max_bytes": ("SHC_HTML_MAX_BYTES", 1024 * 1024, 1024, 2 * 1024 * 1024),
@@ -613,11 +639,17 @@ class Settings(BaseSettings):
     _SAFE_BOOL_FIELDS: ClassVar[dict[str, tuple[str, bool]]] = {
         "marqo_use_e5_query_prefix": ("MARQO_USE_E5_QUERY_PREFIX", True),
         "marqo_exclude_reference": ("MARQO_EXCLUDE_REFERENCE", True),
+        "farmer_layer2_chat_context_enabled": ("FARMER_LAYER2_CHAT_CONTEXT_ENABLED", False),
+        "farmer_layer2_fallback_to_legacy_enabled": ("FARMER_LAYER2_FALLBACK_TO_LEGACY_ENABLED", True),
+        "farmer_layer1_mobile_cache_bypass_enabled": ("FARMER_LAYER1_MOBILE_CACHE_BYPASS_ENABLED", False),
     }
 
     @field_validator(
         "marqo_use_e5_query_prefix",
         "marqo_exclude_reference",
+        "farmer_layer2_chat_context_enabled",
+        "farmer_layer2_fallback_to_legacy_enabled",
+        "farmer_layer1_mobile_cache_bypass_enabled",
         mode="before",
     )
     @classmethod
@@ -640,6 +672,8 @@ class Settings(BaseSettings):
         "vistaar_max_items",
         "farmer_refresh_lock_ttl_seconds",
         "farmer_refresh_queue_batch_size",
+        "farmer_refresh_retry_base_seconds",
+        "farmer_refresh_retry_max_seconds",
         "beckn_operation_ttl_seconds",
         "beckn_callback_max_body_bytes",
         "shc_html_max_bytes",
