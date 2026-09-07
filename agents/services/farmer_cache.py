@@ -31,7 +31,7 @@ from app.models.farmer_transport import FarmerDataEnvelope, FarmerRecord
 from app.models.union import is_ai_call_banned_union
 from agents.tools.farmer_animal_backends import (
     GetAITechniciansBySocietyQueryParams,
-    get_ai_technicians_by_society_api,
+    get_ai_technicians_by_society_cached,
     fetch_reason,
 )
 from helpers.utils import get_logger
@@ -331,7 +331,10 @@ async def _fetch_ai_technicians(records: list[FarmerRecord]) -> list[dict]:
     if not token or not records:
         return []
 
-    async def _fetch_for_farmer(record: FarmerRecord) -> Optional[dict]:
+    # Keep response shape per farmer while deduping upstream lookups by society:
+    # one cache/API lookup per unique (union_code, society_code), then fan out.
+    eligible_rows: list[tuple[dict, str, str]] = []
+    for record in records:
         data = record.model_dump()
         union_name = data.get("unionName") or data.get("union_name")
         if is_ai_call_banned_union(union_name if isinstance(union_name, str) else None):
@@ -340,38 +343,53 @@ async def _fetch_ai_technicians(records: list[FarmerRecord]) -> list[dict]:
                 union_name,
                 data.get("farmerName"),
             )
-            return None
+            continue
         union_code = data.get("unionCode") or data.get("union_code")
         society_code = data.get("societyCode") or data.get("society_code")
         if not union_code or not society_code:
-            return None
+            continue
+        eligible_rows.append((data, str(union_code), str(society_code)))
 
+    if not eligible_rows:
+        return []
+
+    unique_pairs = sorted({(union_code, society_code) for _, union_code, society_code in eligible_rows})
+
+    async def _lookup_pair(union_code: str, society_code: str) -> tuple[tuple[str, str], Optional[list]]:
         try:
-            technicians = await get_ai_technicians_by_society_api(
+            technicians = await get_ai_technicians_by_society_cached(
                 GetAITechniciansBySocietyQueryParams(
-                    unionCode=str(union_code),
-                    societyCode=str(society_code),
+                    unionCode=union_code,
+                    societyCode=society_code,
                 ),
                 token,
             )
+            return (union_code, society_code), technicians
         except Exception as e:
             logger.warning(
-                "AI technician lookup failed for farmer=%s union=%s society=%s: %s",
-                data.get("farmerName"),
+                "AI technician lookup failed for union=%s society=%s: %s",
                 union_code,
                 society_code,
                 e,
             )
-            technicians = None
+            return (union_code, society_code), None
 
-        return {
-            "farmerName": data.get("farmerName"),
-            "farmerCode": data.get("farmerCode"),
-            "societyName": data.get("societyName"),
-            "societyCode": str(society_code),
-            "unionCode": str(union_code),
-            "technicians": [technician.model_dump() for technician in (technicians or [])],
-        }
+    pair_results = await asyncio.gather(
+        *(_lookup_pair(union_code, society_code) for union_code, society_code in unique_pairs)
+    )
+    pair_to_technicians: dict[tuple[str, str], Optional[list]] = dict(pair_results)
 
-    groups = await asyncio.gather(*[_fetch_for_farmer(record) for record in records])
-    return [group for group in groups if group is not None]
+    groups: list[dict] = []
+    for data, union_code, society_code in eligible_rows:
+        technicians = pair_to_technicians.get((union_code, society_code))
+        groups.append(
+            {
+                "farmerName": data.get("farmerName"),
+                "farmerCode": data.get("farmerCode"),
+                "societyName": data.get("societyName"),
+                "societyCode": society_code,
+                "unionCode": union_code,
+                "technicians": [technician.model_dump() for technician in (technicians or [])],
+            }
+        )
+    return groups

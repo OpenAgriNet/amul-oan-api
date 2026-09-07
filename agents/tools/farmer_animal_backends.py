@@ -17,6 +17,7 @@ from pydantic import ValidationError, BaseModel, ConfigDict, Field
 
 from app.core.cache import (
     build_api_cache_key,
+    cache,
     get_cached_api_response,
     set_cached_api_response,
 )
@@ -906,7 +907,13 @@ def merge_farmer_data(data: list[FarmerModel]) -> list[FarmerModel]:
 # start_observation tracing, and a LENIENT camelCase record (Option B: cache
 # stays camelCase). fetch_reason tags API calls so Langfuse can tell a cold/
 # background refresh apart.
+#
+# Society-scoped technician list cache: one Redis entry per (union_code,
+# society_code) pair; TTL from settings.ai_technician_cache_ttl_seconds.
 # ─────────────────────────────────────────────────────────────────────────────
+
+AI_TECHNICIAN_CACHE_NAMESPACE = "ai-technicians-by-society"
+AI_TECHNICIAN_CACHE_TTL_SECONDS = settings.ai_technician_cache_ttl_seconds
 
 _fetch_reason: ContextVar[str] = ContextVar("farmer_fetch_reason", default="request")
 
@@ -999,6 +1006,87 @@ class AITechnicianBySocietyRecord(BaseModel):
     userId: Optional[str] = None
     fullName: Optional[str] = None
     mobileNumber: Optional[str] = None
+
+
+def build_ai_technician_cache_key(union_code: str, society_code: str) -> str:
+    """Normalized Redis key for a (union_code, society_code) technician list."""
+    return f"{str(union_code).strip()}:{str(society_code).strip()}"
+
+
+def _deserialize_ai_technicians(cached: Any) -> list[AITechnicianBySocietyRecord] | None:
+    if not isinstance(cached, list):
+        return None
+    try:
+        return [
+            AITechnicianBySocietyRecord.model_validate(item)
+            for item in cached
+            if isinstance(item, dict)
+        ]
+    except Exception:
+        return None
+
+
+async def _get_cached_ai_technicians(
+    union_code: str, society_code: str
+) -> tuple[bool, list[AITechnicianBySocietyRecord] | None]:
+    """Return (cache_hit, technicians). A miss is signaled by cache_hit=False."""
+    key = build_ai_technician_cache_key(union_code, society_code)
+    try:
+        raw = await cache.get(key, namespace=AI_TECHNICIAN_CACHE_NAMESPACE)
+    except Exception as e:
+        logger.warning("AI technician cache read failed for %s: %s", key, e)
+        return False, None
+    if raw is None:
+        return False, None
+    technicians = _deserialize_ai_technicians(raw)
+    if technicians is None:
+        logger.warning("AI technician cache payload invalid for %s; treating as miss", key)
+        return False, None
+    logger.debug("AI technician cache hit for %s (%d records)", key, len(technicians))
+    return True, technicians
+
+
+async def _set_cached_ai_technicians(
+    union_code: str,
+    society_code: str,
+    technicians: list[AITechnicianBySocietyRecord],
+) -> None:
+    key = build_ai_technician_cache_key(union_code, society_code)
+    try:
+        await cache.set(
+            key,
+            [technician.model_dump() for technician in technicians],
+            ttl=AI_TECHNICIAN_CACHE_TTL_SECONDS,
+            namespace=AI_TECHNICIAN_CACHE_NAMESPACE,
+        )
+        logger.debug("AI technician cache set for %s (%d records)", key, len(technicians))
+    except Exception as e:
+        logger.warning("AI technician cache write failed for %s: %s", key, e)
+
+
+async def get_ai_technicians_by_society_cached(
+    query: GetAITechniciansBySocietyQueryParams,
+    token: str,
+) -> list[AITechnicianBySocietyRecord] | None:
+    """Cache-first AI technician lookup keyed by (union_code, society_code).
+
+    Reads Redis first; calls ``get_ai_technicians_by_society_api`` only on miss.
+    Successful responses (including an empty list) are cached for
+    ``AI_TECHNICIAN_CACHE_TTL_SECONDS``. Failures (``None``) are not cached.
+    """
+    union_code = str(query.union_code).strip()
+    society_code = str(query.society_code).strip()
+    if not union_code or not society_code:
+        return None
+
+    hit, cached = await _get_cached_ai_technicians(union_code, society_code)
+    if hit:
+        return cached
+
+    technicians = await get_ai_technicians_by_society_api(query, token)
+    if technicians is not None:
+        await _set_cached_ai_technicians(union_code, society_code, technicians)
+    return technicians
 
 
 async def get_ai_technicians_by_society_api(
