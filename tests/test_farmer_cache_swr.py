@@ -331,6 +331,7 @@ def test_get_or_fetch_max_serve_stale_blocks_then_returns_fresh():
     enqueue = AsyncMock()
     bounded = AsyncMock(return_value=fresh)
     with patch.object(fc, "get_cached_farmer_data", new=AsyncMock(return_value=ancient)), \
+         patch.object(fc, "_enqueue_backoff_active", new=AsyncMock(return_value=False)), \
          patch.object(fc, "enqueue_farmer_refresh", new=enqueue), \
          patch.object(fc, "refresh_farmer_data_bounded", new=bounded):
         result = asyncio.run(fc.get_or_fetch_farmer_data("9999999999"))
@@ -343,6 +344,7 @@ def test_get_or_fetch_max_serve_stale_fallback_returns_stale_and_enqueues():
     ancient = _Env("found", 1000)
     enqueue = AsyncMock()
     with patch.object(fc, "get_cached_farmer_data", new=AsyncMock(return_value=ancient)), \
+         patch.object(fc, "_enqueue_backoff_active", new=AsyncMock(return_value=False)), \
          patch.object(fc, "enqueue_farmer_refresh", new=enqueue), \
          patch.object(fc, "refresh_farmer_data_bounded", new=AsyncMock(return_value=None)):
         result = asyncio.run(fc.get_or_fetch_farmer_data("9999999999"))
@@ -350,13 +352,37 @@ def test_get_or_fetch_max_serve_stale_fallback_returns_stale_and_enqueues():
     enqueue.assert_awaited_once_with("9999999999")
 
 
+def test_get_or_fetch_max_serve_stale_honors_refresh_backoff():
+    ancient = _Env("found", 1000)
+    bounded = AsyncMock()
+    with patch.object(fc, "get_cached_farmer_data", new=AsyncMock(return_value=ancient)), \
+         patch.object(fc, "_enqueue_backoff_active", new=AsyncMock(return_value=True)) as backoff, \
+         patch.object(fc, "refresh_farmer_data_bounded", new=bounded):
+        result = asyncio.run(fc.get_or_fetch_farmer_data("9999999999"))
+    assert result is ancient
+    backoff.assert_awaited_once_with("9999999999")
+    bounded.assert_not_called()
+
+
 def test_get_or_fetch_cache_miss_calls_bounded_refresh():
     sentinel = _Env("found", 0)
     with patch.object(fc, "get_cached_farmer_data", new=AsyncMock(return_value=None)), \
+         patch.object(fc, "_enqueue_backoff_active", new=AsyncMock(return_value=False)), \
          patch.object(fc, "refresh_farmer_data_bounded", new=AsyncMock(return_value=sentinel)) as refresh:
         result = asyncio.run(fc.get_or_fetch_farmer_data("9999999999"))
     assert result is sentinel
     refresh.assert_awaited_once_with("9999999999")
+
+
+def test_get_or_fetch_cache_miss_honors_refresh_backoff():
+    bounded = AsyncMock()
+    with patch.object(fc, "get_cached_farmer_data", new=AsyncMock(return_value=None)), \
+         patch.object(fc, "_enqueue_backoff_active", new=AsyncMock(return_value=True)) as backoff, \
+         patch.object(fc, "refresh_farmer_data_bounded", new=bounded):
+        result = asyncio.run(fc.get_or_fetch_farmer_data("9999999999"))
+    assert result is None
+    backoff.assert_awaited_once_with("9999999999")
+    bounded.assert_not_called()
 
 
 def test_refresh_error_without_existing_returns_none_and_does_not_cache():

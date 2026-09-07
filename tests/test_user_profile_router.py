@@ -55,14 +55,14 @@ def test_user_profile_ok_on_envelope(monkeypatch):
     assert len(out["farmer"]["farmers"]) == 1
 
 
-def test_user_profile_not_found_when_cache_service_returns_none(monkeypatch):
+def test_user_profile_error_when_cache_service_returns_none(monkeypatch):
     monkeypatch.setattr(
         user_router,
         "get_or_fetch_farmer_data",
         AsyncMock(return_value=None),
     )
     out = asyncio.run(user_router.get_user_profile(user_info={"phone": "9876543210"}))
-    assert out == {"status": "not_found", "farmer": None}
+    assert out == {"status": "error", "farmer": None}
 
 
 def test_user_profile_not_found_on_authoritative_not_found_envelope(monkeypatch):

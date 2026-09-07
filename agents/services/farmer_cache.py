@@ -412,6 +412,15 @@ async def _revalidate_stale_read(
         return envelope
 
     if allow_block_fetch and exceeds_max_serve_stale(envelope):
+        if await _enqueue_backoff_active(phone):
+            logger.info(
+                "Farmer cache read: cold_fetch_deferred phone_hash=%s "
+                "lookup_status=%s reason=retry_backoff",
+                phone_hash,
+                envelope.lookupStatus,
+            )
+            return envelope
+
         logger.info(
             "Farmer cache read: cold_fetch phone_hash=%s lookup_status=%s reason=max_serve_stale",
             phone_hash,
@@ -473,6 +482,13 @@ async def get_or_fetch_farmer_data(phone: str) -> Optional[FarmerDataEnvelope]:
     if cached:
         result = await _revalidate_stale_read(phone, cached, allow_block_fetch=True)
         return await _normalize_for_consumer(phone, result)
+
+    if await _enqueue_backoff_active(phone):
+        logger.info(
+            "Farmer cache read: cold_fetch_deferred phone_hash=%s reason=retry_backoff",
+            _phone_log_hash(phone),
+        )
+        return None
 
     logger.info(
         "Farmer cache read: cold_fetch phone_hash=%s reason=cache_miss",
