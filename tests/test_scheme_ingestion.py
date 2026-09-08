@@ -8,6 +8,27 @@ import pytest
 import app.services.scheme_ingestion as si
 
 
+def test_scheme_sources_read_urls_from_settings():
+    assert si.BANAS_SITE_ORIGIN == si.settings.banas_scheme_site_origin
+    assert si.BANAS_SOURCE.source_url == si.settings.banas_scheme_documents_api_url
+    assert si.SARHAD_SOURCE.source_url == si.settings.sarhad_scheme_source_url
+    assert si.SUMUL_SOURCE.source_url == si.settings.sumul_scheme_source_url
+    assert si.SURSAGAR_SOURCE.source_url == si.settings.sursagar_scheme_source_url
+
+
+def test_scheme_site_origins_derive_from_configured_source_urls(monkeypatch):
+    monkeypatch.setattr(si, "SUMUL_SITE_ORIGIN", "https://sumul-custom.test")
+    monkeypatch.setattr(si, "SURSAGAR_SITE_ORIGIN", "https://sursagar-custom.test")
+
+    sumul_records = si.parse_sumul_scheme_links('<a href="files/a.pdf">Download</a>')
+    sursagar_records = si.parse_sursagar_scheme_links(
+        '<a href="/Farmer/DownloadMilkProducerFile?file=test.pdf" class="btn">view</a>'
+    )
+
+    assert sumul_records[0]["scheme_url"] == "https://sumul-custom.test/files/a.pdf"
+    assert sursagar_records[0]["scheme_url"] == "https://sursagar-custom.test/Farmer/DownloadMilkProducerFile?file=test.pdf"
+
+
 class _FakePixmap:
     def __init__(self, payload: bytes) -> None:
         self._payload = payload

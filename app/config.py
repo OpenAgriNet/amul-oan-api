@@ -396,6 +396,27 @@ class Settings(BaseSettings):
     scheme_require_union_auth: bool = os.getenv("SCHEME_REQUIRE_UNION_AUTH", "true").strip().lower() in {
         "1", "true", "yes", "on"
     }
+    # Union scheme ingestion source URLs.
+    banas_scheme_site_origin: str = Field(
+        default="https://www.banasdairy.coop",
+        validation_alias="BANAS_SCHEME_SITE_ORIGIN",
+    )
+    banas_scheme_documents_api_url: str = Field(
+        default="https://www.banasdairy.coop/api/documents",
+        validation_alias="BANAS_SCHEME_DOCUMENTS_API_URL",
+    )
+    sarhad_scheme_source_url: str = Field(
+        default="https://sarhaddairy.coop/for-our-milk-producers/",
+        validation_alias="SARHAD_SCHEME_SOURCE_URL",
+    )
+    sumul_scheme_source_url: str = Field(
+        default="https://www.sumul.com/farmer-section.html",
+        validation_alias="SUMUL_SCHEME_SOURCE_URL",
+    )
+    sursagar_scheme_source_url: str = Field(
+        default="https://sursagardairy.com/Farmer/MilkProducers",
+        validation_alias="SURSAGAR_SCHEME_SOURCE_URL",
+    )
     # Banas scheme PDF ingestion via Chandra OCR (see scheme_ingestion.py).
     scheme_ocr_endpoint_url: Optional[str] = os.getenv("SCHEME_OCR_ENDPOINT_URL")
     # Per-page OCR timeout budget. Each OCR POST is a small page batch (or a
@@ -722,6 +743,11 @@ class Settings(BaseSettings):
         "herdman_base_url",
         "banas_mobile_base_url",
         "cvcc_base_url",
+        "banas_scheme_site_origin",
+        "banas_scheme_documents_api_url",
+        "sarhad_scheme_source_url",
+        "sumul_scheme_source_url",
+        "sursagar_scheme_source_url",
         mode="before",
     )
     @classmethod
