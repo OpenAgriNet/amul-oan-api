@@ -3,6 +3,7 @@ Tool for booking an artificial insemination call for a farmer.
 """
 import json
 import os
+import re
 
 import httpx
 from pydantic_ai import RunContext
@@ -30,6 +31,41 @@ ALREADY_BOOKED_MESSAGE = (
     "Please try again later or contact your society for assistance."
 )
 OUT_OF_SCOPE_MESSAGE = "This helpline only handles dairy farming and animal husbandry questions."
+
+# With no farmer/technician context the model does not stop — it invents
+# identifiers and books anyway. Seen on chat-production in the 30d to
+# 2026-09-08: {"union_code":"null",...}, "not_available", and
+# U11223/S67890/F12345/T001; all three reached CreateAICall and 500'd.
+# Patterns validated on those 30d of chat bookings (n=2,728, 2,423 successful):
+# they reject 4 attempts, all of which already failed upstream, and 0 that
+# succeeded. Real codes are NOT always numeric (M001, NA4192 book fine), so the
+# codes stay loose and the technician id — 24 base64 chars ending "==" on every
+# successful booking — is what is checked strictly.
+_CODE_PATTERN = re.compile(r"^[A-Za-z0-9/-]{1,12}$")
+_TECHNICIAN_ID_PATTERN = re.compile(r"^[A-Za-z0-9+/]{22}==$")
+INVALID_IDENTIFIERS_MESSAGE = (
+    "Artificial insemination call booking failed.\n\n"
+    "The farmer or technician details are not available."
+)
+
+
+def _invalid_booking_identifier(
+    union_code: str,
+    society_code: str,
+    farmer_code: str,
+    user_id: str,
+) -> str | None:
+    """Name of the first identifier that cannot be real, else None."""
+    for field, value in (
+        ("union_code", union_code),
+        ("society_code", society_code),
+        ("farmer_code", farmer_code),
+    ):
+        if not _CODE_PATTERN.match((value or "").strip()):
+            return field
+    if not _TECHNICIAN_ID_PATTERN.match((user_id or "").strip()):
+        return "user_id"
+    return None
 
 # The network route answered, but neither confirmed nor refused the booking. We
 # cannot prove the SMS did not go out, so the reservation is held for the TTL.
@@ -193,6 +229,16 @@ async def create_ai_call(
         )
         lang_code = getattr(ctx.deps, "lang_code", None) if ctx and ctx.deps else None
         return union_banned_message(lang_code)
+
+    # Before either route: an invented identifier cannot be resolved or booked,
+    # so refuse here instead of spending signed Beckn reads or a partner call.
+    invalid_field = _invalid_booking_identifier(union_code, society_code, farmer_code, user_id)
+    if invalid_field is not None:
+        logger.warning(
+            "AI call blocked: invalid %s; session=%s union=%s society=%s farmer=%s user_id=%s",
+            invalid_field, session_id, union_code, society_code, farmer_code, user_id,
+        )
+        return INVALID_IDENTIFIERS_MESSAGE
 
     if settings.enable_network and settings.beckn_callback_transactions_enabled:
         # Re-resolve the account and technician through signed, directed Beckn
