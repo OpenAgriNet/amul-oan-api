@@ -196,6 +196,11 @@ def test_default_prompt_lists_localized_ban_lines():
 
 SPECIES = next(iter(AISpecies))
 
+# create_ai_call rejects identifiers that cannot be real; every real prod
+# technician id is 24 base64 chars ending "==".
+TECH_ID = "YWl0LXRlY2gtMDAwMDAwMQ=="
+
+
 
 async def _in_scope():
     return True
@@ -232,7 +237,7 @@ def test_create_ai_call_refuses_sarhad_without_writing(monkeypatch):
     monkeypatch.setattr(ai_mod, "_book_via_network", fake_network)
 
     out = asyncio.run(
-        ai_mod.create_ai_call(_booking_ctx(unions=["sarhad"]), "U", "S", "F", "tech1", SPECIES)
+        ai_mod.create_ai_call(_booking_ctx(unions=["sarhad"]), "U", "S", "F", TECH_ID, SPECIES)
     )
     assert out == UNION_BANNED_MESSAGE
     assert calls == {"api": 0, "reserve": 0}
@@ -250,7 +255,7 @@ def test_create_ai_call_refuses_canonical_and_mixed_banned_unions(monkeypatch, u
     monkeypatch.setattr(ai_mod.settings, "enable_network", False)
 
     out = asyncio.run(
-        ai_mod.create_ai_call(_booking_ctx(unions=unions), "U", "S", "F", "tech1", SPECIES)
+        ai_mod.create_ai_call(_booking_ctx(unions=unions), "U", "S", "F", TECH_ID, SPECIES)
     )
     assert out == UNION_BANNED_MESSAGE
     assert calls["n"] == 0
@@ -275,7 +280,7 @@ def test_create_ai_call_returns_localized_ban_message(monkeypatch, lang, expecte
 
     out = asyncio.run(
         ai_mod.create_ai_call(
-            _booking_ctx(unions=["kutch"], lang_code=lang), "U", "S", "F", "tech1", SPECIES,
+            _booking_ctx(unions=["kutch"], lang_code=lang), "U", "S", "F", TECH_ID, SPECIES,
         )
     )
     assert out == expected
@@ -294,7 +299,7 @@ def test_create_ai_call_still_books_for_kaira(monkeypatch):
     monkeypatch.setattr(ai_mod.settings, "enable_network", False)
 
     out = asyncio.run(
-        ai_mod.create_ai_call(_booking_ctx(unions=["kaira"]), "U", "S", "F", "tech1", SPECIES)
+        ai_mod.create_ai_call(_booking_ctx(unions=["kaira"]), "U", "S", "F", TECH_ID, SPECIES)
     )
     assert calls["n"] == 1
     assert "booked successfully" in out
@@ -316,7 +321,7 @@ def test_create_ai_call_empty_or_missing_unions_is_not_banned(monkeypatch, union
     out = asyncio.run(
         ai_mod.create_ai_call(
             _booking_ctx(unions=unions, include_unions=include_unions),
-            "U", "S", "F", "tech1", SPECIES,
+            "U", "S", "F", TECH_ID, SPECIES,
         )
     )
     assert calls["n"] == 1
@@ -339,7 +344,7 @@ def test_moderation_block_runs_before_union_ban(monkeypatch):
         ensure_in_scope=_out_of_scope,
         farmer_unions=["kutch"],
     ))
-    out = asyncio.run(ai_mod.create_ai_call(ctx, "U", "S", "F", "tech1", SPECIES))
+    out = asyncio.run(ai_mod.create_ai_call(ctx, "U", "S", "F", TECH_ID, SPECIES))
     assert out == ai_mod.OUT_OF_SCOPE_MESSAGE
     assert calls["n"] == 0
 

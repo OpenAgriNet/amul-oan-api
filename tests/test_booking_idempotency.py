@@ -74,8 +74,8 @@ def test_ai_call_idempotent_on_rerun(monkeypatch):
     monkeypatch.setattr(ai_mod, "create_ai_call_api", fake_api)
     species = next(iter(AISpecies))
 
-    r1 = asyncio.run(ai_mod.create_ai_call(_ctx("s1"), "U", "S", "F", "tech1", species))
-    r2 = asyncio.run(ai_mod.create_ai_call(_ctx("s1"), "U", "S", "F", "tech1", species))
+    r1 = asyncio.run(ai_mod.create_ai_call(_ctx("s1"), "U", "S", "F", TECH_ID, species))
+    r2 = asyncio.run(ai_mod.create_ai_call(_ctx("s1"), "U", "S", "F", TECH_ID, species))
 
     assert calls["n"] == 1                 # booking API hit exactly once across the re-run
     assert "booked successfully" in r1
@@ -121,8 +121,8 @@ def test_ai_call_concurrent_submits_book_once(monkeypatch):
 
     async def go():
         return await asyncio.gather(
-            ai_mod.create_ai_call(_ctx("sX"), "U", "S", "F", "t", species),
-            ai_mod.create_ai_call(_ctx("sX"), "U", "S", "F", "t", species),
+            ai_mod.create_ai_call(_ctx("sX"), "U", "S", "F", TECH_ID, species),
+            ai_mod.create_ai_call(_ctx("sX"), "U", "S", "F", TECH_ID, species),
         )
 
     r1, r2 = asyncio.run(go())
@@ -142,13 +142,18 @@ def test_no_session_id_does_not_crash(monkeypatch):
 
     monkeypatch.setattr(ai_mod, "create_ai_call_api", fake_api)
     species = next(iter(AISpecies))
-    r = asyncio.run(ai_mod.create_ai_call(_ctx(None), "U", "S", "F", "tech1", species))
+    r = asyncio.run(ai_mod.create_ai_call(_ctx(None), "U", "S", "F", TECH_ID, species))
     assert "booked successfully" in r
 
 
 # --- §13 Part B: tools route observability through the centralized helpers ---
 
 import contextlib
+
+# create_ai_call rejects identifiers that cannot be real; every real prod
+# technician id is 24 base64 chars ending "==".
+TECH_ID = "YWl0LXRlY2gtMDAwMDAwMQ=="
+
 
 
 def _patch_obs(monkeypatch, module):
@@ -187,7 +192,7 @@ def test_ai_call_annotates_its_own_span_and_never_the_turn(monkeypatch):
     monkeypatch.setattr(ai_mod, "create_ai_call_api", fake_api)
     species = next(iter(AISpecies))
 
-    r = asyncio.run(ai_mod.create_ai_call(_ctx("obs1"), "U", "S", "F", "t", species))
+    r = asyncio.run(ai_mod.create_ai_call(_ctx("obs1"), "U", "S", "F", TECH_ID, species))
     assert "booked successfully" in r
     assert obs_names == ["ai_call_booking"]   # the booking span was opened
     # #212: the tool must NOT write turn-level IO. Doing so replaced the
