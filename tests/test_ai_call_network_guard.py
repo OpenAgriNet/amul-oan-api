@@ -28,6 +28,11 @@ from app.models.ai_call import AISpecies
 
 SPECIES = next(iter(AISpecies))
 
+# create_ai_call rejects identifiers that cannot be real; every real prod
+# technician id is 24 base64 chars ending "==".
+TECH_ID = "YWl0LXRlY2gtMDAwMDAwMQ=="
+
+
 
 def _ctx(session_id, in_scope=True):
     async def _ensure():
@@ -123,8 +128,8 @@ def test_guard_on_network_on_refuses_second_booking_in_a_session(monkeypatch):
     _patch_cache(monkeypatch)
     calls = _patch_network(monkeypatch)
 
-    r1 = asyncio.run(ai_mod.create_ai_call(_ctx("s-net-1"), "U", "S", "F", "tech1", SPECIES))
-    r2 = asyncio.run(ai_mod.create_ai_call(_ctx("s-net-1"), "U", "S", "F", "tech1", SPECIES))
+    r1 = asyncio.run(ai_mod.create_ai_call(_ctx("s-net-1"), "U", "S", "F", TECH_ID, SPECIES))
+    r2 = asyncio.run(ai_mod.create_ai_call(_ctx("s-net-1"), "U", "S", "F", TECH_ID, SPECIES))
 
     assert calls["n"] == 1, "the booking BPP was confirmed more than once in one session"
     assert "booked successfully" in r1
@@ -147,8 +152,8 @@ def test_guard_on_network_on_books_once_under_concurrency(monkeypatch):
 
     async def go():
         return await asyncio.gather(
-            ai_mod.create_ai_call(_ctx("s-net-race"), "U", "S", "F", "t", SPECIES),
-            ai_mod.create_ai_call(_ctx("s-net-race"), "U", "S", "F", "t", SPECIES),
+            ai_mod.create_ai_call(_ctx("s-net-race"), "U", "S", "F", TECH_ID, SPECIES),
+            ai_mod.create_ai_call(_ctx("s-net-race"), "U", "S", "F", TECH_ID, SPECIES),
         )
 
     r1, r2 = asyncio.run(go())
@@ -165,8 +170,8 @@ def test_guard_on_network_on_failed_booking_releases_the_reservation(monkeypatch
     _patch_cache(monkeypatch)
     calls = _patch_network(monkeypatch, ok=False)
 
-    r1 = asyncio.run(ai_mod.create_ai_call(_ctx("s-net-nack"), "U", "S", "F", "t", SPECIES))
-    r2 = asyncio.run(ai_mod.create_ai_call(_ctx("s-net-nack"), "U", "S", "F", "t", SPECIES))
+    r1 = asyncio.run(ai_mod.create_ai_call(_ctx("s-net-nack"), "U", "S", "F", TECH_ID, SPECIES))
+    r2 = asyncio.run(ai_mod.create_ai_call(_ctx("s-net-nack"), "U", "S", "F", TECH_ID, SPECIES))
 
     assert "failed" in r1.lower()
     assert calls["n"] == 2, "the retry never reached the network — reservation was not released"
@@ -187,8 +192,8 @@ def test_guard_on_network_on_pre_send_transport_error_releases_the_reservation(m
 
     monkeypatch.setattr(bn_mod, "network_create_ai_call_result", boom)
 
-    r1 = asyncio.run(ai_mod.create_ai_call(_ctx("s-net-boom"), "U", "S", "F", "t", SPECIES))
-    r2 = asyncio.run(ai_mod.create_ai_call(_ctx("s-net-boom"), "U", "S", "F", "t", SPECIES))
+    r1 = asyncio.run(ai_mod.create_ai_call(_ctx("s-net-boom"), "U", "S", "F", TECH_ID, SPECIES))
+    r2 = asyncio.run(ai_mod.create_ai_call(_ctx("s-net-boom"), "U", "S", "F", TECH_ID, SPECIES))
 
     assert "failed" in r1.lower()          # surfaced, not raised into the agent
     assert attempts["n"] == 2, "the retry never reached the network — reservation was not released"
@@ -205,8 +210,8 @@ def test_guard_off_network_on_allows_a_second_booking(monkeypatch):
     _patch_cache(monkeypatch)
     calls = _patch_network(monkeypatch)
 
-    r1 = asyncio.run(ai_mod.create_ai_call(_ctx("s-net-2"), "U", "S", "F", "tech1", SPECIES))
-    r2 = asyncio.run(ai_mod.create_ai_call(_ctx("s-net-2"), "U", "S", "F", "tech1", SPECIES))
+    r1 = asyncio.run(ai_mod.create_ai_call(_ctx("s-net-2"), "U", "S", "F", TECH_ID, SPECIES))
+    r2 = asyncio.run(ai_mod.create_ai_call(_ctx("s-net-2"), "U", "S", "F", TECH_ID, SPECIES))
 
     assert calls["n"] == 2
     assert "booked successfully" in r1
@@ -223,7 +228,7 @@ def test_moderation_rejected_network_on_writes_no_booking(monkeypatch):
     _patch_cache(monkeypatch)
     calls = _patch_network(monkeypatch)
 
-    r = asyncio.run(ai_mod.create_ai_call(_ctx("s-net-mod", in_scope=False), "U", "S", "F", "t", SPECIES))
+    r = asyncio.run(ai_mod.create_ai_call(_ctx("s-net-mod", in_scope=False), "U", "S", "F", TECH_ID, SPECIES))
 
     assert calls["n"] == 0, "a moderation-rejected query was booked on the network"
     assert "dairy farming" in r
@@ -237,7 +242,7 @@ def test_moderation_rejected_network_on_with_guard_off_also_writes_no_booking(mo
     _patch_cache(monkeypatch)
     calls = _patch_network(monkeypatch)
 
-    r = asyncio.run(ai_mod.create_ai_call(_ctx("s-net-mod2", in_scope=False), "U", "S", "F", "t", SPECIES))
+    r = asyncio.run(ai_mod.create_ai_call(_ctx("s-net-mod2", in_scope=False), "U", "S", "F", TECH_ID, SPECIES))
 
     assert calls["n"] == 0
     assert "dairy farming" in r
@@ -250,7 +255,7 @@ def test_moderation_rejected_network_off_writes_no_booking(monkeypatch):
     _patch_cache(monkeypatch)
     calls = _patch_direct(monkeypatch)
 
-    r = asyncio.run(ai_mod.create_ai_call(_ctx("s-dir-mod", in_scope=False), "U", "S", "F", "t", SPECIES))
+    r = asyncio.run(ai_mod.create_ai_call(_ctx("s-dir-mod", in_scope=False), "U", "S", "F", TECH_ID, SPECIES))
 
     assert calls["n"] == 0
     assert "dairy farming" in r
@@ -267,8 +272,8 @@ def test_network_off_still_uses_the_direct_path_and_its_guard(monkeypatch):
     direct = _patch_direct(monkeypatch)
     net = _patch_network(monkeypatch)
 
-    r1 = asyncio.run(ai_mod.create_ai_call(_ctx("s-dir-1"), "U", "S", "F", "tech1", SPECIES))
-    r2 = asyncio.run(ai_mod.create_ai_call(_ctx("s-dir-1"), "U", "S", "F", "tech1", SPECIES))
+    r1 = asyncio.run(ai_mod.create_ai_call(_ctx("s-dir-1"), "U", "S", "F", TECH_ID, SPECIES))
+    r2 = asyncio.run(ai_mod.create_ai_call(_ctx("s-dir-1"), "U", "S", "F", TECH_ID, SPECIES))
 
     assert net["n"] == 0, "the network was contacted with enable_network=false"
     assert direct["n"] == 1
@@ -284,8 +289,8 @@ def test_network_off_guard_off_allows_a_second_direct_booking(monkeypatch):
     direct = _patch_direct(monkeypatch)
     net = _patch_network(monkeypatch)
 
-    r1 = asyncio.run(ai_mod.create_ai_call(_ctx("s-dir-2"), "U", "S", "F", "tech1", SPECIES))
-    r2 = asyncio.run(ai_mod.create_ai_call(_ctx("s-dir-2"), "U", "S", "F", "tech1", SPECIES))
+    r1 = asyncio.run(ai_mod.create_ai_call(_ctx("s-dir-2"), "U", "S", "F", TECH_ID, SPECIES))
+    r2 = asyncio.run(ai_mod.create_ai_call(_ctx("s-dir-2"), "U", "S", "F", TECH_ID, SPECIES))
 
     assert net["n"] == 0
     assert direct["n"] == 2
@@ -309,7 +314,7 @@ def test_redis_error_fail_open_does_not_delete_an_earlier_booking_marker(monkeyp
     direct = _patch_direct(monkeypatch)
 
     # 1. a real booking succeeds and marks the session
-    r1 = asyncio.run(ai_mod.create_ai_call(_ctx("s-open"), "U", "S", "F", "t", SPECIES))
+    r1 = asyncio.run(ai_mod.create_ai_call(_ctx("s-open"), "U", "S", "F", TECH_ID, SPECIES))
     assert "booked successfully" in r1
     marker = store[(ai_mod.AI_CALL_CACHE_NAMESPACE, "s-open")]
     assert marker["ticket"] == "T1"
@@ -327,7 +332,7 @@ def test_redis_error_fail_open_does_not_delete_an_earlier_booking_marker(monkeyp
         return None
 
     monkeypatch.setattr(ai_mod, "create_ai_call_api", failing_api)
-    r2 = asyncio.run(ai_mod.create_ai_call(_ctx("s-open"), "U", "S", "F", "t", SPECIES))
+    r2 = asyncio.run(ai_mod.create_ai_call(_ctx("s-open"), "U", "S", "F", TECH_ID, SPECIES))
     assert "failed" in r2.lower()
     assert direct["n"] == 2, "fail-open was lost: the booking did not reach the API"
 
@@ -347,7 +352,7 @@ def test_redis_error_fail_open_does_not_delete_an_earlier_booking_marker(monkeyp
         return True
 
     monkeypatch.setattr(ai_mod.cache, "add", real_add)
-    r3 = asyncio.run(ai_mod.create_ai_call(_ctx("s-open"), "U", "S", "F", "t", SPECIES))
+    r3 = asyncio.run(ai_mod.create_ai_call(_ctx("s-open"), "U", "S", "F", TECH_ID, SPECIES))
     assert "already" in r3.lower()
     assert direct["n"] == 2, "the guard was voided: a third write reached the API"
 
@@ -369,8 +374,8 @@ def test_read_timeout_holds_the_reservation_and_refuses_an_immediate_retry(monke
 
     monkeypatch.setattr(bn_mod, "network_create_ai_call_result", timeout)
 
-    r1 = asyncio.run(ai_mod.create_ai_call(_ctx("s-net-rt"), "U", "S", "F", "t", SPECIES))
-    r2 = asyncio.run(ai_mod.create_ai_call(_ctx("s-net-rt"), "U", "S", "F", "t", SPECIES))
+    r1 = asyncio.run(ai_mod.create_ai_call(_ctx("s-net-rt"), "U", "S", "F", TECH_ID, SPECIES))
+    r2 = asyncio.run(ai_mod.create_ai_call(_ctx("s-net-rt"), "U", "S", "F", TECH_ID, SPECIES))
 
     assert "could not be confirmed" in r1.lower(), "the farmer was told a flat 'failed'"
     assert "booked successfully" not in r1.lower()
@@ -395,8 +400,8 @@ def test_gateway_5xx_holds_the_reservation(monkeypatch):
 
     monkeypatch.setattr(bn_mod, "network_create_ai_call_result", bad_gateway)
 
-    r1 = asyncio.run(ai_mod.create_ai_call(_ctx("s-net-502"), "U", "S", "F", "t", SPECIES))
-    r2 = asyncio.run(ai_mod.create_ai_call(_ctx("s-net-502"), "U", "S", "F", "t", SPECIES))
+    r1 = asyncio.run(ai_mod.create_ai_call(_ctx("s-net-502"), "U", "S", "F", TECH_ID, SPECIES))
+    r2 = asyncio.run(ai_mod.create_ai_call(_ctx("s-net-502"), "U", "S", "F", TECH_ID, SPECIES))
 
     assert "could not be confirmed" in r1.lower()
     assert attempts["n"] == 1
@@ -417,8 +422,8 @@ def test_connect_timeout_is_pre_send_and_releases(monkeypatch):
 
     monkeypatch.setattr(bn_mod, "network_create_ai_call_result", connect_timeout)
 
-    asyncio.run(ai_mod.create_ai_call(_ctx("s-net-ct"), "U", "S", "F", "t", SPECIES))
-    r2 = asyncio.run(ai_mod.create_ai_call(_ctx("s-net-ct"), "U", "S", "F", "t", SPECIES))
+    asyncio.run(ai_mod.create_ai_call(_ctx("s-net-ct"), "U", "S", "F", TECH_ID, SPECIES))
+    r2 = asyncio.run(ai_mod.create_ai_call(_ctx("s-net-ct"), "U", "S", "F", TECH_ID, SPECIES))
 
     assert attempts["n"] == 2, "a provably pre-send failure kept the farmer locked out"
     assert "already" not in r2.lower()
@@ -438,7 +443,7 @@ def test_direct_path_timeout_behaviour_is_unchanged(monkeypatch):
     monkeypatch.setattr(ai_mod, "create_ai_call_api", timeout)
 
     with pytest.raises(httpx.ReadTimeout):
-        asyncio.run(ai_mod.create_ai_call(_ctx("s-dir-rt"), "U", "S", "F", "t", SPECIES))
+        asyncio.run(ai_mod.create_ai_call(_ctx("s-dir-rt"), "U", "S", "F", TECH_ID, SPECIES))
 
 
 # --- a 200 with an unparseable body is not a booking ----------------------
@@ -475,8 +480,8 @@ def test_unparseable_200_is_not_success_and_holds_the_reservation(monkeypatch):
 
     monkeypatch.setattr(bn_mod.httpx, "AsyncClient", _Client)
 
-    r1 = asyncio.run(ai_mod.create_ai_call(_ctx("s-net-empty"), "U", "S", "F", "t", SPECIES))
-    r2 = asyncio.run(ai_mod.create_ai_call(_ctx("s-net-empty"), "U", "S", "F", "t", SPECIES))
+    r1 = asyncio.run(ai_mod.create_ai_call(_ctx("s-net-empty"), "U", "S", "F", TECH_ID, SPECIES))
+    r2 = asyncio.run(ai_mod.create_ai_call(_ctx("s-net-empty"), "U", "S", "F", TECH_ID, SPECIES))
 
     assert "booked successfully" not in r1.lower()
     assert "ticket: none" not in r1.lower()

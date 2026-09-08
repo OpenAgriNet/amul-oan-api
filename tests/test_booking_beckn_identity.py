@@ -7,6 +7,11 @@ from agents.tools import ai_call, beckn_network, health_call
 from app.models.ai_call import AISpecies
 from app.models.health_call import HealthCaseType
 
+# create_ai_call rejects identifiers that cannot be real; every real prod
+# technician id is 24 base64 chars ending "==".
+TECH_ID = "YWl0LXRlY2gtMDAwMDAwMQ=="
+
+
 
 async def _in_scope():
     return True
@@ -42,7 +47,7 @@ async def test_ai_confirm_uses_canonical_owned_account_and_discovered_technician
 
     async def technicians(**kwargs):
         assert kwargs["union_code"] == "CANON-U"
-        return [beckn_amul.AITechnicianRecord(userId="TECH-1", fullName="Technician")]
+        return [beckn_amul.AITechnicianRecord(userId=TECH_ID, fullName="Technician")]
 
     captured = {}
     async def confirm(*args, **kwargs):
@@ -55,11 +60,11 @@ async def test_ai_confirm_uses_canonical_owned_account_and_discovered_technician
     monkeypatch.setattr(beckn_network, "network_create_ai_call_result", confirm)
 
     result = await ai_call.create_ai_call(
-        _ctx(), "MODEL-U", "MODEL-S", "MODEL-F", "TECH-1", AISpecies.COW
+        _ctx(), "MODEL-U", "MODEL-S", "MODEL-F", TECH_ID, AISpecies.COW
     )
 
     assert "booked successfully" in result
-    assert captured["args"][:5] == ("CANON-U", "CANON-S", "CANON-F", "TECH-1", "cow")
+    assert captured["args"][:5] == ("CANON-U", "CANON-S", "CANON-F", TECH_ID, "cow")
 
 
 @pytest.mark.asyncio
@@ -77,7 +82,7 @@ async def test_ai_confirm_is_not_sent_for_unowned_account(monkeypatch):
     monkeypatch.setattr(beckn_network, "network_create_ai_call_result", confirm)
 
     result = await ai_call.create_ai_call(
-        _ctx(), "MODEL-U", "MODEL-S", "MODEL-F", "TECH-1", AISpecies.COW
+        _ctx(), "MODEL-U", "MODEL-S", "MODEL-F", TECH_ID, AISpecies.COW
     )
 
     assert "does not belong" in result
