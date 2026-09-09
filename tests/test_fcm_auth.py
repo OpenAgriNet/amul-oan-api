@@ -1,20 +1,96 @@
-"""Tests for parallel Firebase Cloud Messaging token verification.
+"""Tests for Firebase credential discovery and parallel FCM token verification.
 
 The Firebase Admin SDK is heavy and requires real service-account
 credentials, so these tests mock the per-app verification primitive
 (:func:`app.auth.fcm_auth._verify_against_app_sync`) and the lazy
-initializer. That keeps the suite hermetic while still exercising the
-concurrency, first-success, and short-circuit semantics we care about.
+initializer. That keeps the suite hermetic while still exercising arbitrary
+credential slots, concurrency, first-success, and short-circuit semantics.
 """
 
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 
 import pytest
 
 from app.auth import fcm_auth
+
+
+def _clear_firebase_credential_config(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """Remove host Firebase config so credential-discovery tests are hermetic."""
+    for env_name in list(os.environ):
+        if env_name.startswith("FIREBASE_SERVICE_ACCOUNT"):
+            monkeypatch.delenv(env_name)
+
+    monkeypatch.setattr(fcm_auth.settings, "base_dir", tmp_path)
+    for setting_name in (
+        "firebase_service_account",
+        "firebase_service_account_path",
+        "firebase_service_account_2",
+        "firebase_service_account_path_2",
+        "firebase_service_account_3",
+        "firebase_service_account_path_3",
+    ):
+        monkeypatch.setattr(fcm_auth.settings, setting_name, None)
+
+
+def test_discovers_arbitrarily_numbered_credentials_with_gaps(monkeypatch, tmp_path):
+    _clear_firebase_credential_config(monkeypatch, tmp_path)
+    monkeypatch.setenv(
+        "FIREBASE_SERVICE_ACCOUNT_2", '{"project_id": "second-project"}'
+    )
+    monkeypatch.setenv(
+        "FIREBASE_SERVICE_ACCOUNT_12", '{"project_id": "twelfth-project"}'
+    )
+
+    assert fcm_auth._get_firebase_configs() == [
+        ("secondary", {"project_id": "second-project"}),
+        ("firebase-12", {"project_id": "twelfth-project"}),
+    ]
+
+
+def test_numbered_credential_path_is_resolved_relative_to_base_dir(
+    monkeypatch, tmp_path
+):
+    _clear_firebase_credential_config(monkeypatch, tmp_path)
+    credential_path = tmp_path / "service-account-8.json"
+    credential_path.write_text("credential contents")
+    monkeypatch.setenv("FIREBASE_SERVICE_ACCOUNT_PATH_8", credential_path.name)
+
+    assert fcm_auth._get_firebase_configs() == [
+        ("firebase-8", str(credential_path))
+    ]
+
+
+def test_inline_numbered_credential_takes_precedence_over_path(monkeypatch, tmp_path):
+    _clear_firebase_credential_config(monkeypatch, tmp_path)
+    credential_path = tmp_path / "unused-service-account.json"
+    credential_path.write_text("unused credential contents")
+    monkeypatch.setenv(
+        "FIREBASE_SERVICE_ACCOUNT_7", '{"project_id": "inline-project"}'
+    )
+    monkeypatch.setenv("FIREBASE_SERVICE_ACCOUNT_PATH_7", credential_path.name)
+
+    assert fcm_auth._get_firebase_configs() == [
+        ("firebase-7", {"project_id": "inline-project"})
+    ]
+
+
+def test_legacy_settings_slots_remain_supported(monkeypatch, tmp_path):
+    _clear_firebase_credential_config(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        fcm_auth.settings,
+        "firebase_service_account_3",
+        '{"project_id": "legacy-third-project"}',
+    )
+
+    assert fcm_auth._get_firebase_configs() == [
+        ("tertiary", {"project_id": "legacy-third-project"})
+    ]
 
 
 @pytest.fixture(autouse=True)
