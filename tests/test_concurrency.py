@@ -278,7 +278,7 @@ def test_resolve_chain_deprioritizes_saturated_up_primary(monkeypatch):
     monkeypatch.setattr(health.settings, "health_poller_enabled", False)
     _inject_gauge(monkeypatch, 20)                                 # saturated
 
-    chain = asyncio.run(split.resolve_chain("", Step.AGENT, _gated_config()))
+    chain = asyncio.run(split.resolve_chain("", Step.AGENT, _gated_config(), profile_name="oss"))
     assert [c.provider for c in chain] == ["openai", "vllm"]       # managed first, vLLM kept last
     assert [c.kind for c in chain] == ["managed", "oss"]
 
@@ -296,7 +296,7 @@ def test_resolve_chain_health_prune_then_concurrency_compose(monkeypatch):
     health.reset(BreakerConfig(fail_threshold=1, cooldown_s=1e12, healthy_polls_required=2))
     health._registry.record_failure(OSS_EP)                        # OSS box DOWN -> pruned
 
-    chain = asyncio.run(split.resolve_chain("", Step.AGENT, _gated_config()))
+    chain = asyncio.run(split.resolve_chain("", Step.AGENT, _gated_config(), profile_name="oss"))
     # prune -> [managed]; reorder sees no vLLM -> [managed]. Down OSS never at front.
     assert [c.provider for c in chain] == ["openai"]
     assert all(c.provider != "vllm" for c in chain)
@@ -310,7 +310,7 @@ def test_resolve_chain_untouched_when_gauge_off(monkeypatch):
     monkeypatch.setattr(health.settings, "health_poller_enabled", False)
     _inject_gauge(monkeypatch, 99)                                 # would saturate if on
 
-    chain = asyncio.run(split.resolve_chain("", Step.AGENT, _gated_config()))
+    chain = asyncio.run(split.resolve_chain("", Step.AGENT, _gated_config(), profile_name="oss"))
     assert [c.provider for c in chain] == ["vllm", "openai"]       # primary stays primary
     assert [c.kind for c in chain] == ["oss", "managed"]
 
@@ -412,7 +412,7 @@ def test_resolve_chain_overflow_tier_materializes_at_front(monkeypatch):
     monkeypatch.setattr(health.settings, "health_poller_enabled", False)
     _inject_gauge(monkeypatch, 20)                                 # saturated
 
-    chain = asyncio.run(split.resolve_chain("", Step.AGENT, _overflow_gated_config()))
+    chain = asyncio.run(split.resolve_chain("", Step.AGENT, _overflow_gated_config(), profile_name="oss"))
     assert [c.model_name for c in chain] == ["gpt-4o-mini", "gemma", "gpt-4.1"]
     assert [c.provider for c in chain] == ["openai", "vllm", "openai"]
     assert [c.kind for c in chain] == ["managed", "oss", "managed"]  # overflow is a managed AGENT model

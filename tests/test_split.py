@@ -122,7 +122,7 @@ def test_fallback_chain_uses_split(monkeypatch):
 
     sentinel = ["MATERIALIZED_TIER"]
 
-    async def _spy(session_id, step, pipeline=None, *, profile_name="managed"):
+    async def _spy(session_id, step, pipeline=None, *, profile_name):
         assert step is Step.MODERATION
         assert profile_name == "oss"
         return sentinel
@@ -139,7 +139,7 @@ def test_fallback_chain_degrades_to_managed_on_split_error(monkeypatch):
 
     runtime.configure(run_self_check=False)
 
-    async def _boom(session_id, step, pipeline=None, *, profile_name="managed"):
+    async def _boom(session_id, step, pipeline=None, *, profile_name):
         raise RuntimeError("config blew up")
 
     monkeypatch.setattr(split, "resolve_chain", _boom)

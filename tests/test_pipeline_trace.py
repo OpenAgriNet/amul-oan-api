@@ -81,7 +81,7 @@ def _fresh_ctx():
 def test_resolve_chain_populates_profile_and_step(monkeypatch):
     import asyncio
     trace.begin("oss")
-    asyncio.run(split.resolve_chain("", Step.AGENT, _cfg(100)))
+    asyncio.run(split.resolve_chain("", Step.AGENT, _cfg(100), profile_name="oss"))
 
     md = trace.current().to_metadata()
     assert md["profile"] == {"name": "oss", "weight": 100}
@@ -118,7 +118,7 @@ def test_resolver_seam_records_step(monkeypatch):
 def test_no_api_key_value_in_metadata():
     import asyncio
     trace.begin("oss")
-    asyncio.run(split.resolve_chain("", Step.AGENT, _cfg(100)))
+    asyncio.run(split.resolve_chain("", Step.AGENT, _cfg(100), profile_name="oss"))
     blob = json.dumps(trace.current().to_metadata())
     assert _SECRET not in blob
     # The env-var NAME is fine to trace; the VALUE must never appear.
@@ -321,5 +321,5 @@ def test_recorders_noop_without_context():
     trace.record_step_chain(Step.AGENT, [])
     trace.record_served(Step.AGENT, "managed", 1)
     # split resolving with no context is still a clean no-op for tracing.
-    asyncio.run(split.resolve_chain("", Step.AGENT, _cfg(100)))
+    asyncio.run(split.resolve_chain("", Step.AGENT, _cfg(100), profile_name="oss"))
     assert trace.current() is None

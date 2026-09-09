@@ -30,12 +30,14 @@ async def resolve_chain(
     step: Step,
     pipeline: Optional[PipelineConfig] = None,
     *,
-    profile_name: str = "managed",
+    profile_name: str,
 ) -> list[MaterializedTier]:
     """Materialize an ordered tier chain for the selected profile and step.
 
-    ``session_id`` is preserved in the seam for call-site compatibility and
-    logging parity; chain selection now depends only on ``profile_name``.
+    ``profile_name`` is required — callers must pass the profile explicitly
+    (chat hardcodes ``"oss"``). ``session_id`` is preserved for call-site
+    compatibility and logging parity; chain selection depends only on
+    ``profile_name``.
     """
     pipeline = pipeline or runtime.get_pipeline()
     profile = _profile_for(pipeline, profile_name)
