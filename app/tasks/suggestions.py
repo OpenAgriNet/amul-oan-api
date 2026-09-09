@@ -21,16 +21,17 @@ except ImportError:
     propagate_attributes = None
     get_langfuse_client = None
 
-async def create_suggestions(session_id: str, target_lang: str = 'mr'):
+async def create_suggestions(
+    session_id: str,
+    target_lang: str,
+    execution: llm_core.ExecutionContext,
+):
     """
     Create and save suggestions for a session
     """
     logger.info(f"Getting suggestions for session {session_id}")
 
-    profile_name = await llm_core.profile(session_id)
-    sug_model_name = llm_core.primary_info(
-        _LlmStep.SUGGESTIONS, profile_name
-    ).model_name
+    sug_model_name = execution.info(_LlmStep.SUGGESTIONS).model_name
 
     status_key = f"suggestions_{session_id}_{target_lang}:pending"
     try:
@@ -79,12 +80,10 @@ async def create_suggestions(session_id: str, target_lang: str = 'mr'):
 
         with session_ctx:
             with _suggestions_obs_ctx as sug_obs:
-                agent_run = await llm_core.run(
+                agent_run = await execution.run(
                     _LlmStep.SUGGESTIONS,
-                    session_id,
                     suggestions_agent,
                     message,
-                    profile_name=profile_name,
                 )
                 suggestions = [x for x in agent_run.output]
                 if sug_obs is not None:

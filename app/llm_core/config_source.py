@@ -13,7 +13,7 @@ Design
 * **Redis key** ``llm_pipeline_config:{channel}`` holds the JSON of a
   ``PipelineConfig`` (``model_dump(mode="json")``). Secrets are NEVER in it — a
   tier only names its ``api_key_env``; the VALUE is read from the centralized
-  Vault/environment secret provider at materialize time.
+  Vault/environment secret provider when a handle is built.
 * **channel** — ``PIPELINE_CHANNEL`` env, defaulting to the repo's identity
   (``voice`` if the ``Step`` enum has the voice-only ``non_meaningful`` step,
   else ``chat``) so each deployment self-identifies without any per-repo code
@@ -28,7 +28,7 @@ Design
   ``runtime.validate_content`` (the SAME content gates the boot path applies —
   provider/step legality + a resolvability probe that builds every profile/step
   primary handle). A schema-valid but UNBUILDABLE config (vllm tier with no
-  endpoint, absent ``api_key_env``, anthropic/gemini on a RAW_OPENAI step, a
+  endpoint, absent ``api_key_env``, anthropic/gemini on a PRE_TRANSLATION step, a
   profile missing a required step) is therefore REJECTED — treated exactly like a
   read failure (last-good kept, rate-limited WARNING) so a bad push can never go
   live and break requests.

@@ -25,11 +25,13 @@ from __future__ import annotations
 import logging
 
 from app.llm_core.config_model import (
+    AdmissionPolicy,
     ApiStyle,
     ConcurrencyGate,
     NamedProfile,
     PipelineConfig,
     Provider,
+    ProfileCapabilities,
     Step,
     StepConfig,
     Tier,
@@ -65,17 +67,21 @@ def _managed_agent_tier(timeout_ms: int, label: str) -> Tier:
                     api_key_env="INFERENCE_API_KEY", timeout_ms=timeout_ms, label=label)
     if provider == "anthropic":
         return Tier(provider=Provider.ANTHROPIC, model=model,
-                    api_key_env="ANTHROPIC_API_KEY", timeout_ms=timeout_ms, label=label)
+                    api_key_env="ANTHROPIC_API_KEY", timeout_ms=timeout_ms,
+                    admission=AdmissionPolicy.MANAGED, label=label)
     if provider == "gemini":
         return Tier(provider=Provider.GEMINI, model=model,
-                    api_key_env="GEMINI_API_KEY", timeout_ms=timeout_ms, label=label)
+                    api_key_env="GEMINI_API_KEY", timeout_ms=timeout_ms,
+                    admission=AdmissionPolicy.MANAGED, label=label)
     if provider == "azure-openai":
         return Tier(provider=Provider.AZURE, model=_env("AZURE_OPENAI_DEPLOYMENT_NAME", model) or model,
                     endpoint=_env("AZURE_OPENAI_ENDPOINT"), api_key_env="AZURE_OPENAI_API_KEY",
-                    api_version=_env("AZURE_OPENAI_API_VERSION"), timeout_ms=timeout_ms, label=label)
+                    api_version=_env("AZURE_OPENAI_API_VERSION"), timeout_ms=timeout_ms,
+                    admission=AdmissionPolicy.MANAGED, label=label)
     # default: openai
     return Tier(provider=Provider.OPENAI, model=model, endpoint=None,
-                api_key_env="OPENAI_API_KEY", timeout_ms=timeout_ms, label=label)
+                api_key_env="OPENAI_API_KEY", timeout_ms=timeout_ms,
+                admission=AdmissionPolicy.MANAGED, label=label)
 
 
 def _oss_agent_tier(timeout_ms: int, label: str) -> Tier:
@@ -108,9 +114,11 @@ def _managed_pretranslation_tier(timeout_ms: int) -> Tier:
                     api_key_env="INFERENCE_API_KEY", timeout_ms=timeout_ms, label="managed-pretranslation")
     if provider == "anthropic":
         return Tier(provider=Provider.ANTHROPIC, model=model,
-                    api_key_env="ANTHROPIC_API_KEY", timeout_ms=timeout_ms, label="managed-pretranslation")
+                    api_key_env="ANTHROPIC_API_KEY", timeout_ms=timeout_ms,
+                    admission=AdmissionPolicy.MANAGED, label="managed-pretranslation")
     return Tier(provider=Provider.OPENAI, model=model, endpoint=None,
-                api_key_env="OPENAI_API_KEY", timeout_ms=timeout_ms, label="managed-pretranslation")
+                api_key_env="OPENAI_API_KEY", timeout_ms=timeout_ms,
+                admission=AdmissionPolicy.MANAGED, label="managed-pretranslation")
 
 
 def _oss_pretranslation_tier(timeout_ms: int) -> Tier:
@@ -181,6 +189,20 @@ def _agent_concurrency_gate() -> ConcurrencyGate | None:
     return ConcurrencyGate(metrics_url=metrics_url, max_concurrency=_int_env("CONCURRENCY_MAX", 10))
 
 
+def _capabilities(agent_tier: Tier) -> ProfileCapabilities:
+    override = _env("CHAT_HISTORY_MAX_TOKENS")
+    if override and override.isdigit():
+        history_max_tokens = int(override)
+    elif agent_tier.provider is Provider.VLLM and "gemma" in agent_tier.model.lower():
+        history_max_tokens = _int_env("CHAT_HISTORY_MAX_TOKENS_VLLM_GEMMA", 10_000)
+    else:
+        history_max_tokens = 80_000
+    return ProfileCapabilities(
+        requires_translation=agent_tier.provider is Provider.VLLM,
+        history_max_tokens=history_max_tokens,
+    )
+
+
 def synthesize_from_env() -> PipelineConfig:
     """Build a behaviour-identical PipelineConfig from the current environment."""
     managed_ms = _int_env("FALLBACK_MANAGED_TIMEOUT_MS", 20000)
@@ -190,14 +212,12 @@ def synthesize_from_env() -> PipelineConfig:
     oss_sug_ms = _int_env("FALLBACK_SUGGESTIONS_OSS_TIMEOUT_MS", 6000)
 
     fallback_enabled = str(get_config_value("FALLBACK_ENABLED", "true")).strip().lower() in {"1", "true", "yes", "on"}
-    sticky_ttl = _int_env("OSS_VARIANT_TTL", 60 * 60 * 24 * 7)
-
     # Managed tiers per step (single-tier managed profile).
     managed_agent = _managed_agent_tier(managed_ms, "managed-agent")
     managed_pre = _managed_pretranslation_tier(managed_ms)
 
     def managed_steps() -> dict:
-        agent_cfg = StepConfig(tiers=[managed_agent], triggers=Triggers(ttft_deadline_ms=managed_ms))
+        agent_cfg = StepConfig(tiers=[managed_agent])
         return {
             Step.AGENT: agent_cfg,
             Step.MODERATION: StepConfig(tiers=[managed_agent]),
@@ -209,11 +229,15 @@ def synthesize_from_env() -> PipelineConfig:
     defaults = {Step.POST_TRANSLATION: StepConfig(tiers=post_tiers)}
 
     if not _oss_configured():
-        managed = NamedProfile(name="managed", weight=100, steps=managed_steps())
+        managed = NamedProfile(
+            name="managed",
+            weight=100,
+            capabilities=_capabilities(managed_agent),
+            steps=managed_steps(),
+        )
         return PipelineConfig(
             profiles=[managed],
             defaults=defaults,
-            sticky_ttl_s=sticky_ttl,
             fallback_enabled=fallback_enabled,
         )
 
@@ -224,17 +248,26 @@ def synthesize_from_env() -> PipelineConfig:
     oss_steps = {
         Step.AGENT: StepConfig(
             tiers=[_oss_agent_tier(oss_chat_ms, "oss-agent"), managed_agent],
-            triggers=Triggers(ttft_deadline_ms=oss_chat_ms, concurrency_gate=agent_gate),
+            triggers=Triggers(concurrency_gate=agent_gate),
         ),
         Step.MODERATION: StepConfig(tiers=[_oss_agent_tier(oss_mod_ms, "oss-moderation"), managed_agent]),
         Step.SUGGESTIONS: StepConfig(tiers=[_oss_agent_tier(oss_sug_ms, "oss-suggestions"), managed_agent]),
         Step.PRE_TRANSLATION: StepConfig(tiers=[_oss_pretranslation_tier(oss_pre_ms), managed_pre]),
     }
-    oss_profile = NamedProfile(name="oss", weight=pct, steps=oss_steps)
-    managed_profile = NamedProfile(name="managed", weight=100 - pct, steps=managed_steps())
+    oss_profile = NamedProfile(
+        name="oss",
+        weight=pct,
+        capabilities=_capabilities(oss_steps[Step.AGENT].tiers[0]),
+        steps=oss_steps,
+    )
+    managed_profile = NamedProfile(
+        name="managed",
+        weight=100 - pct,
+        capabilities=_capabilities(managed_agent),
+        steps=managed_steps(),
+    )
     return PipelineConfig(
         profiles=[oss_profile, managed_profile],
         defaults=defaults,
-        sticky_ttl_s=sticky_ttl,
         fallback_enabled=fallback_enabled,
     )

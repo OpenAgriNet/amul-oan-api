@@ -145,7 +145,6 @@ def test_hindi_source_uses_pretranslation_then_hindi_output(monkeypatch):
             user_info={},
             background_tasks=BackgroundTasks(),
             use_translation_pipeline=True,
-            pipeline_profile="managed",
         ):
             chunks.append(chunk)
         return "".join(chunks)

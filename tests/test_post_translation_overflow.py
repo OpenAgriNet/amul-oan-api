@@ -11,39 +11,18 @@ Covers (no network — the aiohttp SSE + AsyncOpenAI stream are mocked):
   * classify-based fallback fires on TIMEOUT / CONNECTION / 5xx, NOT on BAD_OUTPUT;
   * translate_text (non-stream) falls TranslateGemma -> LLM.
 
-This module stubs ``agents.tools`` before importing ``app.services.translation``
-because the locally-installed pydantic-ai (0.2.4, vs the repo-pinned 1.50) fails to
-build ``agents/tools/__init__``'s Tool schemas — a pre-existing env mismatch unrelated
-to translation. The stub provides only the four glossary symbols translation imports.
 """
+import asyncio
 import os
-import sys
 import types
 
 os.environ.setdefault("OPENAI_API_KEY", "test-key")
 
-# ── stub agents.tools.terms (see module docstring) ────────────────────────────
-_fake_terms = types.ModuleType("agents.tools.terms")
-_fake_terms.get_mini_glossary_for_text = lambda *a, **k: ""
-_fake_terms.get_ambiguity_hints_for_query = lambda *a, **k: ""
-_fake_terms.TERM_PAIRS = []
-
-
-class TermPair:  # minimal stand-in
-    def __init__(self, **kw):
-        self.__dict__.update(kw)
-
-
-_fake_terms.TermPair = TermPair
-_fake_agents = types.ModuleType("agents"); _fake_agents.__path__ = []
-_fake_agents_tools = types.ModuleType("agents.tools"); _fake_agents_tools.__path__ = []
-sys.modules.setdefault("agents", _fake_agents)
-sys.modules.setdefault("agents.tools", _fake_agents_tools)
-sys.modules.setdefault("agents.tools.terms", _fake_terms)
-
 import pytest
 
 from app.llm_core import runtime
+from app.llm_core.config_model import NamedProfile, PipelineConfig, Provider, Step, StepConfig, Tier
+from app.llm_core.execution import ExecutionContext
 import app.services.translation as tr
 
 
@@ -167,6 +146,73 @@ class _FakeTGDescriptor:
     endpoint = "http://lb/v1"
 
 
+def _post_context(*, ttft_ms=10):
+    return ExecutionContext(
+        session_id="s1",
+        profile_name="managed",
+        config=PipelineConfig(
+            fallback_enabled=True,
+            profiles=[NamedProfile(name="managed", weight=100)],
+            defaults={
+                Step.POST_TRANSLATION: StepConfig(
+                    tiers=[
+                        Tier(
+                            provider=Provider.TRANSLATEGEMMA,
+                            model="tg",
+                            endpoint="http://lb/v1",
+                            ttft_ms=ttft_ms,
+                        ),
+                        Tier(provider=Provider.OPENAI, model="gpt"),
+                    ]
+                )
+            },
+        ),
+    )
+
+
+@pytest.mark.asyncio
+async def test_pretranslation_uses_provider_protocol_and_trace(monkeypatch):
+    calls = {}
+
+    class Messages:
+        async def create(self, **kwargs):
+            calls["request"] = kwargs
+            return types.SimpleNamespace(
+                content=[types.SimpleNamespace(type="text", text="translated")]
+            )
+
+    class Observation:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def update(self, **kwargs):
+            calls["output"] = kwargs["output"]
+
+    class Langfuse:
+        def start_as_current_observation(self, **kwargs):
+            calls["observation"] = kwargs
+            return Observation()
+
+    monkeypatch.setattr(tr, "_get_langfuse", lambda: Langfuse())
+    target = types.SimpleNamespace(
+        provider="anthropic",
+        model_name="claude-haiku",
+        handle=types.SimpleNamespace(messages=Messages()),
+    )
+
+    result = await tr.pretranslate_with_tier(
+        target, text="નમસ્તે", source_lang="gujarati"
+    )
+    assert result == "translated"
+    assert calls["request"]["model"] == "claude-haiku"
+    assert calls["observation"]["name"] == "query_pretranslation"
+    assert calls["observation"]["metadata"]["translation_provider"] == "anthropic"
+    assert calls["output"] == "translated"
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # 1. Guards short-circuit WITHOUT a model call
 # ══════════════════════════════════════════════════════════════════════════════
@@ -175,7 +221,7 @@ async def test_stream_untranslatable_yields_verbatim_no_model_call(monkeypatch):
     def _boom(*a, **k):
         raise AssertionError("resolve_chain must not be called for a guarded input")
 
-    monkeypatch.setattr(tr.llm_core, "stream_adapter", _boom)
+    monkeypatch.setattr(tr.llm_core, "context", _boom)
     chunks = [c async for c in tr.translate_text_stream_fast("**", "english", "gujarati")]
     assert chunks == ["**"]
 
@@ -183,7 +229,7 @@ async def test_stream_untranslatable_yields_verbatim_no_model_call(monkeypatch):
 @pytest.mark.asyncio
 async def test_stream_same_lang_yields_verbatim_no_model_call(monkeypatch):
     monkeypatch.setattr(
-        tr.llm_core, "stream_adapter",
+        tr.llm_core, "context",
         lambda *a, **k: (_ for _ in ()).throw(AssertionError("no chain for same-lang")),
     )
     chunks = [c async for c in tr.translate_text_stream_fast("hi", "english", "english")]
@@ -193,7 +239,7 @@ async def test_stream_same_lang_yields_verbatim_no_model_call(monkeypatch):
 @pytest.mark.asyncio
 async def test_stream_empty_returns_nothing(monkeypatch):
     monkeypatch.setattr(
-        tr.llm_core, "stream_adapter",
+        tr.llm_core, "context",
         lambda *a, **k: (_ for _ in ()).throw(AssertionError("no chain for empty")),
     )
     chunks = [c async for c in tr.translate_text_stream_fast("   ", "english", "gujarati")]
@@ -205,7 +251,7 @@ async def test_unary_guards_short_circuit(monkeypatch):
     async def _boom(*args, **kwargs):
         raise AssertionError("no model call for guard")
 
-    monkeypatch.setattr(tr.llm_core, "run_adapter", _boom)
+    monkeypatch.setattr(tr.llm_core, "context", _boom)
     assert await tr.translate_text("**", "english", "gujarati") == "**"
     assert await tr.translate_text("hi", "gujarati", "gujarati") == "hi"
     assert await tr.translate_text("", "english", "gujarati") == ""
@@ -311,6 +357,58 @@ async def test_e2e_tg_fails_pre_commit_llm_serves(monkeypatch, _managed_pipeline
         c async for c in tr.translate_text_stream_fast("hydrate", "english", "gujarati")
     ])
     assert out == "llm-served"
+
+
+@pytest.mark.asyncio
+async def test_healthy_tg_does_not_build_invalid_overflow(monkeypatch):
+    from app.llm_core import execution
+
+    built = []
+
+    def build(tier, kind):
+        built.append(tier.provider)
+        if tier.provider is Provider.TRANSLATEGEMMA:
+            return _FakeTGDescriptor()
+        raise ValueError("unused overflow is intentionally invalid")
+
+    monkeypatch.setattr(execution, "build_handle", build)
+
+    def unexpected_admission():
+        raise AssertionError("TranslateGemma must not use managed admission")
+
+    monkeypatch.setattr(execution, "_get_managed_sem", unexpected_admission)
+    _patch_aiohttp(monkeypatch, _FakeResp(body={"choices": [{"text": "ગાભણ।"}]}))
+
+    result = await tr.translate_text(
+        "pregnant", "english", "gujarati", execution=_post_context()
+    )
+    assert result == "ગાભણ."
+    assert built == [Provider.TRANSLATEGEMMA]
+
+
+@pytest.mark.asyncio
+async def test_post_translation_common_stream_enforces_ttft(monkeypatch):
+    from app.llm_core import execution
+
+    monkeypatch.setattr(execution, "build_handle", lambda tier, kind: object())
+
+    async def silent_tg(*args, **kwargs):
+        await asyncio.sleep(0.05)
+        yield "late"
+
+    async def managed_overflow(*args, **kwargs):
+        yield "overflow"
+
+    monkeypatch.setattr(tr, "_translategemma_stream", silent_tg)
+    monkeypatch.setattr(tr, "_llm_translation_stream", managed_overflow)
+
+    result = "".join([
+        chunk
+        async for chunk in tr.translate_text_stream_fast(
+            "hydrate", "english", "gujarati", execution=_post_context(ttft_ms=10)
+        )
+    ])
+    assert result == "overflow"
 
 
 # ══════════════════════════════════════════════════════════════════════════════

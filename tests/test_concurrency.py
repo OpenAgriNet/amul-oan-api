@@ -21,7 +21,7 @@ The bar these pin:
 Zero network: the gauge value is injected (``get_concurrency`` monkeypatched) for
 the reorder/composition tests; the scrape test stubs ``httpx.AsyncClient`` + an
 in-memory cache. Dummy OPENAI/OSS keys are set before importing app code (the
-factory reads keys at materialize time).
+factory reads keys when a handle is built).
 """
 
 import os
@@ -403,10 +403,9 @@ def _overflow_gated_config():
     return PipelineConfig(profiles=[NamedProfile(name="oss", weight=100, steps=oss_steps)])
 
 
-def test_resolve_chain_overflow_tier_materializes_at_front(monkeypatch):
+def test_resolve_chain_places_overflow_target_at_front(monkeypatch):
     """End-to-end: saturated box + configured overflow_tier -> resolve_chain
-    materializes the overflow tier as a managed AGENT model at the FRONT, original
-    tiers following (proves the prepended tier flows through materialize cleanly)."""
+    places the overflow tier at the front with original tiers following."""
     monkeypatch.setattr(concurrency.settings, "concurrency_gauge_enabled", True)
     monkeypatch.setattr(health.settings, "health_breaker_enabled", False)
     monkeypatch.setattr(health.settings, "health_poller_enabled", False)

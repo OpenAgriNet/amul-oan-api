@@ -1,6 +1,6 @@
 """Unit tests for the per-turn resolved-pipeline-config tracer
 (``app/llm_core/trace.py``) and its recording seams in
-``split`` / ``resolver`` / ``health`` / ``concurrency`` / ``fallback``.
+``split`` / ``health`` / ``concurrency`` / ``execution``.
 
 The bar these pin:
   (a) a stubbed turn (no network) populates the ``pipeline`` trace metadata with
@@ -30,7 +30,7 @@ import json
 
 import pytest
 
-from app.llm_core import trace, split, resolver, health, concurrency
+from app.llm_core import ExecutionContext, trace, split, health, concurrency
 from app.llm_core.config_model import (
     ConcurrencyGate,
     NamedProfile,
@@ -104,16 +104,6 @@ def test_flags_present_in_metadata():
     }
 
 
-def test_resolver_seam_records_step(monkeypatch):
-    """The non-fallback primary-tier seam records too."""
-    monkeypatch.setattr(resolver.runtime, "get_pipeline", lambda: _cfg(100))
-    trace.begin("oss")
-    resolver.resolve_chain(Step.AGENT, "oss")
-    md = trace.current().to_metadata()
-    assert md["profile"]["name"] == "oss"
-    assert md["steps"]["agent"]["model"] == "gemma"
-
-
 # ── (b) secrets never leak ─────────────────────────────────────────────────────
 def test_no_api_key_value_in_metadata():
     import asyncio
@@ -142,21 +132,12 @@ def test_no_secret_in_full_config_dump(caplog):
 
 
 # ── (c) fallback walker threads the served tier index ──────────────────────────
-def test_fallback_walker_records_served_index(monkeypatch):
+def test_fallback_walker_records_served_index(monkeypatch, materialized_tier):
     import asyncio
 
     fb = pytest.importorskip("app.llm_core.execution")
-    # P4 removed the hardwired ``Attempt``; the walkers now consume MaterializedTier.
-    from app.llm_core.factory import MaterializedTier
-    oss = MaterializedTier(kind="oss", handle=object(), model_name="gemma",
-                           provider="vllm", endpoint="http://oss:8020/v1", timeout=None)
-    managed = MaterializedTier(kind="managed", handle=object(), model_name="gpt-4.1",
-                               provider="openai", endpoint="managed", timeout=None)
-
-    async def _chain(**kw):
-        return [oss, managed]
-
-    monkeypatch.setattr(fb, "_resolve_chain", _chain)
+    oss = materialized_tier("oss", object(), model_name="gemma")
+    managed = materialized_tier("managed", object(), model_name="gpt-4.1")
 
     trace.begin("oss")
     trace.record_step_chain(Step.AGENT, [oss, managed])  # seed primary=index0
@@ -167,7 +148,7 @@ def test_fallback_walker_records_served_index(monkeypatch):
         return "answer"
 
     out = asyncio.run(fb.execute_with_fallback(
-        pipeline="chat", session_id="s", profile_name="oss", run=_run))
+        step=Step.AGENT, session_id="s", run=_run, chain=[oss, managed]))
     assert out == "answer"
     served = trace.current().to_metadata()["steps"]["agent"]["tier_served"]
     assert served == {"kind": "managed", "index": 1}
@@ -212,15 +193,9 @@ def test_concurrency_deprioritize_trigger_recorded(monkeypatch):
 
 
 # ── (f) populate + COMPACT flat metadata keys (the path that lands) ───────────
-def test_populate_sets_profile_and_per_step_primary_tiers(monkeypatch):
-    """`populate` (the explicit, contextvar-independent path the request path uses)
-    fills profile + each step's PRIMARY tier via the SYNC resolver.primary_tier —
-    exactly as chat.py/voice.py call it (`resolver.primary_tier`)."""
+def test_execution_context_populates_profile_and_primary_tiers():
     cfg = _cfg(100)
-    monkeypatch.setattr(resolver.runtime, "get_pipeline", lambda: cfg)
-
-    pt = trace.begin("oss")
-    trace.populate(pt, cfg, resolver.primary_tier, "oss", (Step.AGENT, Step.MODERATION))
+    pt = ExecutionContext("", cfg, "oss").begin_trace()
     md = pt.to_metadata()
     assert md["profile"] == {"name": "oss", "weight": 100}
     assert md["steps"]["agent"]["provider"] == "vllm"
@@ -231,13 +206,11 @@ def test_populate_sets_profile_and_per_step_primary_tiers(monkeypatch):
     assert len(md["flags"]) == 3
 
 
-def test_compact_metadata_produces_short_flat_keys(monkeypatch):
+def test_compact_metadata_produces_short_flat_keys():
     """The keys that actually land on the trace: `pipeline_profile`, `pipeline_flags`,
     and one `pc_<step>` per step — short flat strings, under the OTEL attribute cap."""
     cfg = _cfg(100)
-    monkeypatch.setattr(resolver.runtime, "get_pipeline", lambda: cfg)
-    pt = trace.begin("oss")
-    trace.populate(pt, cfg, resolver.primary_tier, "oss", (Step.AGENT, Step.MODERATION))
+    pt = ExecutionContext("", cfg, "oss").begin_trace()
 
     m = trace.compact_metadata(pt)
     assert m["pipeline_profile"] == "oss"
@@ -253,7 +226,7 @@ def test_compact_metadata_produces_short_flat_keys(monkeypatch):
     assert all(v is None or len(v) < 120 for v in m.values())
 
 
-def test_compact_metadata_hard_caps_long_values(monkeypatch):
+def test_compact_metadata_hard_caps_long_values():
     """A long configured endpoint/model must NOT push a pc_<step> value over the
     OTEL attribute cap (which would silently DROP the key). Values are truncated to
     _ATTR_CAP; the full untruncated config is always in the boot full_config dump."""
@@ -267,22 +240,18 @@ def test_compact_metadata_hard_caps_long_values(monkeypatch):
             provider=Provider.VLLM, model="m" * 300, endpoint=long_ep,
             api_key_env="OSS_INFERENCE_API_KEY", timeout_ms=8000)]),
     })])
-    monkeypatch.setattr(resolver.runtime, "get_pipeline", lambda: cfg)
-    pt = trace.begin("oss")
-    trace.populate(pt, cfg, resolver.primary_tier, "oss", (Step.AGENT,))
+    pt = ExecutionContext("", cfg, "oss").begin_trace()
 
     m = trace.compact_metadata(pt)
     assert len(m["pc_agent"]) == trace._ATTR_CAP           # truncated -> the key still LANDS
     assert all(v is None or len(v) <= trace._ATTR_CAP for v in m.values())
 
 
-def test_add_compact_metadata_merges_into_request_metadata_dict(monkeypatch):
+def test_add_compact_metadata_merges_into_request_metadata_dict():
     """The request path merges the compact keys into the SAME dict it already hands
     to propagate_attributes / VoiceTrace.metadata — existing keys preserved."""
     cfg = _cfg(100)
-    monkeypatch.setattr(resolver.runtime, "get_pipeline", lambda: cfg)
-    pt = trace.begin("oss")
-    trace.populate(pt, cfg, resolver.primary_tier, "oss", (Step.AGENT,))
+    pt = ExecutionContext("", cfg, "oss").begin_trace()
 
     langfuse_metadata = {"pipeline": "translation", "variant": "oss"}  # pre-existing keys
     trace.add_compact_metadata(pt, langfuse_metadata)

@@ -7,7 +7,7 @@ current env (``legacy_shim``), validates it, stores it in the module global
 configures on first use so request paths and tests never see ``None``.
 
 The startup self-check logs the resolved (provider, base URL, model, timeout)
-for every configured step and verifies that every primary tier materializes.
+for every configured step and verifies that every primary handle can be built.
 Agents carry no construction-time model; this module is the only runtime model
 selection path.
 """
@@ -40,32 +40,20 @@ def _load_from_yaml(path: str) -> PipelineConfig:
     return PipelineConfig(**data)
 
 
-# Providers that can materialize as a RAW_OPENAI client (AsyncOpenAI-compatible).
-# anthropic/gemini are AGENT-kind only; a RAW_OPENAI step (chat pre-translation)
-# configured with them would crash per-request in the factory, so reject at boot.
-_RAW_OPENAI_OK = {"vllm", "openai", "azure-openai"}
-# Enhancement tracking for real anthropic/gemini RAW pretranslation support.
-_RAW_PROVIDER_ENH_ISSUE = (
-    "https://github.com/OpenAgriNet/amul-oan-api/issues "
-    "(enhancement: support anthropic/gemini RAW pretranslation)"
-)
+# Providers with a concrete pretranslation protocol adapter.
+_PRETRANSLATION_OK = {"vllm", "openai", "azure-openai", "anthropic"}
 
 
 def validate_config(pipeline: PipelineConfig, *, enforce: bool) -> None:
-    """(E) Fail-fast on a RAW_OPENAI-kind step whose tier provider is unsupported.
-
-    ``Step.PRE_TRANSLATION`` materializes as a RAW_OPENAI client, which the factory
-    rejects for ``anthropic``/``gemini``. If the shim synthesizes an anthropic
-    pretranslation tier (``PRETRANSLATION_PROVIDER=anthropic`` or
-    ``LLM_PROVIDER=anthropic``), that would crash on every request. Catch it at
-    startup with a clear message instead. Gated on ``enforce`` (== LLM_CORE_ENABLED)
-    so a flag-off boot on the legacy path — which handles anthropic pretranslation
-    itself — is never broken; setting the flag on is what makes the config binding
-    and thus the one that must be legal."""
+    """Fail fast when a pretranslation tier has no protocol adapter."""
     from app.llm_core.config_model import StepClientKind
-    from app.llm_core.resolver import STEP_CLIENT_KIND
+    from app.llm_core.factory import STEP_CLIENT_KIND
 
-    raw_steps = [s for s, k in STEP_CLIENT_KIND.items() if k is StepClientKind.RAW_OPENAI]
+    raw_steps = [
+        step
+        for step, kind in STEP_CLIENT_KIND.items()
+        if kind is StepClientKind.PRE_TRANSLATION
+    ]
     problems: list[str] = []
     for profile in pipeline.profiles:
         for step in raw_steps:
@@ -73,19 +61,16 @@ def validate_config(pipeline: PipelineConfig, *, enforce: bool) -> None:
             if cfg is None:
                 continue
             for tier in cfg.tiers:
-                if tier.provider.value not in _RAW_OPENAI_OK:
+                if tier.provider.value not in _PRETRANSLATION_OK:
                     problems.append(
                         f"profile={profile.name} step={step.value} "
-                        f"provider={tier.provider.value} is not RAW_OPENAI-compatible "
-                        f"(allowed: {sorted(_RAW_OPENAI_OK)})"
+                        f"provider={tier.provider.value} has no pretranslation adapter "
+                        f"(allowed: {sorted(_PRETRANSLATION_OK)})"
                     )
     if not problems:
         return
     msg = (
-        "llm_core config INVALID — unsupported provider for a RAW_OPENAI step; "
-        "anthropic/gemini need the AGENT client kind. Track "
-        + _RAW_PROVIDER_ENH_ISSUE
-        + ":\n  - "
+        "llm_core config INVALID — unsupported pretranslation provider:\n  - "
         + "\n  - ".join(problems)
     )
     if enforce:
@@ -103,35 +88,23 @@ def validate_content(cfg: PipelineConfig) -> None:
 
     Two checks, mirroring boot:
       (a) ``validate_config(cfg, enforce=True)`` — provider/step legality (an
-          anthropic/gemini tier on a RAW_OPENAI step, etc.); and
+          anthropic/gemini tier on a PRE_TRANSLATION step, etc.); and
       (b) a resolvability probe — for every profile, for every CONFIGURED step, build
-          the primary tier handle via ``resolver.primary_tier``; the factory raises on
+          the primary tier handle; the factory raises on
           an unbuildable tier (vllm tier with no endpoint, azure tier missing
           api_key_env/api_version, etc.), exactly as the boot self-check would.
 
-    The resolver reads ``runtime.get_pipeline()``, so the probe is run with ``cfg``
-    temporarily installed as ``PIPELINE`` and the live source suppressed (so the
-    nested ``get_pipeline`` neither re-reads redis nor recurses); both are restored
-    in a ``finally``. Raises (never swallows) so callers can fail closed."""
-    global PIPELINE
+    Raises (never swallows) so callers can fail closed."""
     validate_config(cfg, enforce=True)
+    from app.llm_core.factory import STEP_CLIENT_KIND, build_handle, tier_client_kind
 
-    from app.llm_core import resolver, config_source
-
-    prev_pipeline = PIPELINE
-    prev_suppress = config_source._suppress_refresh
-    PIPELINE = cfg
-    config_source._suppress_refresh = True
-    try:
-        for profile in cfg.profiles:
-            for step in Step:
-                if cfg.step_config(profile, step) is None:
-                    continue  # a profile need not configure every step (probe only what's set)
-                # Builds the primary handle; raises on an unbuildable tier.
-                resolver.primary_tier(step, profile.name)
-    finally:
-        config_source._suppress_refresh = prev_suppress
-        PIPELINE = prev_pipeline
+    for profile in cfg.profiles:
+        for step in Step:
+            step_config = cfg.step_config(profile, step)
+            if step_config is None:
+                continue
+            tier = step_config.tiers[0]
+            build_handle(tier, tier_client_kind(STEP_CLIENT_KIND[step], tier))
 
 
 def _truthy_env(name: str) -> bool:
@@ -274,12 +247,12 @@ def self_check() -> None:
     legacy wiring to compare against — the unified pipeline is the only path — so
     the check now just logs the resolved (provider, base_url, model, timeout) per
     configured step and WARNS on any step that fails to resolve. It is
-    intentionally non-fatal: a materialize edge case (e.g. a fallback-tier key
+    intentionally non-fatal: a handle-build edge case (e.g. a fallback-tier key
     absent in this env) must never block startup, exactly as the flag-off boot was
     robust before. Genuine config-shape errors are already caught by
     ``PipelineConfig``'s validator at load time.
     """
-    from app.llm_core import resolver
+    from app.llm_core.factory import STEP_CLIENT_KIND, build_handle, tier_client_kind
 
     pipeline = get_pipeline()
     failures: list[str] = []
@@ -292,10 +265,18 @@ def self_check() -> None:
             try:
                 # Resolve BY PROFILE NAME (N-way): a broken 3rd-profile tier (bad
                 # provider/endpoint/key) is caught here at boot, not just oss/managed.
-                mt = resolver.primary_tier(step, profile.name)
+                tier = step_cfg.tiers[0]
+                handle = build_handle(
+                    tier, tier_client_kind(STEP_CLIENT_KIND[step], tier)
+                )
                 logger.info(
                     "llm_core self-check profile=%s step=%s -> provider=%s base_url=%s model=%s timeout=%s",
-                    profile.name, step.value, mt.provider, _base_url(mt.handle), mt.model_name, mt.timeout,
+                    profile.name,
+                    step.value,
+                    tier.provider.value,
+                    _base_url(handle),
+                    tier.model,
+                    tier.timeout_ms / 1000.0 if tier.timeout_ms is not None else None,
                 )
             except Exception as exc:
                 failures.append(f"{profile.name}/{step.value}: {type(exc).__name__}: {exc}")

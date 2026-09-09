@@ -173,8 +173,8 @@ def set_profile(pt: Optional[PipelineTrace], name: str, weight: Optional[int]) -
 
 def set_step_primary(pt: Optional[PipelineTrace], step: Any, tier: Any) -> None:
     """Set a step's PRIMARY resolved tier (provider/model/endpoint/timeout) on an
-    EXPLICIT pt, from a resolved ``MaterializedTier``/``Attempt``. Independent of
-    the contextvar. Preserves any served/trigger fields a deep recorder may have
+    explicit trace from an execution target. Independent of the contextvar.
+    Preserves any served/trigger fields a deep recorder may have
     already set on the same step."""
     if pt is None or tier is None:
         return
@@ -191,39 +191,8 @@ def set_step_primary(pt: Optional[PipelineTrace], step: Any, tier: Any) -> None:
         rec.tier_served_index = 0
 
 
-def populate(
-    pt: Optional[PipelineTrace],
-    pipeline: Any,
-    primary_tier_fn: Any,
-    profile_name: Optional[str],
-    steps: Any,
-) -> None:
-    """Explicitly (contextvar-independent) populate the fields the emit MUST carry:
-    the resolved profile (selected by NAME from the pipeline) and each step's PRIMARY
-    tier (resolved via ``primary_tier_fn(step, profile_name)``). Best-effort per step;
-    a resolve failure for one step is skipped, never raised into the request path.
-
-    ``profile_name`` is the routing token (the actual profile name); the profile is
-    selected DIRECTLY (fail-safe to managed), so a 3rd profile records its own name +
-    weight instead of collapsing to oss/managed. ``pipeline`` and ``primary_tier_fn``
-    are passed in (duck-typed) so this module stays import-clean — it never imports
-    resolver/runtime itself."""
-    if pt is None:
-        return
-    try:
-        prof = pipeline.by_name(profile_name) or pipeline.by_name("managed") or pipeline.profiles[0]
-        set_profile(pt, prof.name, prof.weight)
-    except Exception as e:  # pragma: no cover - defensive
-        logger.debug("llm_core.trace: profile populate skipped: %s", e)
-    for step in steps:
-        try:
-            set_step_primary(pt, step, primary_tier_fn(step, profile_name))
-        except Exception:
-            continue
-
-
 def _tier_summary(tier: Any) -> dict:
-    """A secret-free summary of a resolved tier (``MaterializedTier``/``Attempt``)."""
+    """A secret-free summary of an execution target."""
     return {
         "kind": getattr(tier, "kind", None),
         "provider": getattr(tier, "provider", None),
@@ -238,7 +207,7 @@ def _timeout_ms(tier: Any) -> Optional[int]:
 
 
 def record_step_chain(step: Any, chain: list) -> None:
-    """Record the resolved (materialized) tier chain for a step: primary tier's
+    """Record the resolved tier chain for a step: primary tier's
     provider/model/endpoint/timeout + the ordered chain. Defaults ``tier_served``
     to the primary (index 0) — the fallback walker overwrites it if a later tier
     actually serves."""
@@ -389,6 +358,10 @@ def config_to_dict(pipeline: Any) -> dict:
             "model": getattr(t, "model", None),
             "endpoint": getattr(t, "endpoint", None),
             "timeout_ms": getattr(t, "timeout_ms", None),
+            "ttft_ms": getattr(t, "ttft_ms", None),
+            "admission": getattr(
+                getattr(t, "admission", None), "value", getattr(t, "admission", None)
+            ),
             "api_key_env": getattr(t, "api_key_env", None),  # NAME only, never the value
             "api_version": getattr(t, "api_version", None),
         }
@@ -396,8 +369,6 @@ def config_to_dict(pipeline: Any) -> dict:
     def _triggers(tr: Any) -> dict:
         gate = getattr(tr, "concurrency_gate", None)
         return {
-            "ttft_deadline_ms": getattr(tr, "ttft_deadline_ms", None),
-            "health_check": getattr(tr, "health_check", None),
             "concurrency_gate": (
                 {
                     "metrics_url": getattr(gate, "metrics_url", None),
@@ -420,13 +391,13 @@ def config_to_dict(pipeline: Any) -> dict:
         }
 
     return {
-        "sticky_ttl_s": getattr(pipeline, "sticky_ttl_s", None),
         "fallback_enabled": getattr(pipeline, "fallback_enabled", None),
         "defaults": _steps(getattr(pipeline, "defaults", {})),
         "profiles": [
             {
                 "name": p.name,
                 "weight": p.weight,
+                "capabilities": p.capabilities.model_dump(mode="json"),
                 "steps": _steps(getattr(p, "steps", {})),
             }
             for p in getattr(pipeline, "profiles", [])

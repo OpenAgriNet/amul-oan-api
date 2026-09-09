@@ -931,6 +931,7 @@ async def translate_text(
     temperature: float = 0.0,
     max_tokens: int = 2048,
     max_output_chars: Optional[int] = None,
+    execution: Optional["llm_core.ExecutionContext"] = None,
 ) -> str:
     """Translate text via the post-translation tier chain.
 
@@ -969,11 +970,10 @@ async def translate_text(
             tier.handle, tier.model_name, instruction, source_lang, target_lang, text, temperature, max_tokens
         )
 
-    result = await llm_core.run_adapter(
+    execution = execution or await llm_core.context("-")
+    result = await execution.run_adapter(
         _Step.POST_TRANSLATION,
-        "-",
         _run,
-        profile_name="managed",
     )
     return _apply_protected_output(result, _prot)
 
@@ -1053,25 +1053,63 @@ async def pretranslate_with_tier(
 
     source_name = LANG_NAMES.get(source_lang.lower(), source_lang.capitalize())
     source_code = LANG_CODES.get(source_lang.lower(), source_lang.lower())
-    response = await tier.handle.chat.completions.create(
-        model=tier.model_name,
-        max_completion_tokens=max_tokens,
-        temperature=0.0,
-        messages=[
-            {"role": "system", "content": _pretranslation_system_with_glossary(text)},
-            {
-                "role": "user",
-                "content": (
-                    f"Translate this {source_name} ({source_code}) text to English."
-                    f"\n\n{text.strip()}"
-                ),
+    system = _pretranslation_system_with_glossary(text)
+    user = f"Translate this {source_name} ({source_code}) text to English.\n\n{text.strip()}"
+
+    async def _translate() -> str:
+        if tier.provider == "anthropic":
+            response = await tier.handle.messages.create(
+                model=tier.model_name,
+                max_tokens=max_tokens,
+                temperature=0.0,
+                system=system,
+                messages=[{"role": "user", "content": user}],
+            )
+            parts = [
+                block.text
+                for block in response.content
+                if getattr(block, "type", None) == "text"
+                and getattr(block, "text", None)
+            ]
+            return "".join(parts).strip()
+        response = await tier.handle.chat.completions.create(
+            model=tier.model_name,
+            max_completion_tokens=max_tokens,
+            temperature=0.0,
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+        )
+        return (response.choices[0].message.content or "").strip()
+
+    langfuse = _get_langfuse()
+    observation = (
+        langfuse.start_as_current_observation(
+            name="query_pretranslation",
+            as_type="generation",
+            input={
+                "source_lang": source_lang,
+                "target_lang": "english",
+                "text": text,
             },
-        ],
+            model=tier.model_name,
+            metadata={
+                "translation_provider": tier.provider,
+                "pipeline_stage": "query_pretranslation",
+            },
+        )
+        if langfuse
+        else nullcontext()
     )
-    translated_text = (response.choices[0].message.content or "").strip()
-    if not translated_text:
-        raise ValueError(f"{tier.provider} pre-translation returned empty output")
-    return _enforce_clinical_pretranslation_terms(text, translated_text)
+    with observation as span:
+        translated_text = await _translate()
+        if not translated_text:
+            raise ValueError(f"{tier.provider} pre-translation returned empty output")
+        translated_text = _enforce_clinical_pretranslation_terms(text, translated_text)
+        if span is not None:
+            span.update(output=translated_text)
+        return translated_text
 
 
 async def translate_text_stream_fast(
@@ -1082,6 +1120,7 @@ async def translate_text_stream_fast(
     temperature: float = 0.0,
     max_tokens: int = 2048,
     max_output_chars: Optional[int] = None,
+    execution: Optional["llm_core.ExecutionContext"] = None,
 ):
     """Stream translated text token by token (no artificial delay) via the
     post-translation tier chain [TranslateGemma(LB), managed-LLM overflow].
@@ -1123,11 +1162,10 @@ async def translate_text_stream_fast(
         )
 
     try:
-        base_stream = llm_core.stream_adapter(
+        execution = execution or await llm_core.context("-")
+        base_stream = execution.stream_adapter(
             _Step.POST_TRANSLATION,
-            "-",
             _make_stream,
-            profile_name="managed",
         )
         stream = _buffered_protected_stream(base_stream, _prot) if _prot else base_stream
         async for chunk in stream:

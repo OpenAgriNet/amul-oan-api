@@ -433,7 +433,7 @@ def record_failed_poll(endpoint: str) -> None:
 def _endpoint_of(tier: Any) -> Optional[str]:
     """Endpoint key for a tier-like object — works for the inert ``Tier``
     (``.endpoint`` is the URL, or ``None`` for OpenAI) and for the materialized
-    ``Attempt`` / ``MaterializedTier`` (``.endpoint`` is the URL or ``"managed"``).
+    an execution target (``.endpoint`` is the URL or ``"managed"``).
     Only real self-hosted URLs ever key a breaker; ``None`` / ``"managed"`` are
     never tracked (we don't poll OpenAI), so they are never pruned here."""
     ep = getattr(tier, "endpoint", None)
@@ -445,14 +445,14 @@ def _endpoint_of(tier: Any) -> Optional[str]:
 def prune_unhealthy(step: Optional[Step], tiers: list) -> list:
     """Pre-flight FILTER: drop tiers whose endpoint is currently ``open``.
 
-    Runs BEFORE materialize (on inert ``Tier`` s in the config path) and also on
+    Runs before target creation (on inert ``Tier`` objects) and also on
     the legacy ``Attempt`` chain — both expose ``.endpoint``. **Never returns
     empty**: if every tier would be pruned, the input is returned unchanged
     (degrade-safe). No-op (identity) unless a health flag is on, which is what
     keeps the flags-off path byte-identical.
 
     NOTE (P3 composition seam): this is the FIRST pre-flight filter. The P3
-    concurrency-gauge REORDER runs AFTER this prune and BEFORE materialize —
+    concurrency-gauge reordering runs after this prune and before target creation —
     ``split.resolve_chain`` calls this, then leaves the reorder hook, then
     materializes. Health prunes known-DOWN tiers; concurrency only DEPRIORITIZES
     saturated (but up) tiers, so composing prune-then-reorder is order-safe."""

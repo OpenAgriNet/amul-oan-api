@@ -18,7 +18,7 @@ The bar these pin:
 Zero real network: the redis client seam (``config_source._get_redis``) is
 monkeypatched to an in-memory fake; no test contacts a real redis. Dummy keys are
 set before importing app code to match the other llm_core test modules (the
-factory reads keys at build time), though these tests never materialize a tier.
+factory reads keys at build time), though these tests never build a handle.
 """
 
 import os
@@ -66,7 +66,7 @@ def _two_profile(pct: int) -> PipelineConfig:
 def _content_invalid() -> PipelineConfig:
     """SCHEMA-valid (weight sums to 100, unique names) but UNBUILDABLE: a vllm AGENT
     tier with NO endpoint. ``PipelineConfig(**data)`` accepts it, but the factory
-    raises at materialize time (``resolver.primary_tier`` -> build_handle), so the
+    raises only when its execution target builds a handle, so the
     boot-parity content probe in ``runtime.validate_content`` rejects it. AGENT is a
     RAW-independent step configured identically in chat and voice, so this fixture is
     byte-identical across the two repos."""

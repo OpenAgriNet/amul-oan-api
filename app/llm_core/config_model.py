@@ -32,6 +32,11 @@ class ApiStyle(str, Enum):
     TEXT_COMPLETION = "text_completion"
 
 
+class AdmissionPolicy(str, Enum):
+    NONE = "none"
+    MANAGED = "managed"
+
+
 class Step(str, Enum):
     """LLM steps the config must cover. Chat has 5 (no non_meaningful)."""
 
@@ -46,7 +51,7 @@ class StepClientKind(str, Enum):
     """How the engine consumes a materialized tier at a call site."""
 
     AGENT = "agent"            # pydantic-ai Model (agent loop, chat moderation, suggestions)
-    RAW_OPENAI = "raw_openai"  # AsyncOpenAI client (pre-translation)
+    PRE_TRANSLATION = "pre_translation"  # provider-native raw client
     TRANSLATEGEMMA = "translategemma"  # aiohttp text-completion descriptor (post-translation)
 
 
@@ -54,7 +59,7 @@ class Tier(BaseModel):
     """One inert tier in a step's chain (primary first, fallbacks after).
 
     Frozen so it is hashable and usable as an ``lru_cache`` key in the factory.
-    ``api_key_env`` names the secret; the VALUE is read at materialize time via
+    ``api_key_env`` names the secret; the value is read when a handle is built via
     the centralized secret provider and never stored in pipeline config.
     """
 
@@ -71,7 +76,7 @@ class Tier(BaseModel):
     # for the full 60s total. ``None`` -> the consumer falls back to ``timeout_ms``.
     ttft_ms: Optional[int] = None
     api_version: Optional[str] = None
-    max_tokens: Optional[int] = None
+    admission: AdmissionPolicy = AdmissionPolicy.NONE
     label: Optional[str] = None
 
     model_config = {"frozen": True}
@@ -108,12 +113,11 @@ class ConcurrencyGate(BaseModel):
 
 
 class Triggers(BaseModel):
-    """Composable pre-flight trigger config. ``health_check`` is consumed by P2;
-    ``concurrency_gate`` by P3 (a step without one is untouched by the gauge)."""
+    """Composable pre-flight trigger config."""
 
-    ttft_deadline_ms: Optional[int] = None
-    health_check: bool = False
     concurrency_gate: Optional[ConcurrencyGate] = None
+
+    model_config = {"frozen": True}
 
 
 class StepConfig(BaseModel):
@@ -123,17 +127,30 @@ class StepConfig(BaseModel):
     model_config = {"frozen": True}
 
 
+class ProfileCapabilities(BaseModel):
+    """Application behavior supported by every model in a named profile."""
+
+    requires_translation: bool = False
+    history_max_tokens: int = Field(default=80_000, gt=0)
+
+    model_config = {"frozen": True}
+
+
 class NamedProfile(BaseModel):
     name: str
     weight: int = Field(ge=0, le=100)
+    capabilities: ProfileCapabilities = ProfileCapabilities()
     steps: dict[Step, StepConfig] = {}
+
+    model_config = {"frozen": True}
 
 
 class PipelineConfig(BaseModel):
     profiles: list[NamedProfile]
     defaults: dict[Step, StepConfig] = {}
-    sticky_ttl_s: int = 604800
-    fallback_enabled: bool = True
+    fallback_enabled: bool = False
+
+    model_config = {"frozen": True}
 
     @model_validator(mode="after")
     def _validate(self) -> "PipelineConfig":

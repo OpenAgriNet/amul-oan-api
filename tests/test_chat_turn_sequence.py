@@ -165,7 +165,6 @@ def _drive(monkeypatch, *, source_lang="gu", target_lang="gu",
             user_info=user_info or {},
             background_tasks=BackgroundTasks(),
             use_translation_pipeline=True,
-            pipeline_profile="managed",
             persona=persona,
         ):
             out.append(chunk)

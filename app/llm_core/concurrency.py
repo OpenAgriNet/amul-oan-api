@@ -50,7 +50,7 @@ Two aggregation/shed improvements over the naive single-scrape bang-bang:
      rule is about deterministic-config contexts, not this load shed.)
 
 Composition (fixed order, plan §2): ``health-prune -> concurrency-reorder ->
-materialize -> classify-walk``. Health prunes known-DOWN tiers FIRST, so a down
+target creation -> classify-walk``. Health prunes known-DOWN tiers first, so a down
 tier is already gone before this reorder runs and can never be reordered back to
 the front — this filter only ever touches saturated-but-UP vLLM tiers.
 
@@ -269,7 +269,7 @@ async def reprioritize_by_load(
     Shed probability rises with load (``_shed_probability``): a self-proportioning
     fraction near the cap, a hard 1.0 at/above it.
 
-    Runs on the already-HEALTH-PRUNED inert ``Tier`` list, BEFORE materialize, so
+    Runs on the already-health-pruned inert ``Tier`` list before target creation, so
     a tier the health filter already dropped is gone and can never be reordered
     back to the front here.
     """

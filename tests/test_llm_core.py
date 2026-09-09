@@ -1,8 +1,7 @@
 """Unit tests for the unified LLM pipeline core (app/llm_core), P0.
 
-Covers: factory superset (each provider builds the right handle kind + carries
-base_url/key), shim identity (synthesize_from_env reproduces the legacy env
-wiring), resolver returns a non-empty chain, and the default-OFF flag posture.
+Covers the provider factory, env-config synthesis, startup validation, and the
+default-OFF fallback posture.
 
 Zero network: building a pydantic-ai Model / AsyncOpenAI client is lazy (no call
 is made), and no test invokes a model. The dummy key is read only by factory
@@ -22,12 +21,10 @@ from app.llm_core import (
     Tier,
     ApiStyle,
     build_handle,
-    materialize,
     synthesize_from_env,
-    resolver,
     runtime,
 )
-from app.llm_core.factory import TGDescriptor, MaterializedTier
+from app.llm_core.factory import TGDescriptor
 
 
 def _openai_model_types() -> tuple[str, ...]:
@@ -81,11 +78,11 @@ def test_factory_gemini_agent_builds_model():
     assert type(handle).__name__ in ("GoogleModel", "GeminiModel")
 
 
-def test_factory_raw_openai_client_carries_api_key_and_base_url():
+def test_factory_pretranslation_client_carries_api_key_and_base_url():
     os.environ["OSS_INFERENCE_API_KEY"] = "dummy-oss"
     tier = Tier(provider=Provider.VLLM, model="gemma-4-31b-it",
                 endpoint="http://10.0.0.1:8020/v1", api_key_env="OSS_INFERENCE_API_KEY")
-    client = build_handle(tier, StepClientKind.RAW_OPENAI)
+    client = build_handle(tier, StepClientKind.PRE_TRANSLATION)
     assert type(client).__name__ == "AsyncOpenAI"
     assert str(client.base_url).rstrip("/") == "http://10.0.0.1:8020/v1"
     assert client.api_key == "dummy-oss"
@@ -102,10 +99,14 @@ def test_factory_translategemma_builds_descriptor():
 
 # ── legality enforcement ──────────────────────────────────────────────────────
 
-def test_factory_rejects_anthropic_for_raw_openai():
-    tier = Tier(provider=Provider.ANTHROPIC, model="claude-haiku-4-5")
-    with pytest.raises(ValueError):
-        build_handle(tier, StepClientKind.RAW_OPENAI)
+def test_factory_builds_anthropic_pretranslation_client(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    tier = Tier(
+        provider=Provider.ANTHROPIC,
+        model="claude-haiku-4-5",
+        api_key_env="ANTHROPIC_API_KEY",
+    )
+    assert type(build_handle(tier, StepClientKind.PRE_TRANSLATION)).__name__ == "AsyncAnthropic"
 
 
 def test_factory_rejects_translategemma_for_agent():
@@ -121,20 +122,6 @@ def test_factory_rejects_openai_for_translategemma_kind():
 
 
 # ── materialize ───────────────────────────────────────────────────────────────
-
-def test_materialize_preserves_order_and_timeout():
-    tiers = [
-        Tier(provider=Provider.VLLM, model="gemma", endpoint="http://oss:8020/v1", timeout_ms=8000),
-        Tier(provider=Provider.OPENAI, model="gpt-4.1", timeout_ms=20000),
-    ]
-    mts = materialize(StepClientKind.AGENT, tiers)
-    assert len(mts) == 2
-    assert isinstance(mts[0], MaterializedTier)
-    assert mts[0].timeout == 8.0 and mts[1].timeout == 20.0
-    # .model back-compat property returns the handle
-    assert mts[0].model is mts[0].handle
-    assert mts[0].provider == "vllm" and mts[1].provider == "openai"
-
 
 # ── shim identity ─────────────────────────────────────────────────────────────
 
@@ -206,50 +193,20 @@ def test_shim_post_translation_tg_ttft_deadline(monkeypatch):
     assert tg2.ttft_ms == 3500 and tg2.timeout_ms == 60000
 
 
-def test_shim_agent_resolves_to_env_managed_tier(monkeypatch):
-    """Resolver's AGENT primary reflects the env-synthesized managed tier
-    (provider + model come from LLM_PROVIDER / LLM_MODEL_NAME)."""
-    monkeypatch.delenv("OSS_INFERENCE_ENDPOINT_URL", raising=False)
-    monkeypatch.setenv("LLM_PROVIDER", "openai")
-    monkeypatch.setenv("LLM_MODEL_NAME", "gpt-4.1")
-    runtime.configure(run_self_check=False)
-    mt = resolver.primary_tier(Step.AGENT, "legacy")
-    assert mt.provider == "openai"
-    assert mt.model_name == "gpt-4.1"
-    assert mt.handle is not None
-
-
 # ── resolver ──────────────────────────────────────────────────────────────────
-
-def test_resolver_returns_non_empty_chain():
-    runtime.configure(run_self_check=False)
-    chain = resolver.resolve_chain(Step.AGENT, "legacy")
-    assert len(chain) >= 1
-    assert chain[0].handle is not None
-    # post-translation resolves to a TG descriptor
-    post = resolver.resolve_chain(Step.POST_TRANSLATION, "legacy")
-    assert isinstance(post[0].handle, TGDescriptor)
-
-
-def test_resolver_falls_back_to_managed_when_oss_profile_absent():
-    runtime.configure(run_self_check=False)
-    # current env has no OSS profile -> asking for oss variant still resolves.
-    chain = resolver.resolve_chain(Step.AGENT, "oss")
-    assert len(chain) >= 1
-
 
 # ── self-check (resolvability, non-fatal) ─────────────────────────────────────
 
 def test_self_check_is_non_fatal_on_unresolvable_step(monkeypatch):
-    """The P4 self-check logs+warns on a step that fails to resolve; it must NOT
-    raise (a materialize edge case must never block startup)."""
+    """A client construction failure is logged rather than blocking startup."""
+    from app.llm_core import factory
+
     runtime.configure(run_self_check=False)
 
-    def _boom(step, variant="legacy"):
+    def _boom(*args, **kwargs):
         raise RuntimeError("cannot build handle in this env")
 
-    monkeypatch.setattr(resolver, "primary_tier", _boom)
-    # No exception — self_check swallows resolve failures into a warning log.
+    monkeypatch.setattr(factory, "build_handle", _boom)
     runtime.self_check()
 
 
@@ -259,16 +216,23 @@ def test_configure_runs_self_check_without_raising():
     assert cfg is not None and len(cfg.profiles) >= 1
 
 
+def test_yaml_config_does_not_enable_fallback_implicitly():
+    from app.llm_core.config_model import NamedProfile, PipelineConfig
+
+    cfg = PipelineConfig(profiles=[NamedProfile(name="managed", weight=100)])
+    assert cfg.fallback_enabled is False
+
+
 # ── (D) vLLM/OSS tier without an endpoint must RAISE (not silently build OpenAI) ─
 
-def test_vllm_raw_openai_without_endpoint_raises():
-    """A vLLM RAW_OPENAI tier missing its endpoint raises instead of building an
+def test_vllm_pretranslation_without_endpoint_raises():
+    """A vLLM PRE_TRANSLATION tier missing its endpoint raises instead of building an
     OpenAI-default client — preserving the legacy fail-OPEN behaviour when OSS is
     unconfigured (moderation/pretranslation catch the raise and fail open)."""
     tier = Tier(provider=Provider.VLLM, model="gemma-4-31b-it",
                 api_key_env="OSS_INFERENCE_API_KEY")  # endpoint omitted
     with pytest.raises(ValueError, match="endpoint"):
-        build_handle(tier, StepClientKind.RAW_OPENAI)
+        build_handle(tier, StepClientKind.PRE_TRANSLATION)
 
 
 def test_vllm_agent_without_endpoint_raises():
@@ -280,14 +244,14 @@ def test_vllm_agent_without_endpoint_raises():
 
 
 def test_openai_raw_without_endpoint_is_fine():
-    """An OpenAI (managed) RAW_OPENAI tier legitimately has no endpoint (base_url
+    """An OpenAI (managed) PRE_TRANSLATION tier legitimately has no endpoint (base_url
     None => OpenAI proper) and must NOT raise."""
     tier = Tier(provider=Provider.OPENAI, model="gpt-4.1", api_key_env="OPENAI_API_KEY")
-    client = build_handle(tier, StepClientKind.RAW_OPENAI)
+    client = build_handle(tier, StepClientKind.PRE_TRANSLATION)
     assert client is not None
 
 
-# ── (E) startup config validation rejects an anthropic RAW_OPENAI step ──────────
+# ── startup config validation for pretranslation adapters ────────────────────
 
 def _cfg_with_pretranslation_provider(provider: Provider) -> "object":
     from app.llm_core.config_model import (
@@ -302,30 +266,25 @@ def _cfg_with_pretranslation_provider(provider: Provider) -> "object":
     return PipelineConfig(profiles=[NamedProfile(name="managed", weight=100, steps=steps)])
 
 
-def test_validate_config_rejects_anthropic_raw_pretranslation_when_enforced():
-    """PRE_TRANSLATION is RAW_OPENAI; an anthropic tier there would crash per-request,
-    so validate_config raises at startup when LLM_CORE_ENABLED (enforce=True)."""
+def test_validate_config_accepts_anthropic_pretranslation():
     cfg = _cfg_with_pretranslation_provider(Provider.ANTHROPIC)
-    with pytest.raises(ValueError, match="RAW_OPENAI"):
-        runtime.validate_config(cfg, enforce=True)
+    runtime.validate_config(cfg, enforce=True)
 
 
-def test_validate_config_rejects_gemini_raw_pretranslation_when_enforced():
+def test_validate_config_rejects_gemini_pretranslation_when_enforced():
     cfg = _cfg_with_pretranslation_provider(Provider.GEMINI)
-    with pytest.raises(ValueError, match="RAW_OPENAI"):
+    with pytest.raises(ValueError, match="pretranslation"):
         runtime.validate_config(cfg, enforce=True)
 
 
 def test_validate_config_warns_not_raises_when_flag_off():
-    """Flag-off boot on the legacy path (which handles anthropic pretranslation
-    itself) must NOT be broken — validate_config only warns."""
-    cfg = _cfg_with_pretranslation_provider(Provider.ANTHROPIC)
+    cfg = _cfg_with_pretranslation_provider(Provider.GEMINI)
     runtime.validate_config(cfg, enforce=False)  # no raise
 
 
 def test_validate_config_accepts_openai_and_vllm_raw_pretranslation():
     cfg = _cfg_with_pretranslation_provider(Provider.OPENAI)
-    runtime.validate_config(cfg, enforce=True)  # openai is RAW_OPENAI-legal
+    runtime.validate_config(cfg, enforce=True)  # openai is PRE_TRANSLATION-legal
     from app.llm_core.config_model import (
         NamedProfile, PipelineConfig, StepConfig, Tier as _Tier,
     )
@@ -336,7 +295,7 @@ def test_validate_config_accepts_openai_and_vllm_raw_pretranslation():
         Step.AGENT: StepConfig(tiers=[agent]),
         Step.PRE_TRANSLATION: StepConfig(tiers=[vllm_pre]),
     })])
-    runtime.validate_config(cfg2, enforce=True)  # vllm is RAW_OPENAI-legal
+    runtime.validate_config(cfg2, enforce=True)  # vllm is PRE_TRANSLATION-legal
 
 
 # ── (ENABLE) concurrency gate is attached from AGENT_CONCURRENCY_METRICS_URL ────

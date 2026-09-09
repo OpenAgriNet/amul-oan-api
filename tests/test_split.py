@@ -15,7 +15,7 @@ The bar these pin:
 
 Zero network: routing is pure deterministic (no Redis). Building a factory handle
 is lazy (no model call is ever made). Dummy OpenAI/OSS keys are set before import
-because the llm_core factory reads them when test tiers materialize.
+because the llm_core factory reads them when test handles are built.
 """
 
 import os
@@ -51,7 +51,7 @@ def _managed_tier(model="gpt-4.1"):
                 timeout_ms=20000)
 
 
-def two_profile_config(pct: int, ttl: int = 604800) -> PipelineConfig:
+def two_profile_config(pct: int) -> PipelineConfig:
     """The shim's seeded 2-profile split: ``[oss(pct), managed(100-pct)]`` with
     per-step ``[oss, managed]`` (oss profile) / ``[managed]`` (managed profile),
     mirroring ``fallback.attempt_chain``."""
@@ -68,7 +68,6 @@ def two_profile_config(pct: int, ttl: int = 604800) -> PipelineConfig:
             NamedProfile(name="oss", weight=pct, steps=oss_steps),
             NamedProfile(name="managed", weight=100 - pct, steps=managed_steps),
         ],
-        sticky_ttl_s=ttl,
     )
 
 
@@ -171,8 +170,16 @@ def test_pipeline_config_rejects_weights_not_summing_to_100():
 
 # ── (b) resolve_chain returns a materialized chain matching the profile tiers ──
 
-def test_resolve_chain_matches_oss_profile_tiers():
+def test_resolve_chain_matches_oss_profile_tiers(monkeypatch):
     import asyncio
+    from app.llm_core import execution
+
+    built = []
+    monkeypatch.setattr(
+        execution,
+        "build_handle",
+        lambda tier, kind: built.append(tier.model) or object(),
+    )
 
     cfg = two_profile_config(100)  # everyone -> oss profile
     chain = asyncio.run(split.resolve_chain("", Step.AGENT, cfg))
@@ -180,7 +187,9 @@ def test_resolve_chain_matches_oss_profile_tiers():
     assert [c.model_name for c in chain] == ["gemma", "gpt-4.1"]
     assert [c.kind for c in chain] == ["oss", "managed"]   # == attempt_chain labels
     assert [c.provider for c in chain] == ["vllm", "openai"]
-    assert all(c.handle is not None for c in chain)
+    assert built == []
+    assert chain[0].handle is not None
+    assert built == ["gemma"]
     assert chain[0].timeout == 8.0 and chain[1].timeout == 20.0
 
 
@@ -265,46 +274,6 @@ def test_resolve_chain_honors_profile_name_without_rebucketing(monkeypatch):
     assert [c.kind for c in legacy_chain] == ["managed"]
 
 
-# ── (d) the walkers receive the config-driven chain (the only path) ───────────
-
-def test_fallback_chain_uses_split(monkeypatch):
-    """The walkers' chain acquisition delegates to the config-driven split for the
-    mapped step (moderation -> Step.MODERATION). The router variant is threaded
-    through (fix C) — asserted in the spy below."""
-    import asyncio
-    from app.llm_core import execution as fb
-
-
-    sentinel = ["MATERIALIZED_TIER"]
-
-    async def _spy(session_id, step, *, profile_name=None):
-        assert step is Step.MODERATION
-        assert profile_name == "oss"     # (C) router-resolved profile NAME threaded through
-        return sentinel
-
-    monkeypatch.setattr(split, "resolve_chain", _spy)
-    chain = asyncio.run(fb._resolve_chain(pipeline="moderation", session_id="s", profile_name="oss"))
-    assert chain is sentinel
-
-
-def test_fallback_chain_degrades_to_managed_on_split_error(monkeypatch):
-    """A config/Redis edge case in split must never break the fallback path: it
-    degrades to the resolver's managed-tier chain (non-empty)."""
-    import asyncio
-    from app.llm_core import execution as fb
-    from app.llm_core import runtime
-
-    runtime.configure(run_self_check=False)   # synthesized (managed-only) config
-
-    async def _boom(session_id, step, *, profile_name=None):
-        raise RuntimeError("config blew up")
-
-    monkeypatch.setattr(split, "resolve_chain", _boom)
-    chain = asyncio.run(fb._resolve_chain(pipeline="moderation", session_id="s", profile_name="oss"))
-    assert len(chain) >= 1                       # degrade chain is never empty
-    assert chain[-1].kind == "managed"
-
-
 # ── N-way ("nxn"): the 3-profile yaml is loaded, distributed AND served ────────
 # The proof that a 3rd profile is actually SERVED (not collapsed to oss/managed):
 # deterministic_profile buckets across all 3 by weight, and each profile's AGENT
@@ -318,7 +287,7 @@ _EXAMPLE_YAML = _os.path.join(
 
 
 def test_nway_three_profile_yaml_distributes_and_serves(monkeypatch):
-    from app.llm_core import runtime, resolver
+    from app.llm_core import ExecutionContext, runtime
 
     monkeypatch.setenv("PIPELINE_CONFIG_PATH", _EXAMPLE_YAML)
     cfg = runtime.configure(run_self_check=False)   # parse N NamedProfiles w/ per-step tiers
@@ -337,15 +306,15 @@ def test_nway_three_profile_yaml_distributes_and_serves(monkeypatch):
 
         # (2) each profile's AGENT primary tier is ITS model + kind — served, not
         # collapsed. A qwen-on-vLLM profile is "oss"; the gpt profile is "managed".
-        gemma = resolver.primary_tier(Step.AGENT, "gemma")
-        qwen = resolver.primary_tier(Step.AGENT, "qwen")
-        gpt = resolver.primary_tier(Step.AGENT, "gpt")
+        gemma = ExecutionContext("", cfg, "gemma").info(Step.AGENT)
+        qwen = ExecutionContext("", cfg, "qwen").info(Step.AGENT)
+        gpt = ExecutionContext("", cfg, "gpt").info(Step.AGENT)
         assert (gemma.model_name, gemma.kind) == ("gemma-4-31b-it", "oss")
         assert (qwen.model_name, qwen.kind) == ("qwen2.5-32b-instruct", "oss")
         assert (gpt.model_name, gpt.kind) == ("gpt-4.1", "managed")
         # unknown name fail-safes: managed if present, else profiles[0] (here gemma,
         # since this N-way config has no "managed" profile) — never raises.
-        assert resolver.primary_tier(Step.AGENT, "does-not-exist").model_name == "gemma-4-31b-it"
+        assert ExecutionContext("", cfg, "does-not-exist").info(Step.AGENT).model_name == "gemma-4-31b-it"
     finally:
         # delenv BEFORE reconfigure so the global is restored to the env-shim (not the
         # yaml) for later tests — monkeypatch's own teardown runs only after this.

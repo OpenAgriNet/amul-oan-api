@@ -17,7 +17,7 @@ from app.utils import (
     set_cache,
 )
 from app.tasks.suggestions import create_suggestions
-from app.config import get_config_value, settings
+from app.config import settings
 from app.core.cache import cache
 from agents.deps import FarmerContext
 from agents.farmer_context import get_farmer_context_bundle_by_mobile
@@ -62,26 +62,6 @@ class SentenceSegmenter:
 
 
 sentence_segmenter = SentenceSegmenter()
-
-
-def _chat_history_trim_max_tokens(agent_provider: str, agent_model_name: str) -> int:
-    """Keep fewer past turns for smaller-context vLLM gemma backends so
-    system+tools+history+user fit.
-
-    Driven by the RESOLVED agent tier (provider + model), not a startup singleton:
-    a self-hosted vLLM gemma tier — whether the session's primary is the gemma
-    profile or the startup default is gemma-on-vLLM — gets the tighter gemma cap
-    (tune via CHAT_HISTORY_MAX_TOKENS_VLLM_GEMMA); everything else gets 80k. This
-    reproduces the old ``is_oss_gemma or is_startup_vllm_gemma`` decision now that
-    the tier is resolved by app/llm_core.
-    """
-    override = str(get_config_value("CHAT_HISTORY_MAX_TOKENS", ""))
-    if override.isdigit():
-        return int(override)
-    if (agent_provider or "").lower() == "vllm" and "gemma" in (agent_model_name or "").lower():
-        cap = str(get_config_value("CHAT_HISTORY_MAX_TOKENS_VLLM_GEMMA", "10000"))
-        return int(cap) if cap.isdigit() else 10_000
-    return 80_000
 
 
 def extract_complete_sentences(text: str):
@@ -243,30 +223,25 @@ async def stream_chat_messages(
     user_info: dict,
     background_tasks: BackgroundTasks,
     use_translation_pipeline: bool = True,
-    pipeline_profile: str | None = None,
     persona: ChatPersona = "farmer",
     history_session_id: str | None = None,
     artifact_sink: list[dict[str, Any]] | None = None,
     emit_artifact_frames: bool = True,
 ) -> AsyncGenerator[str, None]:
     """Async generator for streaming chat messages."""
-    pipeline_profile = pipeline_profile or await llm_core.profile(session_id)
+    execution = await llm_core.context(session_id)
+    pipeline_profile = execution.profile_name
     active_agent = doctor_agent if persona == "doctor" else agrinet_agent
     active_moderation_agent = doctor_moderation_agent if persona == "doctor" else moderation_agent
     message_history_session_id = history_session_id or session_id
     # The turn's channel profile: what differs between delivery channels, resolved
     # once here rather than re-derived at each use site.
     profile = _profile_for(channel)
-    # The oss-vs-managed behavioural split is derived from the resolved AGENT primary
-    # tier KIND (not a variant string): a vllm/self-hosted primary (gemma, qwen, ...)
-    # materializes kind "oss"; a managed provider (openai/anthropic/gemini) -> "managed".
-    # So a qwen-on-vLLM profile correctly takes the OSS path and a gpt profile the
-    # managed path. With the 2-way env-shim (profile named oss/managed) this equals
-    # the old ``pipeline_variant == "oss"`` bit exactly (oss profile's agent tier is
-    # vllm -> kind "oss"; managed profile's is the managed provider -> "managed").
-    agent_info = llm_core.primary_info(_LlmStep.AGENT, pipeline_profile)
-    is_oss = agent_info.kind == "oss"
-    use_translation_pipeline = bool(use_translation_pipeline) or is_oss
+    agent_info = execution.info(_LlmStep.AGENT)
+    use_translation_pipeline = (
+        bool(use_translation_pipeline)
+        or execution.capabilities.requires_translation
+    )
     # Open the per-turn pipeline-config tracer and hold the EXPLICIT instance.
     # The ContextVar does NOT survive Starlette's StreamingResponse async-generator
     # consumption, so we populate the must-have static fields (profile, variant,
@@ -274,7 +249,7 @@ async def stream_chat_messages(
     # emit site — never relying on a contextvar read at emit time. Deep trigger /
     # served-tier recording stays best-effort on top (via the contextvar).
     try:
-        pt = llm_core.begin_trace(pipeline_profile)
+        pt = execution.begin_trace()
     except Exception as _pt_exc:  # pragma: no cover - tracing must never break the turn
         logger.debug("pipeline_config populate skipped: %s", _pt_exc)
         pt = _pipeline_trace.begin(pipeline_profile)
@@ -405,6 +380,7 @@ async def stream_chat_messages(
                             source_lang="english",
                             target_lang=target_lang,
                             max_output_chars=profile.response_max_chars,
+                            execution=execution,
                         )
                     except Exception as e:
                         logger.warning(
@@ -481,9 +457,7 @@ async def stream_chat_messages(
             if hindi_enabled:
                 pretranslation_source_langs |= {"hi", "hindi"}
             if use_translation_pipeline and source_lang.lower() in pretranslation_source_langs:
-                pretrans_info = llm_core.primary_info(
-                    _LlmStep.PRE_TRANSLATION, pipeline_profile
-                )
+                pretrans_info = execution.info(_LlmStep.PRE_TRANSLATION)
                 logger.info(
                     "request_id=%s translation_pipeline=True variant=%s pretranslating %s->en with %s/%s",
                     request_id,
@@ -493,15 +467,13 @@ async def stream_chat_messages(
                     pretrans_info.model_name,
                 )
                 try:
-                    processing_query = await llm_core.run_adapter(
+                    processing_query = await execution.run_adapter(
                         _LlmStep.PRE_TRANSLATION,
-                        session_id,
                         lambda tier: pretranslate_with_tier(
                             tier,
                             text=query,
                             source_lang=source_lang,
                         ),
-                        profile_name=pipeline_profile,
                     )
                     processing_lang = "en"
                     logger.info(
@@ -578,12 +550,10 @@ async def stream_chat_messages(
                     else nullcontext()
                 )
                 with _mod_obs_ctx as mod_obs:
-                    moderation_run = await llm_core.run(
+                    moderation_run = await execution.run(
                         _LlmStep.MODERATION,
-                        session_id,
                         active_moderation_agent,
                         user_message,
-                        profile_name=pipeline_profile,
                     )
                     moderation_data = moderation_run.output
                     logger.info(
@@ -608,7 +578,9 @@ async def stream_chat_messages(
                             # Mark pending and clear stale suggestions so callers wait for fresh output.
                             await set_cache(status_key, True, ttl=SUGGESTIONS_PENDING_TTL)
                             await cache.delete(suggestions_cache_key)
-                            background_tasks.add_task(create_suggestions, session_id, target_lang)
+                            background_tasks.add_task(
+                                create_suggestions, session_id, target_lang, execution
+                            )
                             logger.info("Successfully added suggestions task")
                         except Exception as e:
                             logger.error(f"Error adding suggestions task: {str(e)}")
@@ -658,7 +630,7 @@ async def stream_chat_messages(
             # loop, not via message_history. Suggestions already runs this way.
             trimmed_history = trim_history(
                 history,
-                max_tokens=_chat_history_trim_max_tokens(request_provider, request_model_name),
+                max_tokens=execution.capabilities.history_max_tokens,
                 include_system_prompts=False,
                 include_tool_calls=False
             )
@@ -724,6 +696,7 @@ async def stream_chat_messages(
                                             source_lang="english",
                                             target_lang=target_lang,
                                             max_output_chars=deps.response_max_chars,
+                                            execution=execution,
                                         ):
                                             translated_output_chunks.append(translated_chunk)
                                             yield translated_chunk
@@ -745,6 +718,7 @@ async def stream_chat_messages(
                                     source_lang="english",
                                     target_lang=target_lang,
                                     max_output_chars=deps.response_max_chars,
+                                    execution=execution,
                                 ):
                                     translated_output_chunks.append(translated_chunk)
                                     yield translated_chunk
@@ -762,6 +736,7 @@ async def stream_chat_messages(
                                     source_lang="english",
                                     target_lang=target_lang,
                                     max_output_chars=deps.response_max_chars,
+                                    execution=execution,
                                 ):
                                     translated_output_chunks.append(translated_chunk)
                                     yield translated_chunk
@@ -774,14 +749,12 @@ async def stream_chat_messages(
                             raw_output_chunks.append(chunk)
                             yield chunk
 
-                english_src = llm_core.stream(
-                    session_id,
+                english_src = execution.stream(
                     active_agent,
                     user_message,
                     message_history=trimmed_history,
                     deps=deps,
                     new_messages=new_messages,
-                    profile_name=pipeline_profile,
                 )
 
                 if persona == "doctor":
