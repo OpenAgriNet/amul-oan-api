@@ -21,6 +21,8 @@ from app.services.translation import (
 
 def test_non_gujarati_passthrough_unchanged():
     assert _post_normalize_gu_translation("She is pregnant", "english") == "She is pregnant"
+    # Digitless Hindi is otherwise untouched (ASCII digits → Devanagari is covered
+    # in test_gu_digit_glyph.py).
     assert _post_normalize_gu_translation("unchanged", "hi") == "unchanged"
 
 

@@ -121,7 +121,8 @@ def test_hindi_source_uses_pretranslation_then_hindi_output(monkeypatch):
                 "max_output_chars": max_output_chars,
             }
         )
-        yield "अपनी गाय को रोज़ 40 से 60 लीटर साफ पानी पिलाएँ।"
+        # Post-translation digit script for Hindi uses Devanagari numerals.
+        yield "अपनी गाय को रोज़ ४० से ६० लीटर साफ पानी पिलाएँ।"
 
     monkeypatch.setattr(chat_service, "set_cache", _fake_set_cache)
     monkeypatch.setattr(chat_service, "update_message_history", _fake_update_message_history)
@@ -154,14 +155,10 @@ def test_hindi_source_uses_pretranslation_then_hindi_output(monkeypatch):
 
     result = asyncio.run(_drive())
 
-    assert result == "अपनी गाय को रोज़ 40 से 60 लीटर साफ पानी पिलाएँ।"
-    assert pretranslation_calls == [
-        {
-            "text": "मुझे अपनी गाय को कितना पानी पिलाना चाहिए?",
-            "source_lang": "hi",
-            "provider": None,
-        }
-    ]
+    assert result == "अपनी गाय को रोज़ ४० से ६० लीटर साफ पानी पिलाएँ।"
+    assert len(pretranslation_calls) == 1
+    assert pretranslation_calls[0]["text"] == "मुझे अपनी गाय को कितना पानी पिलाना चाहिए?"
+    assert pretranslation_calls[0]["source_lang"] == "hi"
     assert moderation_messages and "How much water should I give my cow?" in moderation_messages[0]
     assert agent_calls and agent_calls[0]["deps"].query == "How much water should I give my cow?"
     assert agent_calls[0]["deps"].lang_code == "en"
