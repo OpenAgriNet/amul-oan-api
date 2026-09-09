@@ -63,7 +63,6 @@ public API and the eventual repo-merge stays mechanical.
 
 from __future__ import annotations
 
-import os
 import random
 import re
 from typing import Optional
@@ -87,7 +86,7 @@ _DEFAULT_PROM_QUERY = "sum(vllm:num_requests_running + vllm:num_requests_waiting
 
 # Fraction of ``max_concurrency`` at which probabilistic shedding STARTS ramping
 # from 0. At/above the cap the shed probability is a hard 1.0. Env-tunable.
-_SHED_START_FRAC = float(os.getenv("CONCURRENCY_SHED_START_FRAC", "0.7"))
+_SHED_START_FRAC = settings.concurrency_shed_start_frac
 
 # vLLM Prometheus gauges summed into one in-flight number (identical to bh).
 _NUM_RE = re.compile(
@@ -172,11 +171,11 @@ async def get_concurrency(metrics_url: str) -> Optional[int]:
     request path); a fetch failure returns ``None`` — the fail-open signal the
     reorder honors (treat as NOT saturated). A successful fresh read publishes
     ``metrics.set_inflight`` for the read source."""
-    prom_url = os.getenv("CONCURRENCY_PROMETHEUS_URL")
+    prom_url = settings.concurrency_prometheus_url
     prom_url = prom_url.strip() if prom_url else ""
 
     if prom_url:
-        query = os.getenv("CONCURRENCY_PROMETHEUS_QUERY", _DEFAULT_PROM_QUERY)
+        query = settings.concurrency_prometheus_query or _DEFAULT_PROM_QUERY
         cache_source = f"prom:{prom_url}:{query}"
         inflight_label = prom_url
 

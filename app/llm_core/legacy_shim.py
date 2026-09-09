@@ -16,14 +16,14 @@ For the OSS profile each LLM step carries ``[oss, managed]`` tiers (mirroring
 ``fallback.attempt_chain``); managed carries ``[managed]``. Post-translation
 (TranslateGemma) is profile-invariant and lives in ``defaults``.
 
-Kept free of ``agents.*`` / ``app.services.*`` imports — reads os.getenv only —
+Kept free of ``agents.*`` / ``app.services.*`` imports — reads centralized
+``app.config`` values only —
 so the core stays import-clean.
 """
 
 from __future__ import annotations
 
 import logging
-import os
 
 from app.llm_core.config_model import (
     ApiStyle,
@@ -36,17 +36,18 @@ from app.llm_core.config_model import (
     Tier,
     Triggers,
 )
+from app.config import get_config_value
 
 
 logger = logging.getLogger(__name__)
 
 
 def _env(name: str, default: str | None = None) -> str | None:
-    return os.getenv(name, default)
+    return get_config_value(name, default)
 
 
 def _int_env(name: str, default: int) -> int:
-    raw = os.getenv(name)
+    raw = get_config_value(name)
     if raw is None or not raw.strip():
         return default
     try:
@@ -189,7 +190,7 @@ def synthesize_from_env() -> PipelineConfig:
     oss_pre_ms = _int_env("FALLBACK_PRETRANSLATION_OSS_TIMEOUT_MS", 10000)
     oss_sug_ms = _int_env("FALLBACK_SUGGESTIONS_OSS_TIMEOUT_MS", 6000)
 
-    fallback_enabled = (os.getenv("FALLBACK_ENABLED", "false") or "false").strip().lower() in {"1", "true", "yes", "on"}
+    fallback_enabled = str(get_config_value("FALLBACK_ENABLED", "false")).strip().lower() in {"1", "true", "yes", "on"}
     sticky_ttl = _int_env("OSS_VARIANT_TTL", 60 * 60 * 24 * 7)
 
     # Managed tiers per step (single-tier managed profile).

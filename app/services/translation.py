@@ -5,7 +5,6 @@ Provides translation between Indian languages and English using
 TranslateGemma 27B base model deployed on vLLM.
 """
 
-import os
 import json
 import re
 import time
@@ -18,8 +17,7 @@ from pathlib import Path
 from typing import Literal, Optional
 from openai import AsyncOpenAI
 from helpers.utils import get_logger, normalize_voice_output
-from dotenv import load_dotenv
-from app.config import settings
+from app.config import get_config_value, settings
 from app.models.union import UNION_BANNED_MESSAGE_VARIANTS, union_banned_message
 from agents.tools.terms import get_mini_glossary_for_text, get_ambiguity_hints_for_query, TERM_PAIRS, TermPair
 
@@ -79,8 +77,6 @@ try:
 except ImportError:
     get_langfuse_client = None
 
-load_dotenv()
-
 logger = get_logger(__name__)
 
 
@@ -99,23 +95,23 @@ class _TranslationHTTPError(Exception):
 # Pretranslation provider — follows main LLM_PROVIDER by default.
 # Override with PRETRANSLATION_PROVIDER if you want a different provider for pretranslation.
 # Supported: "openai" | "anthropic" | "vllm" (OpenAI-compatible endpoint, e.g. local Gemma 4 via vLLM).
-LLM_PROVIDER = os.getenv("LLM_PROVIDER", "openai").lower()
-PRETRANSLATION_PROVIDER = os.getenv("PRETRANSLATION_PROVIDER", LLM_PROVIDER).lower()
+LLM_PROVIDER = str(get_config_value("LLM_PROVIDER", "openai")).lower()
+PRETRANSLATION_PROVIDER = str(get_config_value("PRETRANSLATION_PROVIDER", LLM_PROVIDER)).lower()
 if PRETRANSLATION_PROVIDER == "anthropic":
-    _PRETRANSLATION_MODEL_DEFAULT = os.getenv("ANTHROPIC_PRETRANSLATION_MODEL", "claude-haiku-4-5")
+    _PRETRANSLATION_MODEL_DEFAULT = get_config_value("ANTHROPIC_PRETRANSLATION_MODEL", "claude-haiku-4-5")
 elif PRETRANSLATION_PROVIDER == "vllm":
     # vLLM speaks OpenAI-compatible API; default to the configured main LLM.
-    _PRETRANSLATION_MODEL_DEFAULT = os.getenv("LLM_MODEL_NAME", "gemma-4-31b-it")
+    _PRETRANSLATION_MODEL_DEFAULT = get_config_value("LLM_MODEL_NAME", "gemma-4-31b-it")
 else:
     _PRETRANSLATION_MODEL_DEFAULT = "gpt-4.1-mini"
-PRETRANSLATION_MODEL = os.getenv("PRETRANSLATION_MODEL", _PRETRANSLATION_MODEL_DEFAULT)
+PRETRANSLATION_MODEL = get_config_value("PRETRANSLATION_MODEL", _PRETRANSLATION_MODEL_DEFAULT)
 # Legacy alias consumed by the voice moderation service for its OpenAI-compatible
 # model selection. Mirrors PRETRANSLATION_MODEL (which takes precedence) with an
 # OPENAI_PRETRANSLATION_MODEL env fallback. Additive — chat translation paths use
 # PRETRANSLATION_MODEL directly; this exists so app/services/moderation.py imports cleanly.
-OPENAI_PRETRANSLATION_MODEL = os.getenv(
+OPENAI_PRETRANSLATION_MODEL = get_config_value(
     "PRETRANSLATION_MODEL",
-    os.getenv("OPENAI_PRETRANSLATION_MODEL", _PRETRANSLATION_MODEL_DEFAULT),
+    get_config_value("OPENAI_PRETRANSLATION_MODEL", _PRETRANSLATION_MODEL_DEFAULT),
 )
 
 _openai_client: Optional[AsyncOpenAI] = None
@@ -124,10 +120,10 @@ _anthropic_client: Optional[AsyncAnthropic] = None
 # OSS pretranslation (vLLM) — used per-request only for sticky 'oss' sessions,
 # independent of the startup PRETRANSLATION_PROVIDER so legacy sessions are
 # completely unaffected. Mirrors the dev OSS pipeline.
-OSS_INFERENCE_ENDPOINT_URL = os.getenv("OSS_INFERENCE_ENDPOINT_URL", "").rstrip("/")
-OSS_INFERENCE_API_KEY = os.getenv("OSS_INFERENCE_API_KEY") or "dummy"
-OSS_PRETRANSLATION_MODEL = os.getenv(
-    "OSS_PRETRANSLATION_MODEL", os.getenv("OSS_LLM_MODEL_NAME", "gemma-4-31b-it")
+OSS_INFERENCE_ENDPOINT_URL = str(get_config_value("OSS_INFERENCE_ENDPOINT_URL", "")).rstrip("/")
+OSS_INFERENCE_API_KEY = get_config_value("OSS_INFERENCE_API_KEY") or "dummy"
+OSS_PRETRANSLATION_MODEL = get_config_value(
+    "OSS_PRETRANSLATION_MODEL", get_config_value("OSS_LLM_MODEL_NAME", "gemma-4-31b-it")
 )
 _oss_pretrans_client: Optional[AsyncOpenAI] = None
 
@@ -590,8 +586,8 @@ def _post_normalize_gu_translation(
 # through the llm_core config chain (Step.POST_TRANSLATION); these singular
 # constants back the voice pretranslation structured fallback, which still speaks
 # TranslateGemma ``/completions`` directly.
-TRANSLATEGEMMA_27B_BASE_ENDPOINT = os.getenv("TRANSLATEGEMMA_27B_BASE_ENDPOINT", "http://localhost:18002/v1")
-TRANSLATEGEMMA_27B_BASE_MODEL = os.getenv("TRANSLATEGEMMA_27B_BASE_MODEL", "translategemma-27b-base")
+TRANSLATEGEMMA_27B_BASE_ENDPOINT = get_config_value("TRANSLATEGEMMA_27B_BASE_ENDPOINT", "http://localhost:18002/v1")
+TRANSLATEGEMMA_27B_BASE_MODEL = get_config_value("TRANSLATEGEMMA_27B_BASE_MODEL", "translategemma-27b-base")
 
 LANG_NAMES = {
     "marathi": "Marathi", "english": "English", "hindi": "Hindi",
@@ -1317,15 +1313,15 @@ def _get_openai_client() -> AsyncOpenAI:
     global _openai_client
     if _openai_client is None:
         if PRETRANSLATION_PROVIDER == "vllm":
-            base_url = os.getenv("INFERENCE_ENDPOINT_URL", "").rstrip("/")
+            base_url = str(get_config_value("INFERENCE_ENDPOINT_URL", "")).rstrip("/")
             if not base_url:
                 raise ValueError(
                     "INFERENCE_ENDPOINT_URL is required when PRETRANSLATION_PROVIDER=vllm"
                 )
-            api_key = os.getenv("INFERENCE_API_KEY") or "dummy"
+            api_key = get_config_value("INFERENCE_API_KEY") or "dummy"
             _openai_client = AsyncOpenAI(api_key=api_key, base_url=base_url)
         else:
-            api_key = os.getenv("OPENAI_API_KEY")
+            api_key = get_config_value("OPENAI_API_KEY")
             if not api_key:
                 raise ValueError("OPENAI_API_KEY is required for OpenAI pre-translation")
             _openai_client = AsyncOpenAI(api_key=api_key)
@@ -1337,7 +1333,7 @@ def _get_anthropic_client():
     if _anthropic_client is None:
         if AsyncAnthropic is None:
             raise ImportError("anthropic package not installed; set PRETRANSLATION_PROVIDER=openai")
-        api_key = os.getenv("ANTHROPIC_API_KEY")
+        api_key = get_config_value("ANTHROPIC_API_KEY")
         if not api_key:
             raise ValueError("ANTHROPIC_API_KEY is required for Anthropic pre-translation")
         _anthropic_client = AsyncAnthropic(api_key=api_key)

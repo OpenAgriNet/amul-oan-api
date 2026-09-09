@@ -1,5 +1,3 @@
-import os
-
 from pydantic_ai import Agent, RunContext, Tool
 from pydantic_ai.settings import ModelSettings
 
@@ -7,19 +5,20 @@ from agents.agrinet import _agrinet_max_output_tokens
 from agents.deps import FarmerContext
 from agents.tools.search import search_documents
 from helpers.utils import get_prompt, get_today_date_str
+from app.config import get_config_value, settings
 
 
 def _doctor_max_output_tokens() -> int:
-    override = os.getenv("DOCTOR_MAX_TOKENS")
-    if override and override.isdigit():
+    override = str(get_config_value("DOCTOR_MAX_TOKENS", ""))
+    if override.isdigit():
         return int(override)
     return min(_agrinet_max_output_tokens(), 1200)
 
 
 def _doctor_request_limit() -> int:
     """Allow enough model turns for treatment completeness searches plus synthesis."""
-    override = os.getenv("DOCTOR_REQUEST_LIMIT")
-    if override and override.isdigit() and int(override) > 0:
+    override = str(get_config_value("DOCTOR_REQUEST_LIMIT", ""))
+    if override.isdigit() and int(override) > 0:
         return int(override)
     return 10
 

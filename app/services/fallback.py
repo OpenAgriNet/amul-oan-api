@@ -21,7 +21,6 @@ own task + queue, so it stays disconnect-safe (see its docstring).
 from __future__ import annotations
 
 import asyncio
-import os
 import random
 import time
 
@@ -306,7 +305,7 @@ AGENT_ACTIVITY = _AgentActivity()
 # timeout we proceed anyway rather than deadlock a farmer's turn.
 def _managed_max_concurrency() -> int:
     try:
-        return max(1, int(os.getenv("MANAGED_MAX_CONCURRENCY", "64")))
+        return max(1, settings.managed_max_concurrency)
     except Exception:
         return 64
 

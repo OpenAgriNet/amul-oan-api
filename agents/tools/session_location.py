@@ -25,9 +25,8 @@ restate the location; the cost of raising would be a dead tool.
 """
 from __future__ import annotations
 
-import os
-
 from agents.tools.districts import DISTRICTS
+from app.config import settings
 from app.core.cache import cache
 from helpers.utils import get_logger
 
@@ -41,7 +40,7 @@ __all__ = [
 ]
 
 MANDI_LOCATION_NAMESPACE = "mandi-location"
-MANDI_LOCATION_TTL_S = int(os.getenv("MANDI_LOCATION_TTL_S", "3600"))
+MANDI_LOCATION_TTL_S = settings.mandi_location_ttl_s
 
 
 async def get_session_district_key(session_id: str | None) -> str | None:

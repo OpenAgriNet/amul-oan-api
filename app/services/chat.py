@@ -1,7 +1,6 @@
 from contextlib import nullcontext
 from typing import Any, AsyncGenerator
 from functools import lru_cache
-import os
 import regex
 import re
 from fastapi import BackgroundTasks
@@ -18,7 +17,7 @@ from app.utils import (
     set_cache,
 )
 from app.tasks.suggestions import create_suggestions
-from app.config import settings
+from app.config import get_config_value, settings
 from app.services.fallback import AGENT_ACTIVITY, execute_with_fallback, stream_with_fallback, with_first_token_deadline
 from app.core.cache import cache
 from agents.deps import FarmerContext
@@ -39,7 +38,7 @@ from app.services.identity_profile import (
     build_identity_profile_table,
     is_identity_query,
 )
-from app.personas import ChatPersona, resolve_chat_persona
+from app.personas import ChatPersona
 from app.chat_artifacts import encode_chat_artifacts
 
 
@@ -79,11 +78,11 @@ def _chat_history_trim_max_tokens(agent_provider: str, agent_model_name: str) ->
     reproduces the old ``is_oss_gemma or is_startup_vllm_gemma`` decision now that
     the tier is resolved by app/llm_core.
     """
-    override = os.getenv("CHAT_HISTORY_MAX_TOKENS")
-    if override and override.isdigit():
+    override = str(get_config_value("CHAT_HISTORY_MAX_TOKENS", ""))
+    if override.isdigit():
         return int(override)
     if (agent_provider or "").lower() == "vllm" and "gemma" in (agent_model_name or "").lower():
-        cap = os.getenv("CHAT_HISTORY_MAX_TOKENS_VLLM_GEMMA", "10000")
+        cap = str(get_config_value("CHAT_HISTORY_MAX_TOKENS_VLLM_GEMMA", "10000"))
         return int(cap) if cap.isdigit() else 10_000
     return 80_000
 
@@ -248,13 +247,12 @@ async def stream_chat_messages(
     background_tasks: BackgroundTasks,
     use_translation_pipeline: bool = True,
     pipeline_profile: str = "oss",
-    requested_persona: ChatPersona | None = None,
+    persona: ChatPersona = "farmer",
     history_session_id: str | None = None,
     artifact_sink: list[dict[str, Any]] | None = None,
     emit_artifact_frames: bool = True,
 ) -> AsyncGenerator[str, None]:
     """Async generator for streaming chat messages."""
-    persona = resolve_chat_persona(user_info, requested_persona)
     active_agent = doctor_agent if persona == "doctor" else agrinet_agent
     active_moderation_agent = doctor_moderation_agent if persona == "doctor" else moderation_agent
     message_history_session_id = history_session_id or session_id

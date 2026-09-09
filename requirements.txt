@@ -34,6 +34,7 @@ redis==7.1.0
 
 # Settings
 python-decouple==3.8
+hvac>=2.3.0,<3.0.0
 
 openpyxl==3.1.5
 

@@ -12,8 +12,8 @@ Design
 ------
 * **Redis key** ``llm_pipeline_config:{channel}`` holds the JSON of a
   ``PipelineConfig`` (``model_dump(mode="json")``). Secrets are NEVER in it — a
-  tier only names its ``api_key_env``; the VALUE is read from the environment at
-  materialize time, exactly as for the boot config.
+  tier only names its ``api_key_env``; the VALUE is read from the centralized
+  Vault/environment secret provider at materialize time.
 * **channel** — ``PIPELINE_CHANNEL`` env, defaulting to the repo's identity
   (``voice`` if the ``Step`` enum has the voice-only ``non_meaningful`` step,
   else ``chat``) so each deployment self-identifies without any per-repo code
@@ -63,12 +63,12 @@ at most once per window with a short socket timeout.
 from __future__ import annotations
 
 import json
-import os
 import time
 from typing import Optional
 
 from helpers.utils import get_logger
 from app.llm_core.config_model import PipelineConfig, Step
+from app.config import get_config_value
 
 logger = get_logger(__name__)
 
@@ -109,7 +109,7 @@ _suppress_refresh: bool = False
 
 
 def _truthy(name: str) -> bool:
-    v = os.getenv(name)
+    v = get_config_value(name)
     return v is not None and v.strip().lower() in {"1", "true", "yes", "on"}
 
 
@@ -121,7 +121,7 @@ def enabled() -> bool:
 def channel() -> str:
     """The config channel this deployment reads — ``PIPELINE_CHANNEL`` or the
     repo default (``chat`` / ``voice``). Chat and voice read distinct keys."""
-    v = os.getenv(CHANNEL_ENV)
+    v = get_config_value(CHANNEL_ENV)
     v = v.strip() if v else ""
     return v or _DEFAULT_CHANNEL
 
@@ -137,7 +137,7 @@ def refresh_interval_s() -> float:
     negative) window would otherwise GET redis on EVERY request (defeating the TTL
     and putting a blocking read on every hot-path call), so clamp it to the
     default."""
-    raw = os.getenv(REFRESH_ENV)
+    raw = get_config_value(REFRESH_ENV)
     if raw is None or not raw.strip():
         return _DEFAULT_REFRESH_S
     try:
@@ -153,7 +153,7 @@ def redis_timeout_s() -> float:
     the app-wide ``redis_socket_timeout`` (up to 10s): this read sits on the request
     hot path (once per TTL window), so a slow/down redis must cost ≤0.5s, not 10s. A
     bad or non-positive value degrades to the default rather than raising."""
-    raw = os.getenv(TIMEOUT_ENV)
+    raw = get_config_value(TIMEOUT_ENV)
     if raw is None or not raw.strip():
         return _DEFAULT_REDIS_TIMEOUT_S
     try:

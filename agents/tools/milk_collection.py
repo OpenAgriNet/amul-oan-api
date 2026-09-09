@@ -2,7 +2,6 @@
 Tool for fetching farmer milk collection and deduction details.
 """
 import asyncio
-import os
 
 from pydantic_ai import RunContext
 from pydantic_ai.tools import ToolDefinition
@@ -15,7 +14,7 @@ from agents.services.beckn_amul import (
 )
 from agents.tools.farmer_animal_backends import get_farmer_milk_collection_details_api
 from agents.tools.farmer import get_farmer_data_by_mobile
-from app.config import settings
+from app.config import get_config_value, settings
 from app.models.milk_collection import FarmerMilkCollectionRequestModel
 from helpers.utils import get_logger
 
@@ -239,7 +238,7 @@ async def get_farmer_milk_collection_details(
             return_exceptions=True,
         )
     else:
-        token = os.getenv("PASHUGPT_TOKEN")
+        token = get_config_value("PASHUGPT_TOKEN")
         if not token:
             logger.error("PASHUGPT_TOKEN is not set")
             return "Milk collection lookup failed.\n\nProvider access is not configured."

@@ -12,7 +12,6 @@ The BAP runs in sync mode, so `/search` returns the on_search catalog inline.
 Endpoint is overridable via VISTAAR_BAP_URL (default: the Vistaar sandbox).
 Advisory (ICAR/NPSS) is NOT here — on BV that's document search, not Beckn.
 """
-import os
 import uuid
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
@@ -87,7 +86,7 @@ _DATE_FMT = "%d-%m-%Y"
 # SEQUENCE and only on zero rows: each attempt costs ~2.2 s, and the upstream is
 # a single non-redundant sandbox, so fanning out in parallel would double its
 # load on every happy path to save time only on the rare failure path.
-MANDI_MAX_CANDIDATES = int(os.getenv("MANDI_MAX_CANDIDATES", "3"))
+MANDI_MAX_CANDIDATES = settings.mandi_max_candidates
 
 # BV's get_scheme_info codes and the farmer-phrasing alias map live in
 # agents/tools/scheme_codes.py — ONE copy, shared with beckn_network.py.

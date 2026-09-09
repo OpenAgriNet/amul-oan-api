@@ -1,12 +1,10 @@
 # sva/helpers/utils.py
 
-import os
 import re
 from pathlib import Path
 from typing import List, Dict, Optional
 import logging
 import boto3
-from dotenv import load_dotenv
 import base64
 import tiktoken
 import unicodedata as ud
@@ -17,8 +15,7 @@ import pytz
 from helpers.gujarati_numbers import normalize_numbers_for_tts
 from app.models.farmer import FarmerModel
 from app.models.union import UnionName
-
-load_dotenv()
+from app.config import settings
 
 # In-memory prompt template cache (populated at app startup; no disk I/O at request time)
 PROMPT_TEMPLATES_CACHE: Dict[str, str] = {}
@@ -28,10 +25,10 @@ def get_s3_client():
     """Get S3 client."""
     return boto3.client(
         's3',
-        aws_access_key_id=os.getenv('AWS_ACCESS_KEY_ID'),
-        aws_secret_access_key=os.getenv('AWS_SECRET_ACCESS_KEY'),
-        region_name=os.getenv('AWS_REGION'),
-        endpoint_url=os.getenv("AWS_ENDPOINT_URL", None)
+        aws_access_key_id=settings.aws_access_key_id,
+        aws_secret_access_key=settings.aws_secret_access_key,
+        region_name=settings.aws_region,
+        endpoint_url=settings.aws_endpoint_url,
     )
 
 
@@ -396,7 +393,7 @@ def upload_audio_to_s3(audio_base64: str, session_id: str, bucket_name: str | No
     """
     try:
         if not bucket_name:
-            bucket_name = os.getenv('AWS_S3_BUCKET')
+            bucket_name = settings.aws_s3_bucket
             
         if not bucket_name:
             raise ValueError("S3 bucket name not provided")

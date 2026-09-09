@@ -2,7 +2,6 @@
 Simple authentication router that generates JWT tokens for the frontend.
 This closes the auth loop - FE can call this endpoint to get a valid token.
 """
-import os
 import uuid
 from datetime import datetime, timedelta
 from enum import Enum
@@ -239,7 +238,7 @@ def _require_api_key(
     api_key: str = Query(..., alias="api_key", description="Server-side API key for demo-ui backends"),
 ) -> str:
     """Validate the demo-ui API key."""
-    expected = os.getenv("DEMO_UI_API_KEY", "").strip()
+    expected = (settings.demo_ui_api_key or "").strip()
     if not expected:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,

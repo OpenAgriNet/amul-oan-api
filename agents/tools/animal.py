@@ -4,10 +4,10 @@ Uses amulpashudhan.com and returns normalized snake_case animal data.
 """
 from app.models.animal import AnimalModel
 import json
-import os
 from typing import Optional
 
 from helpers.utils import get_logger
+from app.config import get_config_value
 
 from agents.tools.farmer_animal_backends import fetch_animal_amulpashudhan
 
@@ -34,7 +34,7 @@ async def get_animal_data_by_tag(tag: str) -> AnimalModel | None:
     if not tag:
         return None
 
-    token1 = os.getenv("PASHUGPT_TOKEN")
+    token1 = get_config_value("PASHUGPT_TOKEN")
     if not token1:
         logger.error("PASHUGPT_TOKEN is not set")
         return None
@@ -69,7 +69,7 @@ async def get_animal_by_tag(tag: str, society_name: Optional[str] = None) -> str
 
     # Herdman fallback is temporarily disabled. Keep the old flow commented out
     # instead of removing it completely.
-    # token3 = os.getenv("PASHUGPT_TOKEN_3")
+    # token3 = get_config_value("PASHUGPT_TOKEN_3")
     # fallback: Optional[Dict[str, Any]] = None
     # if token3 and society_name == "Mehsana":
     #     try:
