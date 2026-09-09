@@ -16,7 +16,7 @@ os.environ.setdefault("OPENAI_API_KEY", "test-key")
 
 import pytest
 
-from app.services.fallback import AGENT_ACTIVITY, with_first_token_deadline
+from app.llm_core.execution import AGENT_ACTIVITY, with_first_token_deadline
 
 
 class _Attempt:

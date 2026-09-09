@@ -72,13 +72,12 @@ def _drive(monkeypatch, *, agent_raises=False, stop_after=None):
     from fastapi import BackgroundTasks
 
     scored = _capture(monkeypatch)
-    monkeypatch.setattr(chat_service.settings, "fallback_enabled", False)
     monkeypatch.setattr(chat_service, "propagate_attributes", None)
     monkeypatch.setattr(chat_service, "cache", _Cache())
     monkeypatch.setattr(chat_service, "trim_history", lambda *_a, **_k: [])
     monkeypatch.setattr(chat_service, "format_message_pairs", lambda *_a, **_k: "")
 
-    async def _pre(text, *_a, **_k):
+    async def _pre(_tier, *, text, **_k):
         return "How much water?"
 
     async def _mod(user_message, model=None):
@@ -95,7 +94,7 @@ def _drive(monkeypatch, *, agent_raises=False, stop_after=None):
     async def _noop(*_a, **_k):
         return None
 
-    monkeypatch.setattr(chat_service, "translate_to_english_pretranslation", _pre)
+    monkeypatch.setattr(chat_service, "pretranslate_with_tier", _pre)
     monkeypatch.setattr(chat_service.moderation_agent, "run", _mod)
     monkeypatch.setattr(chat_service.agrinet_agent, "iter", _iter)
     monkeypatch.setattr(chat_service, "translate_text_stream_fast", _tr)

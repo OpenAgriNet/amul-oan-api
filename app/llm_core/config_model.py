@@ -133,7 +133,7 @@ class PipelineConfig(BaseModel):
     profiles: list[NamedProfile]
     defaults: dict[Step, StepConfig] = {}
     sticky_ttl_s: int = 604800
-    fallback_enabled: bool = False
+    fallback_enabled: bool = True
 
     @model_validator(mode="after")
     def _validate(self) -> "PipelineConfig":

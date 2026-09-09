@@ -35,10 +35,9 @@ def _dead_oss_model():
 
 @pytest.fixture
 def oss_dead(monkeypatch):
-    from app.services import fallback as fb
+    from app.llm_core import execution as fb
     from app.llm_core.factory import MaterializedTier
 
-    monkeypatch.setattr(fb.settings, "fallback_enabled", True)
 
     # Config-driven chain: a DEAD OSS vLLM tier (connection refused) first, then
     # the real managed model — the walker must classify the connection failure and

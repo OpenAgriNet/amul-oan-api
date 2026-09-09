@@ -189,7 +189,7 @@ def synthesize_from_env() -> PipelineConfig:
     oss_pre_ms = _int_env("FALLBACK_PRETRANSLATION_OSS_TIMEOUT_MS", 10000)
     oss_sug_ms = _int_env("FALLBACK_SUGGESTIONS_OSS_TIMEOUT_MS", 6000)
 
-    fallback_enabled = str(get_config_value("FALLBACK_ENABLED", "false")).strip().lower() in {"1", "true", "yes", "on"}
+    fallback_enabled = str(get_config_value("FALLBACK_ENABLED", "true")).strip().lower() in {"1", "true", "yes", "on"}
     sticky_ttl = _int_env("OSS_VARIANT_TTL", 60 * 60 * 24 * 7)
 
     # Managed tiers per step (single-tier managed profile).

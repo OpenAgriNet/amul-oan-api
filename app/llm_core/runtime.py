@@ -162,7 +162,7 @@ def _assert_boot_posture() -> None:
     def _onoff(b: bool) -> str:
         return "on" if b else "off"
 
-    fallback_on = bool(settings.fallback_enabled)
+    fallback_on = bool(PIPELINE and PIPELINE.fallback_enabled)
     if settings.concurrency_gauge_enabled:
         conc = "on(metrics_url set)" if settings.agent_concurrency_metrics_url else "on(metrics_url unset — no-op)"
     else:

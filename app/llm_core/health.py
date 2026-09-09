@@ -3,7 +3,7 @@
 Two composable pieces feed one per-endpoint breaker, and one filter consumes it:
 
 * **Passive breaker** (fed by the fallback failure/success path in
-  ``app.services.fallback``): a ``FALLBACKABLE`` classified failure on a tier is a
+  ``app.llm_core.execution``): a ``FALLBACKABLE`` classified failure on a tier is a
   ``record_failure(endpoint)``; a clean success is a ``record_success(endpoint)``.
   The endpoint trips ``open`` on EITHER of two signals:
     * ``N`` **consecutive** failures (whole-box death — every request errors), OR

@@ -472,23 +472,6 @@ class Settings(BaseSettings):
     # OSS_LLM_MODEL_NAME) by app/llm_core/legacy_shim.py. The env vars stay; the
     # duplicate settings attributes + the pipeline_router that read them are gone.
 
-    # Standard OSS -> managed overflow/fallback (see docs/oss-fallback-design.md).
-    # ARMS the whole overflow system: the OSS->managed attempt chain AND the health
-    # + concurrency guards (which fire ONLY via the fallback walkers) are inert
-    # while this is off. Post-P4 the unified pipeline is the ONLY path (legacy
-    # deleted), so shipping with overflow off makes no sense — DEFAULTS TRUE. Envs
-    # that deliberately want it off can still set FALLBACK_ENABLED=false.
-    fallback_enabled: bool = os.getenv("FALLBACK_ENABLED", "true").strip().lower() in {
-        "1", "true", "yes", "on"
-    }
-    # Per-pipeline OSS time-to-respond budgets before falling back to managed.
-    fallback_chat_oss_timeout_ms: int = int(os.getenv("FALLBACK_CHAT_OSS_TIMEOUT_MS", "8000"))
-    fallback_moderation_oss_timeout_ms: int = int(os.getenv("FALLBACK_MODERATION_OSS_TIMEOUT_MS", "5000"))
-    fallback_pretranslation_oss_timeout_ms: int = int(os.getenv("FALLBACK_PRETRANSLATION_OSS_TIMEOUT_MS", "10000"))
-    fallback_suggestions_oss_timeout_ms: int = int(os.getenv("FALLBACK_SUGGESTIONS_OSS_TIMEOUT_MS", "6000"))
-    # Deadline for the managed (fallback) tier.
-    fallback_managed_timeout_ms: int = int(os.getenv("FALLBACK_MANAGED_TIMEOUT_MS", "20000"))
-
     # The unified LLM pipeline (app/llm_core) is now the ONLY model-selection path
     # — the LLM_CORE_ENABLED / PROFILES_ENABLED kill-switches (P0/P1 identity gates)
     # were removed at P4. The weighted-profile split + config-driven fallback chain

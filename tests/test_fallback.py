@@ -8,8 +8,8 @@ import asyncio
 
 import pytest
 
-from app.services import fallback as fb
-from app.services.fallback import FallbackReason, classify, execute_with_fallback
+from app.llm_core import execution as fb
+from app.llm_core.execution import FallbackReason, classify, execute_with_fallback
 
 
 # ── classify() ──────────────────────────────────────────────────────────────
@@ -65,7 +65,6 @@ def test_bad_output_and_cancelled_not_fallbackable():
 @pytest.fixture
 def oss_enabled(monkeypatch, install_chain):
     """Fallback ON, controlled [oss, managed] chain; capture emitted events."""
-    monkeypatch.setattr(fb.settings, "fallback_enabled", True)
     install_chain()
     events = []
     monkeypatch.setattr(fb, "emit", events.append)

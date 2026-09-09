@@ -277,6 +277,9 @@ class MaterializedTier:
     provider: str
     endpoint: str
     timeout: Optional[float]
+    # Optional first-token deadline, distinct from the overall attempt timeout.
+    # Most tiers leave this unset and streaming falls back to ``timeout``.
+    ttft: Optional[float] = None
 
     @property
     def model(self) -> Any:
@@ -321,6 +324,7 @@ def materialize(step_client_kind: StepClientKind, tiers: list[Tier]) -> list[Mat
                 provider=tier.provider.value,
                 endpoint=tier.endpoint or "managed",
                 timeout=(tier.timeout_ms / 1000.0) if tier.timeout_ms is not None else None,
+                ttft=(tier.ttft_ms / 1000.0) if tier.ttft_ms is not None else None,
             )
         )
     return out

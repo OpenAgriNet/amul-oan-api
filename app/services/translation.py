@@ -7,44 +7,19 @@ TranslateGemma 27B base model deployed on vLLM.
 
 import json
 import re
-import time
 import asyncio
 import aiohttp
-import anyio
-from contextlib import contextmanager, suppress
+from contextlib import contextmanager
 from contextvars import ContextVar
 from pathlib import Path
 from typing import Literal, Optional
-from openai import AsyncOpenAI
 from helpers.utils import get_logger, normalize_voice_output
 from app.config import get_config_value, settings
 from app.models.union import UNION_BANNED_MESSAGE_VARIANTS, union_banned_message
 from agents.tools.terms import get_mini_glossary_for_text, get_ambiguity_hints_for_query, TERM_PAIRS, TermPair
 
-# Post-translation now flows through the unified llm_core config chain
-# (Step.POST_TRANSLATION = [TranslateGemma(LB), managed-LLM overflow]). These are
-# the seams the adapter walks; the disconnect-safe first-token primitive
-# (with_first_token_deadline) and the failure classifier are reused verbatim — the
-# translation logic is preserved, only the tier walk + cross-provider overflow are
-# new.
-from app.llm_core import resolver as _llm_resolver
-from app.llm_core import health as _llm_health
-from app.llm_core import trace as _llm_trace
-from app import metrics as _metrics
-from app.llm_core.config_model import (
-    Step as _Step,
-    Tier as _Tier,
-    Provider as _Provider,
-    StepClientKind as _StepClientKind,
-)
-from app.llm_core.factory import TGDescriptor as _TGDescriptor, build_handle as _build_handle
-from app.services.fallback import (
-    FALLBACKABLE as _FALLBACKABLE,
-    FallbackEvent as _FallbackEvent,
-    classify as _classify,
-    emit as _emit,
-    with_first_token_deadline as _with_first_token_deadline,
-)
+from app import llm_core
+from app.llm_core import Step as _Step
 
 
 # ── Channel-aware translation (§14) ───────────────────────────────────────────
@@ -68,11 +43,6 @@ def _is_voice_channel() -> bool:
     return _translation_channel.get() == "voice"
 
 try:
-    from anthropic import AsyncAnthropic
-except ImportError:
-    AsyncAnthropic = None  # type: ignore
-
-try:
     from langfuse import get_client as get_langfuse_client
 except ImportError:
     get_langfuse_client = None
@@ -90,97 +60,6 @@ class _TranslationHTTPError(Exception):
     def __init__(self, status: int, body: str = ""):
         self.status_code = status
         super().__init__(f"Translation failed with status {status}: {body}")
-
-
-# Pretranslation provider — follows main LLM_PROVIDER by default.
-# Override with PRETRANSLATION_PROVIDER if you want a different provider for pretranslation.
-# Supported: "openai" | "anthropic" | "vllm" (OpenAI-compatible endpoint, e.g. local Gemma 4 via vLLM).
-LLM_PROVIDER = str(get_config_value("LLM_PROVIDER", "openai")).lower()
-PRETRANSLATION_PROVIDER = str(get_config_value("PRETRANSLATION_PROVIDER", LLM_PROVIDER)).lower()
-if PRETRANSLATION_PROVIDER == "anthropic":
-    _PRETRANSLATION_MODEL_DEFAULT = get_config_value("ANTHROPIC_PRETRANSLATION_MODEL", "claude-haiku-4-5")
-elif PRETRANSLATION_PROVIDER == "vllm":
-    # vLLM speaks OpenAI-compatible API; default to the configured main LLM.
-    _PRETRANSLATION_MODEL_DEFAULT = get_config_value("LLM_MODEL_NAME", "gemma-4-31b-it")
-else:
-    _PRETRANSLATION_MODEL_DEFAULT = "gpt-4.1-mini"
-PRETRANSLATION_MODEL = get_config_value("PRETRANSLATION_MODEL", _PRETRANSLATION_MODEL_DEFAULT)
-# Legacy alias consumed by the voice moderation service for its OpenAI-compatible
-# model selection. Mirrors PRETRANSLATION_MODEL (which takes precedence) with an
-# OPENAI_PRETRANSLATION_MODEL env fallback. Additive — chat translation paths use
-# PRETRANSLATION_MODEL directly; this exists so app/services/moderation.py imports cleanly.
-OPENAI_PRETRANSLATION_MODEL = get_config_value(
-    "PRETRANSLATION_MODEL",
-    get_config_value("OPENAI_PRETRANSLATION_MODEL", _PRETRANSLATION_MODEL_DEFAULT),
-)
-
-_openai_client: Optional[AsyncOpenAI] = None
-_anthropic_client: Optional[AsyncAnthropic] = None
-
-# OSS pretranslation (vLLM) — used per-request only for sticky 'oss' sessions,
-# independent of the startup PRETRANSLATION_PROVIDER so legacy sessions are
-# completely unaffected. Mirrors the dev OSS pipeline.
-OSS_INFERENCE_ENDPOINT_URL = str(get_config_value("OSS_INFERENCE_ENDPOINT_URL", "")).rstrip("/")
-OSS_INFERENCE_API_KEY = get_config_value("OSS_INFERENCE_API_KEY") or "dummy"
-OSS_PRETRANSLATION_MODEL = get_config_value(
-    "OSS_PRETRANSLATION_MODEL", get_config_value("OSS_LLM_MODEL_NAME", "gemma-4-31b-it")
-)
-_oss_pretrans_client: Optional[AsyncOpenAI] = None
-
-
-def _get_oss_pretranslation_client() -> AsyncOpenAI:
-    """OpenAI-compatible client pinned to the OSS vLLM endpoint."""
-    global _oss_pretrans_client
-    if _oss_pretrans_client is None:
-        if not OSS_INFERENCE_ENDPOINT_URL:
-            raise ValueError(
-                "OSS_INFERENCE_ENDPOINT_URL is required for OSS pretranslation"
-            )
-        _oss_pretrans_client = AsyncOpenAI(
-            api_key=OSS_INFERENCE_API_KEY, base_url=OSS_INFERENCE_ENDPOINT_URL
-        )
-    return _oss_pretrans_client
-
-
-async def _create_with_timeout(make_coro, timeout):
-    """Run an async client call under a timeout while guaranteeing the request
-    coroutine is owned by a task the instant it is created.
-
-    Passing a bare coroutine straight to ``asyncio.wait_for`` can leave it
-    unawaited on Python 3.10 if this frame is cancelled/closed during wait_for's
-    setup — surfacing as ``RuntimeWarning: coroutine ... was never awaited``.
-    Taking a thunk and wrapping its result in a task here closes that window: the
-    coroutine is created and handed to ``ensure_future`` synchronously (no await
-    in between), and is cancel-drained on timeout/cancel so no task is left
-    pending. Behaviour is otherwise identical — same result, same timeout, same
-    exceptions propagated.
-    """
-    task = asyncio.ensure_future(make_coro())
-    try:
-        return await asyncio.wait_for(task, timeout)
-    except (asyncio.TimeoutError, asyncio.CancelledError):
-        task.cancel()
-        with suppress(asyncio.CancelledError, Exception):
-            await task
-        raise
-
-
-async def _pretranslate_oss(text: str, source_name: str, source_code: str, max_tokens: int) -> str:
-    """Pretranslate via the OSS vLLM endpoint (per-request; legacy untouched)."""
-    client = _get_oss_pretranslation_client()
-    response = await _create_with_timeout(
-        lambda: client.chat.completions.create(
-            model=OSS_PRETRANSLATION_MODEL,
-            max_completion_tokens=max_tokens,
-            temperature=0.0,
-            messages=[
-                {"role": "system", "content": _pretranslation_system_with_glossary(text)},
-                {"role": "user", "content": f"Translate this {source_name} ({source_code}) text to English.\n\n{text.strip()}"},
-            ],
-        ),
-        10.0,
-    )
-    return (response.choices[0].message.content or "").strip()
 
 
 GU_PREFERRED_TRANSLATION_RULES = [
@@ -737,16 +616,8 @@ def _canned_union_ban_translation(text: str, target_lang: str) -> str | None:
 # (chat.completions). The SAME instruction (glossary Rules + GU style rules + length
 # rule, channel-aware) and the SAME per-chunk transform pipeline
 # (``_fix_dandas -> _post_normalize_gu_translation(strip_outer=False)``) apply to
-# BOTH tiers. First-token-commit + classify-based overflow mirror
-# ``stream_with_fallback``; the disconnect-safe TTFT primitive
-# (``with_first_token_deadline``) is reused verbatim. Post-translation is
-# profile-invariant (llm_core ``defaults``), so the chain is variant-independent — we
-# resolve with "legacy". A dedicated walker (not ``stream_with_fallback`` /
-# ``execute_with_fallback``) is used because those resolve their chain internally from
-# a pipeline-string + session_id + weighted split, which post-translation has none of.
-_POST_TRANSLATION_PIPELINE = "posttranslation"
-
-
+# BOTH tiers. llm_core owns tier selection, first-token commit, fallback and
+# telemetry; this module only adapts each selected model protocol.
 def _prepare_translation_inputs(text, source_lang, target_lang, max_output_chars):
     """Mini-glossary fetch + build the translation instruction ONCE (shared by both
     tiers) + the Gemma-wrapped TranslateGemma prompt. Verbatim to the prior inline
@@ -767,103 +638,6 @@ def _prepare_translation_inputs(text, source_lang, target_lang, max_output_chars
     )
     tg_prompt = _wrap_translategemma_prompt(instruction)
     return instruction, tg_prompt
-
-
-def _is_translategemma_tier(tier) -> bool:
-    """A tier whose handle speaks TranslateGemma ``/completions`` over aiohttp.
-    Decided from the provider label alone so it never forces a lazy handle build."""
-    return getattr(tier, "provider", "") == "translategemma"
-
-
-class _PostTranslationTier:
-    """One entry in the post-translation fallback chain. Carries the telemetry
-    metadata the walkers read (``kind``/``provider``/``model_name``/``endpoint``/
-    ``timeout``) but builds its client handle LAZILY, memoized, on first access.
-
-    TranslateGemma serves ~every turn and its ``TGDescriptor`` primary is a cheap,
-    provider-independent URL holder; the managed-LLM overflow is an ``AsyncOpenAI``
-    client that is expensive to construct and can legitimately fail to build in a
-    healthy-TG env. Building lazily means the overflow client is constructed ONLY
-    when a request actually falls through to it — never eagerly per call, and a
-    misconfigured overflow tier can never take a healthy primary down (its build
-    error, if reached, is just this tier's failure and hits the caller degrade net,
-    exactly like the old pure-TG path)."""
-
-    __slots__ = ("_tier", "kind", "model_name", "endpoint", "timeout", "ttft", "_memo")
-
-    def __init__(self, tier: _Tier):
-        self._tier = tier
-        self.kind = "oss" if tier.provider is _Provider.VLLM else "managed"
-        self.model_name = tier.model
-        self.endpoint = tier.endpoint or "managed"
-        self.timeout = (tier.timeout_ms / 1000.0) if tier.timeout_ms is not None else None
-        # Distinct SHORT first-token deadline (seconds) — the stream walker bounds
-        # time-to-first-token by this, keeping ``timeout`` as the overall/total cap.
-        # ``None`` (e.g. the managed overflow tier) -> walker falls back to ``timeout``.
-        self.ttft = (tier.ttft_ms / 1000.0) if tier.ttft_ms is not None else None
-        self._memo: list = []
-
-    @property
-    def provider(self) -> str:
-        return self._tier.provider.value
-
-    @property
-    def handle(self):
-        if not self._memo:
-            kind = (
-                _StepClientKind.TRANSLATEGEMMA
-                if self._tier.provider is _Provider.TRANSLATEGEMMA
-                else _StepClientKind.RAW_OPENAI
-            )
-            self._memo.append(_build_handle(self._tier, kind))
-        return self._memo[0]
-
-
-class _TtftDeadlineView:
-    """Minimal view exposing ONLY the attributes ``with_first_token_deadline`` reads
-    (``timeout``/``kind``/``endpoint``), so a post-translation tier can present a
-    SHORT first-token bound (its ``ttft``) to that primitive while its real
-    ``timeout`` stays the 60s overall/total cap the unary walker + aiohttp honor.
-    A saturated-but-ALIVE TranslateGemma thus overflows in single-digit seconds
-    instead of blocking a voice turn for up to the full 60s."""
-
-    __slots__ = ("timeout", "kind", "endpoint")
-
-    def __init__(self, tier, ttft):
-        self.timeout = ttft
-        self.kind = tier.kind
-        self.endpoint = tier.endpoint
-
-
-def _record_served_tier(tier, index: int) -> None:
-    """Record the tier that actually served this post-translation turn: onto the
-    per-turn Langfuse pipeline trace (served kind + 0-based chain index) and the
-    Prometheus served counter (the managed-share KPI). Both hooks are best-effort
-    no-ops off-path (no active trace context / prometheus_client absent)."""
-    _llm_trace.record_served(_Step.POST_TRANSLATION, tier.kind, index)
-    _metrics.record_served(
-        _Step.POST_TRANSLATION.value, tier.kind, tier.provider, tier.model_name
-    )
-
-
-def _post_translation_chain():
-    """Resolve the INERT POST_TRANSLATION tiers, HEALTH-PRUNE known-down endpoints,
-    wrap the survivors as lazy-handle chain entries + record the trace chain.
-    Post-translation is profile-invariant (llm_core ``defaults``), so we resolve
-    with ``"legacy"``.
-
-    The prune is why this exists: the post-translation walkers DO feed the breaker
-    (``record_failure``/``record_success``) and the poller polls the TG ``/health``,
-    but without pruning here a down TG is re-attempted (and re-timed-out) EVERY turn
-    on the most-traveled path. ``prune_unhealthy`` drops tiers whose endpoint breaker
-    is ``open`` and is contractually never-empty (all-open -> chain returned
-    unchanged), and it is a settings-gated identity no-op when the health flags are
-    off, so the flags-off path is byte-identical."""
-    tiers = _llm_resolver.post_translation_tiers()  # profile-invariant (lives in defaults)
-    tiers = _llm_health.prune_unhealthy(_Step.POST_TRANSLATION, tiers)
-    chain = [_PostTranslationTier(t) for t in tiers]
-    _llm_trace.record_step_chain(_Step.POST_TRANSLATION, chain)
-    return chain
 
 
 async def _translategemma_stream(descriptor, prompt, source_lang, target_lang, text, temperature, max_tokens):
@@ -1149,108 +923,6 @@ async def _llm_translation_unary(client, model_name, instruction, source_lang, t
         return translated_text
 
 
-async def _stream_post_translation_chain(chain, make_stream, *, source_lang, target_lang):
-    """First-token-commit walker over the POST_TRANSLATION chain — mirrors
-    ``fallback.stream_with_fallback`` (commit on first chunk; pre-commit fallbackable
-    failure swaps to the next tier; post-commit failure propagates) but drives a
-    PRE-RESOLVED chain and calls ``with_first_token_deadline`` for the disconnect-safe
-    TTFT bound. Cross-provider overflow (translategemma -> managed LLM) is just the
-    next tier."""
-    last_exc: Optional[BaseException] = None
-    for i, tier in enumerate(chain):
-        t0 = time.monotonic()
-        committed = False
-        try:
-            # Bound the FIRST-token wait by the tier's short ``ttft`` (falling back to
-            # its ``timeout`` when unset); the 60s ``timeout`` remains the overall/total
-            # cap (aiohttp total + unary walker), so a saturated-but-alive TG overflows
-            # fast instead of holding a voice turn for the whole 60s.
-            _ttft = getattr(tier, "ttft", None)
-            _deadline_view = _TtftDeadlineView(
-                tier, _ttft if _ttft is not None else tier.timeout
-            )
-            async for chunk in _with_first_token_deadline(_deadline_view, make_stream(tier)):
-                committed = True
-                yield chunk
-            _llm_health.record_success(tier.endpoint)
-            _record_served_tier(tier, i)
-            return
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            reason = _classify(exc)
-            is_last = i == len(chain) - 1
-            if committed:
-                _emit(_FallbackEvent(
-                    pipeline=_POST_TRANSLATION_PIPELINE, session_id="-",
-                    from_variant=tier.kind, to_variant=None, reason=reason,
-                    error_class=type(exc).__name__, error_detail=str(exc)[:500],
-                    oss_endpoint=tier.endpoint, oss_model=tier.model_name,
-                    latency_ms=int((time.monotonic() - t0) * 1000),
-                    fell_back=False, committed=True,
-                ))
-                raise
-            will_fall_back = reason in _FALLBACKABLE and not is_last
-            if reason in _FALLBACKABLE:
-                _llm_health.record_failure(tier.endpoint)
-            _emit(_FallbackEvent(
-                pipeline=_POST_TRANSLATION_PIPELINE, session_id="-",
-                from_variant=tier.kind,
-                to_variant=chain[i + 1].kind if will_fall_back else None,
-                reason=reason, error_class=type(exc).__name__, error_detail=str(exc)[:500],
-                oss_endpoint=tier.endpoint, oss_model=tier.model_name,
-                latency_ms=int((time.monotonic() - t0) * 1000),
-                fell_back=will_fall_back, committed=False,
-            ))
-            last_exc = exc
-            if will_fall_back:
-                continue
-            raise
-    if last_exc is not None:
-        raise last_exc
-
-
-async def _run_post_translation_chain(chain, run):
-    """Unary walker over the POST_TRANSLATION chain — mirrors
-    ``fallback.execute_with_fallback`` (per-tier timeout via ``anyio.fail_after``;
-    fall back on a classified infrastructure failure) over a PRE-RESOLVED chain."""
-    last_exc: Optional[BaseException] = None
-    for i, tier in enumerate(chain):
-        t0 = time.monotonic()
-        try:
-            if tier.timeout is None:
-                result = await run(tier)
-            else:
-                with anyio.fail_after(tier.timeout):
-                    result = await run(tier)
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            reason = _classify(exc)
-            is_last = i == len(chain) - 1
-            will_fall_back = reason in _FALLBACKABLE and not is_last
-            if reason in _FALLBACKABLE:
-                _llm_health.record_failure(tier.endpoint)
-            _emit(_FallbackEvent(
-                pipeline=_POST_TRANSLATION_PIPELINE, session_id="-",
-                from_variant=tier.kind,
-                to_variant=chain[i + 1].kind if will_fall_back else None,
-                reason=reason, error_class=type(exc).__name__, error_detail=str(exc)[:500],
-                oss_endpoint=tier.endpoint, oss_model=tier.model_name,
-                latency_ms=int((time.monotonic() - t0) * 1000),
-                fell_back=will_fall_back, committed=False,
-            ))
-            last_exc = exc
-            if not will_fall_back:
-                raise
-        else:
-            _llm_health.record_success(tier.endpoint)
-            _record_served_tier(tier, i)
-            return result
-    if last_exc is not None:
-        raise last_exc
-
-
 async def translate_text(
     text: str,
     source_lang: str,
@@ -1288,10 +960,8 @@ async def translate_text(
     )
     logger.info(f"Translating {source_lang} -> {target_lang} via post-translation chain")
 
-    chain = _post_translation_chain()
-
     async def _run(tier):
-        if _is_translategemma_tier(tier):
+        if tier.provider == "translategemma":
             return await _translategemma_unary(
                 tier.handle, tg_prompt, source_lang, target_lang, text, temperature, max_tokens
             )
@@ -1299,45 +969,13 @@ async def translate_text(
             tier.handle, tier.model_name, instruction, source_lang, target_lang, text, temperature, max_tokens
         )
 
-    result = await _run_post_translation_chain(chain, _run)
+    result = await llm_core.run_adapter(
+        _Step.POST_TRANSLATION,
+        "-",
+        _run,
+        profile_name="managed",
+    )
     return _apply_protected_output(result, _prot)
-
-
-def _get_openai_client() -> AsyncOpenAI:
-    """Return an OpenAI-compatible async client.
-
-    When PRETRANSLATION_PROVIDER=vllm, point the OpenAI client at the local
-    vLLM `INFERENCE_ENDPOINT_URL` (e.g. http://10.185.25.198:8020/v1) so the
-    same chat-completions call path serves an OSS model like Gemma 4 31B IT.
-    """
-    global _openai_client
-    if _openai_client is None:
-        if PRETRANSLATION_PROVIDER == "vllm":
-            base_url = str(get_config_value("INFERENCE_ENDPOINT_URL", "")).rstrip("/")
-            if not base_url:
-                raise ValueError(
-                    "INFERENCE_ENDPOINT_URL is required when PRETRANSLATION_PROVIDER=vllm"
-                )
-            api_key = get_config_value("INFERENCE_API_KEY") or "dummy"
-            _openai_client = AsyncOpenAI(api_key=api_key, base_url=base_url)
-        else:
-            api_key = get_config_value("OPENAI_API_KEY")
-            if not api_key:
-                raise ValueError("OPENAI_API_KEY is required for OpenAI pre-translation")
-            _openai_client = AsyncOpenAI(api_key=api_key)
-    return _openai_client
-
-
-def _get_anthropic_client():
-    global _anthropic_client
-    if _anthropic_client is None:
-        if AsyncAnthropic is None:
-            raise ImportError("anthropic package not installed; set PRETRANSLATION_PROVIDER=openai")
-        api_key = get_config_value("ANTHROPIC_API_KEY")
-        if not api_key:
-            raise ValueError("ANTHROPIC_API_KEY is required for Anthropic pre-translation")
-        _anthropic_client = AsyncAnthropic(api_key=api_key)
-    return _anthropic_client
 
 
 _PRETRANSLATION_SYSTEM = (
@@ -1398,97 +1036,42 @@ def _enforce_clinical_pretranslation_terms(source_text: str, translated_text: st
     return corrected.rstrip() + " Clinical intent: calf scours (diarrhea), not obesity."
 
 
-async def _pretranslate_openai(text: str, source_name: str, source_code: str, max_tokens: int) -> str:
-    """Pretranslate using OpenAI API."""
-    client = _get_openai_client()
-    response = await _create_with_timeout(
-        lambda: client.chat.completions.create(
-            model=PRETRANSLATION_MODEL,
-            max_completion_tokens=max_tokens,
-            temperature=0.0,
-            messages=[
-                {"role": "system", "content": _pretranslation_system_with_glossary(text)},
-                {"role": "user", "content": f"Translate this {source_name} ({source_code}) text to English.\n\n{text.strip()}"},
-            ],
-        ),
-        10.0,
-    )
-    return (response.choices[0].message.content or "").strip()
-
-
-async def _pretranslate_anthropic(text: str, source_name: str, source_code: str, max_tokens: int) -> str:
-    """Pretranslate using Anthropic API."""
-    client = _get_anthropic_client()
-    response = await client.messages.create(
-        model=PRETRANSLATION_MODEL,
-        max_tokens=max_tokens,
-        temperature=0.0,
-        system=_pretranslation_system_with_glossary(text),
-        messages=[
-            {"role": "user", "content": f"Translate this {source_name} ({source_code}) text to English.\n\n{text.strip()}"},
-        ],
-    )
-    parts = [block.text for block in response.content if getattr(block, "type", None) == "text" and getattr(block, "text", None)]
-    return "".join(parts).strip()
-async def translate_to_english_pretranslation(
+async def pretranslate_with_tier(
+    tier,
+    *,
     text: str,
     source_lang: str,
-    *,
     max_tokens: int = 512,
-    provider: Optional[str] = None,
 ) -> str:
-    """Translate input text to English using a pretranslation provider.
+    """Pretranslate with the model target selected by ``llm_core``.
 
-    By default the provider is selected by the PRETRANSLATION_PROVIDER env var
-    (defaults to LLM_PROVIDER); supports 'openai' and 'anthropic'. Pass
-    ``provider="vllm"`` (or "oss") to force the per-request OSS vLLM endpoint
-    for a sticky 'oss' session without affecting legacy sessions.
+    This adapter contains translation prompt/response semantics only. Endpoint,
+    provider, model, timeout and fallback decisions remain in ``llm_core``.
     """
-    if not text or not text.strip():
-        return text
-
-    if source_lang.lower() in {"english", "en"}:
+    if not text or not text.strip() or source_lang.lower() in {"english", "en"}:
         return text
 
     source_name = LANG_NAMES.get(source_lang.lower(), source_lang.capitalize())
     source_code = LANG_CODES.get(source_lang.lower(), source_lang.lower())
-
-    langfuse = _get_langfuse()
-    if provider in ("vllm", "oss"):
-        effective_provider = "vllm"
-        effective_model = OSS_PRETRANSLATION_MODEL
-        pretranslate_fn = _pretranslate_oss
-    else:
-        effective_provider = PRETRANSLATION_PROVIDER
-        effective_model = PRETRANSLATION_MODEL
-        pretranslate_fn = _pretranslate_openai if PRETRANSLATION_PROVIDER != "anthropic" else _pretranslate_anthropic
-
-    if not langfuse:
-        translated_text = await pretranslate_fn(text, source_name, source_code, max_tokens)
-        if not translated_text:
-            raise ValueError(f"{effective_provider} pre-translation returned empty output")
-        return _enforce_clinical_pretranslation_terms(text, translated_text)
-
-    with langfuse.start_as_current_observation(
-        name="query_pretranslation",
-        as_type="generation",
-        input={
-            "source_lang": source_lang,
-            "target_lang": "english",
-            "text": text,
-        },
-        model=effective_model,
-        metadata={
-            "translation_provider": effective_provider,
-            "pipeline_stage": "query_pretranslation",
-        },
-    ) as observation:
-        translated_text = await pretranslate_fn(text, source_name, source_code, max_tokens)
-        if not translated_text:
-            raise ValueError(f"{effective_provider} pre-translation returned empty output")
-        translated_text = _enforce_clinical_pretranslation_terms(text, translated_text)
-        observation.update(output=translated_text)
-        return translated_text
+    response = await tier.handle.chat.completions.create(
+        model=tier.model_name,
+        max_completion_tokens=max_tokens,
+        temperature=0.0,
+        messages=[
+            {"role": "system", "content": _pretranslation_system_with_glossary(text)},
+            {
+                "role": "user",
+                "content": (
+                    f"Translate this {source_name} ({source_code}) text to English."
+                    f"\n\n{text.strip()}"
+                ),
+            },
+        ],
+    )
+    translated_text = (response.choices[0].message.content or "").strip()
+    if not translated_text:
+        raise ValueError(f"{tier.provider} pre-translation returned empty output")
+    return _enforce_clinical_pretranslation_terms(text, translated_text)
 
 
 async def translate_text_stream_fast(
@@ -1530,10 +1113,8 @@ async def translate_text_stream_fast(
     )
     logger.info(f"Fast streaming translation {source_lang} -> {target_lang} via post-translation chain")
 
-    chain = _post_translation_chain()
-
     def _make_stream(tier):
-        if _is_translategemma_tier(tier):
+        if tier.provider == "translategemma":
             return _translategemma_stream(
                 tier.handle, tg_prompt, source_lang, target_lang, text, temperature, max_tokens
             )
@@ -1542,8 +1123,11 @@ async def translate_text_stream_fast(
         )
 
     try:
-        base_stream = _stream_post_translation_chain(
-            chain, _make_stream, source_lang=source_lang, target_lang=target_lang
+        base_stream = llm_core.stream_adapter(
+            _Step.POST_TRANSLATION,
+            "-",
+            _make_stream,
+            profile_name="managed",
         )
         stream = _buffered_protected_stream(base_stream, _prot) if _prot else base_stream
         async for chunk in stream:
@@ -1558,6 +1142,6 @@ async def translate_text_stream_fast(
 # pretranslation (Option A). Tuned for noisy telephony/STT input: a richer
 # domain prompt, structured extraction, exact-glossary transliteration fixups,
 # an OSS-vLLM path, and a structured fallback to TranslateGemma. Reuses chat's
-# shared helpers (_get_openai_client, LANG_NAMES, _get_langfuse, etc.).
+# shared helpers (LANG_NAMES, _get_langfuse, etc.).
 # Consumed by the voice pipeline (voice.py, 7.4b); chat's path is unchanged.
 # ──────────────────────────────────────────────────────────────────────────

@@ -41,7 +41,7 @@ from app.llm_core.config_model import (
     Tier,
     Triggers,
 )
-# NB: app.services.fallback is imported lazily inside the one test that needs it
+# NB: app.llm_core.execution is imported lazily inside the one test that needs it
 # to keep this otherwise network-free tracer module narrowly scoped.
 
 
@@ -145,7 +145,7 @@ def test_no_secret_in_full_config_dump(caplog):
 def test_fallback_walker_records_served_index(monkeypatch):
     import asyncio
 
-    fb = pytest.importorskip("app.services.fallback")
+    fb = pytest.importorskip("app.llm_core.execution")
     # P4 removed the hardwired ``Attempt``; the walkers now consume MaterializedTier.
     from app.llm_core.factory import MaterializedTier
     oss = MaterializedTier(kind="oss", handle=object(), model_name="gemma",

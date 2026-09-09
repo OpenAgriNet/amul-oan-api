@@ -400,11 +400,10 @@ def _oss_moderation_pipeline():
 def test_fallback_resolve_chain_prunes_when_breaker_on(monkeypatch):
     """HEALTH_BREAKER_ENABLED prunes the config-driven chain, so the OSS timeout
     tax is skipped during an outage (the whole win of the pre-flight filter)."""
-    from app.services import fallback as fb
+    from app.llm_core import execution as fb
     from app.llm_core import runtime
 
     monkeypatch.setattr(runtime, "PIPELINE", _oss_moderation_pipeline())
-    monkeypatch.setattr(fb.settings, "fallback_enabled", True)
     monkeypatch.setattr(fb.settings, "health_breaker_enabled", True)
     monkeypatch.setattr(fb.settings, "health_poller_enabled", False)
 
@@ -420,11 +419,10 @@ def test_fallback_resolve_chain_prunes_when_breaker_on(monkeypatch):
 def test_fallback_resolve_chain_untouched_when_health_off(monkeypatch):
     """Flags off -> the config-driven chain is intact even with a tripped endpoint
     in the registry (the filter is inert)."""
-    from app.services import fallback as fb
+    from app.llm_core import execution as fb
     from app.llm_core import runtime
 
     monkeypatch.setattr(runtime, "PIPELINE", _oss_moderation_pipeline())
-    monkeypatch.setattr(fb.settings, "fallback_enabled", True)
     monkeypatch.setattr(fb.settings, "health_breaker_enabled", False)
     monkeypatch.setattr(fb.settings, "health_poller_enabled", False)
 
@@ -456,8 +454,7 @@ def _grant_probe(r, ep=OSS_EP):
 def test_walker_releases_probe_on_non_evidence_failure(monkeypatch, install_chain):
     """OSS probe fails on UNKNOWN (a caller bug / 4xx) -> fallbackable but NOT breaker
     evidence, so record_failure never fires; only the finally can free the probe."""
-    from app.services import fallback as fb
-    monkeypatch.setattr(fb.settings, "fallback_enabled", True)
+    from app.llm_core import execution as fb
     monkeypatch.setattr(fb.settings, "health_breaker_enabled", True)
     monkeypatch.setattr(fb.settings, "health_poller_enabled", False)
     monkeypatch.setattr(fb, "emit", lambda e: None)
@@ -481,8 +478,7 @@ def test_walker_releases_probe_on_non_evidence_failure(monkeypatch, install_chai
 def test_walker_releases_probe_on_bad_output_raise(monkeypatch, install_chain):
     """BAD_OUTPUT is non-fallbackable, so the walker RAISES on the first tier; the
     probe must still be freed on the way out."""
-    from app.services import fallback as fb
-    monkeypatch.setattr(fb.settings, "fallback_enabled", True)
+    from app.llm_core import execution as fb
     monkeypatch.setattr(fb.settings, "health_breaker_enabled", True)
     monkeypatch.setattr(fb.settings, "health_poller_enabled", False)
     monkeypatch.setattr(fb, "emit", lambda e: None)
@@ -507,8 +503,7 @@ def test_walker_releases_probe_on_not_run_reordered_tier(monkeypatch, materializ
     """The crux: a concurrency reorder moved the just-probed OSS tier off index 0,
     so the managed tier returns first and the OSS tier NEVER executes — yet its probe
     must STILL be freed (only the whole-chain finally sweep does this)."""
-    from app.services import fallback as fb
-    monkeypatch.setattr(fb.settings, "fallback_enabled", True)
+    from app.llm_core import execution as fb
     monkeypatch.setattr(fb.settings, "health_breaker_enabled", True)
     monkeypatch.setattr(fb.settings, "health_poller_enabled", False)
     monkeypatch.setattr(fb, "emit", lambda e: None)

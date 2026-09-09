@@ -65,7 +65,7 @@ The entire fallback/fail-closed layer (voice PR-#169-equivalent) was not carried
 - `app/services/voice.py`: the `if settings.fallback_enabled:` **streaming** branch
   (`stream_with_fallback` + `with_first_token_deadline`, first-token-deadline OSS→managed swap,
   moderation gate resolved after first token), the **pretranslation** fallback branch, and the
-  `from app.services.fallback import …` imports.
+  `from app.llm_core.execution import …` imports.
 - `app/services/moderation.py`: `check_moderation` fallback routing via `execute_with_fallback`
   (per-session `variant`/`session_id`), `_parse_verdict_strict` (fail-CLOSED parser),
   `_block_unavailable()` + `ModerationVerdict.failed_closed`, the `unavailable` reject category

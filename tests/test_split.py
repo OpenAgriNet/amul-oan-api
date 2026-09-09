@@ -272,7 +272,7 @@ def test_fallback_chain_uses_split(monkeypatch):
     mapped step (moderation -> Step.MODERATION). The router variant is threaded
     through (fix C) — asserted in the spy below."""
     import asyncio
-    from app.services import fallback as fb
+    from app.llm_core import execution as fb
 
 
     sentinel = ["MATERIALIZED_TIER"]
@@ -291,7 +291,7 @@ def test_fallback_chain_degrades_to_managed_on_split_error(monkeypatch):
     """A config/Redis edge case in split must never break the fallback path: it
     degrades to the resolver's managed-tier chain (non-empty)."""
     import asyncio
-    from app.services import fallback as fb
+    from app.llm_core import execution as fb
     from app.llm_core import runtime
 
     runtime.configure(run_self_check=False)   # synthesized (managed-only) config

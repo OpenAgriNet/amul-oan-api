@@ -79,7 +79,6 @@ def test_hindi_source_uses_pretranslation_then_hindi_output(monkeypatch):
     agent_calls: list[dict] = []
     stream_translation_calls: list[dict] = []
 
-    monkeypatch.setattr(chat_service.settings, "fallback_enabled", False)
     monkeypatch.setattr(chat_service, "propagate_attributes", None)
     monkeypatch.setattr(chat_service, "get_langfuse_client", None)
     monkeypatch.setattr(chat_service, "cache", _DummyCache())
@@ -92,12 +91,11 @@ def test_hindi_source_uses_pretranslation_then_hindi_output(monkeypatch):
     async def _fake_update_message_history(*_args, **_kwargs):
         return None
 
-    async def _fake_pretranslation(text: str, source_lang: str, provider=None, **_kwargs):
+    async def _fake_pretranslation(_tier, *, text: str, source_lang: str, **_kwargs):
         pretranslation_calls.append(
             {
                 "text": text,
                 "source_lang": source_lang,
-                "provider": provider,
             }
         )
         return "How much water should I give my cow?"
@@ -125,7 +123,7 @@ def test_hindi_source_uses_pretranslation_then_hindi_output(monkeypatch):
 
     monkeypatch.setattr(chat_service, "set_cache", _fake_set_cache)
     monkeypatch.setattr(chat_service, "update_message_history", _fake_update_message_history)
-    monkeypatch.setattr(chat_service, "translate_to_english_pretranslation", _fake_pretranslation)
+    monkeypatch.setattr(chat_service, "pretranslate_with_tier", _fake_pretranslation)
     monkeypatch.setattr(chat_service.moderation_agent, "run", _fake_moderation_run)
     def _fake_iter(**kwargs):
         agent_calls.append(kwargs)
@@ -159,7 +157,6 @@ def test_hindi_source_uses_pretranslation_then_hindi_output(monkeypatch):
         {
             "text": "मुझे अपनी गाय को कितना पानी पिलाना चाहिए?",
             "source_lang": "hi",
-            "provider": None,
         }
     ]
     assert moderation_messages and "How much water should I give my cow?" in moderation_messages[0]

@@ -44,7 +44,6 @@ sys.modules.setdefault("agents.tools.terms", _fake_terms)
 import pytest
 
 from app.llm_core import runtime
-from app.llm_core.config_model import Step
 import app.services.translation as tr
 
 
@@ -168,18 +167,6 @@ class _FakeTGDescriptor:
     endpoint = "http://lb/v1"
 
 
-class _FakeTier:
-    """Duck-types MaterializedTier for the walkers + with_first_token_deadline."""
-
-    def __init__(self, provider, *, kind, endpoint, handle, timeout=None, model_name="m"):
-        self.provider = provider
-        self.kind = kind
-        self.endpoint = endpoint
-        self.handle = handle
-        self.timeout = timeout
-        self.model_name = model_name
-
-
 # ══════════════════════════════════════════════════════════════════════════════
 # 1. Guards short-circuit WITHOUT a model call
 # ══════════════════════════════════════════════════════════════════════════════
@@ -188,7 +175,7 @@ async def test_stream_untranslatable_yields_verbatim_no_model_call(monkeypatch):
     def _boom(*a, **k):
         raise AssertionError("resolve_chain must not be called for a guarded input")
 
-    monkeypatch.setattr(tr._llm_resolver, "resolve_chain", _boom)
+    monkeypatch.setattr(tr.llm_core, "stream_adapter", _boom)
     chunks = [c async for c in tr.translate_text_stream_fast("**", "english", "gujarati")]
     assert chunks == ["**"]
 
@@ -196,7 +183,7 @@ async def test_stream_untranslatable_yields_verbatim_no_model_call(monkeypatch):
 @pytest.mark.asyncio
 async def test_stream_same_lang_yields_verbatim_no_model_call(monkeypatch):
     monkeypatch.setattr(
-        tr._llm_resolver, "resolve_chain",
+        tr.llm_core, "stream_adapter",
         lambda *a, **k: (_ for _ in ()).throw(AssertionError("no chain for same-lang")),
     )
     chunks = [c async for c in tr.translate_text_stream_fast("hi", "english", "english")]
@@ -206,7 +193,7 @@ async def test_stream_same_lang_yields_verbatim_no_model_call(monkeypatch):
 @pytest.mark.asyncio
 async def test_stream_empty_returns_nothing(monkeypatch):
     monkeypatch.setattr(
-        tr._llm_resolver, "resolve_chain",
+        tr.llm_core, "stream_adapter",
         lambda *a, **k: (_ for _ in ()).throw(AssertionError("no chain for empty")),
     )
     chunks = [c async for c in tr.translate_text_stream_fast("   ", "english", "gujarati")]
@@ -215,10 +202,10 @@ async def test_stream_empty_returns_nothing(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_unary_guards_short_circuit(monkeypatch):
-    monkeypatch.setattr(
-        tr._llm_resolver, "resolve_chain",
-        lambda *a, **k: (_ for _ in ()).throw(AssertionError("no chain for guard")),
-    )
+    async def _boom(*args, **kwargs):
+        raise AssertionError("no model call for guard")
+
+    monkeypatch.setattr(tr.llm_core, "run_adapter", _boom)
     assert await tr.translate_text("**", "english", "gujarati") == "**"
     assert await tr.translate_text("hi", "gujarati", "gujarati") == "hi"
     assert await tr.translate_text("", "english", "gujarati") == ""
@@ -287,160 +274,6 @@ def test_instruction_injects_glossary_rules_when_present():
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 4. Chain walk order + first-chunk commit
-# ══════════════════════════════════════════════════════════════════════════════
-def _two_tier_chain():
-    return [
-        _FakeTier("translategemma", kind="managed", endpoint="tg", handle=_FakeTGDescriptor()),
-        _FakeTier("openai", kind="managed", endpoint="llm", handle=object()),
-    ]
-
-
-async def _agen(*items, raise_before=None, raise_after=None):
-    if raise_before is not None:
-        raise raise_before
-    for i, it in enumerate(items):
-        yield it
-        if raise_after is not None and i == len(items) - 1:
-            raise raise_after
-
-
-@pytest.mark.asyncio
-async def test_stream_walk_tg_serves_first_llm_never_called():
-    calls = []
-
-    def make_stream(tier):
-        calls.append(tier.endpoint)
-        if tier.endpoint == "tg":
-            return _agen("a", "b")
-        raise AssertionError("LLM overflow must not be reached when TG succeeds")
-
-    out = [c async for c in tr._stream_post_translation_chain(
-        _two_tier_chain(), make_stream, source_lang="english", target_lang="gujarati")]
-    assert out == ["a", "b"]
-    assert calls == ["tg"]
-
-
-@pytest.mark.asyncio
-async def test_stream_walk_tg_fails_pre_commit_llm_serves():
-    calls = []
-
-    def make_stream(tier):
-        calls.append(tier.endpoint)
-        if tier.endpoint == "tg":
-            return _agen(raise_before=ConnectionError("connect refused"))
-        return _agen("x", "y")
-
-    out = [c async for c in tr._stream_post_translation_chain(
-        _two_tier_chain(), make_stream, source_lang="english", target_lang="gujarati")]
-    assert out == ["x", "y"]
-    assert calls == ["tg", "llm"]  # order preserved, TG then LLM
-
-
-@pytest.mark.asyncio
-async def test_stream_walk_tg_fails_post_commit_propagates_no_llm():
-    calls = []
-
-    def make_stream(tier):
-        calls.append(tier.endpoint)
-        if tier.endpoint == "tg":
-            return _agen("a", raise_after=ConnectionError("mid-stream reset"))
-        raise AssertionError("post-commit failure must NOT swap tiers")
-
-    got = []
-    with pytest.raises(ConnectionError):
-        async for c in tr._stream_post_translation_chain(
-            _two_tier_chain(), make_stream, source_lang="english", target_lang="gujarati"):
-            got.append(c)
-    assert got == ["a"]        # the committed chunk reached the caller
-    assert calls == ["tg"]     # LLM never reached
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# 5. classify-based fallback: fires on infra errors, NOT on BAD_OUTPUT
-# ══════════════════════════════════════════════════════════════════════════════
-class _ValidationError(Exception):
-    """Type name contains 'Validation' -> classify -> BAD_OUTPUT (not fallbackable)."""
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("exc", [
-    TimeoutError("ttft exceeded"),
-    ConnectionError("connect refused"),
-])
-async def test_stream_fallbackable_infra_errors_swap_to_llm(exc):
-    def make_stream(tier):
-        if tier.endpoint == "tg":
-            return _agen(raise_before=exc)
-        return _agen("served-by-llm")
-
-    out = [c async for c in tr._stream_post_translation_chain(
-        _two_tier_chain(), make_stream, source_lang="english", target_lang="gujarati")]
-    assert out == ["served-by-llm"]
-
-
-@pytest.mark.asyncio
-async def test_stream_bad_output_does_not_swap():
-    calls = []
-
-    def make_stream(tier):
-        calls.append(tier.endpoint)
-        if tier.endpoint == "tg":
-            return _agen(raise_before=_ValidationError("schema exhausted"))
-        raise AssertionError("BAD_OUTPUT must not trigger the overflow tier")
-
-    with pytest.raises(_ValidationError):
-        async for _ in tr._stream_post_translation_chain(
-            _two_tier_chain(), make_stream, source_lang="english", target_lang="gujarati"):
-            pass
-    assert calls == ["tg"]
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# 6. Non-stream translate_text falls TG -> LLM
-# ══════════════════════════════════════════════════════════════════════════════
-@pytest.mark.asyncio
-async def test_unary_walk_falls_tg_to_llm():
-    calls = []
-
-    async def run(tier):
-        calls.append(tier.endpoint)
-        if tier.endpoint == "tg":
-            raise ConnectionError("tg down")
-        return "llm-result"
-
-    result = await tr._run_post_translation_chain(_two_tier_chain(), run)
-    assert result == "llm-result"
-    assert calls == ["tg", "llm"]
-
-
-@pytest.mark.asyncio
-async def test_unary_walk_tg_success_short_circuits():
-    calls = []
-
-    async def run(tier):
-        calls.append(tier.endpoint)
-        return "tg-result"
-
-    result = await tr._run_post_translation_chain(_two_tier_chain(), run)
-    assert result == "tg-result"
-    assert calls == ["tg"]
-
-
-@pytest.mark.asyncio
-async def test_unary_walk_bad_output_propagates():
-    calls = []
-
-    async def run(tier):
-        calls.append(tier.endpoint)
-        raise _ValidationError("schema exhausted")
-
-    with pytest.raises(_ValidationError):
-        await tr._run_post_translation_chain(_two_tier_chain(), run)
-    assert calls == ["tg"]  # not fallbackable -> no LLM attempt
-
-
-# ══════════════════════════════════════════════════════════════════════════════
 # 7. End-to-end through the REAL resolved chain (dispatch + wiring)
 # ══════════════════════════════════════════════════════════════════════════════
 @pytest.fixture
@@ -452,10 +285,6 @@ def _managed_pipeline(monkeypatch):
     monkeypatch.setenv("TRANSLATEGEMMA_27B_BASE_ENDPOINT", "http://lb/v1")
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
     runtime.configure(run_self_check=False)
-    # The resolved POST_TRANSLATION chain is [TranslateGemma, managed-LLM].
-    chain = tr._llm_resolver.resolve_chain(Step.POST_TRANSLATION, "legacy")
-    assert [t.provider for t in chain] == ["translategemma", "openai"]
-    assert isinstance(chain[0].handle, tr._TGDescriptor)
     yield
 
 
@@ -485,10 +314,9 @@ async def test_e2e_tg_fails_pre_commit_llm_serves(monkeypatch, _managed_pipeline
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 8. Review fixes: faithful HTTP status classify + LAZY per-tier handle build
+# 8. Faithful HTTP status classification
 # ══════════════════════════════════════════════════════════════════════════════
-from app.services.fallback import classify, FallbackReason
-from app.llm_core.config_model import Provider, Tier, ApiStyle
+from app.llm_core.execution import classify, FallbackReason
 
 
 def test_tg_http_error_carries_status_for_classify():
@@ -496,135 +324,3 @@ def test_tg_http_error_carries_status_for_classify():
     assert classify(tr._TranslationHTTPError(503, "upstream down")) is FallbackReason.HTTP_5XX
     assert classify(tr._TranslationHTTPError(429, "slow down")) is FallbackReason.RATE_LIMITED
     assert classify(tr._TranslationHTTPError(500, "CUDA out of memory")) is FallbackReason.OOM
-
-
-def _tg_inert():
-    return Tier(provider=Provider.TRANSLATEGEMMA, model="tg", endpoint="http://lb/v1",
-                api_style=ApiStyle.TEXT_COMPLETION, timeout_ms=60000, label="translategemma")
-
-
-def _unbuildable_llm_inert():
-    # openai provider, no api_key_env -> AsyncOpenAI() raises when OPENAI_API_KEY
-    # is absent, i.e. an overflow tier that cannot be built in this env.
-    return Tier(provider=Provider.OPENAI, model="gpt-x", endpoint=None,
-                api_style=ApiStyle.CHAT, timeout_ms=30000, label="llm-fallback")
-
-
-def test_lazy_tier_metadata_available_without_building_handle():
-    """The walker's metadata is readable without constructing any client."""
-    llm = tr._PostTranslationTier(_unbuildable_llm_inert())
-    assert (llm.kind, llm.provider, llm.model_name, llm.timeout) == ("managed", "openai", "gpt-x", 30.0)
-    assert llm._memo == []  # reading metadata never triggered a build
-
-
-def test_lazy_overflow_build_is_isolated_from_healthy_primary(monkeypatch):
-    """Constructing the chain builds NO handles; a broken overflow tier can't take
-    the primary down — TG builds fine, and the overflow only errors if its handle
-    is actually accessed."""
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    tg = tr._PostTranslationTier(_tg_inert())
-    llm = tr._PostTranslationTier(_unbuildable_llm_inert())
-    assert tg._memo == [] and llm._memo == []           # nothing built yet
-    assert isinstance(tg.handle, tr._TGDescriptor)       # primary builds independently
-    with pytest.raises(Exception):                       # overflow only raises when reached
-        llm.handle
-
-
-@pytest.mark.asyncio
-async def test_walk_tg_serves_never_builds_overflow(monkeypatch):
-    """The blocker, proven end-to-end: when TG serves, the overflow client is
-    never constructed — even if it is unbuildable."""
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    tg = tr._PostTranslationTier(_tg_inert())
-    llm = tr._PostTranslationTier(_unbuildable_llm_inert())
-
-    def make_stream(tier):
-        assert tier is tg  # walker only reaches the serving tier
-        return _agen("ok")
-
-    out = [c async for c in tr._stream_post_translation_chain(
-        [tg, llm], make_stream, source_lang="english", target_lang="gujarati")]
-    assert out == ["ok"]
-    assert llm._memo == []  # overflow handle never built
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# 9. Review fixes: distinct TG first-token deadline (ttft) + health-prune wiring
-# ══════════════════════════════════════════════════════════════════════════════
-def _tg_inert_ttft():
-    return Tier(provider=Provider.TRANSLATEGEMMA, model="tg", endpoint="http://lb/v1",
-                api_style=ApiStyle.TEXT_COMPLETION, timeout_ms=60000, ttft_ms=5000,
-                label="translategemma")
-
-
-def test_post_translation_tier_carries_distinct_ttft():
-    """_PostTranslationTier exposes ttft (the SHORT first-token bound) alongside the
-    unchanged timeout (the overall/total cap). The overflow tier (no ttft_ms) -> None."""
-    pt = tr._PostTranslationTier(_tg_inert_ttft())
-    assert pt.timeout == 60.0     # overall/total cap unchanged
-    assert pt.ttft == 5.0         # distinct short first-token deadline
-    assert tr._PostTranslationTier(_unbuildable_llm_inert()).ttft is None
-
-
-@pytest.mark.asyncio
-async def test_stream_walker_bounds_first_token_by_ttft_not_total(monkeypatch):
-    """The stream walker hands with_first_token_deadline the tier's SHORT ttft as the
-    bound (NOT the 60s total), while preserving kind/endpoint for its telemetry."""
-    captured = {}
-
-    def fake_deadline(attempt, agen):
-        captured["timeout"] = attempt.timeout
-        captured["endpoint"] = attempt.endpoint
-        captured["kind"] = attempt.kind
-        return agen
-
-    monkeypatch.setattr(tr, "_with_first_token_deadline", fake_deadline)
-    tg = tr._PostTranslationTier(_tg_inert_ttft())
-    out = [c async for c in tr._stream_post_translation_chain(
-        [tg], lambda tier: _agen("ok"), source_lang="english", target_lang="gujarati")]
-    assert out == ["ok"]
-    assert captured["timeout"] == 5.0              # ttft, NOT the 60s total cap
-    assert captured["endpoint"] == "http://lb/v1"  # tier identity preserved for errors
-    assert captured["kind"] == "managed"
-
-
-@pytest.mark.asyncio
-async def test_stream_walker_ttft_falls_back_to_timeout_when_unset(monkeypatch):
-    """A tier without ttft (the managed overflow) bounds first-token by its own timeout."""
-    captured = {}
-
-    def fake_deadline(attempt, agen):
-        captured["timeout"] = attempt.timeout
-        return agen
-
-    monkeypatch.setattr(tr, "_with_first_token_deadline", fake_deadline)
-    llm = tr._PostTranslationTier(_unbuildable_llm_inert())  # timeout_ms=30000, no ttft
-    out = [c async for c in tr._stream_post_translation_chain(
-        [llm], lambda tier: _agen("ok"), source_lang="english", target_lang="gujarati")]
-    assert out == ["ok"]
-    assert captured["timeout"] == 30.0
-
-
-def test_post_translation_chain_invokes_health_prune(monkeypatch, _managed_pipeline):
-    """_post_translation_chain routes the INERT tiers through health.prune_unhealthy
-    BEFORE wrapping them — so a down TG is pruned at resolve time, not re-discovered
-    (and re-timed-out) every turn. Proven by a prune that drops the TG tier."""
-    seen = {}
-
-    def fake_prune(step, tiers):
-        seen["step"] = step
-        seen["endpoints"] = [t.endpoint for t in tiers]  # inert Tiers, pre-wrap
-        return [t for t in tiers if t.provider is not Provider.TRANSLATEGEMMA]
-
-    monkeypatch.setattr(tr._llm_health, "prune_unhealthy", fake_prune)
-    chain = tr._post_translation_chain()
-    assert seen["step"] is Step.POST_TRANSLATION
-    assert "http://lb/v1" in seen["endpoints"]
-    assert [t.provider for t in chain] == ["openai"]  # TG pruned, overflow kept
-
-
-def test_post_translation_chain_prune_noop_when_flags_off(_managed_pipeline):
-    """Flags-off path is byte-identical: the real prune is a settings-gated identity,
-    so the full [TG, overflow] chain survives unchanged."""
-    chain = tr._post_translation_chain()
-    assert [t.provider for t in chain] == ["translategemma", "openai"]

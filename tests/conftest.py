@@ -58,7 +58,7 @@ def materialized_tier():
 def install_chain(monkeypatch):
     """Install a controlled variant-keyed chain on ``fallback._resolve_chain``.
     Usage: ``install_chain(oss_timeout=0.05)`` inside a test/fixture."""
-    from app.services import fallback as fb
+    from app.llm_core import execution as fb
 
     def _install(**kw):
         return install_variant_chain(monkeypatch, fb, **kw)
