@@ -60,7 +60,7 @@ async def chat_endpoint(
         background_tasks=background_tasks,
         use_translation_pipeline=request.use_translation_pipeline if request.use_translation_pipeline is not None else True,
         pipeline_profile=pipeline_profile,
-        requested_persona=request.persona,
+        persona=resolved_persona,
         history_session_id=history_session_id,
         artifact_sink=artifacts,
         emit_artifact_frames=request.stream is not False,
