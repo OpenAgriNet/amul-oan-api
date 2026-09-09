@@ -451,11 +451,9 @@ def prune_unhealthy(step: Optional[Step], tiers: list) -> list:
     (degrade-safe). No-op (identity) unless a health flag is on, which is what
     keeps the flags-off path byte-identical.
 
-    NOTE (P3 composition seam): this is the FIRST pre-flight filter. The P3
-    concurrency-gauge reordering runs after this prune and before target creation —
-    ``split.resolve_chain`` calls this, then leaves the reorder hook, then
-    is built. Health prunes known-DOWN tiers; concurrency only DEPRIORITIZES
-    saturated (but up) tiers, so composing prune-then-reorder is order-safe."""
+    ``split.resolve_chain`` calls this after concurrency routing and before target
+    creation. That ordering ensures an inserted overflow tier is checked too. This
+    filter drops DOWN tiers; concurrency routing moves or inserts candidates."""
     if not (settings.health_breaker_enabled or settings.health_poller_enabled):
         return tiers
     if not tiers:

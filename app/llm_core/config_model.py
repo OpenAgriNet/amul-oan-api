@@ -123,10 +123,10 @@ class StepConfig(BaseModel):
 
 
 class ProfileCapabilities(BaseModel):
-    """Application behavior supported by every model in a named profile."""
+    """Optional application-policy overrides for a named profile."""
 
-    requires_translation: bool = False
-    history_max_tokens: int = Field(default=80_000, gt=0)
+    requires_translation: Optional[bool] = None
+    history_max_tokens: Optional[int] = Field(default=None, gt=0)
 
     model_config = {"frozen": True}
 

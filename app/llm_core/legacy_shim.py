@@ -136,7 +136,7 @@ def _oss_pretranslation_tier(timeout_ms: int) -> Tier:
 # endpoint, never a client-side list. The overflow tier is the managed LLM doing
 # en→target translation via chat.completions with the SAME glossary/rules prompt;
 # it serves only when TranslateGemma fails before the first streamed token.
-def _post_translation_tiers() -> list[Tier]:
+def _post_translation_tiers(fallback_enabled: bool) -> list[Tier]:
     # TranslateGemma is fronted by an nginx LB, so post-translation reads the
     # SINGULAR endpoint. The old client-side plural list (+random.choice) is gone;
     # warn loudly if a stale env still sets only the plural var, which would
@@ -159,12 +159,19 @@ def _post_translation_tiers() -> list[Tier]:
         ttft_ms=_int_env("FALLBACK_POST_TRANSLATION_TG_TTFT_MS", 5000),
         label="translategemma",
     )
-    # Cross-provider overflow uses the managed model and its own timeout. Reuses
-    # the managed builder so
-    # provider/model/key/endpoint track LLM_PROVIDER exactly.
+    # Post-translation is an OpenAI-compatible protocol and is deliberately
+    # independent of the agent provider. An Anthropic/Gemini agent deployment
+    # must not make this fallback unbuildable.
     llm_ms = _int_env("FALLBACK_POST_TRANSLATION_LLM_TIMEOUT_MS", 30000)
-    llm_fallback = _managed_agent_tier(llm_ms, "llm-fallback")
-    return [tg, llm_fallback]
+    llm_fallback = Tier(
+        provider=Provider.OPENAI,
+        model=_env("POST_TRANSLATION_LLM_MODEL", "gpt-4.1") or "gpt-4.1",
+        api_key_env="OPENAI_API_KEY",
+        timeout_ms=llm_ms,
+        admission=AdmissionPolicy.MANAGED,
+        label="llm-fallback",
+    )
+    return [tg, llm_fallback] if fallback_enabled else [tg]
 
 
 def _oss_configured() -> bool:
@@ -220,7 +227,7 @@ def synthesize_from_env() -> PipelineConfig:
             Step.PRE_TRANSLATION: StepConfig(tiers=[managed_pre]),
         }
 
-    post_tiers = _post_translation_tiers()
+    post_tiers = _post_translation_tiers(fallback_enabled)
     defaults = {Step.POST_TRANSLATION: StepConfig(tiers=post_tiers)}
 
     if not _oss_configured():

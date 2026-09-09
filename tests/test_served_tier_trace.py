@@ -24,14 +24,14 @@ def test_none_trace_is_safe():
 def test_records_the_tier_that_actually_answered():
     pt = t.begin("oss")
     t.record_served(Step.AGENT, "managed", 1)
-    assert t.served_summary(pt) == "agent=managed"
+    assert t.served_summary(pt) == "agent=managed[1]"
 
 
 def test_reports_every_step_sorted():
     pt = t.begin("oss")
     t.record_served(Step.POST_TRANSLATION, "managed", 1)
     t.record_served(Step.AGENT, "oss", 0)
-    assert t.served_summary(pt) == "agent=oss,post_translation=managed"
+    assert t.served_summary(pt) == "agent=oss[0],post_translation=managed[1]"
 
 
 def test_a_failover_is_visible_where_configured_primary_would_hide_it():

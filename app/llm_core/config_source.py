@@ -26,8 +26,8 @@ Design
 * **Boot-time validation on the LIVE path (fail-CLOSED on bad content)** — a
   live config is not merely schema-checked: after parse it is run through
   ``runtime.validate_content`` (the SAME content gates the boot path applies —
-  provider/step legality + a resolvability probe that builds every profile/step
-  primary handle). A schema-valid but UNBUILDABLE config (vllm tier with no
+  provider/step legality + a resolvability probe that builds every normal and
+  concurrency-overflow tier). A schema-valid but UNBUILDABLE config (vllm tier with no
   endpoint, absent ``api_key_env``, anthropic/gemini on a PRE_TRANSLATION step, a
   profile missing a required step) is therefore REJECTED — treated exactly like a
   read failure (last-good kept, rate-limited WARNING) so a bad push can never go
@@ -240,8 +240,8 @@ def _try_load():
         _warn("pipeline config: invalid live config at %s (%s); keeping last-good", k, e)
         return None
     # FAIL-CLOSED content gate: run the SAME checks the boot path applies (provider/
-    # step legality + a resolvability probe that builds each profile/step primary
-    # handle). A schema-valid but unbuildable config is rejected like a read failure
+    # step legality + a resolvability probe that builds every normal and overflow
+    # tier). A schema-valid but unbuildable config is rejected like a read failure
     # so a bad push cannot go live. ``validate_content`` is per-repo in ``runtime``;
     # calling ONLY it here keeps this module byte-identical across chat and voice.
     try:

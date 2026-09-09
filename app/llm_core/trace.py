@@ -53,13 +53,22 @@ class StepRecord:
     tier_chain: list[dict] = field(default_factory=list)  # ordered, primary-first
     tier_served_kind: Optional[str] = None   # kind of the tier that actually served
     tier_served_index: Optional[int] = None  # 0 = primary, 1 = first fallback, ...
+    tier_served_provider: Optional[str] = None
+    tier_served_model: Optional[str] = None
+    tier_served_label: Optional[str] = None
     health: Optional[dict] = None        # {"pruned": [...], "breaker_states": {...}}
     concurrency: Optional[dict] = None   # {"gauge", "max_concurrency", "deprioritized", ...}
 
     def to_dict(self) -> dict:
         served = None
         if self.tier_served_kind is not None or self.tier_served_index is not None:
-            served = {"kind": self.tier_served_kind, "index": self.tier_served_index}
+            served = {
+                "kind": self.tier_served_kind,
+                "index": self.tier_served_index,
+                "provider": self.tier_served_provider,
+                "model": self.tier_served_model,
+                "label": self.tier_served_label,
+            }
         triggers: dict = {}
         if self.health is not None:
             triggers["health"] = self.health
@@ -225,6 +234,9 @@ def record_served(
     kind: Optional[str],
     index: int,
     *,
+    provider: Optional[str] = None,
+    model: Optional[str] = None,
+    label: Optional[str] = None,
     trace_state: Optional[PipelineTrace] = None,
 ) -> None:
     """The fallback walker's success hook: which tier (kind + 0-based index in the
@@ -236,6 +248,9 @@ def record_served(
     rec = pt.step(name)
     rec.tier_served_kind = kind
     rec.tier_served_index = index
+    rec.tier_served_provider = provider
+    rec.tier_served_model = model
+    rec.tier_served_label = label
 
 
 def record_health_prune(step: Any, pruned: list, breaker_states: dict) -> None:
@@ -430,11 +445,16 @@ def served_summary(pt: Optional[PipelineTrace]) -> Optional[str]:
     if pt is None:
         return None
     try:
-        parts = [
-            f"{name}={rec.tier_served_kind}"
-            for name, rec in sorted(pt.steps.items())
-            if getattr(rec, "tier_served_kind", None)
-        ]
+        parts = []
+        for name, rec in sorted(pt.steps.items()):
+            if rec.tier_served_index is None:
+                continue
+            identity = (
+                rec.tier_served_label
+                or ":".join(filter(None, (rec.tier_served_provider, rec.tier_served_model)))
+                or rec.tier_served_kind
+            )
+            parts.append(f"{name}={identity}[{rec.tier_served_index}]")
         return ",".join(parts) or None
     except Exception as e:  # pragma: no cover - defensive
         logger.debug("llm_core.trace: served_summary failed: %s", e)

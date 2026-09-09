@@ -74,6 +74,8 @@ def test_unary_falls_back_on_infrastructure_error(monkeypatch):
     )
     assert result == "managed"
     assert events[0].fell_back is True
+    assert events[0].from_variant == "vllm:test-model"
+    assert events[0].to_variant == "openai:test-model"
 
 
 def test_unary_does_not_fallback_on_bad_output(monkeypatch):
@@ -118,6 +120,26 @@ def test_disabled_context_calls_primary_without_policy_walker(monkeypatch):
         return target.model_name
 
     assert asyncio.run(run()) == "gpt-4.1"
+
+
+def test_disabled_partial_stream_is_not_counted_as_served(monkeypatch):
+    from app import metrics
+    from app.llm_core.config_model import NamedProfile, PipelineConfig, Provider, StepConfig, Tier
+
+    cfg = PipelineConfig(profiles=[NamedProfile(name="managed", weight=100, steps={
+        Step.AGENT: StepConfig(tiers=[Tier(provider=Provider.OPENAI, model="gpt")])
+    })])
+    execution = fb.ExecutionContext("s1", cfg, "managed")
+    served = []
+    monkeypatch.setattr(metrics, "record_served", lambda *args: served.append(args))
+
+    async def partial(target):
+        yield "partial"
+        raise ConnectionError("stream failed")
+
+    with pytest.raises(ConnectionError):
+        asyncio.run(_collect(execution.stream_adapter(Step.AGENT, partial)))
+    assert served == []
 
 
 def test_stream_ttft_falls_back_before_commit(monkeypatch):

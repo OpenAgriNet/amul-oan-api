@@ -11,8 +11,8 @@ The bar these pin:
       flags-off is identity.
   (c) the metrics scrape sums ``num_requests_running + num_requests_waiting`` and
       is Redis-cached; a fetch failure -> ``None`` (the fail-open signal).
-  (d) composition: ``resolve_chain`` runs health-prune THEN concurrency-reorder,
-      so a DOWN tier pruned by P2 is gone and can never be reordered to the front,
+  (d) composition: ``resolve_chain`` runs concurrency-routing THEN health-prune,
+      so every final candidate — including an inserted overflow tier — is checked,
       while a saturated-but-UP vLLM primary is deprioritized (not dropped).
   (e) inverted-semantics note (plan §2): "primary" is only tier index 0; the
       filter reproduces bh's "flip to closed-source when gemma busy" as a pure
@@ -257,7 +257,7 @@ def test_get_concurrency_cache_error_degrades_to_fetch(monkeypatch):
     assert asyncio.run(concurrency.get_concurrency(METRICS_URL)) == 12  # direct fetch, not broken
 
 
-# ── (d) composition: health-prune THEN concurrency-reorder in resolve_chain ────
+# ── (d) composition: concurrency-routing THEN health-prune in resolve_chain ───
 
 def _gated_config():
     """Single OSS profile whose AGENT step carries a ConcurrencyGate + [oss, managed]."""
@@ -283,10 +283,9 @@ def test_resolve_chain_deprioritizes_saturated_up_primary(monkeypatch):
     assert [c.kind for c in chain] == ["managed", "oss"]
 
 
-def test_resolve_chain_health_prune_then_concurrency_compose(monkeypatch):
-    """The composition proof: a DOWN vLLM tier is pruned by P2 FIRST, so it is
-    already gone when the concurrency reorder runs and can NEVER be reordered back
-    to the front — even though the box also reads as saturated."""
+def test_resolve_chain_concurrency_then_health_prune_compose(monkeypatch):
+    """A DOWN vLLM tier is absent from the final chain even when concurrency
+    routing also sees the endpoint as saturated."""
     monkeypatch.setattr(concurrency.settings, "concurrency_gauge_enabled", True)
     monkeypatch.setattr(health.settings, "health_breaker_enabled", True)
     monkeypatch.setattr(health.settings, "health_poller_enabled", False)
@@ -297,7 +296,7 @@ def test_resolve_chain_health_prune_then_concurrency_compose(monkeypatch):
     health._registry.record_failure(OSS_EP)                        # OSS box DOWN -> pruned
 
     chain = asyncio.run(split.resolve_chain("", Step.AGENT, _gated_config()))
-    # prune -> [managed]; reorder sees no vLLM -> [managed]. Down OSS never at front.
+    # reorder -> [managed, oss]; prune -> [managed]. Down OSS never reaches execution.
     assert [c.provider for c in chain] == ["openai"]
     assert all(c.provider != "vllm" for c in chain)
     health.reset()
@@ -415,3 +414,29 @@ def test_resolve_chain_places_overflow_target_at_front(monkeypatch):
     assert [c.model_name for c in chain] == ["gpt-4o-mini", "gemma", "gpt-4.1"]
     assert [c.provider for c in chain] == ["openai", "vllm", "openai"]
     assert [c.kind for c in chain] == ["managed", "oss", "managed"]  # overflow is a managed AGENT model
+
+
+def test_resolve_chain_prunes_open_overflow_endpoint(monkeypatch):
+    from app.llm_core.health import BreakerConfig
+
+    overflow_endpoint = "http://overflow:8020/v1"
+    overflow = Tier(
+        provider=Provider.VLLM,
+        model="overflow",
+        endpoint=overflow_endpoint,
+    )
+    cfg = PipelineConfig(profiles=[NamedProfile(name="oss", weight=100, steps={
+        Step.AGENT: StepConfig(
+            tiers=[_oss_tier(), _managed_tier()],
+            triggers=Triggers(concurrency_gate=_gate_with_overflow(10, overflow)),
+        )
+    })])
+    monkeypatch.setattr(concurrency.settings, "concurrency_gauge_enabled", True)
+    monkeypatch.setattr(health.settings, "health_breaker_enabled", True)
+    _inject_gauge(monkeypatch, 20)
+    health.reset(BreakerConfig(fail_threshold=1, cooldown_s=1e12))
+    health._registry.record_failure(overflow_endpoint)
+
+    chain = asyncio.run(split.resolve_chain("", Step.AGENT, cfg))
+    assert "overflow" not in [target.model_name for target in chain]
+    health.reset()

@@ -150,7 +150,13 @@ def test_fallback_walker_records_served_index(monkeypatch, materialized_tier):
         step=Step.AGENT, session_id="s", run=_run, chain=[oss, managed]))
     assert out == "answer"
     served = trace.current().to_metadata()["steps"]["agent"]["tier_served"]
-    assert served == {"kind": "managed", "index": 1}
+    assert served == {
+        "kind": "managed",
+        "index": 1,
+        "provider": "openai",
+        "model": "gpt-4.1",
+        "label": None,
+    }
 
 
 # ── (d) trigger outcomes recorded when the filters fire ────────────────────────
@@ -205,7 +211,7 @@ def test_execution_context_separates_configured_and_served_tiers():
     assert md["steps"]["moderation"]["model"] == "gemma"
     assert trace.served_summary(pt) is None
     asyncio.run(execution.run_adapter(Step.AGENT, lambda target: _result(target)))
-    assert trace.served_summary(pt) == "agent=oss"
+    assert trace.served_summary(pt) == "agent=vllm:gemma[0]"
 
 
 async def _result(target):

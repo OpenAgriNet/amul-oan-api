@@ -49,10 +49,9 @@ Two aggregation/shed improvements over the naive single-scrape bang-bang:
      ceiling. (Normal Python runtime ``random`` — the "no ``Math.random()``"
      rule is about deterministic-config contexts, not this load shed.)
 
-Composition (fixed order, plan §2): ``health-prune -> concurrency-reorder ->
-target creation -> classify-walk``. Health prunes known-DOWN tiers first, so a down
-tier is already gone before this reorder runs and can never be reordered back to
-the front — this filter only ever touches saturated-but-UP vLLM tiers.
+Composition (fixed order): ``concurrency-route -> health-prune -> target creation
+-> classify-walk``. Routing may insert an explicit overflow tier, then the health
+filter sees the complete candidate chain and removes any known-DOWN endpoint.
 
 Gated by ``CONCURRENCY_GAUGE_ENABLED`` (default off) and only active where a
 ``ConcurrencyGate`` is configured on the step; both off => identity (zero

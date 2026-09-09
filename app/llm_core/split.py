@@ -122,23 +122,18 @@ async def resolve_chain(
     if step_cfg is None:
         raise ValueError(f"no config for step={step.value} in profile={profile.name}")
 
-    # Health-prune inert tiers before creating execution targets.
-    # Drop tiers whose endpoint is currently `open` (per-endpoint breaker). No-op
-    # unless a HEALTH_* flag is on; contract: never empties the chain. Runs on the
-    # inert Tiers so a pruned tier's client is never even built.
-    from app.llm_core import health
-    tiers = health.prune_unhealthy(step, list(step_cfg.tiers))
+    tiers = list(step_cfg.tiers)
 
-    # Then reorder by load before the classify/fallback walk. A saturated but
-    # healthy vLLM tier can move behind
-    # the managed tier, reading the gauge from the step's explicit ConcurrencyGate.
-    # A no-op unless CONCURRENCY_GAUGE_ENABLED and a gate is configured on the step;
-    # never drops a tier / empties the chain. Because health has already pruned any
-    # DOWN tier, a down tier is gone here and can never be reordered back to front.
+    # Reorder by load, possibly inserting the configured overflow tier.
     from app.llm_core import concurrency
     tiers = await concurrency.reprioritize_by_load(
         step, tiers, step_cfg.triggers.concurrency_gate
     )
+
+    # Health-filter the final candidate set so a breaker-open overflow cannot be
+    # reinserted at the front under saturation. The filter never empties a chain.
+    from app.llm_core import health
+    tiers = health.prune_unhealthy(step, tiers)
 
     from app.llm_core.execution import ExecutionTarget
 

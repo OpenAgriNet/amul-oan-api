@@ -45,6 +45,13 @@ _PRETRANSLATION_OK = {"vllm", "openai", "azure-openai", "anthropic"}
 _POST_TRANSLATION_OK = {"vllm", "openai", "azure-openai", "translategemma"}
 
 
+def _step_tiers(step_config):
+    yield from step_config.tiers
+    gate = step_config.triggers.concurrency_gate
+    if gate is not None and gate.overflow_tier is not None:
+        yield gate.overflow_tier
+
+
 def validate_config(pipeline: PipelineConfig) -> None:
     """Fail fast when a configured tier has no protocol adapter."""
     from app.llm_core.config_model import StepClientKind
@@ -61,7 +68,7 @@ def validate_config(pipeline: PipelineConfig) -> None:
             cfg = pipeline.step_config(profile, step)
             if cfg is None:
                 continue
-            for tier in cfg.tiers:
+            for tier in _step_tiers(cfg):
                 if tier.provider.value not in _PRETRANSLATION_OK:
                     problems.append(
                         f"profile={profile.name} step={step.value} "
@@ -70,7 +77,7 @@ def validate_config(pipeline: PipelineConfig) -> None:
                     )
         post = pipeline.step_config(profile, Step.POST_TRANSLATION)
         if post is not None:
-            for tier in post.tiers:
+            for tier in _step_tiers(post):
                 if tier.provider.value not in _POST_TRANSLATION_OK:
                     problems.append(
                         f"profile={profile.name} step={Step.POST_TRANSLATION.value} "
@@ -110,7 +117,7 @@ def validate_content(cfg: PipelineConfig) -> None:
             step_config = cfg.step_config(profile, step)
             if step_config is None:
                 continue
-            for tier in step_config.tiers:
+            for tier in _step_tiers(step_config):
                 build_handle(tier, tier_client_kind(STEP_CLIENT_KIND[step], tier))
 
 
@@ -171,20 +178,24 @@ def _assert_boot_posture() -> None:
 def configure(*, run_self_check: bool = True) -> PipelineConfig:
     """Load / synthesize the pipeline config, validate, store, self-check."""
     global PIPELINE, BOOT_PIPELINE
-    path = get_config_value("PIPELINE_CONFIG_PATH")
-    if path and os.path.exists(path):
-        logger.info("llm_core: loading pipeline config from %s", path)
-        PIPELINE = _load_from_yaml(path)
-    else:
-        PIPELINE = synthesize_from_env()
-        logger.info(
-            "llm_core: synthesized pipeline config from env (profiles=%s)",
-            [f"{p.name}:{p.weight}" for p in PIPELINE.profiles],
-        )
-    # (E) Provider/step legality — fail-fast at boot. The unified pipeline is the
-    # only path after P4 (the LLM_CORE_ENABLED kill-switch was removed), so the
-    # config binding is always the live one and must always be legal: enforce.
-    validate_config(PIPELINE)
+    try:
+        path = get_config_value("PIPELINE_CONFIG_PATH")
+        if path and os.path.exists(path):
+            logger.info("llm_core: loading pipeline config from %s", path)
+            candidate = _load_from_yaml(path)
+        else:
+            candidate = synthesize_from_env()
+            logger.info(
+                "llm_core: synthesized pipeline config from env (profiles=%s)",
+                [f"{p.name}:{p.weight}" for p in candidate.profiles],
+            )
+        validate_content(candidate)
+    except Exception as exc:
+        raise BootRefused(f"llm_core boot config rejected: {exc}") from exc
+
+    # Publish only after every normal and overflow tier has validated. A rejected
+    # reload therefore leaves the previous known-good globals untouched.
+    PIPELINE = candidate
     # Capture the boot config as the permanent fallback BEFORE any live redis
     # refresh can override PIPELINE (get_pipeline -> config_source.maybe_refresh).
     # config_source reverts to THIS on a cleared/absent live key (emergency

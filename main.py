@@ -31,8 +31,8 @@ async def lifespan(app: FastAPI):
     load_prompt_templates(settings.base_dir / "assets" / "prompts")
     # Unified LLM pipeline (the only model-selection path): synthesize/validate the
     # config and run the resolvability self-check (logs the resolved per-step
-    # provider/model/endpoint; non-fatal). Best-effort — a configure/self-check
-    # edge case must never block startup.
+    # provider/model/endpoint). Invalid configuration raises BootRefused and blocks
+    # startup; only an unexpected diagnostic/self-check edge case is best-effort.
     from app.llm_core import runtime as _llm_runtime
     try:
         _llm_runtime.configure()

@@ -340,6 +340,41 @@ def test_omitted_capabilities_preserve_vllm_gemma_behavior(monkeypatch):
     assert capabilities.history_max_tokens == 10_000
 
 
+def test_partial_capabilities_merge_with_reachable_overflow(monkeypatch):
+    from app.llm_core.config_model import (
+        ConcurrencyGate, NamedProfile, PipelineConfig, ProfileCapabilities,
+        StepConfig, Triggers,
+    )
+    from app.llm_core.execution import ExecutionContext
+
+    monkeypatch.delenv("CHAT_HISTORY_MAX_TOKENS", raising=False)
+    overflow = Tier(
+        provider=Provider.VLLM, model="gemma", endpoint="http://overflow/v1"
+    )
+    agent = StepConfig(
+        tiers=[Tier(provider=Provider.OPENAI, model="gpt")],
+        triggers=Triggers(concurrency_gate=ConcurrencyGate(
+            metrics_url="http://metrics", overflow_tier=overflow
+        )),
+    )
+    cfg = PipelineConfig(profiles=[NamedProfile(
+        name="mixed",
+        weight=100,
+        capabilities=ProfileCapabilities(history_max_tokens=20_000),
+        steps={Step.AGENT: agent},
+    )])
+    capabilities = ExecutionContext("s", cfg, "mixed").capabilities
+    assert capabilities.requires_translation is True
+    assert capabilities.history_max_tokens == 20_000
+
+    cfg = cfg.model_copy(update={"profiles": [cfg.profiles[0].model_copy(update={
+        "capabilities": ProfileCapabilities(requires_translation=False)
+    })]})
+    capabilities = ExecutionContext("s", cfg, "mixed").capabilities
+    assert capabilities.requires_translation is False
+    assert capabilities.history_max_tokens == 10_000
+
+
 def test_admission_auto_preserves_managed_provider_policy():
     from app.llm_core.config_model import AdmissionPolicy
     from app.llm_core.execution import ExecutionTarget
@@ -356,7 +391,9 @@ def test_admission_auto_preserves_managed_provider_policy():
 
 
 def test_content_validation_checks_every_fallback_tier():
-    from app.llm_core.config_model import NamedProfile, PipelineConfig, StepConfig
+    from app.llm_core.config_model import (
+        ConcurrencyGate, NamedProfile, PipelineConfig, StepConfig, Triggers,
+    )
 
     cfg = PipelineConfig(profiles=[NamedProfile(name="managed", weight=100, steps={
         Step.AGENT: StepConfig(tiers=[
@@ -365,6 +402,18 @@ def test_content_validation_checks_every_fallback_tier():
         ]),
     })])
     with pytest.raises(ValueError, match="azure-openai"):
+        runtime.validate_content(cfg)
+
+    overflow = Tier(provider=Provider.VLLM, model="broken-overflow")
+    cfg = PipelineConfig(profiles=[NamedProfile(name="managed", weight=100, steps={
+        Step.AGENT: StepConfig(
+            tiers=[Tier(provider=Provider.OPENAI, model="gpt-4.1")],
+            triggers=Triggers(concurrency_gate=ConcurrencyGate(
+                metrics_url="http://metrics", overflow_tier=overflow
+            )),
+        )
+    })])
+    with pytest.raises(ValueError, match="endpoint"):
         runtime.validate_content(cfg)
 
 
@@ -379,3 +428,44 @@ def test_validation_rejects_unsupported_posttranslation_provider():
     )
     with pytest.raises(ValueError, match="post-translation"):
         runtime.validate_config(cfg)
+
+
+@pytest.mark.parametrize("provider", ["anthropic", "gemini"])
+def test_agent_provider_does_not_set_posttranslation_protocol(monkeypatch, provider):
+    monkeypatch.setenv("LLM_PROVIDER", provider)
+    monkeypatch.setenv("FALLBACK_ENABLED", "false")
+    monkeypatch.setenv("OPENAI_API_KEY", "test-openai-key")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-anthropic-key")
+    monkeypatch.setenv("GEMINI_API_KEY", "test-gemini-key")
+    monkeypatch.delenv("OSS_INFERENCE_ENDPOINT_URL", raising=False)
+    monkeypatch.delenv("PIPELINE_CONFIG_PATH", raising=False)
+    monkeypatch.setattr(runtime, "PIPELINE", None)
+    monkeypatch.setattr(runtime, "BOOT_PIPELINE", None)
+
+    cfg = runtime.configure(run_self_check=False)
+    post = cfg.defaults[Step.POST_TRANSLATION].tiers
+    assert [tier.provider for tier in post] == [Provider.TRANSLATEGEMMA]
+
+
+def test_invalid_boot_config_is_not_published(monkeypatch, tmp_path):
+    previous = synthesize_from_env()
+    path = tmp_path / "pipeline.yaml"
+    path.write_text("""
+fallback_enabled: true
+profiles:
+  - name: managed
+    weight: 100
+    steps:
+      agent:
+        tiers:
+          - {provider: openai, model: gpt-4.1}
+          - {provider: azure-openai, model: broken}
+""")
+    monkeypatch.setattr(runtime, "PIPELINE", previous)
+    monkeypatch.setattr(runtime, "BOOT_PIPELINE", previous)
+    monkeypatch.setenv("PIPELINE_CONFIG_PATH", str(path))
+
+    with pytest.raises(runtime.BootRefused):
+        runtime.configure(run_self_check=False)
+    assert runtime.PIPELINE is previous
+    assert runtime.BOOT_PIPELINE is previous

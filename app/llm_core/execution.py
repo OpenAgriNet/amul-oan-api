@@ -164,6 +164,10 @@ class ExecutionTarget:
         return self.tier.model
 
     @property
+    def route(self) -> str:
+        return self.tier.label or f"{self.provider}:{self.model_name}"
+
+    @property
     def endpoint(self) -> str:
         return self.tier.endpoint or "managed"
 
@@ -262,13 +266,26 @@ def emit(event: FallbackEvent) -> None:
     # via a supported API (update_current_span) is a tracked follow-up.
 
 
-def _record_served(step: Step, kind: str, index: int, trace_state: Any = None) -> None:
+def _record_served(
+    step: Step,
+    target: ExecutionTarget,
+    index: int,
+    trace_state: Any = None,
+) -> None:
     """Tracing-only: thread the tier that actually served (kind + 0-based chain
     index) back to the current turn's pipeline-trace, keyed by the pipeline's
     Step. No-op when no trace context is active; never breaks the request path."""
     try:  # pragma: no cover - best effort
         from app.llm_core import trace as _trace
-        _trace.record_served(step, kind, index, trace_state=trace_state)
+        _trace.record_served(
+            step,
+            target.kind,
+            index,
+            provider=target.provider,
+            model=target.model_name,
+            label=target.tier.label,
+            trace_state=trace_state,
+        )
     except Exception:
         pass
 
@@ -412,8 +429,8 @@ async def execute_with_fallback(
                         FallbackEvent(
                             pipeline=pipeline,
                             session_id=session_id,
-                            from_variant=attempt.kind,
-                            to_variant=chain[i + 1].kind if will_fall_back else None,
+                            from_variant=attempt.route,
+                            to_variant=chain[i + 1].route if will_fall_back else None,
                             reason=reason,
                             error_class=type(exc).__name__,
                             error_detail=str(exc)[:500],
@@ -436,7 +453,7 @@ async def execute_with_fallback(
                     # Clean success resets the breaker for this endpoint (P2). No-op unless
                     # HEALTH_BREAKER_ENABLED.
                     health.record_success(attempt.endpoint)
-                    _record_served(step, attempt.kind, i, trace_state)
+                    _record_served(step, attempt, i, trace_state)
                     from app import metrics
                     metrics.record_served(pipeline, attempt.kind, attempt.provider, attempt.model_name)
                     return result
@@ -571,7 +588,7 @@ async def stream_with_fallback(
                             yield chunk
                     # Clean stream finish resets the breaker for this endpoint (P2).
                     health.record_success(attempt.endpoint)
-                    _record_served(step, attempt.kind, i, trace_state)
+                    _record_served(step, attempt, i, trace_state)
                     from app import metrics
                     metrics.record_served(pipeline, attempt.kind, attempt.provider, attempt.model_name)
                     return  # stream finished cleanly
@@ -585,7 +602,7 @@ async def stream_with_fallback(
                             FallbackEvent(
                                 pipeline=pipeline,
                                 session_id=session_id,
-                                from_variant=attempt.kind,
+                                from_variant=attempt.route,
                                 to_variant=None,
                                 reason=reason,
                                 error_class=type(exc).__name__,
@@ -609,8 +626,8 @@ async def stream_with_fallback(
                         FallbackEvent(
                             pipeline=pipeline,
                             session_id=session_id,
-                            from_variant=attempt.kind,
-                            to_variant=chain[i + 1].kind if will_fall_back else None,
+                            from_variant=attempt.route,
+                            to_variant=chain[i + 1].route if will_fall_back else None,
                             reason=reason,
                             error_class=type(exc).__name__,
                             error_detail=str(exc)[:500],
@@ -676,23 +693,36 @@ class ExecutionContext:
 
     @cached_property
     def capabilities(self):
-        if self.profile.capabilities is not None:
-            return self.profile.capabilities
-
         from app.config import get_config_value
 
-        primary = self._step_config(Step.AGENT).tiers[0]
+        agent = self._step_config(Step.AGENT)
+        reachable = list(agent.tiers)
+        gate = agent.triggers.concurrency_gate
+        if gate is not None and gate.overflow_tier is not None:
+            reachable.append(gate.overflow_tier)
         override = str(get_config_value("CHAT_HISTORY_MAX_TOKENS", ""))
         if override.isdigit():
-            history_max_tokens = int(override)
-        elif primary.provider is Provider.VLLM and "gemma" in primary.model.lower():
+            inferred_history = int(override)
+        elif any(
+            tier.provider is Provider.VLLM and "gemma" in tier.model.lower()
+            for tier in reachable
+        ):
             raw = str(get_config_value("CHAT_HISTORY_MAX_TOKENS_VLLM_GEMMA", "10000"))
-            history_max_tokens = int(raw) if raw.isdigit() else 10_000
+            inferred_history = int(raw) if raw.isdigit() else 10_000
         else:
-            history_max_tokens = 80_000
+            inferred_history = 80_000
+        configured = self.profile.capabilities
         return ProfileCapabilities(
-            requires_translation=primary.provider is Provider.VLLM,
-            history_max_tokens=history_max_tokens,
+            requires_translation=(
+                configured.requires_translation
+                if configured is not None and configured.requires_translation is not None
+                else any(tier.provider is Provider.VLLM for tier in reachable)
+            ),
+            history_max_tokens=(
+                configured.history_max_tokens
+                if configured is not None and configured.history_max_tokens is not None
+                else inferred_history
+            ),
         )
 
     def _step_config(self, step: Step):
@@ -740,7 +770,7 @@ class ExecutionContext:
         )
 
     def _record_direct_success(self, step: Step, target: ExecutionTarget) -> None:
-        _record_served(step, target.kind, 0, self._trace_state)
+        _record_served(step, target, 0, self._trace_state)
         from app import metrics
 
         metrics.record_served(
@@ -778,15 +808,10 @@ class ExecutionContext:
     ) -> AsyncIterator[Any]:
         if not self.config.fallback_enabled:
             target = self._target(step, self._step_config(step).tiers[0])
-            served = False
             async for chunk in make_stream(target):
-                if not served:
-                    self._record_direct_success(step, target)
-                    served = True
                 if chunk is not AGENT_ACTIVITY:
                     yield chunk
-            if not served:
-                self._record_direct_success(step, target)
+            self._record_direct_success(step, target)
             return
         async for chunk in stream_with_fallback(
             step=step,
