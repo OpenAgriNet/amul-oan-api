@@ -3,7 +3,6 @@ Tool for fetching farmer details by mobile number from PashuGPT-style APIs.
 Uses amulpashudhan.com first, then herdman.live if needed (cohesive output, fallback on failure/empty).
 """
 import json
-import os
 import re
 import uuid
 from enum import Enum
@@ -19,6 +18,7 @@ from app.models.farmer import FarmerModel
 from app.models.farmer_transport import FarmerRecord
 from app.models.union import UnionName
 from helpers.utils import get_logger, is_from_union
+from app.config import get_config_value
 
 logger = get_logger(__name__)
 
@@ -70,8 +70,8 @@ async def get_farmer_data_by_mobile(mobile_number: str) -> list[FarmerModel] | N
     if not mobile:
         return None
 
-    token1 = os.getenv("PASHUGPT_TOKEN")
-    token3 = os.getenv("PASHUGPT_TOKEN_3")
+    token1 = get_config_value("PASHUGPT_TOKEN")
+    token3 = get_config_value("PASHUGPT_TOKEN_3")
     if not token1 and not token3:
         logger.error("Neither PASHUGPT_TOKEN nor PASHUGPT_TOKEN_3 is set")
         return None
@@ -138,8 +138,8 @@ async def fetch_farmer_info_with_outcome(
     if not mobile:
         return None, FarmerFetchOutcome.ERROR
 
-    token1 = os.getenv("PASHUGPT_TOKEN")
-    token3 = os.getenv("PASHUGPT_TOKEN_3")
+    token1 = get_config_value("PASHUGPT_TOKEN")
+    token3 = get_config_value("PASHUGPT_TOKEN_3")
     if not token1 and not token3:
         logger.error("Neither PASHUGPT_TOKEN nor PASHUGPT_TOKEN_3 is set")
         return None, FarmerFetchOutcome.ERROR

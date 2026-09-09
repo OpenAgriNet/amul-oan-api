@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 from contextlib import contextmanager
 from contextvars import ContextVar, Token
 from datetime import datetime, timezone
@@ -9,6 +8,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from helpers.utils import get_logger
+from app.config import settings
 
 
 logger = get_logger(__name__)
@@ -19,19 +19,12 @@ _QUERY_VAR: ContextVar[str | None] = ContextVar("model_boundary_query", default=
 _CALL_INDEX_VAR: ContextVar[int] = ContextVar("model_boundary_call_index", default=0)
 
 
-def _env_enabled(name: str, default: bool = False) -> bool:
-    value = os.getenv(name)
-    if value is None:
-        return default
-    return value.strip().lower() in {"1", "true", "yes", "on"}
-
-
 def boundary_capture_enabled() -> bool:
-    return _env_enabled("MODEL_BOUNDARY_CAPTURE_ENABLED", default=False)
+    return settings.model_boundary_capture_enabled
 
 
 def get_boundary_capture_dir() -> Path:
-    return Path(os.getenv("MODEL_BOUNDARY_CAPTURE_DIR", "/tmp/voice_model_boundary")).resolve()
+    return Path(settings.model_boundary_capture_dir).resolve()
 
 
 @contextmanager

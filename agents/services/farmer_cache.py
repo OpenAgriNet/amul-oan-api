@@ -21,12 +21,11 @@ cache key), which is cross-service and out of scope for the merge.
 import asyncio
 import hashlib
 import json
-import os
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 from app.core.cache import cache, redis_client, build_cache_key
-from app.config import settings
+from app.config import get_config_value, settings
 from app.observability import start_observation
 from app.models.farmer_transport import FarmerDataEnvelope, FarmerRecord
 from app.models.union import is_ai_call_banned_union
@@ -551,7 +550,7 @@ async def drain_farmer_refresh_queue_once(batch: int = FARMER_REFRESH_QUEUE_BATC
 
 
 async def _fetch_ai_technicians(records: list[FarmerRecord]) -> list[dict]:
-    token = os.getenv("PASHUGPT_TOKEN")
+    token = get_config_value("PASHUGPT_TOKEN")
     if not token or not records:
         return []
 

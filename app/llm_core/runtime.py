@@ -18,6 +18,7 @@ import os
 from typing import Optional
 
 from helpers.utils import get_logger
+from app.config import get_config_value
 from app.llm_core.config_model import PipelineConfig, Step
 from app.llm_core.legacy_shim import synthesize_from_env
 
@@ -134,7 +135,7 @@ def validate_content(cfg: PipelineConfig) -> None:
 
 
 def _truthy_env(name: str) -> bool:
-    v = os.getenv(name)
+    v = get_config_value(name)
     return v is not None and v.strip().lower() in {"1", "true", "yes", "on"}
 
 
@@ -190,7 +191,7 @@ def _assert_boot_posture() -> None:
 def configure(*, run_self_check: bool = True) -> PipelineConfig:
     """Load / synthesize the pipeline config, validate, store, self-check."""
     global PIPELINE, BOOT_PIPELINE
-    path = os.getenv("PIPELINE_CONFIG_PATH")
+    path = get_config_value("PIPELINE_CONFIG_PATH")
     if path and os.path.exists(path):
         logger.info("llm_core: loading pipeline config from %s", path)
         PIPELINE = _load_from_yaml(path)

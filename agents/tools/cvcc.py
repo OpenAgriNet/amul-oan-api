@@ -1,7 +1,6 @@
 """
 Tool for fetching CVCC health details by tag number from Amul Dairy API.
 """
-import os
 from typing import Optional
 from pydantic_ai import ModelRetry
 import json
@@ -9,6 +8,7 @@ import json
 from agents.tools.farmer_animal_backends import fetch_cvcc_health_details
 from app.models.union import UnionName
 from helpers.utils import get_logger
+from app.config import get_config_value
 
 logger = get_logger(__name__)
 
@@ -23,7 +23,7 @@ async def get_cvcc_health_data_by_tag(
         return None
 
     if not token_no:
-        token_no = os.getenv("PASHUGPT_TOKEN_2")
+        token_no = get_config_value("PASHUGPT_TOKEN_2")
         if not token_no:
             logger.error("PASHUGPT_TOKEN_2 is not set")
             return None

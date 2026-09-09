@@ -27,7 +27,6 @@ will reconcile last.
 from __future__ import annotations
 
 import json
-import os
 from dataclasses import dataclass
 from functools import lru_cache
 from typing import Any, Optional
@@ -35,9 +34,11 @@ from typing import Any, Optional
 import httpx
 from openai import AsyncOpenAI, AsyncAzureOpenAI
 from pydantic_ai.models.anthropic import AnthropicModel
+from pydantic_ai.providers.anthropic import AnthropicProvider
 from pydantic_ai.providers.openai import OpenAIProvider
 
 from helpers.utils import get_logger
+from app.config import get_config_value, settings
 from app.llm_core.config_model import Provider, Tier, StepClientKind
 
 # Version-tolerant OpenAI model class: the deploy target pins pydantic-ai 1.x
@@ -132,10 +133,10 @@ class TGDescriptor:
 
 
 def _key(tier: Tier) -> Optional[str]:
-    """Read the named secret env var at materialize time (never stored)."""
+    """Read the named secret at materialize time (never stored in pipeline config)."""
     if not tier.api_key_env:
         return None
-    return os.getenv(tier.api_key_env)
+    return get_config_value(tier.api_key_env)
 
 
 # ── low-level builders ────────────────────────────────────────────────────────
@@ -176,24 +177,24 @@ def _build_agent_model(tier: Tier) -> Any:
         return _OpenAIModel(tier.model, provider=OpenAIProvider(openai_client=azure_client))
 
     if tier.provider is Provider.ANTHROPIC:
-        # AnthropicModel reads ANTHROPIC_API_KEY from the environment.
-        return AnthropicModel(tier.model)
+        return AnthropicModel(tier.model, provider=AnthropicProvider(api_key=_key(tier)))
 
     if tier.provider is Provider.GEMINI:
         # Rebased off the dead-file ``feat/adding-google-as-model-provider`` arm.
         # Deploy target (pydantic-ai 1.x): GoogleModel + GoogleProvider(api_key=).
         # Older local envs: GeminiModel(provider='google-gla'), reading
         # GEMINI_API_KEY / GOOGLE_API_KEY (the chat branch's exact behaviour).
-        api_key = _key(tier) or os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+        api_key = _key(tier) or get_config_value("GEMINI_API_KEY") or get_config_value("GOOGLE_API_KEY")
         try:  # pydantic-ai 1.x
             from pydantic_ai.models.google import GoogleModel
             from pydantic_ai.providers.google import GoogleProvider
+
             return GoogleModel(tier.model, provider=GoogleProvider(api_key=api_key))
         except ImportError:  # pragma: no cover - older pydantic-ai
             from pydantic_ai.models.gemini import GeminiModel
-            if api_key:
-                os.environ["GEMINI_API_KEY"] = api_key
-            return GeminiModel(tier.model, provider="google-gla")
+            from pydantic_ai.providers.google_gla import GoogleGLAProvider
+
+            return GeminiModel(tier.model, provider=GoogleGLAProvider(api_key=api_key))
 
     raise ValueError(f"provider {tier.provider} is not valid for an AGENT step")
 

@@ -1,8 +1,6 @@
-import os
-
 from pydantic_ai import Agent, RunContext
 from helpers.utils import get_prompt, get_today_date_str, get_today_datetime_str
-from app.config import settings
+from app.config import get_config_value, settings
 from agents.tools import TOOLS
 from agents.tools.terms import get_ambiguity_hints_for_query
 from pydantic_ai.settings import ModelSettings
@@ -11,13 +9,13 @@ from agents.deps import FarmerContext
 
 def _agrinet_max_output_tokens() -> int:
     """Cap completion tokens so prompt + max_tokens stays under small-context vLLM models (e.g. Gemma 16k)."""
-    override = os.getenv("AGRINET_MAX_TOKENS")
-    if override and override.isdigit():
+    override = str(get_config_value("AGRINET_MAX_TOKENS", ""))
+    if override.isdigit():
         return int(override)
     provider = (settings.llm_provider or "openai").lower()
     model_name = settings.llm_model_name or "gpt-4.1"
     if provider == "vllm" and "gemma" in model_name.lower():
-        gemma_cap = os.getenv("AGRINET_MAX_TOKENS_VLLM_GEMMA", "2048")
+        gemma_cap = str(get_config_value("AGRINET_MAX_TOKENS_VLLM_GEMMA", "2048"))
         return int(gemma_cap) if gemma_cap.isdigit() else 2048
     return 4000
 

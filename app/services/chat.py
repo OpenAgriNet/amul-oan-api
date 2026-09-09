@@ -1,7 +1,6 @@
 from contextlib import nullcontext
 from typing import Any, AsyncGenerator
 from functools import lru_cache
-import os
 import regex
 import re
 from fastapi import BackgroundTasks
@@ -18,7 +17,7 @@ from app.utils import (
     set_cache,
 )
 from app.tasks.suggestions import create_suggestions
-from app.config import settings
+from app.config import get_config_value, settings
 from app.services.fallback import AGENT_ACTIVITY, execute_with_fallback, stream_with_fallback, with_first_token_deadline
 from app.core.cache import cache
 from agents.deps import FarmerContext
@@ -79,11 +78,11 @@ def _chat_history_trim_max_tokens(agent_provider: str, agent_model_name: str) ->
     reproduces the old ``is_oss_gemma or is_startup_vllm_gemma`` decision now that
     the tier is resolved by app/llm_core.
     """
-    override = os.getenv("CHAT_HISTORY_MAX_TOKENS")
-    if override and override.isdigit():
+    override = str(get_config_value("CHAT_HISTORY_MAX_TOKENS", ""))
+    if override.isdigit():
         return int(override)
     if (agent_provider or "").lower() == "vllm" and "gemma" in (agent_model_name or "").lower():
-        cap = os.getenv("CHAT_HISTORY_MAX_TOKENS_VLLM_GEMMA", "10000")
+        cap = str(get_config_value("CHAT_HISTORY_MAX_TOKENS_VLLM_GEMMA", "10000"))
         return int(cap) if cap.isdigit() else 10_000
     return 80_000
 
