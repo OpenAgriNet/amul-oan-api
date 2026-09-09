@@ -779,3 +779,162 @@ def test_ingest_sursagar_source_raises_when_coverage_too_low(monkeypatch):
 
     with pytest.raises(si.SchemeParseError, match="insufficient sursagar ingestion coverage"):
         asyncio.run(si._ingest_sursagar_source(si.SURSAGAR_SOURCE, SimpleNamespace()))
+
+
+# ---------------------------------------------------------------------------
+# Sabar parser tests
+# ---------------------------------------------------------------------------
+
+_SABAR_HTML = """
+<h5 class="vc_custom_heading sabar-soc-title-1">AMITRAZ LIQ PARIPATRA No.66</h5>
+<p class="vc_custom_heading sabar-soc-title-2">એમિટ્રાઝ લીકવીડ</p>
+<div class="wpb_text_column sabar-soc-text-3"><p>Detailed guidelines.</p></div>
+<a class="vc_btn3" href="https://sabardairy.org/wp-content/uploads/2026/09/1-AMITRAZ-LIQ-Paripatra-No.66.pdf">Download Application Form</a>
+<h5 class="vc_custom_heading sabar-soc-title-1">CATTLE INSURENCE PARIPATRA NO. 73</h5>
+<p class="vc_custom_heading sabar-soc-title-2">સામૂહિક પશુવીમા યોજના</p>
+<a href="https://sabardairy.org/wp-content/uploads/2026/09/2-CATTLE-INSURENCE-PARIPATRA-NO.-73.pdf">Download Application Form</a>
+"""
+
+
+def test_parse_sabar_scheme_links():
+    records = si.parse_sabar_scheme_links(_SABAR_HTML)
+    assert len(records) == 2
+    assert records[0]["scheme_title"] == "AMITRAZ LIQ PARIPATRA No.66 — એમિટ્રાઝ લીકવીડ"
+    assert records[0]["scheme_url"] == (
+        "https://sabardairy.org/wp-content/uploads/2026/09/1-AMITRAZ-LIQ-Paripatra-No.66.pdf"
+    )
+    assert records[1]["scheme_title"] == "CATTLE INSURENCE PARIPATRA NO. 73 — સામૂહિક પશુવીમા યોજના"
+    assert records[1]["scheme_url"] == (
+        "https://sabardairy.org/wp-content/uploads/2026/09/2-CATTLE-INSURENCE-PARIPATRA-NO.-73.pdf"
+    )
+
+
+def test_parse_sabar_scheme_links_deduplication():
+    html = """
+    <h5 class="sabar-soc-title-1">Scheme X</h5>
+    <p class="sabar-soc-title-2">યોજના X</p>
+    <a href="https://sabardairy.org/wp-content/uploads/2026/09/x.pdf">Download</a>
+    <a href="https://sabardairy.org/wp-content/uploads/2026/09/x.pdf">Download Again</a>
+    """
+    records = si.parse_sabar_scheme_links(html)
+    assert len(records) == 1
+
+
+def test_parse_sabar_scheme_links_english_only_when_no_gujarati():
+    html = """
+    <h5 class="sabar-soc-title-1">SILAGE PARIPATRA NO.22</h5>
+    <a href="/wp-content/uploads/2026/09/12-SILAGE-PARIPATRA-NO.22.pdf">Download</a>
+    """
+    records = si.parse_sabar_scheme_links(html)
+    assert len(records) == 1
+    assert records[0]["scheme_title"] == "SILAGE PARIPATRA NO.22"
+    assert records[0]["scheme_url"] == (
+        "https://sabardairy.org/wp-content/uploads/2026/09/12-SILAGE-PARIPATRA-NO.22.pdf"
+    )
+
+
+def test_parse_sabar_scheme_links_collapses_gujarati_subtitle_overlap():
+    html = """
+    <h5 class="sabar-soc-title-1">સ્વચ્છ દૂધ ઉત્પાદન</h5>
+    <p class="sabar-soc-title-2">સ્વચ્છ દૂધ ઉત્પાદન(માર્ગદર્શિકા)</p>
+    <a href="https://sabardairy.org/wp-content/uploads/2026/09/15.pdf">Download</a>
+    """
+    records = si.parse_sabar_scheme_links(html)
+    assert len(records) == 1
+    assert records[0]["scheme_title"] == "સ્વચ્છ દૂધ ઉત્પાદન(માર્ગદર્શિકા)"
+
+
+
+# ---------------------------------------------------------------------------
+# Sabar ingestion tests
+# ---------------------------------------------------------------------------
+
+def test_ingest_sabar_source_heartbeats_lock(monkeypatch):
+    links = [
+        {"scheme_title": "Scheme A", "scheme_url": "https://example.com/a.pdf"},
+        {"scheme_title": "Scheme B", "scheme_url": "https://example.com/b.pdf"},
+    ]
+
+    async def fake_fetch_html(_client, _url):
+        return "<html></html>"
+
+    monkeypatch.setattr(si, "fetch_html", fake_fetch_html)
+    monkeypatch.setattr(si, "parse_sabar_scheme_links", lambda _html: links)
+
+    async def fake_build(**kwargs):
+        return {"scheme_title": kwargs["scheme_title"]}
+
+    monkeypatch.setattr(si, "_build_pdf_record", fake_build)
+
+    extend_calls = []
+
+    async def fake_extend(source_key, lock_token, redis_client=None):
+        extend_calls.append((source_key, lock_token, redis_client))
+        return True
+
+    monkeypatch.setattr(si, "extend_refresh_lock", fake_extend)
+
+    records = asyncio.run(
+        si._ingest_sabar_source(
+            si.SABAR_SOURCE,
+            SimpleNamespace(),
+            lock_token="tok-sabar",
+            redis_client="redis-stub",
+        )
+    )
+
+    assert len(records) == 2
+    assert len(extend_calls) == 2
+    assert all(call[1] == "tok-sabar" and call[2] == "redis-stub" for call in extend_calls)
+
+
+def test_ingest_sabar_source_skips_heartbeat_without_token(monkeypatch):
+    async def fake_fetch_html(_client, _url):
+        return "<html></html>"
+
+    monkeypatch.setattr(si, "fetch_html", fake_fetch_html)
+    monkeypatch.setattr(
+        si,
+        "parse_sabar_scheme_links",
+        lambda _html: [{"scheme_title": "A", "scheme_url": "https://example.com/a.pdf"}],
+    )
+
+    async def fake_build(**kwargs):
+        return {"scheme_title": kwargs["scheme_title"]}
+
+    monkeypatch.setattr(si, "_build_pdf_record", fake_build)
+
+    called = []
+
+    async def fake_extend(*args, **kwargs):
+        called.append(args)
+        return True
+
+    monkeypatch.setattr(si, "extend_refresh_lock", fake_extend)
+
+    asyncio.run(si._ingest_sabar_source(si.SABAR_SOURCE, SimpleNamespace()))
+
+    assert called == []
+
+
+def test_ingest_sabar_source_raises_when_coverage_too_low(monkeypatch):
+    links = [
+        {"scheme_title": f"Scheme {c}", "scheme_url": f"https://example.com/{c}.pdf"}
+        for c in "ABCDE"
+    ]
+
+    async def fake_fetch_html(_client, _url):
+        return "<html></html>"
+
+    monkeypatch.setattr(si, "fetch_html", fake_fetch_html)
+    monkeypatch.setattr(si, "parse_sabar_scheme_links", lambda _html: links)
+
+    async def fake_build(**kwargs):
+        if kwargs["scheme_title"] == "Scheme A":
+            return {"scheme_title": kwargs["scheme_title"]}
+        return None
+
+    monkeypatch.setattr(si, "_build_pdf_record", fake_build)
+
+    with pytest.raises(si.SchemeParseError, match="insufficient sabar ingestion coverage"):
+        asyncio.run(si._ingest_sabar_source(si.SABAR_SOURCE, SimpleNamespace()))
