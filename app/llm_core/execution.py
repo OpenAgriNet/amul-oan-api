@@ -23,7 +23,7 @@ import random
 import time
 
 import anyio
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from functools import cached_property
 from typing import Any, AsyncIterator, Awaitable, Callable, Optional
@@ -32,6 +32,7 @@ from app.config import settings
 from app.llm_core.config_model import (
     AdmissionPolicy,
     PipelineConfig,
+    ProfileCapabilities,
     Provider,
     Step,
     StepClientKind,
@@ -176,7 +177,16 @@ class ExecutionTarget:
 
     @property
     def admission(self) -> AdmissionPolicy:
-        return self.tier.admission
+        if self.tier.admission is not AdmissionPolicy.AUTO:
+            return self.tier.admission
+        if self.tier.provider in {
+            Provider.OPENAI,
+            Provider.AZURE,
+            Provider.ANTHROPIC,
+            Provider.GEMINI,
+        }:
+            return AdmissionPolicy.MANAGED
+        return AdmissionPolicy.NONE
 
 
 @dataclass
@@ -252,13 +262,13 @@ def emit(event: FallbackEvent) -> None:
     # via a supported API (update_current_span) is a tracked follow-up.
 
 
-def _record_served(step: Step, kind: str, index: int) -> None:
+def _record_served(step: Step, kind: str, index: int, trace_state: Any = None) -> None:
     """Tracing-only: thread the tier that actually served (kind + 0-based chain
     index) back to the current turn's pipeline-trace, keyed by the pipeline's
     Step. No-op when no trace context is active; never breaks the request path."""
     try:  # pragma: no cover - best effort
         from app.llm_core import trace as _trace
-        _trace.record_served(step, kind, index)
+        _trace.record_served(step, kind, index, trace_state=trace_state)
     except Exception:
         pass
 
@@ -358,6 +368,7 @@ async def execute_with_fallback(
     session_id: str,
     run: Callable[[ExecutionTarget], Awaitable[Any]],
     chain: list[ExecutionTarget],
+    trace_state: Any = None,
 ) -> Any:
     """Run ``run(attempt)`` against each tier of the chain, falling back on a
     classified infrastructure failure and recording every failure via ``emit``.
@@ -425,7 +436,7 @@ async def execute_with_fallback(
                     # Clean success resets the breaker for this endpoint (P2). No-op unless
                     # HEALTH_BREAKER_ENABLED.
                     health.record_success(attempt.endpoint)
-                    _record_served(step, attempt.kind, i)
+                    _record_served(step, attempt.kind, i, trace_state)
                     from app import metrics
                     metrics.record_served(pipeline, attempt.kind, attempt.provider, attempt.model_name)
                     return result
@@ -471,7 +482,7 @@ async def _attempt_events(
     The event is returned unchanged, including ``AGENT_ACTIVITY``. The common
     walker owns commit state and decides whether an event is externally visible.
     """
-    queue: asyncio.Queue = asyncio.Queue()
+    queue: asyncio.Queue = asyncio.Queue(maxsize=1)
     _CHUNK, _END, _ERR = 0, 1, 2
 
     async def _drain() -> None:
@@ -521,6 +532,7 @@ async def stream_with_fallback(
     session_id: str,
     make_stream: Callable[[ExecutionTarget], AsyncIterator[Any]],
     chain: list[ExecutionTarget],
+    trace_state: Any = None,
 ) -> AsyncIterator[Any]:
     """Stream a chain tier with *first-token commit* semantics.
 
@@ -559,7 +571,7 @@ async def stream_with_fallback(
                             yield chunk
                     # Clean stream finish resets the breaker for this endpoint (P2).
                     health.record_success(attempt.endpoint)
-                    _record_served(step, attempt.kind, i)
+                    _record_served(step, attempt.kind, i, trace_state)
                     from app import metrics
                     metrics.record_served(pipeline, attempt.kind, attempt.provider, attempt.model_name)
                     return  # stream finished cleanly
@@ -652,6 +664,7 @@ class ExecutionContext:
     session_id: str
     config: PipelineConfig
     profile_name: str
+    _trace_state: Any = field(default=None, init=False, repr=False, compare=False)
 
     @property
     def profile(self):
@@ -661,9 +674,26 @@ class ExecutionContext:
             or self.config.profiles[0]
         )
 
-    @property
+    @cached_property
     def capabilities(self):
-        return self.profile.capabilities
+        if self.profile.capabilities is not None:
+            return self.profile.capabilities
+
+        from app.config import get_config_value
+
+        primary = self._step_config(Step.AGENT).tiers[0]
+        override = str(get_config_value("CHAT_HISTORY_MAX_TOKENS", ""))
+        if override.isdigit():
+            history_max_tokens = int(override)
+        elif primary.provider is Provider.VLLM and "gemma" in primary.model.lower():
+            raw = str(get_config_value("CHAT_HISTORY_MAX_TOKENS_VLLM_GEMMA", "10000"))
+            history_max_tokens = int(raw) if raw.isdigit() else 10_000
+        else:
+            history_max_tokens = 80_000
+        return ProfileCapabilities(
+            requires_translation=primary.provider is Provider.VLLM,
+            history_max_tokens=history_max_tokens,
+        )
 
     def _step_config(self, step: Step):
         configured = self.config.step_config(self.profile, step)
@@ -685,6 +715,8 @@ class ExecutionContext:
     def begin_trace(self):
         from app.llm_core import trace
 
+        if self._trace_state is not None:
+            return self._trace_state
         current = trace.begin(self.profile_name)
         trace.set_profile(current, self.profile.name, self.profile.weight)
         for step in Step:
@@ -694,39 +726,43 @@ class ExecutionContext:
                 )
             except ValueError:
                 pass
+        object.__setattr__(self, "_trace_state", current)
         return current
 
     async def _chain(self, step: Step) -> list[ExecutionTarget]:
-        configured = self._step_config(step)
-        tiers = list(configured.tiers)
-        if self.config.fallback_enabled:
-            from app.llm_core import split
+        from app.llm_core import split
 
-            return await split.resolve_chain(
-                self.session_id,
-                step,
-                self.config,
-                profile_name=self.profile_name,
-            )
-        else:
-            tiers = [tiers[0].model_copy(update={"timeout_ms": None, "ttft_ms": None})]
-        chain = [self._target(step, tier) for tier in tiers]
-        from app.llm_core import trace
+        return await split.resolve_chain(
+            self.session_id,
+            step,
+            self.config,
+            profile_name=self.profile_name,
+        )
 
-        trace.record_profile(self.profile.name, self.profile.weight)
-        trace.record_step_chain(step, chain)
-        return chain
+    def _record_direct_success(self, step: Step, target: ExecutionTarget) -> None:
+        _record_served(step, target.kind, 0, self._trace_state)
+        from app import metrics
+
+        metrics.record_served(
+            step.value, target.kind, target.provider, target.model_name
+        )
 
     async def run_adapter(
         self,
         step: Step,
         invoke: Callable[[ExecutionTarget], Awaitable[Any]],
     ) -> Any:
+        if not self.config.fallback_enabled:
+            target = self._target(step, self._step_config(step).tiers[0])
+            result = await invoke(target)
+            self._record_direct_success(step, target)
+            return result
         return await execute_with_fallback(
             step=step,
             session_id=self.session_id[:200],
             run=invoke,
             chain=await self._chain(step),
+            trace_state=self._trace_state,
         )
 
     async def run(self, step: Step, agent: Any, prompt: str, **run_kwargs: Any) -> Any:
@@ -740,11 +776,24 @@ class ExecutionContext:
         step: Step,
         make_stream: Callable[[ExecutionTarget], AsyncIterator[Any]],
     ) -> AsyncIterator[Any]:
+        if not self.config.fallback_enabled:
+            target = self._target(step, self._step_config(step).tiers[0])
+            served = False
+            async for chunk in make_stream(target):
+                if not served:
+                    self._record_direct_success(step, target)
+                    served = True
+                if chunk is not AGENT_ACTIVITY:
+                    yield chunk
+            if not served:
+                self._record_direct_success(step, target)
+            return
         async for chunk in stream_with_fallback(
             step=step,
             session_id=self.session_id[:200],
             make_stream=make_stream,
             chain=await self._chain(step),
+            trace_state=self._trace_state,
         ):
             yield chunk
 

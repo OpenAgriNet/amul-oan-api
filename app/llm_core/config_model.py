@@ -1,8 +1,8 @@
 """Config data model for the unified LLM pipeline (P0).
 
 Four inert-config concepts — ``Tier`` / ``StepConfig`` / ``NamedProfile`` /
-``PipelineConfig`` — plus the enums that discriminate provider, api-style, LLM
-step, and step-client-kind. Nothing here builds a client or reads a secret; a
+``PipelineConfig`` — plus the enums that discriminate provider, LLM step, and
+step-client-kind. Nothing here builds a client or reads a secret; a
 ``Tier`` merely *names* the secret env var (``api_key_env``) so keys never enter
 the config file. The factory turns tiers into live handles at resolve time.
 
@@ -27,12 +27,8 @@ class Provider(str, Enum):
     TRANSLATEGEMMA = "translategemma"
 
 
-class ApiStyle(str, Enum):
-    CHAT = "chat"
-    TEXT_COMPLETION = "text_completion"
-
-
 class AdmissionPolicy(str, Enum):
+    AUTO = "auto"
     NONE = "none"
     MANAGED = "managed"
 
@@ -48,7 +44,7 @@ class Step(str, Enum):
 
 
 class StepClientKind(str, Enum):
-    """How the engine consumes a materialized tier at a call site."""
+    """How the engine consumes a tier at a call site."""
 
     AGENT = "agent"            # pydantic-ai Model (agent loop, chat moderation, suggestions)
     PRE_TRANSLATION = "pre_translation"  # provider-native raw client
@@ -67,7 +63,6 @@ class Tier(BaseModel):
     model: str
     endpoint: Optional[str] = None
     api_key_env: Optional[str] = None
-    api_style: ApiStyle = ApiStyle.CHAT
     timeout_ms: Optional[int] = None
     # Distinct FIRST-token deadline (ms) — bounds only the wait for the first
     # streamed token, independent of ``timeout_ms`` (the overall/total per-attempt
@@ -76,7 +71,7 @@ class Tier(BaseModel):
     # for the full 60s total. ``None`` -> the consumer falls back to ``timeout_ms``.
     ttft_ms: Optional[int] = None
     api_version: Optional[str] = None
-    admission: AdmissionPolicy = AdmissionPolicy.NONE
+    admission: AdmissionPolicy = AdmissionPolicy.AUTO
     label: Optional[str] = None
 
     model_config = {"frozen": True}
@@ -139,7 +134,7 @@ class ProfileCapabilities(BaseModel):
 class NamedProfile(BaseModel):
     name: str
     weight: int = Field(ge=0, le=100)
-    capabilities: ProfileCapabilities = ProfileCapabilities()
+    capabilities: Optional[ProfileCapabilities] = None
     steps: dict[Step, StepConfig] = {}
 
     model_config = {"frozen": True}

@@ -4,7 +4,7 @@ import asyncio
 
 import pytest
 
-from app.llm_core import Step
+from app.llm_core.config_model import Step
 from app.llm_core import execution as fb
 from app.llm_core.execution import FallbackReason
 
@@ -96,6 +96,30 @@ def test_unary_does_not_fallback_on_bad_output(monkeypatch):
         )
 
 
+def test_disabled_context_calls_primary_without_policy_walker(monkeypatch):
+    from app.llm_core.config_model import NamedProfile, PipelineConfig, Provider, StepConfig, Tier
+
+    cfg = PipelineConfig(profiles=[NamedProfile(name="managed", weight=100, steps={
+        Step.MODERATION: StepConfig(tiers=[
+            Tier(provider=Provider.OPENAI, model="gpt-4.1")
+        ])
+    })])
+    execution = fb.ExecutionContext("s1", cfg, "managed")
+    monkeypatch.setattr(
+        fb,
+        "execute_with_fallback",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("policy walker called")),
+    )
+
+    async def run():
+        return await execution.run_adapter(Step.MODERATION, lambda target: _answer(target))
+
+    async def _answer(target):
+        return target.model_name
+
+    assert asyncio.run(run()) == "gpt-4.1"
+
+
 def test_stream_ttft_falls_back_before_commit(monkeypatch):
     events = []
     monkeypatch.setattr(fb, "emit", events.append)
@@ -171,14 +195,16 @@ def test_first_chunk_disarms_ttft(monkeypatch):
 
 
 def test_stream_close_cancels_source_cleanly(monkeypatch):
-    state = {"closed": False}
+    state = {"closed": False, "produced": 0}
     monkeypatch.setattr(fb, "emit", lambda event: None)
 
     async def source(target):
         try:
+            value = 0
             while True:
-                await asyncio.sleep(0.005)
-                yield "chunk"
+                value += 1
+                state["produced"] = value
+                yield f"chunk-{value}"
         finally:
             state["closed"] = True
 
@@ -190,9 +216,13 @@ def test_stream_close_cancels_source_cleanly(monkeypatch):
             chain=[_chain(ttft_ms=100)[0]],
         )
         async for _ in stream:
+            # Let the producer fill the one-item queue and block on its next put.
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
             await stream.aclose()
             break
         await asyncio.sleep(0.02)
 
     asyncio.run(drive())
+    assert state["produced"] >= 3
     assert state["closed"] is True

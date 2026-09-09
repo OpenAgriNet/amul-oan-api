@@ -42,10 +42,11 @@ def _load_from_yaml(path: str) -> PipelineConfig:
 
 # Providers with a concrete pretranslation protocol adapter.
 _PRETRANSLATION_OK = {"vllm", "openai", "azure-openai", "anthropic"}
+_POST_TRANSLATION_OK = {"vllm", "openai", "azure-openai", "translategemma"}
 
 
-def validate_config(pipeline: PipelineConfig, *, enforce: bool) -> None:
-    """Fail fast when a pretranslation tier has no protocol adapter."""
+def validate_config(pipeline: PipelineConfig) -> None:
+    """Fail fast when a configured tier has no protocol adapter."""
     from app.llm_core.config_model import StepClientKind
     from app.llm_core.factory import STEP_CLIENT_KIND
 
@@ -67,15 +68,22 @@ def validate_config(pipeline: PipelineConfig, *, enforce: bool) -> None:
                         f"provider={tier.provider.value} has no pretranslation adapter "
                         f"(allowed: {sorted(_PRETRANSLATION_OK)})"
                     )
+        post = pipeline.step_config(profile, Step.POST_TRANSLATION)
+        if post is not None:
+            for tier in post.tiers:
+                if tier.provider.value not in _POST_TRANSLATION_OK:
+                    problems.append(
+                        f"profile={profile.name} step={Step.POST_TRANSLATION.value} "
+                        f"provider={tier.provider.value} has no post-translation adapter "
+                        f"(allowed: {sorted(_POST_TRANSLATION_OK)})"
+                    )
     if not problems:
         return
     msg = (
-        "llm_core config INVALID — unsupported pretranslation provider:\n  - "
+        "llm_core config INVALID — unsupported provider adapter:\n  - "
         + "\n  - ".join(problems)
     )
-    if enforce:
-        raise ValueError(msg)
-    logger.warning("%s\n(LLM_CORE_ENABLED is off; not raising)", msg)
+    raise ValueError(msg)
 
 
 def validate_content(cfg: PipelineConfig) -> None:
@@ -87,15 +95,14 @@ def validate_content(cfg: PipelineConfig) -> None:
     requests.
 
     Two checks, mirroring boot:
-      (a) ``validate_config(cfg, enforce=True)`` — provider/step legality (an
-          anthropic/gemini tier on a PRE_TRANSLATION step, etc.); and
-      (b) a resolvability probe — for every profile, for every CONFIGURED step, build
-          the primary tier handle; the factory raises on
+      (a) ``validate_config(cfg)`` — provider/step legality; and
+      (b) a resolvability probe — for every profile, every configured step, and every
+          tier, build its handle; the factory raises on
           an unbuildable tier (vllm tier with no endpoint, azure tier missing
           api_key_env/api_version, etc.), exactly as the boot self-check would.
 
     Raises (never swallows) so callers can fail closed."""
-    validate_config(cfg, enforce=True)
+    validate_config(cfg)
     from app.llm_core.factory import STEP_CLIENT_KIND, build_handle, tier_client_kind
 
     for profile in cfg.profiles:
@@ -103,8 +110,8 @@ def validate_content(cfg: PipelineConfig) -> None:
             step_config = cfg.step_config(profile, step)
             if step_config is None:
                 continue
-            tier = step_config.tiers[0]
-            build_handle(tier, tier_client_kind(STEP_CLIENT_KIND[step], tier))
+            for tier in step_config.tiers:
+                build_handle(tier, tier_client_kind(STEP_CLIENT_KIND[step], tier))
 
 
 def _truthy_env(name: str) -> bool:
@@ -177,7 +184,7 @@ def configure(*, run_self_check: bool = True) -> PipelineConfig:
     # (E) Provider/step legality — fail-fast at boot. The unified pipeline is the
     # only path after P4 (the LLM_CORE_ENABLED kill-switch was removed), so the
     # config binding is always the live one and must always be legal: enforce.
-    validate_config(PIPELINE, enforce=True)
+    validate_config(PIPELINE)
     # Capture the boot config as the permanent fallback BEFORE any live redis
     # refresh can override PIPELINE (get_pipeline -> config_source.maybe_refresh).
     # config_source reverts to THIS on a cleared/absent live key (emergency

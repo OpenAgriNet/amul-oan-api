@@ -258,7 +258,6 @@ async def stream_chat_messages(
     # come from the resolved primary tier for this session's profile (agent_tier
     # resolved above). For the current env this is the same provider/base_url/model
     # the removed get_model_for_variant returned, generalized to the weighted split.
-    request_provider = agent_info.provider
     request_model_name = agent_info.model_name
     # Langfuse: propagate session_id, metadata, and tags for dashboard filtering (max 200 chars per value)
     session_id_safe = (session_id or "")[:200]

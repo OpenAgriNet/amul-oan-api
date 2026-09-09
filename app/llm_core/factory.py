@@ -231,7 +231,7 @@ def _build_pretranslation(tier: Tier) -> AsyncOpenAI:
     # (OSS unconfigured) to actually calling OpenAI.
     if tier.provider is Provider.VLLM and not tier.endpoint:
         raise ValueError(
-            "vLLM/OSS raw-openai tier requires an endpoint; refusing to build an "
+            "vLLM/OSS pretranslation tier requires an endpoint; refusing to build an "
             "OpenAI-default client for a vLLM-labeled tier"
         )
     base_url = tier.endpoint if tier.provider is Provider.VLLM else None
@@ -279,9 +279,9 @@ def tier_client_kind(step_client_kind: StepClientKind, tier: Tier) -> StepClient
     """Per-tier client kind for a step.
 
     Every step uses its single fixed kind EXCEPT POST_TRANSLATION, whose chain is
-    mixed-provider: the TranslateGemma primary materializes as an aiohttp
+    mixed-provider: the TranslateGemma primary builds as an aiohttp
     text-completion :class:`TGDescriptor`, while a cross-provider LLM overflow tier
-    (openai/vllm/azure) materializes as a raw :class:`AsyncOpenAI` client. The step
+    (openai/vllm/azure) builds as a raw :class:`AsyncOpenAI` client. The step
     client kind for POST_TRANSLATION is ``TRANSLATEGEMMA`` (the primary's kind), so
     only a NON-TranslateGemma tier under that step is redirected to ``PRE_TRANSLATION``."""
     if step_client_kind is StepClientKind.TRANSLATEGEMMA and tier.provider is not Provider.TRANSLATEGEMMA:

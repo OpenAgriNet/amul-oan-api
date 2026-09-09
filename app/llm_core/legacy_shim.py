@@ -3,10 +3,8 @@
 ``synthesize_from_env()`` reads the env exactly as the current wiring reads it —
 the former construction-time agent model wiring, ``translation.py``
 (pre/post-translation), ``pipeline_router`` (the OSS %-split) and the
-``FALLBACK_*`` timeouts — and emits an equivalent config so that, with
-``LLM_CORE_ENABLED`` on, the resolver reproduces the legacy provider / base_url /
-model / timeout for the current environment. No legacy env reading is removed;
-this is a parallel, additive reader.
+``FALLBACK_*`` timeouts — and emits an equivalent config for the core execution
+boundary.
 
 Profiles: ``[oss(weight=OSS_PIPELINE_PCT), managed(100-pct)]`` when OSS is
 configured (``OSS_INFERENCE_ENDPOINT_URL`` set), else ``[managed(100)]`` — matching
@@ -26,7 +24,6 @@ import logging
 
 from app.llm_core.config_model import (
     AdmissionPolicy,
-    ApiStyle,
     ConcurrencyGate,
     NamedProfile,
     PipelineConfig,
@@ -158,17 +155,15 @@ def _post_translation_tiers() -> list[Tier]:
     # but-alive TG overflows fast instead of blocking a voice turn for the full 60s.
     tg = Tier(
         provider=Provider.TRANSLATEGEMMA, model=model_id, endpoint=endpoint,
-        api_style=ApiStyle.TEXT_COMPLETION, timeout_ms=60000,
+        timeout_ms=60000,
         ttft_ms=_int_env("FALLBACK_POST_TRANSLATION_TG_TTFT_MS", 5000),
         label="translategemma",
     )
-    # Cross-provider overflow = the managed agent tier, but forced to CHAT api_style
-    # and given its own (shorter) first-token deadline. Reuses the managed builder so
+    # Cross-provider overflow uses the managed model and its own timeout. Reuses
+    # the managed builder so
     # provider/model/key/endpoint track LLM_PROVIDER exactly.
     llm_ms = _int_env("FALLBACK_POST_TRANSLATION_LLM_TIMEOUT_MS", 30000)
-    llm_fallback = _managed_agent_tier(llm_ms, "llm-fallback").model_copy(
-        update={"api_style": ApiStyle.CHAT}
-    )
+    llm_fallback = _managed_agent_tier(llm_ms, "llm-fallback")
     return [tg, llm_fallback]
 
 

@@ -101,13 +101,6 @@ _last_good: Optional[PipelineConfig] = None
 _last_warn_monotonic: float = 0.0
 _redis_client = None                   # lazily built; None until first use
 _redis_init_failed: bool = False       # latch so we don't retry a broken import
-# Reentrancy guard: the LIVE-path content validation (``runtime.validate_content``)
-# resolves the candidate config through ``resolver`` -> ``runtime.get_pipeline`` ->
-# back into ``maybe_refresh``. While that probe runs, ``maybe_refresh`` must be an
-# identity no-op (return ``current``) so it neither re-reads redis nor recurses.
-_suppress_refresh: bool = False
-
-
 def _truthy(name: str) -> bool:
     v = get_config_value(name)
     return v is not None and v.strip().lower() in {"1", "true", "yes", "on"}
@@ -271,7 +264,6 @@ def maybe_refresh(current: PipelineConfig) -> PipelineConfig:
 
     Contract:
       * source disabled -> immediate identity (no redis client built);
-      * a validation probe is in flight (reentrant call) -> identity no-op;
       * within the TTL window -> return ``current`` (zero redis I/O — ``current``
         is already the last-good config, since ``runtime`` stores our return);
       * past the TTL -> GET the key:
@@ -281,10 +273,7 @@ def maybe_refresh(current: PipelineConfig) -> PipelineConfig:
           - a transient failure (redis down / invalid / content-invalid) keeps the
             last-good (``current``) serving.
     """
-    global _last_refresh_monotonic, _last_good, _suppress_refresh
-    if _suppress_refresh:
-        # Reentrant call from a content-validation probe: never re-read or recurse.
-        return current
+    global _last_refresh_monotonic, _last_good
     if not enabled():
         return current
 
@@ -294,11 +283,7 @@ def maybe_refresh(current: PipelineConfig) -> PipelineConfig:
         return current
 
     _last_refresh_monotonic = now
-    _suppress_refresh = True  # guard the validate_content probe inside _try_load
-    try:
-        loaded = _try_load()
-    finally:
-        _suppress_refresh = False
+    loaded = _try_load()
 
     if loaded is _KEY_ABSENT:
         # Cleared / never-set -> revert to the BOOT config (NOT the last LIVE one),
@@ -323,10 +308,9 @@ def reset() -> None:
     in a test, or to force the next ``maybe_refresh`` to re-read). Not called on
     the request path."""
     global _last_refresh_monotonic, _last_good, _last_warn_monotonic
-    global _redis_client, _redis_init_failed, _suppress_refresh
+    global _redis_client, _redis_init_failed
     _last_refresh_monotonic = 0.0
     _last_good = None
     _last_warn_monotonic = 0.0
     _redis_client = None
     _redis_init_failed = False
-    _suppress_refresh = False

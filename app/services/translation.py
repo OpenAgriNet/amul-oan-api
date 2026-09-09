@@ -7,16 +7,14 @@ TranslateGemma 27B base model deployed on vLLM.
 
 import json
 import re
-import asyncio
 import aiohttp
 from contextlib import contextmanager
 from contextvars import ContextVar
 from pathlib import Path
 from typing import Literal, Optional
 from helpers.utils import get_logger, normalize_voice_output
-from app.config import get_config_value, settings
 from app.models.union import UNION_BANNED_MESSAGE_VARIANTS, union_banned_message
-from agents.tools.terms import get_mini_glossary_for_text, get_ambiguity_hints_for_query, TERM_PAIRS, TermPair
+from agents.tools.terms import get_mini_glossary_for_text, get_ambiguity_hints_for_query
 
 from app import llm_core
 from app.llm_core import Step as _Step
@@ -465,9 +463,6 @@ def _post_normalize_gu_translation(
 # through the llm_core config chain (Step.POST_TRANSLATION); these singular
 # constants back the voice pretranslation structured fallback, which still speaks
 # TranslateGemma ``/completions`` directly.
-TRANSLATEGEMMA_27B_BASE_ENDPOINT = get_config_value("TRANSLATEGEMMA_27B_BASE_ENDPOINT", "http://localhost:18002/v1")
-TRANSLATEGEMMA_27B_BASE_MODEL = get_config_value("TRANSLATEGEMMA_27B_BASE_MODEL", "translategemma-27b-base")
-
 LANG_NAMES = {
     "marathi": "Marathi", "english": "English", "hindi": "Hindi",
     "gujarati": "Gujarati", "tamil": "Tamil", "kannada": "Kannada",

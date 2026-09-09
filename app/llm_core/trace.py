@@ -90,7 +90,7 @@ class PipelineTrace:
 
     def step(self, name: str) -> StepRecord:
         """Get-or-create the record for a step (health/concurrency may touch it
-        before the materialized chain is recorded)."""
+        before the resolved chain is recorded)."""
         rec = self.steps.get(name)
         if rec is None:
             rec = StepRecord(step=name)
@@ -186,9 +186,6 @@ def set_step_primary(pt: Optional[PipelineTrace], step: Any, tier: Any) -> None:
     rec.timeout_ms = _timeout_ms(tier)
     if not rec.tier_chain:
         rec.tier_chain = [_tier_summary(tier)]
-    if rec.tier_served_index is None:
-        rec.tier_served_kind = getattr(tier, "kind", None)
-        rec.tier_served_index = 0
 
 
 def _tier_summary(tier: Any) -> dict:
@@ -208,9 +205,8 @@ def _timeout_ms(tier: Any) -> Optional[int]:
 
 def record_step_chain(step: Any, chain: list) -> None:
     """Record the resolved tier chain for a step: primary tier's
-    provider/model/endpoint/timeout + the ordered chain. Defaults ``tier_served``
-    to the primary (index 0) — the fallback walker overwrites it if a later tier
-    actually serves."""
+    provider/model/endpoint/timeout + the ordered chain. Served-tier state is
+    recorded only after an attempt succeeds."""
     pt = _CTX.get()
     if pt is None or not chain:
         return
@@ -222,16 +218,18 @@ def record_step_chain(step: Any, chain: list) -> None:
     rec.endpoint = getattr(primary, "endpoint", None)
     rec.timeout_ms = _timeout_ms(primary)
     rec.tier_chain = [_tier_summary(t) for t in chain]
-    # Default served = primary; a real fallback overwrites via record_served.
-    if rec.tier_served_index is None:
-        rec.tier_served_kind = getattr(primary, "kind", None)
-        rec.tier_served_index = 0
 
 
-def record_served(step: Any, kind: Optional[str], index: int) -> None:
+def record_served(
+    step: Any,
+    kind: Optional[str],
+    index: int,
+    *,
+    trace_state: Optional[PipelineTrace] = None,
+) -> None:
     """The fallback walker's success hook: which tier (kind + 0-based index in the
     chain) actually produced the answer."""
-    pt = _CTX.get()
+    pt = trace_state or _CTX.get()
     if pt is None:
         return
     name = getattr(step, "value", step)
@@ -300,9 +298,7 @@ def compact_metadata(pt: Optional[PipelineTrace]) -> dict:
                              tier (oss/managed) — NOT necessarily the tier that
                              actually served. Health-prune / concurrency-reorder /
                              failure fallback can route a given request to a
-                             different tier; that is visible only in the pydantic-ai
-                             GENERATION observations on the same trace (tracked
-                             follow-up to surface the served tier here).
+                             different tier; ``served_summary`` reports that outcome.
 
     Returns ``{}`` on any error / empty pt (never raises into the request path).
     None-valued keys are dropped (propagate_attributes wants string values)."""
@@ -317,10 +313,11 @@ def compact_metadata(pt: Optional[PipelineTrace]) -> dict:
         )
         for step_name, sv in (pc.get("steps") or {}).items():
             sv = sv or {}
-            served = (sv.get("tier_served") or {}).get("kind")
+            chain = sv.get("chain") or [{}]
+            configured_kind = chain[0].get("kind")
             out[f"pc_{step_name}"] = (
                 f'{sv.get("provider")}:{sv.get("model")}@{sv.get("endpoint")}'
-                f'#{served}({sv.get("timeout_ms")}ms)'
+                f'#{configured_kind}({sv.get("timeout_ms")}ms)'
             )
     except Exception as e:  # pragma: no cover - defensive
         logger.debug("llm_core.trace: compact_metadata failed: %s", e)
@@ -397,7 +394,11 @@ def config_to_dict(pipeline: Any) -> dict:
             {
                 "name": p.name,
                 "weight": p.weight,
-                "capabilities": p.capabilities.model_dump(mode="json"),
+                "capabilities": (
+                    p.capabilities.model_dump(mode="json")
+                    if p.capabilities is not None
+                    else None
+                ),
                 "steps": _steps(getattr(p, "steps", {})),
             }
             for p in getattr(pipeline, "profiles", [])

@@ -432,7 +432,7 @@ def record_failed_poll(endpoint: str) -> None:
 
 def _endpoint_of(tier: Any) -> Optional[str]:
     """Endpoint key for a tier-like object — works for the inert ``Tier``
-    (``.endpoint`` is the URL, or ``None`` for OpenAI) and for the materialized
+    (``.endpoint`` is the URL, or ``None`` for OpenAI) and for the resolved
     an execution target (``.endpoint`` is the URL or ``"managed"``).
     Only real self-hosted URLs ever key a breaker; ``None`` / ``"managed"`` are
     never tracked (we don't poll OpenAI), so they are never pruned here."""
@@ -454,7 +454,7 @@ def prune_unhealthy(step: Optional[Step], tiers: list) -> list:
     NOTE (P3 composition seam): this is the FIRST pre-flight filter. The P3
     concurrency-gauge reordering runs after this prune and before target creation —
     ``split.resolve_chain`` calls this, then leaves the reorder hook, then
-    materializes. Health prunes known-DOWN tiers; concurrency only DEPRIORITIZES
+    is built. Health prunes known-DOWN tiers; concurrency only DEPRIORITIZES
     saturated (but up) tiers, so composing prune-then-reorder is order-safe."""
     if not (settings.health_breaker_enabled or settings.health_poller_enabled):
         return tiers

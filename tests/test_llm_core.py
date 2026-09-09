@@ -5,7 +5,7 @@ default-OFF fallback posture.
 
 Zero network: building a pydantic-ai Model / AsyncOpenAI client is lazy (no call
 is made), and no test invokes a model. The dummy key is read only by factory
-handles materialized inside these tests.
+handles built inside these tests.
 """
 
 import os
@@ -14,17 +14,15 @@ os.environ.setdefault("OPENAI_API_KEY", "test-openai-key")
 
 import pytest
 
-from app.llm_core import (
+from app.llm_core.config_model import (
     Provider,
     Step,
     StepClientKind,
     Tier,
-    ApiStyle,
-    build_handle,
-    synthesize_from_env,
-    runtime,
 )
-from app.llm_core.factory import TGDescriptor
+from app.llm_core.factory import TGDescriptor, build_handle
+from app.llm_core.legacy_shim import synthesize_from_env
+from app.llm_core import runtime
 
 
 def _openai_model_types() -> tuple[str, ...]:
@@ -90,7 +88,7 @@ def test_factory_pretranslation_client_carries_api_key_and_base_url():
 
 def test_factory_translategemma_builds_descriptor():
     tier = Tier(provider=Provider.TRANSLATEGEMMA, model="translategemma-27b-base",
-                endpoint="http://localhost:18002/v1", api_style=ApiStyle.TEXT_COMPLETION)
+                endpoint="http://localhost:18002/v1")
     desc = build_handle(tier, StepClientKind.TRANSLATEGEMMA)
     assert isinstance(desc, TGDescriptor)
     assert desc.completions_url == "http://localhost:18002/v1/completions"
@@ -168,7 +166,6 @@ def test_shim_pretranslation_and_post_translation(monkeypatch):
     assert pre.provider is Provider.OPENAI and pre.model == "gpt-4.1-mini"
     post = cfg.defaults[Step.POST_TRANSLATION].tiers[0]
     assert post.provider is Provider.TRANSLATEGEMMA
-    assert post.api_style is ApiStyle.TEXT_COMPLETION
     assert post.endpoint == "http://localhost:18002/v1"
     assert post.model == "translategemma-27b-base"
 
@@ -268,23 +265,18 @@ def _cfg_with_pretranslation_provider(provider: Provider) -> "object":
 
 def test_validate_config_accepts_anthropic_pretranslation():
     cfg = _cfg_with_pretranslation_provider(Provider.ANTHROPIC)
-    runtime.validate_config(cfg, enforce=True)
+    runtime.validate_config(cfg)
 
 
 def test_validate_config_rejects_gemini_pretranslation_when_enforced():
     cfg = _cfg_with_pretranslation_provider(Provider.GEMINI)
     with pytest.raises(ValueError, match="pretranslation"):
-        runtime.validate_config(cfg, enforce=True)
-
-
-def test_validate_config_warns_not_raises_when_flag_off():
-    cfg = _cfg_with_pretranslation_provider(Provider.GEMINI)
-    runtime.validate_config(cfg, enforce=False)  # no raise
+        runtime.validate_config(cfg)
 
 
 def test_validate_config_accepts_openai_and_vllm_raw_pretranslation():
     cfg = _cfg_with_pretranslation_provider(Provider.OPENAI)
-    runtime.validate_config(cfg, enforce=True)  # openai is PRE_TRANSLATION-legal
+    runtime.validate_config(cfg)  # openai is PRE_TRANSLATION-legal
     from app.llm_core.config_model import (
         NamedProfile, PipelineConfig, StepConfig, Tier as _Tier,
     )
@@ -295,7 +287,7 @@ def test_validate_config_accepts_openai_and_vllm_raw_pretranslation():
         Step.AGENT: StepConfig(tiers=[agent]),
         Step.PRE_TRANSLATION: StepConfig(tiers=[vllm_pre]),
     })])
-    runtime.validate_config(cfg2, enforce=True)  # vllm is PRE_TRANSLATION-legal
+    runtime.validate_config(cfg2)  # vllm is PRE_TRANSLATION-legal
 
 
 # ── (ENABLE) concurrency gate is attached from AGENT_CONCURRENCY_METRICS_URL ────
@@ -327,3 +319,63 @@ def test_no_concurrency_gate_without_env(monkeypatch):
     cfg = synthesize_from_env()
     oss = cfg.by_name("oss")
     assert oss.steps[Step.AGENT].triggers.concurrency_gate is None
+
+
+def test_omitted_capabilities_preserve_vllm_gemma_behavior(monkeypatch):
+    from app.llm_core.config_model import NamedProfile, PipelineConfig, StepConfig
+    from app.llm_core.execution import ExecutionContext
+
+    monkeypatch.delenv("CHAT_HISTORY_MAX_TOKENS", raising=False)
+    monkeypatch.delenv("CHAT_HISTORY_MAX_TOKENS_VLLM_GEMMA", raising=False)
+    cfg = PipelineConfig(profiles=[NamedProfile(name="old-yaml", weight=100, steps={
+        Step.AGENT: StepConfig(tiers=[Tier(
+            provider=Provider.VLLM,
+            model="gemma-4-31b-it",
+            endpoint="http://oss:8020/v1",
+        )]),
+    })])
+
+    capabilities = ExecutionContext("s", cfg, "old-yaml").capabilities
+    assert capabilities.requires_translation is True
+    assert capabilities.history_max_tokens == 10_000
+
+
+def test_admission_auto_preserves_managed_provider_policy():
+    from app.llm_core.config_model import AdmissionPolicy
+    from app.llm_core.execution import ExecutionTarget
+
+    managed = ExecutionTarget(
+        Tier(provider=Provider.OPENAI, model="gpt-4.1"), StepClientKind.AGENT
+    )
+    local = ExecutionTarget(
+        Tier(provider=Provider.VLLM, model="gemma", endpoint="http://oss/v1"),
+        StepClientKind.AGENT,
+    )
+    assert managed.admission is AdmissionPolicy.MANAGED
+    assert local.admission is AdmissionPolicy.NONE
+
+
+def test_content_validation_checks_every_fallback_tier():
+    from app.llm_core.config_model import NamedProfile, PipelineConfig, StepConfig
+
+    cfg = PipelineConfig(profiles=[NamedProfile(name="managed", weight=100, steps={
+        Step.AGENT: StepConfig(tiers=[
+            Tier(provider=Provider.OPENAI, model="gpt-4.1", api_key_env="OPENAI_API_KEY"),
+            Tier(provider=Provider.AZURE, model="broken-fallback"),
+        ]),
+    })])
+    with pytest.raises(ValueError, match="azure-openai"):
+        runtime.validate_content(cfg)
+
+
+def test_validation_rejects_unsupported_posttranslation_provider():
+    from app.llm_core.config_model import NamedProfile, PipelineConfig, StepConfig
+
+    cfg = PipelineConfig(
+        profiles=[NamedProfile(name="managed", weight=100)],
+        defaults={Step.POST_TRANSLATION: StepConfig(tiers=[
+            Tier(provider=Provider.ANTHROPIC, model="claude-haiku")
+        ])},
+    )
+    with pytest.raises(ValueError, match="post-translation"):
+        runtime.validate_config(cfg)

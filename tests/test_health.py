@@ -296,7 +296,7 @@ def test_health_url_strips_v1():
 def test_distinct_endpoints_collects_self_hosted_only():
     from app.tasks import health_poller as hp
     from app.llm_core.config_model import (
-        ApiStyle, NamedProfile, PipelineConfig, StepConfig,
+        NamedProfile, PipelineConfig, StepConfig,
     )
 
     oss_steps = {
@@ -305,7 +305,7 @@ def test_distinct_endpoints_collects_self_hosted_only():
     }
     managed_steps = {Step.AGENT: StepConfig(tiers=[_managed_tier()])}
     tg = Tier(provider=Provider.TRANSLATEGEMMA, model="tg", endpoint=TG_EP,
-              api_style=ApiStyle.TEXT_COMPLETION, timeout_ms=60000)
+              timeout_ms=60000)
     cfg = PipelineConfig(
         profiles=[
             NamedProfile(name="oss", weight=60, steps=oss_steps),

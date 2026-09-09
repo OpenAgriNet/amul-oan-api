@@ -90,8 +90,7 @@ def test_resolve_chain_populates_profile_and_step(monkeypatch):
     assert step["model"] == "gemma"
     assert step["endpoint"] == "http://oss:8020/v1"
     assert step["timeout_ms"] == 8000
-    # Default served = primary (index 0) until a fallback overwrites it.
-    assert step["tier_served"] == {"kind": "oss", "index": 0}
+    assert step["tier_served"] is None
     assert [t["kind"] for t in step["chain"]] == ["oss", "managed"]
 
 
@@ -193,14 +192,24 @@ def test_concurrency_deprioritize_trigger_recorded(monkeypatch):
 
 
 # ── (f) populate + COMPACT flat metadata keys (the path that lands) ───────────
-def test_execution_context_populates_profile_and_primary_tiers():
+def test_execution_context_separates_configured_and_served_tiers():
+    import asyncio
+
     cfg = _cfg(100)
-    pt = ExecutionContext("", cfg, "oss").begin_trace()
+    execution = ExecutionContext("", cfg, "oss")
+    pt = execution.begin_trace()
     md = pt.to_metadata()
     assert md["profile"] == {"name": "oss", "weight": 100}
     assert md["steps"]["agent"]["provider"] == "vllm"
     assert md["steps"]["agent"]["model"] == "gemma"
     assert md["steps"]["moderation"]["model"] == "gemma"
+    assert trace.served_summary(pt) is None
+    asyncio.run(execution.run_adapter(Step.AGENT, lambda target: _result(target)))
+    assert trace.served_summary(pt) == "agent=oss"
+
+
+async def _result(target):
+    return target.model_name
     # P4 removed the llm_core/profiles kill-switches; only the 3 operational
     # trigger flags (health-breaker/poller, concurrency-gauge) remain.
     assert len(md["flags"]) == 3

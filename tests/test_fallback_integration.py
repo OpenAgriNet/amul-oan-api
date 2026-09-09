@@ -36,7 +36,8 @@ def _dead_oss_model():
 @pytest.fixture
 def oss_dead(monkeypatch):
     from app.llm_core import execution as fb
-    from app.llm_core import AdmissionPolicy, ExecutionTarget, Provider, StepClientKind, Tier
+    from app.llm_core.config_model import AdmissionPolicy, Provider, StepClientKind, Tier
+    from app.llm_core.execution import ExecutionTarget
 
     # Config-driven chain: a DEAD OSS vLLM tier (connection refused) first, then
     # the real managed model — the walker must classify the connection failure and

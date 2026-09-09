@@ -96,5 +96,5 @@ profiles:
 defaults:
   post_translation:
     tiers:
-      - {provider: translategemma, model: translategemma-27b-base, endpoint: http://translategemma:18002/v1, api_style: text_completion, timeout_ms: 60000, ttft_ms: 5000, label: translategemma}
-      - {provider: openai, admission: managed,         model: gpt-4.1,                 api_key_env: OPENAI_API_KEY, api_style: chat, timeout_ms: 30000, label: llm-fallback}
+      - {provider: translategemma, model: translategemma-27b-base, endpoint: http://translategemma:18002/v1, timeout_ms: 60000, ttft_ms: 5000, label: translategemma}
+      - {provider: openai, admission: managed, model: gpt-4.1, api_key_env: OPENAI_API_KEY, timeout_ms: 30000, label: llm-fallback}
