@@ -7,9 +7,7 @@ The bar these pin:
       no-op that never even builds a redis client, and ``get_pipeline`` returns
       the boot config unchanged.
   (b) Enabled + a VALID config in a fake redis -> ``get_pipeline`` returns the new
-      config after the TTL, and a WEIGHT change re-buckets a fixed session
-      (``deterministic_profile`` maps it differently before/after) — the hot-reload
-      + refresh-on-change contract.
+      config after the TTL — the hot-reload contract.
   (c) FAIL-SAFE: missing key / invalid JSON / weights != 100 / redis GET raising
       all keep the last-good config, log a WARNING, and NEVER raise.
   (d) TTL: two calls within one window hit redis AT MOST once (call counter on the
@@ -30,7 +28,7 @@ import json
 
 import pytest
 
-from app.llm_core import config_source, split
+from app.llm_core import config_source
 from app.llm_core.config_model import (
     NamedProfile,
     PipelineConfig,
@@ -231,22 +229,16 @@ def test_clear_or_absent_reverts_to_boot_not_last_live(monkeypatch, fake):
     assert reverted.by_name("oss").weight == 30
 
 
-# ── (b) hot reload + re-bucket ────────────────────────────────────────────────
+# ── (b) hot reload applies the latest valid config ────────────────────────────
 
-def test_enabled_loads_new_config_and_rebuckets_fixed_session(monkeypatch, fake):
+def test_enabled_loads_new_config(monkeypatch, fake):
     _enable(monkeypatch, refresh="0")   # every call past TTL -> reload
-    # find a session whose bucket sits in [30,60) so a 40->20 pct flip crosses it
-    sid = next(f"pick-{i}" for i in range(10_000) if 30 <= split._bucket(f"pick-{i}") < 60)
-    bucket = split._bucket(sid)
-
-    boot = _two_profile(bucket + 5)   # bucket < pct -> 'oss'
-    live = _two_profile(bucket - 5)   # bucket >= pct -> 'managed'
+    boot = _two_profile(60)
+    live = _two_profile(20)
     fake.store[config_source.key()] = _json_of(live)
 
-    assert split.deterministic_profile(sid, boot) == "oss"      # before
     refreshed = config_source.maybe_refresh(boot)
-    assert split.deterministic_profile(sid, refreshed) == "managed"  # after (re-bucketed)
-    assert [(p.name, p.weight) for p in refreshed.profiles] == [("oss", bucket - 5), ("managed", 100 - (bucket - 5))]
+    assert [(p.name, p.weight) for p in refreshed.profiles] == [("oss", 20), ("managed", 80)]
 
 
 def test_get_pipeline_returns_boot_when_disabled(monkeypatch):
@@ -260,17 +252,16 @@ def test_get_pipeline_returns_boot_when_disabled(monkeypatch):
 def test_get_pipeline_live_after_ttl_via_runtime(monkeypatch, fake):
     from app.llm_core import runtime
     _enable(monkeypatch, refresh="0")
-    sid = next(f"rt-{i}" for i in range(10_000) if 30 <= split._bucket(f"rt-{i}") < 60)
-    bucket = split._bucket(sid)
-
-    boot = _two_profile(bucket + 5)   # sid -> 'oss'
-    live = _two_profile(bucket - 5)   # sid -> 'managed'
+    boot = _two_profile(70)
+    live = _two_profile(25)
     monkeypatch.setattr(runtime, "PIPELINE", boot)
     fake.store[config_source.key()] = _json_of(live)
 
-    assert split.deterministic_profile(sid, runtime.get_pipeline()) == "managed"
+    out = runtime.get_pipeline()
+    assert out.by_name("oss").weight == 25
+    assert out.by_name("managed").weight == 75
     # and runtime's stored PIPELINE is now the live config (get_pipeline stores it)
-    assert runtime.PIPELINE.by_name("oss").weight == bucket - 5
+    assert runtime.PIPELINE.by_name("oss").weight == 25
 
 
 # ── (c) fail-safe: invalid JSON / weights!=100 / redis raising -> keep last-good ─
