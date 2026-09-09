@@ -85,7 +85,7 @@ class _Run:
 def _drive(monkeypatch, *, source_lang="gu", target_lang="gu",
            fallback_enabled=False, moderation_action="allow",
            moderation_category="valid_agricultural", user_info=None,
-           requested_persona=None):
+           persona="farmer"):
     """Run one turn with every stage instrumented, and return the stage order."""
     seen: list[str] = []
 
@@ -167,7 +167,7 @@ def _drive(monkeypatch, *, source_lang="gu", target_lang="gu",
             background_tasks=BackgroundTasks(),
             use_translation_pipeline=True,
             pipeline_profile="managed",
-            requested_persona=requested_persona,
+            persona=persona,
         ):
             out.append(chunk)
         return "".join(out)
@@ -232,6 +232,7 @@ def test_doctor_jwt_routes_to_doctor_agent_without_farmer_context(monkeypatch):
         monkeypatch,
         source_lang="en",
         target_lang="en",
+        persona="doctor",
         user_info={
             "phone": "9375028676",
             "user_type": "doctor",

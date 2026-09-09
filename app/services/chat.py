@@ -39,7 +39,7 @@ from app.services.identity_profile import (
     build_identity_profile_table,
     is_identity_query,
 )
-from app.personas import ChatPersona, resolve_chat_persona
+from app.personas import ChatPersona
 from app.chat_artifacts import encode_chat_artifacts
 
 
@@ -248,13 +248,12 @@ async def stream_chat_messages(
     background_tasks: BackgroundTasks,
     use_translation_pipeline: bool = True,
     pipeline_profile: str = "managed",
-    requested_persona: ChatPersona | None = None,
+    persona: ChatPersona = "farmer",
     history_session_id: str | None = None,
     artifact_sink: list[dict[str, Any]] | None = None,
     emit_artifact_frames: bool = True,
 ) -> AsyncGenerator[str, None]:
     """Async generator for streaming chat messages."""
-    persona = resolve_chat_persona(user_info, requested_persona)
     active_agent = doctor_agent if persona == "doctor" else agrinet_agent
     active_moderation_agent = doctor_moderation_agent if persona == "doctor" else moderation_agent
     message_history_session_id = history_session_id or session_id

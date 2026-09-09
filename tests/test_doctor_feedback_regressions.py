@@ -163,7 +163,7 @@ def test_doctor_identity_short_circuit_bypasses_both_moderation_and_rag(monkeypa
                     history=[],
                     user_info={"user_type": "farmer"},
                     background_tasks=fastapi.BackgroundTasks(),
-                    requested_persona="doctor",
+                    persona="doctor",
                     history_session_id="doctor-identity:persona:doctor",
                 )
             ]
