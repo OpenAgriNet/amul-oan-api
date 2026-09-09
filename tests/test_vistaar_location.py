@@ -240,6 +240,292 @@ class TestExplicitLocation:
         assert "Deesa Veg Yard, Banaskantha, Gujarat" in out
 
 
+# ── Explicit yard intent (step 1: capture only; filtering comes later) ────────
+
+
+class TestRequestedMarketIntent:
+    def test_extract_preserves_apmc_phrase_before_normalization(self):
+        # normalize_place would turn these into town/district keys and erase
+        # the yard marker; capture must happen on the raw argument.
+        assert vistaar._extract_requested_market_name("Anand APMC") == "Anand APMC"
+        assert vistaar._extract_requested_market_name("  nadiad   apmc ") == "nadiad apmc"
+        assert vistaar._extract_requested_market_name("Anand Apmc") == "Anand Apmc"
+        assert vistaar._extract_requested_market_name("Junagadh mandi") == "Junagadh mandi"
+        assert vistaar._extract_requested_market_name("Deesa Veg Yard") == "Deesa Veg Yard"
+
+    def test_extract_ignores_plain_district_or_town_names(self):
+        assert vistaar._extract_requested_market_name("Anand") is None
+        assert vistaar._extract_requested_market_name("Junagadh") is None
+        assert vistaar._extract_requested_market_name("Banaskantha") is None
+        assert vistaar._extract_requested_market_name(None) is None
+        assert vistaar._extract_requested_market_name("") is None
+        assert vistaar._extract_requested_market_name("   ") is None
+
+    def test_extract_accepts_glued_suffix_without_spaces(self):
+        assert vistaar._extract_requested_market_name("AnandAPMC") == "AnandAPMC"
+
+    @pytest.mark.asyncio
+    async def test_resolve_keeps_yard_intent_and_still_resolves_gps(self, fake_cache):
+        where, refusal = await vistaar._resolve_search_location(
+            ctx(district="junagadh"), "Anand APMC"
+        )
+        assert refusal is None
+        assert where is not None
+        assert where.location.key == "anand"
+        assert where.source == "explicit"
+        assert where.requested_market_name == "Anand APMC"
+        assert where.explicit_yard is True
+
+    @pytest.mark.asyncio
+    async def test_town_apmc_resolves_district_but_keeps_yard_phrase(self, fake_cache):
+        where, refusal = await vistaar._resolve_search_location(
+            ctx(district="anand"), "Nadiad APMC"
+        )
+        assert refusal is None
+        assert where is not None
+        assert where.location.key == "kheda"
+        assert where.requested_market_name == "Nadiad APMC"
+
+    @pytest.mark.asyncio
+    async def test_plain_explicit_place_has_no_yard_intent(self, fake_cache):
+        where, refusal = await vistaar._resolve_search_location(
+            ctx(district="anand"), "Junagadh"
+        )
+        assert refusal is None
+        assert where is not None
+        assert where.location.key == "junagadh"
+        assert where.requested_market_name is None
+        assert where.explicit_yard is False
+
+    @pytest.mark.asyncio
+    async def test_session_reuse_does_not_keep_yard_intent(self, bpp, fake_cache):
+        # Stickiness stores district key only. A follow-up without a location
+        # must not pretend the farmer still asked for a specific APMC.
+        await vistaar.get_vistaar_mandi_prices(
+            ctx(district="anand"), "Wheat", "Anand APMC"
+        )
+        where, refusal = await vistaar._resolve_search_location(ctx(district="anand"), None)
+        assert refusal is None
+        assert where is not None
+        assert where.source == "session"
+        assert where.location.key == "anand"
+        assert where.requested_market_name is None
+
+
+class TestExplicitYardFiltering:
+    """Step 2: named-yard asks must not be answered with another market's prices."""
+
+    def test_market_keys_normalize_yard_suffixes(self):
+        assert vistaar._market_match_key("Anand APMC") == "anand"
+        assert vistaar._market_match_key("anand apmc") == "anand"
+        assert vistaar._market_match_key("Anand mandi") == "anand"
+        assert vistaar._market_match_key("APMC HALVAD") == "halvad"
+        assert vistaar._market_match_key("Deesa Veg Yard") == "deesa"
+        assert vistaar._markets_match("Anand APMC", "Anand APMC")
+        assert vistaar._markets_match("Anand mandi", "ANAND APMC")
+        assert not vistaar._markets_match("Anand APMC", "Padra APMC")
+        assert not vistaar._markets_match("Anand APMC", "Nadiad APMC")
+
+    def test_parenthetical_bpp_names_match_the_plain_farmer_ask(self):
+        # Real BPP pattern: "Anand(Veg,Yard,Anand) APMC" is the actual Anand
+        # APMC. A farmer asking "Anand APMC" must match it.
+        assert vistaar._markets_match("Anand APMC", "Anand(Veg,Yard,Anand) APMC")
+        assert vistaar._markets_match("Khambhat APMC", "Khambhat(Veg Yard Khambhat) APMC")
+        assert vistaar._markets_match("Nadiad mandi", "Nadiad APMC")
+        # Different town despite prefix overlap — must NOT match.
+        assert not vistaar._markets_match("Anand APMC", "Anandpur APMC")
+
+    def test_format_and_spelling_aliases_match_same_yard(self):
+        # Prefix "APMC …" form from live BPP.
+        assert vistaar._markets_match("Halvad APMC", "APMC HALVAD")
+        assert vistaar._markets_match("APMC Halvad", "Halvad APMC")
+        # Spelling / transliteration variants of the SAME yard.
+        assert vistaar._markets_match("Nadiad APMC", "Nadiyad(Piplag) APMC")
+        assert vistaar._markets_match("Nadiad APMC", "Nadiyad(Chaklasi) APMC")
+        assert vistaar._markets_match("Bodeli APMC", "Bodeliu APMC")
+        assert vistaar._markets_match("Dhrangadhra APMC", "Dhragradhra APMC")
+        assert vistaar._markets_match("Khambhalia APMC", "Jam Khambalia APMC")
+        assert vistaar._markets_match("Sanand APMC", "Sanad APMC")
+        assert vistaar._markets_match("Wadhwan APMC", "Vadhvan APMC")
+        assert vistaar._markets_match("Wankaner APMC", "Vankaner APMC")
+        assert vistaar._markets_match("Deesa Veg Yard", "Deesa(Deesa Veg Yard) APMC")
+
+    def test_district_names_are_not_aliased_to_yard_towns(self):
+        # Explicit yard safety: district ≠ yard town must stay a miss.
+        assert not vistaar._markets_match("Sabarkantha APMC", "Himatnagar APMC")
+        assert not vistaar._markets_match("Kheda APMC", "Nadiad APMC")
+        assert not vistaar._markets_match("Kutch APMC", "Bhuj APMC")
+        assert not vistaar._markets_match("Banaskantha APMC", "Deesa APMC")
+        assert not vistaar._markets_match("Aravalli APMC", "Modasa APMC")
+        assert not vistaar._markets_match("Gir Somnath APMC", "Veraval APMC")
+        assert not vistaar._markets_match("Panchmahal APMC", "Gogamba APMC")
+        assert not vistaar._markets_match("Bharuch APMC", "Sendhwa APMC")
+
+    @pytest.mark.asyncio
+    async def test_matching_yard_rows_are_kept(self, bpp, fake_cache):
+        out = await vistaar.get_vistaar_mandi_prices(
+            ctx(district="junagadh"), "Onion", "Anand APMC"
+        )
+        assert "at Anand APMC" in out
+        assert "Anand APMC, Anand, Gujarat" in out
+        assert "Padra" not in out
+        assert "modal 2000" in out
+
+    @pytest.mark.asyncio
+    async def test_only_requested_yard_rows_kept_when_mixed(self, bpp, fake_cache):
+        # Inject Padra alongside Anand for the same Anand GPS search.
+        class _Mixed(_FakeBpp):
+            async def post(self, url, json=None):
+                response = await super().post(url, json)
+                payload = response.json()
+                items = payload["results"][vistaar.VISTAAR_LEG]["message"]["catalog"][
+                    "providers"
+                ][0]["items"]
+                commodity = json["intent"]["item"]["descriptor"]["name"]
+                arrival = json["intent"]["tags"][1]["value"]  # to_date
+                items.append(
+                    self._item(
+                        commodity,
+                        _Market(
+                            "Padra APMC", "Vadodara", "Gujarat", 22.24, 73.08, [commodity]
+                        ),
+                        arrival,
+                    )
+                )
+                return _FakeResponse(payload)
+
+        with patch.object(vistaar.httpx, "AsyncClient", return_value=_Mixed()):
+            out = await vistaar.get_vistaar_mandi_prices(
+                ctx(district="junagadh"), "Onion", "Anand APMC"
+            )
+        assert "Anand APMC, Anand, Gujarat" in out
+        assert "Padra" not in out
+        assert "modal" in out
+
+    @pytest.mark.asyncio
+    async def test_empty_catalog_for_named_yard_uses_strict_miss(self, bpp, fake_cache):
+        class _Empty(_FakeBpp):
+            async def post(self, url, json=None):
+                return _FakeResponse(self._wrap([]))
+
+        with patch.object(vistaar.httpx, "AsyncClient", return_value=_Empty()):
+            out = await vistaar.get_vistaar_mandi_prices(
+                ctx(district="junagadh"), "Tomato", "Anand APMC"
+            )
+        assert "No rates were reported for Anand APMC" in out
+        assert "Tomato" in out
+        assert "Nearby markets with data" not in out
+        assert "near Anand" not in out
+
+    @pytest.mark.asyncio
+    async def test_yard_miss_is_strict_and_names_nearby_without_prices(
+        self, bpp, fake_cache
+    ):
+        class _PadraOnly(_FakeBpp):
+            async def post(self, url, json=None):
+                intent = json["intent"]
+                commodity = intent["item"]["descriptor"]["name"]
+                tags = {t["code"]: t["value"] for t in intent.get("tags", [])}
+                arrival = tags["to_date"]
+                padra = _Market(
+                    "Padra APMC", "Vadodara", "Gujarat", 22.24, 73.08, [commodity]
+                )
+                return _FakeResponse(self._wrap([
+                    self._item(commodity, padra, arrival)
+                ]))
+
+        with patch.object(vistaar.httpx, "AsyncClient", return_value=_PadraOnly()):
+            out = await vistaar.get_vistaar_mandi_prices(
+                ctx(district="junagadh"), "Tomato", "Anand APMC"
+            )
+        assert "No rates were reported for Anand APMC" in out
+        assert "Tomato" in out
+        assert "Padra APMC, Vadodara, Gujarat" in out
+        assert "Nearby markets with data" in out
+        assert "not a substitute" in out
+        # Prices must not be quoted as an Anand substitute.
+        assert "modal" not in out
+        assert "2000" not in out
+        assert "at Anand APMC" not in out
+
+    @pytest.mark.asyncio
+    async def test_yard_match_found_on_second_candidate_is_not_a_false_miss(
+        self, bpp, fake_cache
+    ):
+        """Multi-candidate walk: candidate 1 returns nearby rows but NOT the
+        requested yard.  Candidate 2 returns the requested yard.  The old code
+        would stop at candidate 1 (non-empty), filter to zero matched rows, and
+        report a false miss.  The fix should continue to candidate 2."""
+
+        # Kutch has candidates: Bhuj (23.247, 69.668), Bhachau (23.298, 70.346).
+        # Rapar APMC (23.571, 70.645) is 106 km from Bhuj (outside 50 km) but
+        # 43 km from Bhachau (inside 50 km).
+        # We add a fake "Gandhidham APMC" near Bhuj that trades Wheat so that
+        # candidate 1 returns rows but NOT Rapar APMC.
+        class _MultiCandidateBpp(_FakeBpp):
+            async def post(self, url, json=None):
+                intent = json["intent"]
+                category = (intent.get("category") or {}).get("descriptor", {}).get("code")
+                if category != "price-discovery":
+                    return await super().post(url, json)
+
+                location = intent["fulfillment"]["end"]["location"]
+                lat, lon = (float(v) for v in location["gps"].split(","))
+                commodity = intent["item"]["descriptor"]["name"]
+                self.searches.append(
+                    (lat, lon, commodity, (location.get("descriptor") or {}).get("name"))
+                )
+                tags = {t["code"]: t["value"] for t in intent.get("tags", [])}
+
+                # Extra market near Bhuj that trades Wheat — within Bhuj's radius.
+                gandhidham = _Market(
+                    "Gandhidham APMC", "Kutch", "Gujarat", 23.22, 69.72, ["Wheat"]
+                )
+                all_markets = list(MARKETS) + [gandhidham]
+                hits = [
+                    m for m in all_markets
+                    if commodity.casefold() in m.commodities
+                    and _haversine_km(lat, lon, m.lat, m.lon) <= RADIUS_KM
+                ]
+                rows = [
+                    self._item(commodity, m, tags["to_date"]) for m in hits
+                ]
+                return _FakeResponse(self._wrap(rows[:ROW_CAP]))
+
+        with patch.object(vistaar.httpx, "AsyncClient", return_value=_MultiCandidateBpp()):
+            out = await vistaar.get_vistaar_mandi_prices(
+                ctx(district="kutch"), "Wheat", "Rapar APMC"
+            )
+        # Must find Rapar via candidate 2 (Bhachau), NOT report a false miss.
+        assert "Rapar APMC" in out
+        assert "modal 2000" in out
+        assert "No rates were reported" not in out
+
+    @pytest.mark.asyncio
+    async def test_plain_district_ask_still_allows_nearby_markets(self, bpp, fake_cache):
+        # Without yard intent, cross-district rows remain valid answers.
+        class _PadraOnly(_FakeBpp):
+            async def post(self, url, json=None):
+                intent = json["intent"]
+                commodity = intent["item"]["descriptor"]["name"]
+                tags = {t["code"]: t["value"] for t in intent.get("tags", [])}
+                padra = _Market(
+                    "Padra APMC", "Vadodara", "Gujarat", 22.24, 73.08, [commodity]
+                )
+                return _FakeResponse(self._wrap([
+                    self._item(commodity, padra, tags["to_date"])
+                ]))
+
+        with patch.object(vistaar.httpx, "AsyncClient", return_value=_PadraOnly()):
+            out = await vistaar.get_vistaar_mandi_prices(
+                ctx(district="junagadh"), "Tomato", "Anand"
+            )
+        assert "near Anand" in out
+        assert "Padra APMC, Vadodara, Gujarat" in out
+        assert "modal 2000" in out
+        assert "No rates were reported" not in out
+
+
 # ── Case 2: profile district missing ─────────────────────────────────────────
 
 
