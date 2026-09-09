@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from html import unescape
 from html.parser import HTMLParser
 from typing import Any
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlsplit
 
 import httpx
 
@@ -63,10 +63,25 @@ class SchemeSource:
     content_type: str
 
 
-BANAS_SITE_ORIGIN = "https://www.banasdairy.coop"
-BANAS_DOCUMENTS_API_URL = f"{BANAS_SITE_ORIGIN}/api/documents"
 BANAS_SCHEME_SECTION = "schemes"
 SABAR_SITE_ORIGIN = "https://sabardairy.org"
+
+
+def _url_origin(url: str, fallback: str) -> str:
+    raw_url = str(url or "").strip()
+    parsed = urlsplit(raw_url)
+    if parsed.scheme and parsed.netloc:
+        return f"{parsed.scheme}://{parsed.netloc}".rstrip("/")
+    return fallback.rstrip("/")
+
+
+BANAS_SITE_ORIGIN = str(settings.banas_scheme_site_origin or "").strip().rstrip("/") or "https://www.banasdairy.coop"
+BANAS_DOCUMENTS_API_URL = (
+    str(settings.banas_scheme_documents_api_url or "").strip().rstrip("/")
+    or f"{BANAS_SITE_ORIGIN}/api/documents"
+)
+SUMUL_SITE_ORIGIN = _url_origin(settings.sumul_scheme_source_url, "https://www.sumul.com")
+SURSAGAR_SITE_ORIGIN = _url_origin(settings.sursagar_scheme_source_url, "https://sursagardairy.com")
 
 BANAS_SOURCE = SchemeSource(
     source_name="banas",
@@ -81,7 +96,7 @@ BANAS_SOURCE = SchemeSource(
 SARHAD_SOURCE = SchemeSource(
     source_name="sarhad",
     union_name=UnionName.KUTCH.value,
-    source_url="https://sarhaddairy.coop/for-our-milk-producers/",
+    source_url=str(settings.sarhad_scheme_source_url or "").strip() or "https://sarhaddairy.coop/for-our-milk-producers/",
     cache_key="sarhaddairy.coop/for-our-milk-producers",
     content_type="html",
 )
@@ -89,7 +104,7 @@ SARHAD_SOURCE = SchemeSource(
 SUMUL_SOURCE = SchemeSource(
     source_name="sumul",
     union_name=UnionName.SUMUL.value,
-    source_url="https://www.sumul.com/farmer-section.html",
+    source_url=str(settings.sumul_scheme_source_url or "").strip() or "https://www.sumul.com/farmer-section.html",
     cache_key="sumul.com/farmer-section",
     content_type="pdf",
 )
@@ -97,7 +112,7 @@ SUMUL_SOURCE = SchemeSource(
 SURSAGAR_SOURCE = SchemeSource(
     source_name="sursagar",
     union_name=UnionName.SURENDRANAGAR.value,
-    source_url="https://sursagardairy.com/Farmer/MilkProducers",
+    source_url=str(settings.sursagar_scheme_source_url or "").strip() or "https://sursagardairy.com/Farmer/MilkProducers",
     cache_key="sursagardairy.com/farmer/milkproducers",
     content_type="pdf",
 )
@@ -599,7 +614,7 @@ def parse_sumul_scheme_links(html: str) -> list[dict[str, str]]:
             flags=re.IGNORECASE,
         )
         for href in pdf_matches:
-            scheme_url = urljoin("https://www.sumul.com/", _normalize_text(href))
+            scheme_url = urljoin(f"{SUMUL_SITE_ORIGIN}/", _normalize_text(href))
             title = scheme_title or scheme_url.rsplit("/", 1)[-1]
             dedupe_key = (scheme_url, title.casefold())
             if dedupe_key in seen:
@@ -641,7 +656,7 @@ def parse_sursagar_scheme_links(html: str) -> list[dict[str, str]]:
             flags=re.IGNORECASE,
         )
         for href in pdf_matches:
-            scheme_url = urljoin("https://sursagardairy.com", href)
+            scheme_url = urljoin(f"{SURSAGAR_SITE_ORIGIN}/", href)
             dedupe_key = (scheme_url, scheme_title.casefold())
             if dedupe_key in seen:
                 continue
@@ -656,7 +671,7 @@ def parse_sursagar_scheme_links(html: str) -> list[dict[str, str]]:
             flags=re.IGNORECASE,
         )
         for href in fallback_matches:
-            scheme_url = urljoin("https://sursagardairy.com", href)
+            scheme_url = urljoin(f"{SURSAGAR_SITE_ORIGIN}/", href)
             dedupe_key = (scheme_url, "")
             if dedupe_key in seen:
                 continue
