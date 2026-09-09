@@ -3,7 +3,6 @@ import asyncio
 import pytest
 
 from app.config import Settings
-from agents.tools import search
 
 
 @pytest.mark.parametrize(
@@ -179,7 +178,34 @@ def test_settings_normalize_backend_base_urls(monkeypatch):
     assert cfg.cvcc_base_url == "https://cvcc.test/path"
 
 
+def test_settings_scheme_source_url_defaults():
+    cfg = Settings()
+    assert cfg.banas_scheme_site_origin == "https://www.banasdairy.coop"
+    assert cfg.banas_scheme_documents_api_url == "https://www.banasdairy.coop/api/documents"
+    assert cfg.sarhad_scheme_source_url == "https://sarhaddairy.coop/for-our-milk-producers"
+    assert cfg.sumul_scheme_source_url == "https://www.sumul.com/farmer-section.html"
+    assert cfg.sursagar_scheme_source_url == "https://sursagardairy.com/Farmer/MilkProducers"
+
+
+def test_settings_normalize_scheme_source_urls(monkeypatch):
+    monkeypatch.setenv("BANAS_SCHEME_SITE_ORIGIN", "https://banas.example.com/")
+    monkeypatch.setenv("BANAS_SCHEME_DOCUMENTS_API_URL", "https://banas.example.com/api/documents/")
+    monkeypatch.setenv("SARHAD_SCHEME_SOURCE_URL", "https://sarhad.example.com/farmers///")
+    monkeypatch.setenv("SUMUL_SCHEME_SOURCE_URL", "https://sumul.example.com/farmer.html/")
+    monkeypatch.setenv("SURSAGAR_SCHEME_SOURCE_URL", "https://sursagar.example.com/milk///")
+
+    cfg = Settings()
+    assert cfg.banas_scheme_site_origin == "https://banas.example.com"
+    assert cfg.banas_scheme_documents_api_url == "https://banas.example.com/api/documents"
+    assert cfg.sarhad_scheme_source_url == "https://sarhad.example.com/farmers"
+    assert cfg.sumul_scheme_source_url == "https://sumul.example.com/farmer.html"
+    assert cfg.sursagar_scheme_source_url == "https://sursagar.example.com/milk"
+
+
 def test_search_documents_consumes_settings_endpoint_and_index(monkeypatch):
+    # Lazy import avoids Langfuse auth_check during Settings-only collection.
+    from agents.tools import search
+
     captured: dict[str, tuple] = {}
 
     monkeypatch.setattr(search.settings, "enable_network", False)

@@ -62,7 +62,7 @@ def _append_markdown(farmer, monkeypatch):
         calls["n"] += 1
         return [_tech()]
 
-    monkeypatch.setattr(farmer_ctx, "get_ai_technicians_by_society_api", fake_api)
+    monkeypatch.setattr(farmer_ctx, "get_ai_technicians_by_society_cached", fake_api)
     lines = []
     asyncio.run(farmer_ctx._append_ai_technicians_markdown(lines, farmer))
     return "\n".join(lines), calls["n"]
@@ -110,7 +110,7 @@ def test_farmer_context_bundle_for_sarhad_omits_technicians(monkeypatch):
 
     monkeypatch.setattr(farmer_ctx, "get_farmer_data_by_mobile", fake_farmers)
     monkeypatch.setattr(farmer_ctx, "_append_union_scheme_summary_markdown", fake_schemes)
-    monkeypatch.setattr(farmer_ctx, "get_ai_technicians_by_society_api", fake_api)
+    monkeypatch.setattr(farmer_ctx, "get_ai_technicians_by_society_cached", fake_api)
 
     markdown, unions, _location = asyncio.run(
         farmer_ctx.get_farmer_context_bundle_by_mobile("9876543210")
@@ -131,7 +131,7 @@ def _fetch_cache(records, monkeypatch):
         return [_tech()]
 
     monkeypatch.setenv("PASHUGPT_TOKEN", "tok")
-    monkeypatch.setattr(farmer_cache, "get_ai_technicians_by_society_api", fake_api)
+    monkeypatch.setattr(farmer_cache, "get_ai_technicians_by_society_cached", fake_api)
     return asyncio.run(farmer_cache._fetch_ai_technicians(records)), calls
 
 
@@ -161,6 +161,101 @@ def test_cache_fetches_technicians_for_kaira_and_skips_kutch(monkeypatch):
     assert len(groups) == 1
     assert groups[0]["unionCode"] == "1"
     assert groups[0]["technicians"][0]["userId"] == "ait-1"
+
+
+def test_cache_dedupes_lookup_for_same_union_and_society(monkeypatch):
+    records = [
+        FarmerRecord(
+            unionName="kaira", unionCode="1", societyCode="S-Kaira", farmerCode="F-1",
+            farmerName="Farmer One",
+        ),
+        FarmerRecord(
+            unionName="kaira", unionCode="1", societyCode="S-Kaira", farmerCode="F-2",
+            farmerName="Farmer Two",
+        ),
+    ]
+    groups, calls = _fetch_cache(records, monkeypatch)
+    assert calls == [("1", "S-Kaira")]
+    assert len(groups) == 2
+    assert groups[0]["farmerCode"] == "F-1"
+    assert groups[1]["farmerCode"] == "F-2"
+    assert groups[0]["technicians"][0]["userId"] == "ait-1"
+    assert groups[1]["technicians"][0]["userId"] == "ait-1"
+
+
+def test_cache_fetches_unique_pairs_concurrently(monkeypatch):
+    records = [
+        FarmerRecord(
+            unionName="kaira", unionCode="1", societyCode="S1", farmerCode="F-1", farmerName="Farmer One"
+        ),
+        FarmerRecord(
+            unionName="kaira", unionCode="2", societyCode="S2", farmerCode="F-2", farmerName="Farmer Two"
+        ),
+    ]
+    state = {"inflight": 0, "max_inflight": 0}
+    seen_pairs = set()
+    both_started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def fake_api(query, token):
+        pair = (query.union_code, query.society_code)
+        seen_pairs.add(pair)
+        state["inflight"] += 1
+        state["max_inflight"] = max(state["max_inflight"], state["inflight"])
+        if len(seen_pairs) == 2:
+            both_started.set()
+        await release.wait()
+        state["inflight"] -= 1
+        return [_tech()]
+
+    async def _run():
+        task = asyncio.create_task(farmer_cache._fetch_ai_technicians(records))
+        await asyncio.wait_for(both_started.wait(), timeout=0.5)
+        release.set()
+        return await task
+
+    monkeypatch.setenv("PASHUGPT_TOKEN", "tok")
+    monkeypatch.setattr(farmer_cache, "get_ai_technicians_by_society_cached", fake_api)
+    groups = asyncio.run(_run())
+
+    assert state["max_inflight"] == 2
+    assert seen_pairs == {("1", "S1"), ("2", "S2")}
+    assert len(groups) == 2
+
+
+def test_cache_isolates_failure_to_only_failed_pair(monkeypatch):
+    records = [
+        FarmerRecord(
+            unionName="kaira", unionCode="1", societyCode="S1", farmerCode="F-1", farmerName="Farmer One"
+        ),
+        FarmerRecord(
+            unionName="kaira", unionCode="2", societyCode="S2", farmerCode="F-2", farmerName="Farmer Two"
+        ),
+        FarmerRecord(
+            unionName="kaira", unionCode="1", societyCode="S1", farmerCode="F-3", farmerName="Farmer Three"
+        ),
+    ]
+
+    async def fake_api(query, token):
+        if (query.union_code, query.society_code) == ("2", "S2"):
+            raise RuntimeError("upstream timeout")
+        return [
+            AITechnicianBySocietyRecord(
+                userId="ait-s1",
+                fullName="S1 Technician",
+                mobileNumber="9000000001",
+            )
+        ]
+
+    monkeypatch.setenv("PASHUGPT_TOKEN", "tok")
+    monkeypatch.setattr(farmer_cache, "get_ai_technicians_by_society_cached", fake_api)
+    groups = asyncio.run(farmer_cache._fetch_ai_technicians(records))
+
+    by_farmer = {group["farmerCode"]: group for group in groups}
+    assert by_farmer["F-1"]["technicians"][0]["userId"] == "ait-s1"
+    assert by_farmer["F-3"]["technicians"][0]["userId"] == "ait-s1"
+    assert by_farmer["F-2"]["technicians"] is None
+    assert by_farmer["F-2"]["techniciansLookupFailed"] is True
 
 
 @pytest.mark.parametrize("name", PROMPTS)
@@ -195,6 +290,11 @@ def test_default_prompt_lists_localized_ban_lines():
 # ── create_ai_call hard block ─────────────────────────────────────────────────
 
 SPECIES = next(iter(AISpecies))
+
+# create_ai_call rejects identifiers that cannot be real; every real prod
+# technician id is 24 base64 chars ending "==".
+TECH_ID = "YWl0LXRlY2gtMDAwMDAwMQ=="
+
 
 
 async def _in_scope():
@@ -232,7 +332,7 @@ def test_create_ai_call_refuses_sarhad_without_writing(monkeypatch):
     monkeypatch.setattr(ai_mod, "_book_via_network", fake_network)
 
     out = asyncio.run(
-        ai_mod.create_ai_call(_booking_ctx(unions=["sarhad"]), "U", "S", "F", "tech1", SPECIES)
+        ai_mod.create_ai_call(_booking_ctx(unions=["sarhad"]), "U", "S", "F", TECH_ID, SPECIES)
     )
     assert out == UNION_BANNED_MESSAGE
     assert calls == {"api": 0, "reserve": 0}
@@ -250,7 +350,7 @@ def test_create_ai_call_refuses_canonical_and_mixed_banned_unions(monkeypatch, u
     monkeypatch.setattr(ai_mod.settings, "enable_network", False)
 
     out = asyncio.run(
-        ai_mod.create_ai_call(_booking_ctx(unions=unions), "U", "S", "F", "tech1", SPECIES)
+        ai_mod.create_ai_call(_booking_ctx(unions=unions), "U", "S", "F", TECH_ID, SPECIES)
     )
     assert out == UNION_BANNED_MESSAGE
     assert calls["n"] == 0
@@ -275,7 +375,7 @@ def test_create_ai_call_returns_localized_ban_message(monkeypatch, lang, expecte
 
     out = asyncio.run(
         ai_mod.create_ai_call(
-            _booking_ctx(unions=["kutch"], lang_code=lang), "U", "S", "F", "tech1", SPECIES,
+            _booking_ctx(unions=["kutch"], lang_code=lang), "U", "S", "F", TECH_ID, SPECIES,
         )
     )
     assert out == expected
@@ -294,7 +394,7 @@ def test_create_ai_call_still_books_for_kaira(monkeypatch):
     monkeypatch.setattr(ai_mod.settings, "enable_network", False)
 
     out = asyncio.run(
-        ai_mod.create_ai_call(_booking_ctx(unions=["kaira"]), "U", "S", "F", "tech1", SPECIES)
+        ai_mod.create_ai_call(_booking_ctx(unions=["kaira"]), "U", "S", "F", TECH_ID, SPECIES)
     )
     assert calls["n"] == 1
     assert "booked successfully" in out
@@ -316,7 +416,7 @@ def test_create_ai_call_empty_or_missing_unions_is_not_banned(monkeypatch, union
     out = asyncio.run(
         ai_mod.create_ai_call(
             _booking_ctx(unions=unions, include_unions=include_unions),
-            "U", "S", "F", "tech1", SPECIES,
+            "U", "S", "F", TECH_ID, SPECIES,
         )
     )
     assert calls["n"] == 1
@@ -339,7 +439,7 @@ def test_moderation_block_runs_before_union_ban(monkeypatch):
         ensure_in_scope=_out_of_scope,
         farmer_unions=["kutch"],
     ))
-    out = asyncio.run(ai_mod.create_ai_call(ctx, "U", "S", "F", "tech1", SPECIES))
+    out = asyncio.run(ai_mod.create_ai_call(ctx, "U", "S", "F", TECH_ID, SPECIES))
     assert out == ai_mod.OUT_OF_SCOPE_MESSAGE
     assert calls["n"] == 0
 

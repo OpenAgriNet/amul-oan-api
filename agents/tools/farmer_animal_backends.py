@@ -17,6 +17,7 @@ from pydantic import ValidationError, BaseModel, ConfigDict, Field
 
 from app.core.cache import (
     build_api_cache_key,
+    cache,
     get_cached_api_response,
     set_cached_api_response,
 )
@@ -41,6 +42,10 @@ BASE_HERDMAN = settings.herdman_base_url
 BASE_BANAS_MOBILE = settings.banas_mobile_base_url
 BASE_CVCC = settings.cvcc_base_url
 FARMER_BACKEND_HTTP_TIMEOUT_SECONDS = settings.farmer_backend_http_timeout_seconds
+
+
+def _use_farmer_mobile_api_cache() -> bool:
+    return not settings.farmer_layer1_mobile_cache_bypass_enabled
 
 
 def normalize_phone(mobile: str) -> str:
@@ -72,7 +77,8 @@ async def _fetch_farmer_amulpashudhan_raw(
     Option B: cache stays camelCase). Returns None on 204/empty/error. skip_cache
     forces a fresh HTTP fetch (used when cached data fails downstream validation)."""
     cache_key = build_api_cache_key("amulpashudhan_farmer", mobile)
-    if not skip_cache:
+    use_cache = _use_farmer_mobile_api_cache()
+    if use_cache and not skip_cache:
         cache_hit, cached_payload = await get_cached_api_response(cache_key)
         if cache_hit:
             if cached_payload is None:
@@ -103,12 +109,14 @@ async def _fetch_farmer_amulpashudhan_raw(
                 response.raise_for_status()
                 logger.info(f"[AmulPashudhan({mobile})] :: Response successfully recieved.")
                 if response.status_code == 204 or not (response.text or "").strip():
-                    await set_cached_api_response(cache_key, None)
+                    if use_cache:
+                        await set_cached_api_response(cache_key, None)
                     return None
                 r_json = response.json()
                 if not isinstance(r_json, list):
                     raise Exception("Not a valid list provided in the response.")
-                await set_cached_api_response(cache_key, r_json)
+                if use_cache:
+                    await set_cached_api_response(cache_key, r_json)
                 return r_json
     except httpx.HTTPStatusError as e:
         logger.error(
@@ -171,27 +179,29 @@ async def fetch_farmer_amulpashudhan(
 async def fetch_farmer_herdman(mobile: str, token: str) -> list[FarmerModel] | None:
     """Returns list of farmer records or None on error/empty."""
     cache_key = build_api_cache_key("herdman_farmer", mobile)
-    cache_hit, cached_payload = await get_cached_api_response(cache_key)
-    if cache_hit:
-        if cached_payload is None:
-            return None
-        if not isinstance(cached_payload, dict):
-            logger.warning(
-                "[Cache(%s)] :: Cached payload is not a valid dict, refetching.",
-                cache_key,
-            )
-        else:
-            try:
-                data = FarmerHerdmanModel.model_validate(
-                    cached_payload
-                )
-                return data.farmers
-            except Exception as e:
+    use_cache = _use_farmer_mobile_api_cache()
+    if use_cache:
+        cache_hit, cached_payload = await get_cached_api_response(cache_key)
+        if cache_hit:
+            if cached_payload is None:
+                return None
+            if not isinstance(cached_payload, dict):
                 logger.warning(
-                    "[Cache(%s)] :: Failed to validate cached herdman payload, refetching. error=%s",
+                    "[Cache(%s)] :: Cached payload is not a valid dict, refetching.",
                     cache_key,
-                    str(e),
                 )
+            else:
+                try:
+                    data = FarmerHerdmanModel.model_validate(
+                        cached_payload, extra="ignore", by_alias=True
+                    )
+                    return data.farmers
+                except Exception as e:
+                    logger.warning(
+                        "[Cache(%s)] :: Failed to validate cached herdman payload, refetching. error=%s",
+                        cache_key,
+                        str(e),
+                    )
 
     url = f"{BASE_HERDMAN}/get-amul-farmer"
     try:
@@ -210,10 +220,12 @@ async def fetch_farmer_herdman(mobile: str, token: str) -> list[FarmerModel] | N
                 response.raise_for_status()
                 logger.info(f"[Herdman({mobile})] :: Response successfully recieved")
                 if not (response.text or "").strip():
-                    await set_cached_api_response(cache_key, None)
+                    if use_cache:
+                        await set_cached_api_response(cache_key, None)
                     return None
                 response_json = response.json()
-                await set_cached_api_response(cache_key, response_json)
+                if use_cache:
+                    await set_cached_api_response(cache_key, response_json)
                 data = FarmerHerdmanModel.model_validate(
                     response_json
                 )
@@ -264,7 +276,8 @@ async def _fetch_farmer_herdman_raw(
     other. Returns None on 204/empty/error or when there is no usable Farmer list
     (the raw analogue of herdman's ValidationError "no info found" branch)."""
     cache_key = build_api_cache_key("herdman_farmer", mobile)
-    if not skip_cache:
+    use_cache = _use_farmer_mobile_api_cache()
+    if use_cache and not skip_cache:
         cache_hit, cached_payload = await get_cached_api_response(cache_key)
         if cache_hit:
             if cached_payload is None:
@@ -293,10 +306,12 @@ async def _fetch_farmer_herdman_raw(
                 response.raise_for_status()
                 logger.info(f"[Herdman({mobile})] :: Response successfully recieved")
                 if not (response.text or "").strip():
-                    await set_cached_api_response(cache_key, None)
+                    if use_cache:
+                        await set_cached_api_response(cache_key, None)
                     return None
                 response_json = response.json()
-                await set_cached_api_response(cache_key, response_json)
+                if use_cache:
+                    await set_cached_api_response(cache_key, response_json)
                 if isinstance(response_json, dict):
                     return _extract_herdman_rows(response_json)
                 logger.info(f"[Herdman({mobile})] :: No information from herdman found.")
@@ -906,7 +921,13 @@ def merge_farmer_data(data: list[FarmerModel]) -> list[FarmerModel]:
 # start_observation tracing, and a LENIENT camelCase record (Option B: cache
 # stays camelCase). fetch_reason tags API calls so Langfuse can tell a cold/
 # background refresh apart.
+#
+# Society-scoped technician list cache: one Redis entry per (union_code,
+# society_code) pair; TTL from settings.ai_technician_cache_ttl_seconds.
 # ─────────────────────────────────────────────────────────────────────────────
+
+AI_TECHNICIAN_CACHE_NAMESPACE = "ai-technicians-by-society"
+AI_TECHNICIAN_CACHE_TTL_SECONDS = settings.ai_technician_cache_ttl_seconds
 
 _fetch_reason: ContextVar[str] = ContextVar("farmer_fetch_reason", default="request")
 
@@ -999,6 +1020,107 @@ class AITechnicianBySocietyRecord(BaseModel):
     userId: Optional[str] = None
     fullName: Optional[str] = None
     mobileNumber: Optional[str] = None
+
+
+def build_ai_technician_cache_key(union_code: str, society_code: str) -> str:
+    """Normalized Redis key for a (union_code, society_code) technician list."""
+    return f"{str(union_code).strip()}:{str(society_code).strip()}"
+
+
+def _deserialize_ai_technicians(cached: Any) -> list[AITechnicianBySocietyRecord] | None:
+    if not isinstance(cached, list):
+        return None
+    try:
+        return [
+            AITechnicianBySocietyRecord.model_validate(item)
+            for item in cached
+            if isinstance(item, dict)
+        ]
+    except Exception:
+        return None
+
+
+async def _get_cached_ai_technicians(
+    union_code: str, society_code: str
+) -> tuple[bool, list[AITechnicianBySocietyRecord] | None]:
+    """Return (cache_hit, technicians). A miss is signaled by cache_hit=False."""
+    key = build_ai_technician_cache_key(union_code, society_code)
+    try:
+        raw = await cache.get(key, namespace=AI_TECHNICIAN_CACHE_NAMESPACE)
+    except Exception as e:
+        logger.warning("AI technician cache read failed for %s: %s", key, e)
+        return False, None
+    if raw is None:
+        return False, None
+    technicians = _deserialize_ai_technicians(raw)
+    if technicians is None:
+        logger.warning("AI technician cache payload invalid for %s; treating as miss", key)
+        return False, None
+    logger.debug("AI technician cache hit for %s (%d records)", key, len(technicians))
+    return True, technicians
+
+
+async def _set_cached_ai_technicians(
+    union_code: str,
+    society_code: str,
+    technicians: list[AITechnicianBySocietyRecord],
+) -> None:
+    key = build_ai_technician_cache_key(union_code, society_code)
+    try:
+        await cache.set(
+            key,
+            [technician.model_dump() for technician in technicians],
+            ttl=AI_TECHNICIAN_CACHE_TTL_SECONDS,
+            namespace=AI_TECHNICIAN_CACHE_NAMESPACE,
+        )
+        logger.debug("AI technician cache set for %s (%d records)", key, len(technicians))
+    except Exception as e:
+        logger.warning("AI technician cache write failed for %s: %s", key, e)
+
+
+async def get_ai_technicians_by_society_cached(
+    query: GetAITechniciansBySocietyQueryParams,
+    token: str,
+) -> list[AITechnicianBySocietyRecord] | None:
+    """Cache-first AI technician lookup keyed by (union_code, society_code).
+
+    Reads Redis first; calls ``get_ai_technicians_by_society_api`` only on miss.
+    Successful responses (including an empty list) are cached for
+    ``AI_TECHNICIAN_CACHE_TTL_SECONDS``. Failures (``None``) are not cached.
+    """
+    union_code = str(query.union_code).strip()
+    society_code = str(query.society_code).strip()
+    if not union_code or not society_code:
+        return None
+
+    hit, cached = await _get_cached_ai_technicians(union_code, society_code)
+    if hit:
+        return cached
+
+    technicians = await get_ai_technicians_by_society_api(query, token)
+    if technicians is not None:
+        await _set_cached_ai_technicians(union_code, society_code, technicians)
+    return technicians
+
+
+async def get_ai_technicians_by_society_refresh(
+    query: GetAITechniciansBySocietyQueryParams,
+    token: str,
+) -> list[AITechnicianBySocietyRecord] | None:
+    """Bypass Redis read and refresh technician cache from upstream API.
+
+    This is used by verification paths that must not trust a previously cached
+    empty result. Successful API responses (including empty lists) replace cache.
+    """
+    union_code = str(query.union_code).strip()
+    society_code = str(query.society_code).strip()
+    if not union_code or not society_code:
+        return None
+
+    technicians = await get_ai_technicians_by_society_api(query, token)
+    if technicians is not None:
+        await _set_cached_ai_technicians(union_code, society_code, technicians)
+    return technicians
 
 
 async def get_ai_technicians_by_society_api(

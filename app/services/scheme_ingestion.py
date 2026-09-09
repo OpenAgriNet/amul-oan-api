@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from html import unescape
 from html.parser import HTMLParser
 from typing import Any
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlsplit
 
 import httpx
 
@@ -128,9 +128,25 @@ class SchemeSource:
     content_type: str
 
 
-BANAS_SITE_ORIGIN = "https://www.banasdairy.coop"
-BANAS_DOCUMENTS_API_URL = f"{BANAS_SITE_ORIGIN}/api/documents"
 BANAS_SCHEME_SECTION = "schemes"
+SABAR_SITE_ORIGIN = "https://sabardairy.org"
+
+
+def _url_origin(url: str, fallback: str) -> str:
+    raw_url = str(url or "").strip()
+    parsed = urlsplit(raw_url)
+    if parsed.scheme and parsed.netloc:
+        return f"{parsed.scheme}://{parsed.netloc}".rstrip("/")
+    return fallback.rstrip("/")
+
+
+BANAS_SITE_ORIGIN = str(settings.banas_scheme_site_origin or "").strip().rstrip("/") or "https://www.banasdairy.coop"
+BANAS_DOCUMENTS_API_URL = (
+    str(settings.banas_scheme_documents_api_url or "").strip().rstrip("/")
+    or f"{BANAS_SITE_ORIGIN}/api/documents"
+)
+SUMUL_SITE_ORIGIN = _url_origin(settings.sumul_scheme_source_url, "https://www.sumul.com")
+SURSAGAR_SITE_ORIGIN = _url_origin(settings.sursagar_scheme_source_url, "https://sursagardairy.com")
 
 BANAS_SOURCE = SchemeSource(
     source_name="banas",
@@ -145,7 +161,7 @@ BANAS_SOURCE = SchemeSource(
 SARHAD_SOURCE = SchemeSource(
     source_name="sarhad",
     union_name=UnionName.KUTCH.value,
-    source_url="https://sarhaddairy.coop/for-our-milk-producers/",
+    source_url=str(settings.sarhad_scheme_source_url or "").strip() or "https://sarhaddairy.coop/for-our-milk-producers/",
     cache_key="sarhaddairy.coop/for-our-milk-producers",
     content_type="html",
 )
@@ -153,7 +169,7 @@ SARHAD_SOURCE = SchemeSource(
 SUMUL_SOURCE = SchemeSource(
     source_name="sumul",
     union_name=UnionName.SUMUL.value,
-    source_url="https://www.sumul.com/farmer-section.html",
+    source_url=str(settings.sumul_scheme_source_url or "").strip() or "https://www.sumul.com/farmer-section.html",
     cache_key="sumul.com/farmer-section",
     content_type="pdf",
 )
@@ -161,17 +177,34 @@ SUMUL_SOURCE = SchemeSource(
 SURSAGAR_SOURCE = SchemeSource(
     source_name="sursagar",
     union_name=UnionName.SURENDRANAGAR.value,
-    source_url="https://sursagardairy.com/Farmer/MilkProducers",
+    source_url=str(settings.sursagar_scheme_source_url or "").strip() or "https://sursagardairy.com/Farmer/MilkProducers",
     cache_key="sursagardairy.com/farmer/milkproducers",
     content_type="pdf",
 )
 
-SCHEME_SOURCES: tuple[SchemeSource, ...] = (BANAS_SOURCE, SARHAD_SOURCE, SUMUL_SOURCE, SURSAGAR_SOURCE)
+SABAR_SOURCE = SchemeSource(
+    source_name="sabar",
+    union_name=UnionName.SABAR.value,
+    source_url="https://sabardairy.org/for-our-milk-producers/",
+    cache_key="sabardairy.org/for-our-milk-producers",
+    # Page lists scheme cards with PDF application-form downloads (same pattern as
+    # Sumul/Sursagar).
+    content_type="pdf",
+)
+
+SCHEME_SOURCES: tuple[SchemeSource, ...] = (
+    BANAS_SOURCE,
+    SARHAD_SOURCE,
+    SUMUL_SOURCE,
+    SURSAGAR_SOURCE,
+    SABAR_SOURCE,
+)
 SUPPORTED_UNION_SOURCE_MAP = {
     UnionName.BANAS.value: (BANAS_SOURCE,),
     UnionName.KUTCH.value: (SARHAD_SOURCE,),
     UnionName.SUMUL.value: (SUMUL_SOURCE,),
     UnionName.SURENDRANAGAR.value: (SURSAGAR_SOURCE,),
+    UnionName.SABAR.value: (SABAR_SOURCE,),
 }
 
 _WHITESPACE_RE = re.compile(r"\s+")
@@ -773,7 +806,7 @@ def parse_sumul_scheme_links(html: str) -> list[dict[str, str]]:
             flags=re.IGNORECASE,
         )
         for href in pdf_matches:
-            scheme_url = urljoin("https://www.sumul.com/", _normalize_text(href))
+            scheme_url = urljoin(f"{SUMUL_SITE_ORIGIN}/", _normalize_text(href))
             title = scheme_title or scheme_url.rsplit("/", 1)[-1]
             dedupe_key = (scheme_url, title.casefold())
             if dedupe_key in seen:
@@ -815,7 +848,7 @@ def parse_sursagar_scheme_links(html: str) -> list[dict[str, str]]:
             flags=re.IGNORECASE,
         )
         for href in pdf_matches:
-            scheme_url = urljoin("https://sursagardairy.com", href)
+            scheme_url = urljoin(f"{SURSAGAR_SITE_ORIGIN}/", href)
             dedupe_key = (scheme_url, scheme_title.casefold())
             if dedupe_key in seen:
                 continue
@@ -830,7 +863,7 @@ def parse_sursagar_scheme_links(html: str) -> list[dict[str, str]]:
             flags=re.IGNORECASE,
         )
         for href in fallback_matches:
-            scheme_url = urljoin("https://sursagardairy.com", href)
+            scheme_url = urljoin(f"{SURSAGAR_SITE_ORIGIN}/", href)
             dedupe_key = (scheme_url, "")
             if dedupe_key in seen:
                 continue
@@ -838,6 +871,83 @@ def parse_sursagar_scheme_links(html: str) -> list[dict[str, str]]:
             records.append({"scheme_title": scheme_url.rsplit("=", 1)[-1], "scheme_url": scheme_url})
 
     logger.info("Parsed Sursagar scheme links deduplicated_count=%s", len(records))
+    return records
+
+
+def parse_sabar_scheme_links(html: str) -> list[dict[str, str]]:
+    """Extract PDF links and titles from the Sabar milk-producers page.
+
+    Each scheme card starts with ``<h5 class="... sabar-soc-title-1">`` (English
+    title), optionally a ``sabar-soc-title-2`` Gujarati subtitle, then a
+    ``Download Application Form`` anchor to a ``wp-content/uploads/...pdf``.
+    """
+    logger.info("Parsing Sabar scheme links from HTML content_length=%s", len(html))
+
+    card_chunks = re.split(
+        r'(?=<h5[^>]*\bsabar-soc-title-1\b)',
+        html,
+        flags=re.IGNORECASE,
+    )
+
+    seen: set[tuple[str, str]] = set()
+    records: list[dict[str, str]] = []
+
+    for card_html in card_chunks:
+        title_match = re.search(
+            r'<h5[^>]*\bsabar-soc-title-1\b[^>]*>(.*?)</h5>',
+            card_html,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        if not title_match:
+            continue
+        english_title = _normalize_title(_strip_html(title_match.group(1)))
+        if not english_title:
+            continue
+
+        gujarati_match = re.search(
+            r'<p[^>]*\bsabar-soc-title-2\b[^>]*>(.*?)</p>',
+            card_html,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        gujarati_title = _normalize_title(_strip_html(gujarati_match.group(1))) if gujarati_match else ""
+        if not gujarati_title or gujarati_title.casefold() == english_title.casefold():
+            scheme_title = english_title
+        elif english_title in gujarati_title:
+            # Fully Gujarati cards often repeat the heading inside a longer subtitle.
+            scheme_title = gujarati_title
+        else:
+            scheme_title = f"{english_title} — {gujarati_title}"
+
+        pdf_matches = re.findall(
+            r'<a[^>]*href="([^"]+\.pdf[^"]*)"[^>]*>',
+            card_html,
+            flags=re.IGNORECASE,
+        )
+        for href in pdf_matches:
+            scheme_url = urljoin(f"{SABAR_SITE_ORIGIN}/", _normalize_text(href))
+            dedupe_key = (scheme_url, scheme_title.casefold())
+            if dedupe_key in seen:
+                continue
+            seen.add(dedupe_key)
+            records.append({"scheme_title": scheme_title, "scheme_url": scheme_url})
+
+    if not records:
+        logger.warning("No Sabar sabar-soc-title-1 cards found; falling back to PDF anchor scan")
+        fallback_matches = re.findall(
+            r'<a[^>]*href="([^"]+/wp-content/uploads/[^"]+\.pdf[^"]*)"[^>]*>',
+            html,
+            flags=re.IGNORECASE,
+        )
+        for href in fallback_matches:
+            scheme_url = urljoin(f"{SABAR_SITE_ORIGIN}/", _normalize_text(href))
+            filename = scheme_url.rsplit("/", 1)[-1]
+            dedupe_key = (scheme_url, filename.casefold())
+            if dedupe_key in seen:
+                continue
+            seen.add(dedupe_key)
+            records.append({"scheme_title": filename, "scheme_url": scheme_url})
+
+    logger.info("Parsed Sabar scheme links deduplicated_count=%s", len(records))
     return records
 
 
@@ -1428,6 +1538,18 @@ async def _ingest_sursagar_source(
     return await _ingest_pdf_source(source, link_records, client, lock_token=lock_token, redis_client=redis_client)
 
 
+async def _ingest_sabar_source(
+    source: SchemeSource,
+    client: httpx.AsyncClient,
+    lock_token: str | None = None,
+    redis_client=None,
+) -> list[dict[str, Any]]:
+    logger.info("Starting Sabar scheme ingestion source=%s url=%s", source.cache_key, source.source_url)
+    html = await fetch_html(client, source.source_url)
+    link_records = parse_sabar_scheme_links(html)
+    return await _ingest_pdf_source(source, link_records, client, lock_token=lock_token, redis_client=redis_client)
+
+
 async def _ingest_sarhad_source(source: SchemeSource, client: httpx.AsyncClient) -> list[dict[str, Any]]:
     logger.info("Starting Sarhad scheme ingestion source=%s url=%s", source.cache_key, source.source_url)
     html = await fetch_html(client, source.source_url)
@@ -1470,16 +1592,23 @@ async def refresh_scheme_source(source: SchemeSource, redis_client=None, client:
         client = httpx.AsyncClient(timeout=HTTP_TIMEOUT_SECONDS)
 
     try:
+        # PDF sources share the OCR path; Sarhad is HTML-only. Unknown sources
+        # must not fall through to the Sarhad HTML parser.
         _PDF_INGEST_MAP = {
             BANAS_SOURCE.source_name: _ingest_banas_source,
             SUMUL_SOURCE.source_name: _ingest_sumul_source,
             SURSAGAR_SOURCE.source_name: _ingest_sursagar_source,
+            SABAR_SOURCE.source_name: _ingest_sabar_source,
         }
-        ingest_fn = _PDF_INGEST_MAP.get(source.source_name)
-        if ingest_fn is not None:
-            records = await ingest_fn(source, client, lock_token=lock_token, redis_client=redis_client)
-        else:
+        if source.source_name == SARHAD_SOURCE.source_name:
             records = await _ingest_sarhad_source(source, client)
+        else:
+            ingest_fn = _PDF_INGEST_MAP.get(source.source_name)
+            if ingest_fn is None:
+                raise SchemeParseError(
+                    f"no ingest handler registered for source={source.source_name}"
+                )
+            records = await ingest_fn(source, client, lock_token=lock_token, redis_client=redis_client)
 
         if not records:
             logger.warning("Scheme refresh produced no records for source=%s; keeping existing cache", source.cache_key)

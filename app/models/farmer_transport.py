@@ -124,6 +124,16 @@ class FarmerDataEnvelope(BaseModel):
             lookupStatus="not_found",
         )
 
+    @classmethod
+    def unknown(cls, source: str = "api") -> "FarmerDataEnvelope":
+        """Return an empty envelope for ambiguous/failed upstream lookups."""
+        return cls(
+            farmers=[],
+            fetchedAt=datetime.now(timezone.utc).isoformat(),
+            source=source,
+            lookupStatus="unknown",
+        )
+
     def to_summary(self) -> FarmerSummary:
         """Extract the first farmer's lightweight JWT summary."""
         first = self.farmers[0] if self.farmers else None
