@@ -316,6 +316,9 @@ class Settings(BaseSettings):
     # from the raw env (OSS_PIPELINE_PCT / OSS_VARIANT_TTL / OSS_INFERENCE_* /
     # OSS_LLM_MODEL_NAME) by app/llm_core/legacy_shim.py. The env vars stay; the
     # duplicate settings attributes + the pipeline_router that read them are gone.
+    # /api/chat/ hardcodes pipeline_profile="oss"; OSS_PIPELINE_PCT no longer
+    # A/B-splits chat sessions at the router (keep it at 100 so the oss profile
+    # is present with full weight in boot config).
 
     # Standard OSS -> managed overflow/fallback (see docs/oss-fallback-design.md).
     # ARMS the whole overflow system: the OSS->managed attempt chain AND the health
