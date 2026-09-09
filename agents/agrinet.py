@@ -6,7 +6,7 @@ from app.config import settings
 from agents.tools import TOOLS
 from agents.tools.terms import get_ambiguity_hints_for_query
 from pydantic_ai.settings import ModelSettings
-from agents.deps import FarmerContext
+from agents.deps import FarmerContext, MEMORY_INSTRUCTIONS
 
 
 def _agrinet_max_output_tokens() -> int:
@@ -68,6 +68,8 @@ def get_agrinet_instructions(ctx: RunContext):
         'vistaar_shc_enabled': settings.enable_network and settings.vistaar_shc_enabled,
     }
 
-    if ctx.deps.use_translation_pipeline:
-        return get_prompt("agrinet_system_translation_pipeline.md", context=context)
-    return get_prompt("agrinet_system.md", context=context)
+    prompt_name = "agrinet_system_translation_pipeline.md" if ctx.deps.use_translation_pipeline else "agrinet_system.md"
+    instructions = get_prompt(prompt_name, context=context)
+    if ctx.deps.memory_context:
+        instructions += "\n\n" + MEMORY_INSTRUCTIONS
+    return instructions

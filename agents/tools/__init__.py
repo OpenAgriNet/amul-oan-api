@@ -23,6 +23,7 @@ from agents.tools.vistaar_shc import (
     get_vistaar_soil_health_card,
     prepare_get_vistaar_soil_health_card,
 )
+from agents.tools.memory_tools import search_memories, list_memories, read_memory, prepare_memory_tool
 
 TOOLS = [
     # # Search Terms
@@ -34,6 +35,30 @@ TOOLS = [
         docstring_format='auto', 
         require_parameter_descriptions=True,
     ),
+
+    # memory_v0 Level 3: the fuller detail behind the short remembered summaries
+    # that are already injected each turn. Hidden unless memory is on and a farmer
+    # is resolved.
+    Tool(
+        search_memories,
+        takes_ctx=True,  # farmer identity comes from deps, never from the model
+        docstring_format='auto',
+        require_parameter_descriptions=True,
+        prepare=prepare_memory_tool,
+    ),
+
+    # Exact listing covers recorded state and metadata matches. Missing tags and
+    # unrecorded conversations still limit what can be concluded.
+    Tool(
+        list_memories,
+        takes_ctx=True,  # farmer identity comes from deps, never from the model
+        docstring_format='auto',
+        require_parameter_descriptions=True,
+        prepare=prepare_memory_tool,
+    ),
+
+    Tool(read_memory, takes_ctx=True, docstring_format='auto',
+         require_parameter_descriptions=True, prepare=prepare_memory_tool),
 
     Tool(
         create_ai_call,

@@ -1,6 +1,7 @@
 from contextlib import nullcontext
 from typing import Any, AsyncGenerator
 from functools import lru_cache
+import asyncio
 import os
 import regex
 import re
@@ -25,6 +26,7 @@ from agents.deps import FarmerContext
 from agents.farmer_context import get_farmer_context_bundle_by_mobile
 from agents.tools.farmer import normalize_phone_to_mobile
 from agents.tools.session_shc import get_session_shc_context
+from app.services.memory import fetch_memory_context
 from app.services.translation import (
     translate_text,
     translate_to_english_pretranslation,
@@ -700,15 +702,21 @@ async def stream_chat_messages(
                 return
 
             if persona == "farmer":
-                deps.soil_health_card_context = (
-                    await get_session_shc_context(session_id, loan_mobile)
-                ) or ""
+                # Run both lookups concurrently. Memory waiting has its own total
+                # deadline and returns empty context when disabled or unavailable.
+                shc_ctx, mem_ctx = await asyncio.gather(
+                    get_session_shc_context(session_id, loan_mobile),
+                    fetch_memory_context(loan_mobile, processing_query),
+                )
+                deps.soil_health_card_context = shc_ctx or ""
+                deps.memory_context = mem_ctx or ""
             user_message = deps.get_user_message()
             logger.info(
-                "request_id=%s running_agent=True user_query=%s private_shc_context=%s",
+                "request_id=%s running_agent=True user_query=%s private_shc_context=%s memory_used=%s",
                 request_id,
                 deps.query,
                 bool(deps.soil_health_card_context),
+                bool(deps.memory_context),
             )
 
             # Run the main agent
