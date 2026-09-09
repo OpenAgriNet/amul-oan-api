@@ -185,6 +185,7 @@ def test_settings_scheme_source_url_defaults():
     assert cfg.sarhad_scheme_source_url == "https://sarhaddairy.coop/for-our-milk-producers"
     assert cfg.sumul_scheme_source_url == "https://www.sumul.com/farmer-section.html"
     assert cfg.sursagar_scheme_source_url == "https://sursagardairy.com/Farmer/MilkProducers"
+    assert cfg.sabar_scheme_source_url == "https://sabardairy.org/for-our-milk-producers"
 
 
 def test_settings_normalize_scheme_source_urls(monkeypatch):
@@ -193,6 +194,7 @@ def test_settings_normalize_scheme_source_urls(monkeypatch):
     monkeypatch.setenv("SARHAD_SCHEME_SOURCE_URL", "https://sarhad.example.com/farmers///")
     monkeypatch.setenv("SUMUL_SCHEME_SOURCE_URL", "https://sumul.example.com/farmer.html/")
     monkeypatch.setenv("SURSAGAR_SCHEME_SOURCE_URL", "https://sursagar.example.com/milk///")
+    monkeypatch.setenv("SABAR_SCHEME_SOURCE_URL", "https://sabar.example.com/producers///")
 
     cfg = Settings()
     assert cfg.banas_scheme_site_origin == "https://banas.example.com"
@@ -200,6 +202,7 @@ def test_settings_normalize_scheme_source_urls(monkeypatch):
     assert cfg.sarhad_scheme_source_url == "https://sarhad.example.com/farmers"
     assert cfg.sumul_scheme_source_url == "https://sumul.example.com/farmer.html"
     assert cfg.sursagar_scheme_source_url == "https://sursagar.example.com/milk"
+    assert cfg.sabar_scheme_source_url == "https://sabar.example.com/producers"
 
 
 def test_search_documents_consumes_settings_endpoint_and_index(monkeypatch):

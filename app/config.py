@@ -418,6 +418,10 @@ class Settings(BaseSettings):
         default="https://sursagardairy.com/Farmer/MilkProducers",
         validation_alias="SURSAGAR_SCHEME_SOURCE_URL",
     )
+    sabar_scheme_source_url: str = Field(
+        default="https://sabardairy.org/for-our-milk-producers/",
+        validation_alias="SABAR_SCHEME_SOURCE_URL",
+    )
     # Banas/Sumul/Sursagar/Sabar scheme PDF ingestion via stock Chandra vLLM
     # (OpenAI-compatible /v1/chat/completions; see scheme_ingestion.py).
     # Base URL e.g. http://10.185.25.197:8011 (optional trailing /v1 is stripped).
@@ -756,6 +760,7 @@ class Settings(BaseSettings):
         "sarhad_scheme_source_url",
         "sumul_scheme_source_url",
         "sursagar_scheme_source_url",
+        "sabar_scheme_source_url",
         mode="before",
     )
     @classmethod

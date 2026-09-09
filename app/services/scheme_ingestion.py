@@ -129,7 +129,6 @@ class SchemeSource:
 
 
 BANAS_SCHEME_SECTION = "schemes"
-SABAR_SITE_ORIGIN = "https://sabardairy.org"
 
 
 def _url_origin(url: str, fallback: str) -> str:
@@ -147,6 +146,7 @@ BANAS_DOCUMENTS_API_URL = (
 )
 SUMUL_SITE_ORIGIN = _url_origin(settings.sumul_scheme_source_url, "https://www.sumul.com")
 SURSAGAR_SITE_ORIGIN = _url_origin(settings.sursagar_scheme_source_url, "https://sursagardairy.com")
+SABAR_SITE_ORIGIN = _url_origin(settings.sabar_scheme_source_url, "https://sabardairy.org")
 
 BANAS_SOURCE = SchemeSource(
     source_name="banas",
@@ -185,7 +185,7 @@ SURSAGAR_SOURCE = SchemeSource(
 SABAR_SOURCE = SchemeSource(
     source_name="sabar",
     union_name=UnionName.SABAR.value,
-    source_url="https://sabardairy.org/for-our-milk-producers/",
+    source_url=str(settings.sabar_scheme_source_url or "").strip() or "https://sabardairy.org/for-our-milk-producers/",
     cache_key="sabardairy.org/for-our-milk-producers",
     # Page lists scheme cards with PDF application-form downloads (same pattern as
     # Sumul/Sursagar).
