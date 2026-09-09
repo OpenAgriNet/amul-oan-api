@@ -109,7 +109,7 @@ def _drive(monkeypatch, *, agent_raises=False, stop_after=None):
             source_lang="gu", target_lang="gu", channel="web",
             user_id="+919876543210", history=[], user_info={},
             background_tasks=BackgroundTasks(), use_translation_pipeline=True,
-            pipeline_profile="managed",
+            pipeline_profile="oss",
         )
         n = 0
         async for _ in gen:
