@@ -1,14 +1,12 @@
 """
 Tool for booking a health call for a farmer.
 """
-import os
-
 import httpx
 from pydantic_ai import RunContext
 
 from agents.deps import FarmerContext
 from agents.tools.farmer_animal_backends import create_health_call_api
-from app.config import settings
+from app.config import get_config_value, settings
 from app.core.cache import cache, reserve, ReservationOutcome, release_reservation
 from app.models.ai_call import AISpecies
 from app.models.health_call import HealthCallRequestModel, HealthCaseType
@@ -122,7 +120,7 @@ async def create_health_call(
         input=_health_tool_input,
         metadata={"tool_name": "create_health_call"},
     ) as health_tool_obs:
-        token = os.getenv("PASHUGPT_TOKEN")
+        token = get_config_value("PASHUGPT_TOKEN")
         if not token:
             logger.error("PASHUGPT_TOKEN is not set")
             failure_message = "Health call booking failed.\n\nPASHUGPT_TOKEN is not configured."

@@ -1,4 +1,3 @@
-from dotenv import load_dotenv
 from fastapi import FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
 from app.config import settings
@@ -11,8 +10,6 @@ from app.tasks.farmer_refresh_worker import start_farmer_refresh_worker, stop_fa
 # P2 health poller: active LB /health probe feeding the per-endpoint breaker.
 # start_/stop_ are no-ops unless HEALTH_POLLER_ENABLED (flag-off boot is untouched).
 from app.tasks.health_poller import start_health_poller, stop_health_poller
-
-load_dotenv()
 
 # Configure observability (Langfuse + pydantic-ai instrumentation) before router
 # imports that pull in agents, tools, and voice/chat pipelines.

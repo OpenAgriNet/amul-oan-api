@@ -54,8 +54,8 @@ class Tier(BaseModel):
     """One inert tier in a step's chain (primary first, fallbacks after).
 
     Frozen so it is hashable and usable as an ``lru_cache`` key in the factory.
-    ``api_key_env`` names the secret env var; the VALUE is read at materialize
-    time via ``os.getenv`` and never stored on the model or in any file.
+    ``api_key_env`` names the secret; the VALUE is read at materialize time via
+    the centralized secret provider and never stored in pipeline config.
     """
 
     provider: Provider

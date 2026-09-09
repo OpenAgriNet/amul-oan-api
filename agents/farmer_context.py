@@ -1,6 +1,5 @@
 import asyncio
 import json
-import os
 from types import CoroutineType
 from typing import Any
 
@@ -22,7 +21,7 @@ from agents.services.beckn_amul import (
     fetch_cvcc_health,
     search_ai_technicians,
 )
-from app.config import settings
+from app.config import get_config_value, settings
 from app.models.animal import AnimalModel
 from app.models.banas_visit import (
     BanasLabReportModel,
@@ -234,7 +233,7 @@ async def _get_ai_technicians_for_farmer(
             unionCode=farmer.union_code,
             societyCode=farmer.society_code,
         )
-        token = os.getenv("PASHUGPT_TOKEN")
+        token = get_config_value("PASHUGPT_TOKEN")
 
         # force_refresh: always hit upstream. Otherwise use cache-first and
         # trust successful cached responses, including an empty list.

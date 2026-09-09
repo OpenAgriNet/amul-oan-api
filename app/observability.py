@@ -1,11 +1,8 @@
 import logging
-import os
 from contextlib import contextmanager
 from typing import Any, Iterator
 
-from dotenv import load_dotenv
-
-load_dotenv()
+from app.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -13,45 +10,44 @@ logger = logging.getLogger(__name__)
 has_otel_exporter = False
 
 # Conditionally configure Langfuse if env vars are set.
-langfuse_public_key = os.getenv("LANGFUSE_PUBLIC_KEY")
-langfuse_secret_key = os.getenv("LANGFUSE_SECRET_KEY")
+langfuse_public_key = settings.langfuse_public_key
+langfuse_secret_key = settings.langfuse_secret_key
 langfuse_client = None
 
 if langfuse_public_key and langfuse_secret_key:
     try:
-        from app.config import settings
-
         # Labels for Langfuse: identify all traces as from this service.
         release = (
-            os.getenv("LANGFUSE_RELEASE")
-            or settings.langfuse_release
+            settings.langfuse_release
             or "voice-oan-api"
         )
         environment = (
-            os.getenv("LANGFUSE_TRACING_ENVIRONMENT")
-            or settings.langfuse_tracing_environment
+            settings.langfuse_tracing_environment
             or settings.environment
             or "voice-development"
         )
         # Langfuse SDK v4 reads LANGFUSE_BASE_URL. Keep LANGFUSE_HOST as a
         # backward-compatible input because older deployments may still set it.
         host = (
-            os.getenv("LANGFUSE_BASE_URL")
-            or os.getenv("LANGFUSE_HOST")
-            or (settings.langfuse_base_url if settings.langfuse_base_url else None)
+            settings.langfuse_base_url
+            or settings.langfuse_host
             or "https://cloud.langfuse.com"
         )
-
-        os.environ.setdefault("LANGFUSE_BASE_URL", host)
 
         print(
             f"Langfuse initializing: host={host}, release={release}, environment={environment}",
             flush=True,
         )
 
-        from langfuse import get_client
+        from langfuse import Langfuse
 
-        langfuse_client = get_client()
+        langfuse_client = Langfuse(
+            public_key=langfuse_public_key,
+            secret_key=langfuse_secret_key,
+            base_url=host,
+            release=release,
+            environment=environment,
+        )
 
         # Verify connection before enabling pydantic-ai OTEL instrumentation.
         if langfuse_client.auth_check():

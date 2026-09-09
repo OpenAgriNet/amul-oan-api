@@ -1,19 +1,16 @@
 import asyncio
-import os
 import base64
 import requests
 import json
 import httpx
 import logging
-from dotenv import load_dotenv
 # from tenacity import retry, stop_after_attempt, wait_exponential, wait_fixed
 from typing import Dict
 from langcodes import Language
 from openai import OpenAI
 from io import BytesIO
 from pydub import AudioSegment
-
-load_dotenv()
+from app.config import settings
 
 _transcription_logger = logging.getLogger(__name__)
 BHASHINI_SAMPLE_RATE = 16000
@@ -51,7 +48,7 @@ def transcribe_whisper(audio_base64: str):
     Parameters:
     audio_base64 (str): The base64 encoded audio content
     """
-    openai_client = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
+    openai_client = OpenAI(api_key=settings.openai_api_key)
     response = openai_client.audio.transcriptions.create(
         model="whisper-1",
         file=base64_to_audio_file(audio_base64),
@@ -123,8 +120,8 @@ def transcribe_bhashini(audio_base64: str, source_lang='mr'):
     Raises:
     requests.HTTPError: If Bhashini returns a non-2xx status.
     """
-    url = 'https://dhruva-api.bhashini.gov.in/services/inference/pipeline'
-    api_key = os.getenv('MEITY_API_KEY_VALUE')
+    url = settings.bhashini_api_url
+    api_key = settings.meity_api_key_value
     
     # Logging and format handling
     detected_format = _detect_audio_format_from_base64(audio_base64)
@@ -175,7 +172,12 @@ def transcribe_bhashini(audio_base64: str, source_lang='mr'):
     }
     
     try:
-        response = requests.post(url, headers=headers, data=json.dumps(data), timeout=30)
+        response = requests.post(
+            url,
+            headers=headers,
+            data=json.dumps(data),
+            timeout=settings.transcribe_timeout_seconds,
+        )
         
         if response.status_code != 200:
             _transcription_logger.error(
@@ -194,8 +196,8 @@ def transcribe_bhashini(audio_base64: str, source_lang='mr'):
         raise
 
 
-BHASHINI_PIPELINE_URL = "https://dhruva-api.bhashini.gov.in/services/inference/pipeline"
-TRANSCRIBE_TIMEOUT = 30.0
+BHASHINI_PIPELINE_URL = settings.bhashini_api_url
+TRANSCRIBE_TIMEOUT = settings.transcribe_timeout_seconds
 
 
 async def transcribe_bhashini_async(audio_base64: str, source_lang: str = "mr") -> str:
@@ -227,7 +229,7 @@ async def transcribe_bhashini_async(audio_base64: str, source_lang: str = "mr") 
     else:
         _transcription_logger.info("transcribe_bhashini_async: audio already WAV, no conversion needed")
 
-    api_key = os.getenv("MEITY_API_KEY_VALUE")
+    api_key = settings.meity_api_key_value
     headers = {
         "Accept": "*/*",
         "User-Agent": "Thunder Client (https://www.thunderclient.com)",
@@ -273,10 +275,10 @@ def detect_audio_language_bhashini(audio_base64: str):
     str: The detected language code if the request is successful.
     str: An error message if the request fails.
     """
-    url = 'https://dhruva-api.bhashini.gov.in/services/inference/pipeline'
+    url = settings.bhashini_api_url
     headers = {
         'Accept': '*/*',
-        'Authorization': os.getenv('MEITY_API_KEY_VALUE'),
+        'Authorization': settings.meity_api_key_value,
     }
     data = {
         "pipelineTasks": [

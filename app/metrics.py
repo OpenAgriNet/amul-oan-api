@@ -20,8 +20,9 @@ Design constraints:
 
 from __future__ import annotations
 
-import os
 from typing import Optional
+
+from app.config import settings
 
 # Multi-worker aggregation: uvicorn/gunicorn with >1 worker gives each process its
 # OWN in-process registry, so a /metrics scrape hits only one worker and undercounts.
@@ -29,7 +30,7 @@ from typing import Optional
 # shared dir and render() aggregates across all workers via a MultiProcessCollector.
 # Leave it UNSET for single-worker deployments (simple in-process registry). Set it
 # (e.g. /tmp/prom_multiproc, a fresh dir per container) whenever workers > 1.
-_MULTIPROC_DIR = os.environ.get("PROMETHEUS_MULTIPROC_DIR") or None
+_MULTIPROC_DIR = settings.prometheus_multiproc_dir
 
 try:  # optional dependency — the pipeline runs fine without it (no-op mode)
     from prometheus_client import (

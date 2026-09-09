@@ -54,7 +54,6 @@ and the eventual repo-merge stays mechanical.
 
 from __future__ import annotations
 
-import os
 import time
 from collections import deque
 from dataclasses import dataclass, field
@@ -374,9 +373,9 @@ def _default_config() -> BreakerConfig:
         fail_threshold=settings.health_breaker_fail_threshold,
         cooldown_s=settings.health_breaker_cooldown_ms / 1000.0,
         healthy_polls_required=settings.health_poller_healthy_polls,
-        fail_rate_window=int(os.getenv("HEALTH_FAIL_RATE_WINDOW", "20")),
-        fail_rate_threshold=float(os.getenv("HEALTH_FAIL_RATE_THRESHOLD", "0.5")),
-        probe_max_s=float(os.getenv("HEALTH_PROBE_MAX_S", "30")),
+        fail_rate_window=settings.health_fail_rate_window,
+        fail_rate_threshold=settings.health_fail_rate_threshold,
+        probe_max_s=settings.health_probe_max_s,
     )
 
 

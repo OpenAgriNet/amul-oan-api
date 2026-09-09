@@ -1,17 +1,13 @@
 import asyncio
 import jwt
-import os
 import hmac
 import re
-from dotenv import load_dotenv
 from cryptography.hazmat.primitives import serialization
 from fastapi import Depends, HTTPException, status, Request
 from fastapi.security import OAuth2PasswordBearer
 from fastapi.security.utils import get_authorization_scheme_param
 from helpers.utils import get_logger
 from app.config import settings # Import the application settings
-
-load_dotenv()
 
 logger = get_logger(__name__)
 
