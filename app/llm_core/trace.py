@@ -51,23 +51,17 @@ class StepRecord:
     endpoint: Optional[str] = None       # primary tier's endpoint URL (or "managed")
     timeout_ms: Optional[int] = None     # primary tier's per-attempt timeout
     tier_chain: list[dict] = field(default_factory=list)  # ordered, primary-first
-    tier_served_kind: Optional[str] = None   # kind of the tier that actually served
+    tier_served_route: Optional[str] = None  # provider:model plus optional config label
     tier_served_index: Optional[int] = None  # 0 = primary, 1 = first fallback, ...
-    tier_served_provider: Optional[str] = None
-    tier_served_model: Optional[str] = None
-    tier_served_label: Optional[str] = None
     health: Optional[dict] = None        # {"pruned": [...], "breaker_states": {...}}
     concurrency: Optional[dict] = None   # {"gauge", "max_concurrency", "deprioritized", ...}
 
     def to_dict(self) -> dict:
         served = None
-        if self.tier_served_kind is not None or self.tier_served_index is not None:
+        if self.tier_served_route is not None or self.tier_served_index is not None:
             served = {
-                "kind": self.tier_served_kind,
+                "route": self.tier_served_route,
                 "index": self.tier_served_index,
-                "provider": self.tier_served_provider,
-                "model": self.tier_served_model,
-                "label": self.tier_served_label,
             }
         triggers: dict = {}
         if self.health is not None:
@@ -127,13 +121,12 @@ def snapshot_flags() -> dict:
     """The operational trigger flags that gate the pipeline — recorded so a turn's
     trace shows which machinery was even eligible to fire. The llm_core/profiles
     kill-switches were removed in P4 (the unified pipeline is now the only path),
-    leaving only the health-breaker/poller and concurrency-gauge triggers."""
+    leaving only the health-breaker/poller toggles. Concurrency is config-driven."""
     from app.config import settings
 
     return {
         "health_breaker_enabled": bool(getattr(settings, "health_breaker_enabled", False)),
         "health_poller_enabled": bool(getattr(settings, "health_poller_enabled", False)),
-        "concurrency_gauge_enabled": bool(getattr(settings, "concurrency_gauge_enabled", False)),
     }
 
 
@@ -231,26 +224,19 @@ def record_step_chain(step: Any, chain: list) -> None:
 
 def record_served(
     step: Any,
-    kind: Optional[str],
+    route: Optional[str],
     index: int,
     *,
-    provider: Optional[str] = None,
-    model: Optional[str] = None,
-    label: Optional[str] = None,
     trace_state: Optional[PipelineTrace] = None,
 ) -> None:
-    """The fallback walker's success hook: which tier (kind + 0-based index in the
-    chain) actually produced the answer."""
+    """Record the route and chain index that produced the answer."""
     pt = trace_state or _CTX.get()
     if pt is None:
         return
     name = getattr(step, "value", step)
     rec = pt.step(name)
-    rec.tier_served_kind = kind
+    rec.tier_served_route = route
     rec.tier_served_index = index
-    rec.tier_served_provider = provider
-    rec.tier_served_model = model
-    rec.tier_served_label = label
 
 
 def record_health_prune(step: Any, pruned: list, breaker_states: dict) -> None:
@@ -439,7 +425,7 @@ def log_full_config(pipeline: Any) -> None:
 
 
 def served_summary(pt: Optional[PipelineTrace]) -> Optional[str]:
-    """Compact "which tier actually answered" string, e.g. ``"agent=oss,post_translation=managed"``.
+    """Compact served routes, e.g. ``"agent=vllm:gemma[0]"``.
 
     ``compact_metadata`` reports the CONFIGURED primary per step; health-prune,
     concurrency-reorder and failure-fallback can route elsewhere. The walker
@@ -454,12 +440,7 @@ def served_summary(pt: Optional[PipelineTrace]) -> Optional[str]:
         for name, rec in sorted(pt.steps.items()):
             if rec.tier_served_index is None:
                 continue
-            identity = (
-                rec.tier_served_label
-                or ":".join(filter(None, (rec.tier_served_provider, rec.tier_served_model)))
-                or rec.tier_served_kind
-            )
-            parts.append(f"{name}={identity}[{rec.tier_served_index}]")
+            parts.append(f"{name}={rec.tier_served_route}[{rec.tier_served_index}]")
         return ",".join(parts) or None
     except Exception as e:  # pragma: no cover - defensive
         logger.debug("llm_core.trace: served_summary failed: %s", e)

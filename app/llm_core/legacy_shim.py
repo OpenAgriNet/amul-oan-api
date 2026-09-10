@@ -164,9 +164,13 @@ def _post_translation_tiers(fallback_enabled: bool) -> list[Tier]:
 
     # Post-translation requires an OpenAI-compatible raw client. Keep the old
     # provider when it is compatible, but let deployments select it independently
-    # from the agent. Anthropic/Gemini must opt into one of these adapters.
+    # from the agent. For Anthropic/Gemini, omit the optional overflow unless a
+    # compatible provider is explicitly configured.
     agent_provider = (_env("LLM_PROVIDER", "openai") or "openai").lower()
-    provider = (_env("POST_TRANSLATION_LLM_PROVIDER", agent_provider) or agent_provider).lower()
+    configured_provider = _env("POST_TRANSLATION_LLM_PROVIDER")
+    if configured_provider is None and agent_provider not in {"openai", "azure-openai", "vllm"}:
+        return [tg]
+    provider = (configured_provider or agent_provider).lower()
     if provider not in {"openai", "azure-openai", "vllm"}:
         raise ValueError(
             "POST_TRANSLATION_LLM_PROVIDER must be openai, azure-openai, or vllm "
@@ -177,7 +181,7 @@ def _post_translation_tiers(fallback_enabled: bool) -> list[Tier]:
     if provider == "vllm":
         fallback = Tier(
             provider=Provider.VLLM,
-            model=model_override or _env("LLM_MODEL_NAME", "gemma-4-31b-it") or "gemma-4-31b-it",
+            model=model_override or "gemma-4-31b-it",
             endpoint=_env("INFERENCE_ENDPOINT_URL"),
             api_key_env="INFERENCE_API_KEY",
             timeout_ms=llm_ms,
@@ -197,7 +201,7 @@ def _post_translation_tiers(fallback_enabled: bool) -> list[Tier]:
     else:
         fallback = Tier(
             provider=Provider.OPENAI,
-            model=model_override or _env("LLM_MODEL_NAME", "gpt-4.1") or "gpt-4.1",
+            model=model_override or "gpt-4.1",
             api_key_env="OPENAI_API_KEY",
             timeout_ms=llm_ms,
             admission=AdmissionPolicy.MANAGED,

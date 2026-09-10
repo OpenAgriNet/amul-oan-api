@@ -127,7 +127,6 @@ class StepConfig(BaseModel):
 class StepPlan:
     """The immutable set of tiers that can execute for one configured step."""
 
-    step: Step
     tiers: tuple[Tier, ...]
     concurrency_gate: Optional[ConcurrencyGate]
 
@@ -197,9 +196,34 @@ class PipelineConfig(BaseModel):
         if configured is None:
             return None
         if not self.fallback_enabled:
-            return StepPlan(step, (configured.tiers[0],), None)
+            return StepPlan((configured.tiers[0],), None)
+        tiers = tuple(configured.tiers)
+        gate = configured.triggers.concurrency_gate
+        if not any(tier.provider is Provider.VLLM for tier in tiers):
+            gate = None
         return StepPlan(
-            step,
-            tuple(configured.tiers),
-            configured.triggers.concurrency_gate,
+            tiers,
+            gate,
+        )
+
+    def effective_capabilities(self, profile: NamedProfile) -> ProfileCapabilities:
+        """Resolve application policy once from the active agent plan + overrides."""
+        plan = self.step_plan(profile, Step.AGENT)
+        if plan is None:
+            raise ValueError(f"profile={profile.name} has no agent plan")
+        is_vllm = [tier for tier in plan.candidates if tier.provider is Provider.VLLM]
+        configured = profile.capabilities
+        return ProfileCapabilities(
+            requires_translation=(
+                configured.requires_translation
+                if configured is not None and configured.requires_translation is not None
+                else bool(is_vllm)
+            ),
+            history_max_tokens=(
+                configured.history_max_tokens
+                if configured is not None and configured.history_max_tokens is not None
+                else 10_000
+                if any("gemma" in tier.model.lower() for tier in is_vllm)
+                else 80_000
+            ),
         )

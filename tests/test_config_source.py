@@ -64,12 +64,7 @@ def _two_profile(pct: int) -> PipelineConfig:
 
 
 def _content_invalid() -> PipelineConfig:
-    """SCHEMA-valid (weight sums to 100, unique names) but UNBUILDABLE: a vllm AGENT
-    tier with NO endpoint. ``PipelineConfig(**data)`` accepts it, but the factory
-    raises only when its execution target builds a handle, so the
-    boot-parity content probe in ``runtime.validate_content`` rejects it. AGENT is a
-    RAW-independent step configured identically in chat and voice, so this fixture is
-    byte-identical across the two repos."""
+    """Schema-valid but structurally invalid: a vLLM agent has no endpoint."""
     return PipelineConfig(profiles=[
         NamedProfile(name="oss", weight=100,
                      steps={Step.AGENT: StepConfig(tiers=[
@@ -324,6 +319,11 @@ def test_content_invalid_live_config_kept_last_good_and_warns(monkeypatch, fake,
         out = config_source.maybe_refresh(boot)   # must NOT raise; must NOT apply
     assert out is boot                             # kept last-good (fail-closed)
     assert "content-invalid" in caplog.text
+
+    monkeypatch.setenv("REQUIRE_OVERFLOW_ARMED", "true")
+    fake.store[config_source.key()] = _json_of(_two_profile(50))
+    config_source.reset()
+    assert config_source.maybe_refresh(boot) is boot
 
 
 # ── (d) TTL: two calls within one window hit redis at most once ────────────────

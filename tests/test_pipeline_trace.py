@@ -102,7 +102,7 @@ def test_flags_present_in_metadata():
     flags = trace.current().to_metadata()["flags"]
     # P4 removed the llm_core/profiles kill-switches; only the operational triggers remain.
     assert set(flags) == {
-        "health_breaker_enabled", "health_poller_enabled", "concurrency_gauge_enabled",
+        "health_breaker_enabled", "health_poller_enabled",
     }
 
 
@@ -159,11 +159,8 @@ def test_fallback_walker_records_served_index(monkeypatch, materialized_tier):
     assert out == "answer"
     served = trace.current().to_metadata()["steps"]["agent"]["tier_served"]
     assert served == {
-        "kind": "managed",
+        "route": "openai:gpt-4.1",
         "index": 1,
-        "provider": "openai",
-        "model": "gpt-4.1",
-        "label": None,
     }
 
 
@@ -188,7 +185,6 @@ def test_health_prune_trigger_recorded(monkeypatch):
 
 def test_concurrency_deprioritize_trigger_recorded(monkeypatch):
     import asyncio
-    monkeypatch.setattr(concurrency.settings, "concurrency_gauge_enabled", True)
 
     async def _fake_gauge(url):
         return 99  # saturated
@@ -237,10 +233,9 @@ def test_compact_metadata_produces_short_flat_keys():
 
     m = trace.compact_metadata(pt)
     assert m["pipeline_profile"] == "oss"
-    # all-on flags (test env) -> the 3 short names. P4 removed the llm_core/profiles
-    # kill-switches (unified pipeline is the only path), leaving the operational triggers.
+    # P4 removed the llm_core/profiles kill-switches; concurrency is config-driven.
     assert set(m["pipeline_flags"].split(",")) == {
-        "health_breaker", "health_poller", "concurrency_gauge",
+        "health_breaker", "health_poller",
     }
     assert m["pc_agent"] == "vllm:gemma@http://oss:8020/v1#oss(8000ms)"
     assert m["pc_moderation"] == "vllm:gemma@http://oss:8020/v1#oss(8000ms)"

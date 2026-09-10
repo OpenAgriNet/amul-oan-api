@@ -20,9 +20,13 @@ Design constraints:
 
 from __future__ import annotations
 
+import logging
+import os
 from typing import Optional
 
 from app.config import settings
+
+logger = logging.getLogger(__name__)
 
 # Multi-worker aggregation: uvicorn/gunicorn with >1 worker gives each process its
 # OWN in-process registry, so a /metrics scrape hits only one worker and undercounts.
@@ -49,7 +53,13 @@ try:  # optional dependency — the pipeline runs fine without it (no-op mode)
         # cross-restart files). Never fatal — fall back to in-process on any error.
         try:
             os.makedirs(_MULTIPROC_DIR, exist_ok=True)
-        except Exception:
+        except OSError as exc:
+            logger.warning(
+                "Could not initialize PROMETHEUS_MULTIPROC_DIR=%s: %s; "
+                "using in-process metrics",
+                _MULTIPROC_DIR,
+                exc,
+            )
             _MULTIPROC_DIR = None
 except Exception:  # pragma: no cover - exercised only where the lib is absent
     _ENABLED = False

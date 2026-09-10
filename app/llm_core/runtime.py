@@ -49,6 +49,8 @@ def validate_config(pipeline: PipelineConfig) -> None:
     """Structurally validate the normalized tiers that can execute."""
     problems: list[str] = []
     for profile in pipeline.profiles:
+        if profile.weight > 0 and pipeline.step_plan(profile, Step.AGENT) is None:
+            problems.append(f"profile={profile.name} has no agent plan")
         for step in Step:
             plan = pipeline.step_plan(profile, step)
             if plan is None:
@@ -102,6 +104,8 @@ def validate_config(pipeline: PipelineConfig) -> None:
 def validate_content(cfg: PipelineConfig) -> None:
     """Validate active config without constructing or caching provider clients."""
     validate_config(cfg)
+    if _truthy_env("REQUIRE_OVERFLOW_ARMED") and not cfg.fallback_enabled:
+        raise ValueError("REQUIRE_OVERFLOW_ARMED=true but fallback_enabled=false")
 
 
 def _truthy_env(name: str) -> bool:
@@ -114,7 +118,7 @@ class BootRefused(RuntimeError):
     DISARMED). The startup call site re-raises this instead of swallowing it."""
 
 
-def _assert_boot_posture(pipeline: PipelineConfig) -> None:
+def _log_boot_posture(pipeline: PipelineConfig) -> None:
     """Emit a LOUD one-line 'overflow ARMED / DISARMED' posture summary at boot.
 
     The whole overflow system — the OSS->managed attempt chain AND the health +
@@ -123,18 +127,21 @@ def _assert_boot_posture(pipeline: PipelineConfig) -> None:
     with nothing in the logs saying so. This line makes the armament state greppable
     at startup (``grep 'llm_core posture'``): INFO when armed, WARNING when disarmed.
 
-    Honors the opt-in ``REQUIRE_OVERFLOW_ARMED``: when truthy, a DISARMED boot is a
-    hard error (raises) so prod can gate on it and never ship overflow-off."""
+    The shared config validator separately enforces ``REQUIRE_OVERFLOW_ARMED``."""
     from app.config import settings
 
     def _onoff(b: bool) -> str:
         return "on" if b else "off"
 
     fallback_on = pipeline.fallback_enabled
-    if settings.concurrency_gauge_enabled:
-        conc = "on(metrics_url set)" if settings.agent_concurrency_metrics_url else "on(metrics_url unset — no-op)"
-    else:
-        conc = "off"
+    plans = (
+        pipeline.step_plan(profile, step)
+        for profile in pipeline.profiles
+        for step in Step
+    )
+    conc = "on" if any(
+        plan is not None and plan.concurrency_gate is not None for plan in plans
+    ) else "off"
     guards = (
         f"health_breaker={_onoff(settings.health_breaker_enabled)} "
         f"health_poller={_onoff(settings.health_poller_enabled)} "
@@ -148,12 +155,6 @@ def _assert_boot_posture(pipeline: PipelineConfig) -> None:
             "health/concurrency guards inert (they fire only via the fallback "
             "walkers); %s", guards,
         )
-        if _truthy_env("REQUIRE_OVERFLOW_ARMED"):
-            raise BootRefused(
-                "llm_core boot refused: REQUIRE_OVERFLOW_ARMED=true but overflow is "
-                "DISARMED (FALLBACK_ENABLED=false). Set FALLBACK_ENABLED=true to arm "
-                "the unified overflow/fallback path, or unset REQUIRE_OVERFLOW_ARMED."
-            )
 
 
 def configure() -> PipelineConfig:
@@ -174,10 +175,6 @@ def configure() -> PipelineConfig:
     except Exception as exc:
         raise BootRefused(f"llm_core boot config rejected: {exc}") from exc
 
-    # The posture gate is validation too: run it before the single commit point so
-    # any rejection leaves both known-good globals untouched.
-    _assert_boot_posture(candidate)
-
     # Publish only after the complete candidate has passed.
     PIPELINE = candidate
     # Capture the boot config as the permanent fallback BEFORE any live redis
@@ -190,6 +187,7 @@ def configure() -> PipelineConfig:
     # in logs even before any turn arrives (`grep llm_core.full_config`).
     from app.llm_core import trace as _trace
     _trace.log_full_config(PIPELINE)
+    _log_boot_posture(PIPELINE)
     # M2: note whether the live redis-backed config source is enabled (default OFF).
     # When on, weight changes PUT to the channel key take effect within the TTL with
     # no redeploy; when off, get_pipeline() serves the boot config only.

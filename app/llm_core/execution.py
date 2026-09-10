@@ -32,7 +32,6 @@ from app.config import settings
 from app.llm_core.config_model import (
     AdmissionPolicy,
     PipelineConfig,
-    ProfileCapabilities,
     Provider,
     Step,
     StepClientKind,
@@ -169,7 +168,8 @@ class ExecutionTarget:
 
     @property
     def route(self) -> str:
-        return self.tier.label or f"{self.provider}:{self.model_name}"
+        route = f"{self.provider}:{self.model_name}"
+        return f"{route}({self.tier.label})" if self.tier.label else route
 
     @property
     def endpoint(self) -> str:
@@ -283,11 +283,8 @@ def _record_served(
         from app.llm_core import trace as _trace
         _trace.record_served(
             step,
-            target.kind,
+            target.route,
             index,
-            provider=target.provider,
-            model=target.model_name,
-            label=target.tier.label,
             trace_state=trace_state,
         )
     except Exception:
@@ -697,33 +694,7 @@ class ExecutionContext:
 
     @cached_property
     def capabilities(self):
-        from app.config import get_config_value
-
-        reachable = self._step_plan(Step.AGENT).candidates
-        override = str(get_config_value("CHAT_HISTORY_MAX_TOKENS", ""))
-        if override.isdigit():
-            inferred_history = int(override)
-        elif any(
-            tier.provider is Provider.VLLM and "gemma" in tier.model.lower()
-            for tier in reachable
-        ):
-            raw = str(get_config_value("CHAT_HISTORY_MAX_TOKENS_VLLM_GEMMA", "10000"))
-            inferred_history = int(raw) if raw.isdigit() else 10_000
-        else:
-            inferred_history = 80_000
-        configured = self.profile.capabilities
-        return ProfileCapabilities(
-            requires_translation=(
-                configured.requires_translation
-                if configured is not None and configured.requires_translation is not None
-                else any(tier.provider is Provider.VLLM for tier in reachable)
-            ),
-            history_max_tokens=(
-                configured.history_max_tokens
-                if configured is not None and configured.history_max_tokens is not None
-                else inferred_history
-            ),
-        )
+        return self.config.effective_capabilities(self.profile)
 
     def _step_plan(self, step: Step):
         plan = self.config.step_plan(self.profile, step)

@@ -195,6 +195,8 @@ def test_yaml_config_does_not_enable_fallback_implicitly():
 
     cfg = PipelineConfig(profiles=[NamedProfile(name="managed", weight=100)])
     assert cfg.fallback_enabled is False
+    with pytest.raises(ValueError, match="no agent plan"):
+        runtime.validate_content(cfg)
 
 
 # ── (D) vLLM/OSS tier without an endpoint must RAISE (not silently build OpenAI) ─
@@ -298,12 +300,10 @@ def test_no_concurrency_gate_without_env(monkeypatch):
     assert oss.steps[Step.AGENT].triggers.concurrency_gate is None
 
 
-def test_omitted_capabilities_preserve_vllm_gemma_behavior(monkeypatch):
+def test_omitted_capabilities_preserve_vllm_gemma_behavior():
     from app.llm_core.config_model import NamedProfile, PipelineConfig, StepConfig
     from app.llm_core.execution import ExecutionContext
 
-    monkeypatch.delenv("CHAT_HISTORY_MAX_TOKENS", raising=False)
-    monkeypatch.delenv("CHAT_HISTORY_MAX_TOKENS_VLLM_GEMMA", raising=False)
     cfg = PipelineConfig(profiles=[NamedProfile(name="old-yaml", weight=100, steps={
         Step.AGENT: StepConfig(tiers=[Tier(
             provider=Provider.VLLM,
@@ -317,19 +317,21 @@ def test_omitted_capabilities_preserve_vllm_gemma_behavior(monkeypatch):
     assert capabilities.history_max_tokens == 10_000
 
 
-def test_partial_capabilities_merge_with_reachable_overflow(monkeypatch):
+def test_partial_capabilities_merge_with_reachable_overflow():
     from app.llm_core.config_model import (
         ConcurrencyGate, NamedProfile, PipelineConfig, ProfileCapabilities,
         StepConfig, Triggers,
     )
     from app.llm_core.execution import ExecutionContext
 
-    monkeypatch.delenv("CHAT_HISTORY_MAX_TOKENS", raising=False)
     overflow = Tier(
         provider=Provider.VLLM, model="gemma", endpoint="http://overflow/v1"
     )
     agent = StepConfig(
-        tiers=[Tier(provider=Provider.OPENAI, model="gpt")],
+        tiers=[
+            Tier(provider=Provider.OPENAI, model="gpt"),
+            Tier(provider=Provider.VLLM, model="qwen", endpoint="http://qwen/v1"),
+        ],
         triggers=Triggers(concurrency_gate=ConcurrencyGate(
             metrics_url="http://metrics", overflow_tier=overflow
         )),
@@ -398,7 +400,10 @@ def test_content_validation_checks_every_fallback_tier():
     overflow = Tier(provider=Provider.VLLM, model="broken-overflow")
     cfg = PipelineConfig(profiles=[NamedProfile(name="managed", weight=100, steps={
         Step.AGENT: StepConfig(
-            tiers=[Tier(provider=Provider.OPENAI, model="gpt-4.1")],
+            tiers=[
+                Tier(provider=Provider.OPENAI, model="gpt-4.1"),
+                Tier(provider=Provider.VLLM, model="qwen", endpoint="http://qwen/v1"),
+            ],
             triggers=Triggers(concurrency_gate=ConcurrencyGate(
                 metrics_url="http://metrics", overflow_tier=overflow
             )),
@@ -424,6 +429,7 @@ def test_validation_rejects_unsupported_posttranslation_provider():
 @pytest.mark.parametrize("provider", ["anthropic", "gemini"])
 def test_agent_provider_does_not_set_posttranslation_protocol(monkeypatch, provider):
     monkeypatch.setenv("LLM_PROVIDER", provider)
+    monkeypatch.setenv("LLM_MODEL_NAME", "agent-only-model")
     monkeypatch.setenv("FALLBACK_ENABLED", "false")
     monkeypatch.setenv("OPENAI_API_KEY", "test-openai-key")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-anthropic-key")
@@ -438,9 +444,13 @@ def test_agent_provider_does_not_set_posttranslation_protocol(monkeypatch, provi
     assert [tier.provider for tier in post] == [Provider.TRANSLATEGEMMA]
 
     monkeypatch.setenv("FALLBACK_ENABLED", "true")
+    post = runtime.configure().defaults[Step.POST_TRANSLATION].tiers
+    assert [tier.provider for tier in post] == [Provider.TRANSLATEGEMMA]
+
     monkeypatch.setenv("POST_TRANSLATION_LLM_PROVIDER", "openai")
     post = runtime.configure().defaults[Step.POST_TRANSLATION].tiers
     assert [tier.provider for tier in post] == [Provider.TRANSLATEGEMMA, Provider.OPENAI]
+    assert post[1].model == "gpt-4.1"
 
 
 @pytest.mark.parametrize(

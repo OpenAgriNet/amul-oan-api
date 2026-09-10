@@ -53,9 +53,8 @@ Composition (fixed order): ``concurrency-route -> health-prune -> target creatio
 -> classify-walk``. Routing may insert an explicit overflow tier, then the health
 filter sees the complete candidate chain and removes any known-DOWN endpoint.
 
-Gated by ``CONCURRENCY_GAUGE_ENABLED`` (default off) and only active where a
-``ConcurrencyGate`` is configured on the step; both off => identity (zero
-behaviour change). Kept import-clean (stdlib + httpx + ``app.config`` + the app
+Enabled only where a ``ConcurrencyGate`` is configured on the step; no gate means
+identity. Kept import-clean (stdlib + httpx + ``app.config`` + the app
 cache + ``config_model`` + ``app.metrics``) so the voice repo can mirror the same
 public API and the eventual repo-merge stays mechanical.
 """
@@ -241,7 +240,6 @@ async def reprioritize_by_load(
     drops a tier, never returns empty — only ever REORDERS. Returns ``tiers``
     unchanged (identity) when:
 
-    * ``CONCURRENCY_GAUGE_ENABLED`` is off;
     * the step has no ``ConcurrencyGate`` configured (``gate is None``) — a step
       without a gate is untouched;
     * the gauge is unreadable (``None``) — **fail-open**: treat as NOT saturated;
@@ -268,16 +266,14 @@ async def reprioritize_by_load(
     Shed probability rises with load (``_shed_probability``): a self-proportioning
     fraction near the cap, a hard 1.0 at/above it.
 
-    Runs on the already-health-pruned inert ``Tier`` list before target creation, so
-    a tier the health filter already dropped is gone and can never be reordered
-    back to the front here.
+    Runs on inert ``Tier`` values before the final health prune and target creation.
     """
-    if not settings.concurrency_gauge_enabled:
-        return tiers
     if gate is None:
         return tiers            # step without a configured gate -> untouched
     if not tiers:
         return tiers
+    if not any(_is_vllm(tier) for tier in tiers):
+        return tiers            # no saturating vLLM candidate to shed
 
     gauge = await get_concurrency(gate.metrics_url)
 
