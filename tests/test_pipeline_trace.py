@@ -1,6 +1,5 @@
 """Unit tests for the per-turn resolved-pipeline-config tracer
-(``app/llm_core/trace.py``) and its recording seams in
-``split`` / ``health`` / ``concurrency`` / ``execution``.
+(``app/llm_core/trace.py``) and its recording seams in ``split`` / ``execution``.
 
 The bar these pin:
   (a) a stubbed turn (no network) populates the ``pipeline`` trace metadata with
@@ -9,9 +8,7 @@ The bar these pin:
   (b) SECRETS never appear — the api-key *value* is nowhere in the emitted
       metadata nor in the startup full-config dump (only the env-var NAME is);
   (c) the fallback walker threads the actually-served tier index back;
-  (d) the health-prune and concurrency-deprioritize trigger outcomes are recorded
-      when those filters fire;
-  (e) the recorders are a no-op with no active context (cheap request-path guard).
+  (d) the recorders are a no-op with no active context (cheap request-path guard).
 
 Zero network: ``session_id=""`` avoids Redis; building a factory handle is lazy
 (no model call). A KNOWN-SECRET api key is placed in the env and then asserted
@@ -30,7 +27,7 @@ import json
 
 import pytest
 
-from app.llm_core import ExecutionContext, trace, split, health, concurrency
+from app.llm_core import ExecutionContext, trace, split
 from app.llm_core.config_model import (
     ConcurrencyGate,
     NamedProfile,
@@ -164,44 +161,7 @@ def test_fallback_walker_records_served_index(monkeypatch, materialized_tier):
     }
 
 
-# ── (d) trigger outcomes recorded when the filters fire ────────────────────────
-def test_health_prune_trigger_recorded(monkeypatch):
-    monkeypatch.setattr(health.settings, "health_breaker_enabled", True)
-    reg = health.reset()
-    # Trip the oss endpoint open at real monotonic time so it stays open (within
-    # cooldown) when prune_unhealthy consults is_open with the real clock.
-    for _ in range(reg.config.fail_threshold):
-        reg.record_failure("http://oss:8020/v1")
-
-    trace.begin("oss")
-    tiers = [_oss_tier(), _managed_tier()]
-    kept = health.prune_unhealthy(Step.AGENT, tiers)
-    assert len(kept) == 1  # oss pruned
-    h = trace.current().to_metadata()["steps"]["agent"]["triggers"]["health"]
-    assert h["pruned"] == ["http://oss:8020/v1"]
-    assert h["breaker_states"]["http://oss:8020/v1"] == "open"
-    health.reset()
-
-
-def test_concurrency_deprioritize_trigger_recorded(monkeypatch):
-    import asyncio
-
-    async def _fake_gauge(url):
-        return 99  # saturated
-
-    monkeypatch.setattr(concurrency, "get_concurrency", _fake_gauge)
-    gate = ConcurrencyGate(metrics_url="http://oss:8020/metrics", max_concurrency=10)
-
-    trace.begin("oss")
-    tiers = [_oss_tier(), _managed_tier()]
-    out = asyncio.run(concurrency.reprioritize_by_load(Step.AGENT, tiers, gate))
-    assert out[-1].provider is Provider.VLLM  # vLLM deprioritized to the back
-    c = trace.current().to_metadata()["steps"]["agent"]["triggers"]["concurrency"]
-    assert c["gauge"] == 99 and c["max_concurrency"] == 10 and c["deprioritized"] is True
-    assert c["metrics_url"] == "http://oss:8020/metrics"
-
-
-# ── (f) populate + COMPACT flat metadata keys (the path that lands) ───────────
+# ── (d) populate + COMPACT flat metadata keys (the path that lands) ───────────
 def test_execution_context_separates_configured_and_served_tiers():
     import asyncio
 
@@ -220,9 +180,6 @@ def test_execution_context_separates_configured_and_served_tiers():
 
 async def _result(target):
     return target.model_name
-    # P4 removed the llm_core/profiles kill-switches; only the 3 operational
-    # trigger flags (health-breaker/poller, concurrency-gauge) remain.
-    assert len(md["flags"]) == 3
 
 
 def test_compact_metadata_produces_short_flat_keys():

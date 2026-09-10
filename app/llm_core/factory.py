@@ -206,13 +206,23 @@ def _build_agent_model(tier: Tier) -> Any:
     raise ValueError(f"provider {tier.provider} is not valid for an AGENT step")
 
 
-def _build_pretranslation(tier: Tier) -> AsyncOpenAI:
-    """PRE_TRANSLATION kind -> AsyncOpenAI client (pre-translation)."""
-    if tier.provider not in (Provider.VLLM, Provider.OPENAI, Provider.AZURE):
+def _build_pretranslation(tier: Tier) -> Any:
+    """Build the provider-native async client used by translation adapters."""
+    if tier.provider not in (
+        Provider.VLLM,
+        Provider.OPENAI,
+        Provider.AZURE,
+        Provider.GEMINI,
+    ):
         raise ValueError(
             f"provider {tier.provider} is not an OpenAI-compatible raw client; "
-            "anthropic/gemini/translategemma are not valid for a PRE_TRANSLATION step"
+            "anthropic/translategemma are built by their dedicated paths"
         )
+    if tier.provider is Provider.GEMINI:
+        from google import genai
+
+        api_key = _key(tier) or get_config_value("GOOGLE_API_KEY")
+        return genai.Client(api_key=api_key).aio
     if tier.provider is Provider.AZURE:
         endpoint = tier.endpoint
         api_key = _key(tier)
@@ -281,7 +291,7 @@ def tier_client_kind(step_client_kind: StepClientKind, tier: Tier) -> StepClient
     Every step uses its single fixed kind EXCEPT POST_TRANSLATION, whose chain is
     mixed-provider: the TranslateGemma primary builds as an aiohttp
     text-completion :class:`TGDescriptor`, while a cross-provider LLM overflow tier
-    (openai/vllm/azure) builds as a raw :class:`AsyncOpenAI` client. The step
+    (openai/vllm/azure/anthropic/gemini) builds as a provider-native async client. The step
     client kind for POST_TRANSLATION is ``TRANSLATEGEMMA`` (the primary's kind), so
     only a NON-TranslateGemma tier under that step is redirected to ``PRE_TRANSLATION``."""
     if step_client_kind is StepClientKind.TRANSLATEGEMMA and tier.provider is not Provider.TRANSLATEGEMMA:

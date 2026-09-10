@@ -297,6 +297,28 @@ async def test_unary_transforms_tg_and_llm_match(monkeypatch):
     assert tg == llm == "ગાભણ."
 
 
+@pytest.mark.asyncio
+async def test_posttranslation_uses_anthropic_and_gemini_protocols(monkeypatch):
+    monkeypatch.setattr(tr, "_get_langfuse", lambda: None)
+
+    class AnthropicMessages:
+        async def create(self, **_kwargs):
+            return types.SimpleNamespace(content=[
+                types.SimpleNamespace(type="text", text="ગર્ભવતી।")
+            ])
+
+    class GeminiModels:
+        async def generate_content(self, **_kwargs):
+            return types.SimpleNamespace(text="ગર્ભવતી।")
+
+    anthropic = types.SimpleNamespace(messages=AnthropicMessages())
+    gemini = types.SimpleNamespace(models=GeminiModels())
+    args = ("model", "instruction", "english", "gujarati", "src", 0.0, 2048)
+
+    assert await tr._llm_translation_unary(anthropic, *args, provider="anthropic") == "ગાભણ."
+    assert await tr._llm_translation_unary(gemini, *args, provider="gemini") == "ગાભણ."
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # 3. Instruction carries glossary + GU rules + length rule (shared by both tiers)
 # ══════════════════════════════════════════════════════════════════════════════

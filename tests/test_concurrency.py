@@ -7,7 +7,7 @@ The bar these pin:
       tier is moved BEHIND the managed tier; below-threshold leaves order
       unchanged; the chain is never emptied and no tier is dropped.
   (b) fail-open — unreadable metrics (gauge ``None``) leave order unchanged (NOT a
-      forced flip to managed); a step without a configured gate or vLLM candidate
+      forced flip to managed); a step without a configured gate or vLLM primary
       is untouched.
   (c) the metrics scrape sums ``num_requests_running + num_requests_waiting`` and
       is Redis-cached; a fetch failure -> ``None`` (the fail-open signal).
@@ -148,9 +148,12 @@ def test_step_without_gate_untouched(gauge_on):
     assert out is tiers
 
 
-def test_gate_without_vllm_candidate_is_identity(gauge_on):
-    _inject_gauge(gauge_on, 99)
-    tiers = [Tier(provider=Provider.ANTHROPIC, model="claude")]
+def test_gate_does_not_measure_vllm_fallback(monkeypatch):
+    async def _unexpected(_url):
+        raise AssertionError("managed primary must not read a vLLM gauge")
+
+    monkeypatch.setattr(concurrency, "get_concurrency", _unexpected)
+    tiers = [_managed_tier(), _oss_tier()]
     out = asyncio.run(
         concurrency.reprioritize_by_load(Step.AGENT, tiers, _gate_with_overflow(10))
     )

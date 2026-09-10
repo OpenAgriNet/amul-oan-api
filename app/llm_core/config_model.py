@@ -199,14 +199,22 @@ class PipelineConfig(BaseModel):
             return StepPlan((configured.tiers[0],), None)
         tiers = tuple(configured.tiers)
         gate = configured.triggers.concurrency_gate
-        if not any(tier.provider is Provider.VLLM for tier in tiers):
+        # The gauge describes the selected vLLM primary. A vLLM tier that is only
+        # reachable after a healthy managed primary must not reorder that primary.
+        if tiers[0].provider is not Provider.VLLM:
             gate = None
         return StepPlan(
             tiers,
             gate,
         )
 
-    def effective_capabilities(self, profile: NamedProfile) -> ProfileCapabilities:
+    def effective_capabilities(
+        self,
+        profile: NamedProfile,
+        *,
+        history_default_tokens: int = 80_000,
+        history_vllm_gemma_tokens: int = 10_000,
+    ) -> ProfileCapabilities:
         """Resolve application policy once from the active agent plan + overrides."""
         plan = self.step_plan(profile, Step.AGENT)
         if plan is None:
@@ -222,8 +230,8 @@ class PipelineConfig(BaseModel):
             history_max_tokens=(
                 configured.history_max_tokens
                 if configured is not None and configured.history_max_tokens is not None
-                else 10_000
+                else history_vllm_gemma_tokens
                 if any("gemma" in tier.model.lower() for tier in is_vllm)
-                else 80_000
+                else history_default_tokens
             ),
         )

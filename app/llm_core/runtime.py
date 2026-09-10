@@ -42,7 +42,9 @@ def _load_from_yaml(path: str) -> PipelineConfig:
 # Providers with a concrete pretranslation protocol adapter.
 _AGENT_OK = {"vllm", "openai", "azure-openai", "anthropic", "gemini"}
 _PRETRANSLATION_OK = {"vllm", "openai", "azure-openai", "anthropic"}
-_POST_TRANSLATION_OK = {"vllm", "openai", "azure-openai", "translategemma"}
+_POST_TRANSLATION_OK = {
+    "vllm", "openai", "azure-openai", "anthropic", "gemini", "translategemma"
+}
 
 
 def validate_config(pipeline: PipelineConfig) -> None:
@@ -113,6 +115,35 @@ def _truthy_env(name: str) -> bool:
     return v is not None and v.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _positive_int_env(name: str, default: int) -> int:
+    raw = get_config_value(name)
+    try:
+        value = int(raw) if raw is not None and raw.strip() else default
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
+def normalize_config(pipeline: PipelineConfig) -> PipelineConfig:
+    """Resolve plan-wide capabilities once for every config ingress."""
+    history_override = _positive_int_env("CHAT_HISTORY_MAX_TOKENS", 0)
+    history_default = history_override or 80_000
+    gemma_default = history_override or _positive_int_env(
+        "CHAT_HISTORY_MAX_TOKENS_VLLM_GEMMA", 10_000
+    )
+    profiles = [
+        profile.model_copy(update={
+            "capabilities": pipeline.effective_capabilities(
+                profile,
+                history_default_tokens=history_default,
+                history_vllm_gemma_tokens=gemma_default,
+            )
+        })
+        for profile in pipeline.profiles
+    ]
+    return pipeline.model_copy(update={"profiles": profiles})
+
+
 class BootRefused(RuntimeError):
     """Intentional hard-gate boot failure (e.g. REQUIRE_OVERFLOW_ARMED with overflow
     DISARMED). The startup call site re-raises this instead of swallowing it."""
@@ -171,6 +202,7 @@ def configure() -> PipelineConfig:
                 "llm_core: synthesized pipeline config from env (profiles=%s)",
                 [f"{p.name}:{p.weight}" for p in candidate.profiles],
             )
+        candidate = normalize_config(candidate)
         validate_content(candidate)
     except Exception as exc:
         raise BootRefused(f"llm_core boot config rejected: {exc}") from exc

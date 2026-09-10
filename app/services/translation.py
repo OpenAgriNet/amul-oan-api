@@ -8,7 +8,7 @@ TranslateGemma 27B base model deployed on vLLM.
 import json
 import re
 import aiohttp
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar
 from pathlib import Path
 from typing import Literal, Optional
@@ -742,63 +742,77 @@ async def _translategemma_stream(descriptor, prompt, source_lang, target_lang, t
         observation.update(output="".join(translated_parts))
 
 
-async def _llm_translation_stream(client, model_name, instruction, source_lang, target_lang, text, temperature, max_tokens):
-    """Cross-provider overflow: a managed chat LLM does en->target translation with
-    the SAME instruction (glossary + rules), piping each ``delta.content`` through the
-    SAME per-chunk transforms. Mirrors the TG observation for parity."""
-    langfuse = _get_langfuse()
-
-    if not langfuse:
-        stream = await client.chat.completions.create(
+async def _raw_llm_translation_stream(
+    client, provider, model_name, instruction, temperature, max_tokens
+):
+    if provider == "anthropic":
+        async with client.messages.stream(
             model=model_name,
             messages=[{"role": "user", "content": instruction}],
             temperature=temperature,
-            max_completion_tokens=max_tokens,
-            stream=True,
-        )
-        async for chunk in stream:
-            if not getattr(chunk, "choices", None):
-                continue
-            content = getattr(chunk.choices[0].delta, "content", None) or ""
-            if content:
-                content = _fix_dandas(content, target_lang)
-                content = _post_normalize_gu_translation(content, target_lang, strip_outer=False)
+            max_tokens=max_tokens,
+        ) as stream:
+            async for content in stream.text_stream:
                 yield content
         return
-
-    translated_parts: list[str] = []
-    with langfuse.start_as_current_observation(
-        name="stream_translation",
-        as_type="generation",
-        input={
-            "source_lang": source_lang,
-            "target_lang": target_lang,
-            "text": text,
-        },
-        model=model_name,
-        metadata={
-            "translation_provider": "llm-fallback",
-            "stream": "true",
-            "pipeline_stage": "stream_translation",
-        },
-    ) as observation:
-        stream = await client.chat.completions.create(
+    if provider == "gemini":
+        stream = await client.models.generate_content_stream(
             model=model_name,
-            messages=[{"role": "user", "content": instruction}],
-            temperature=temperature,
-            max_completion_tokens=max_tokens,
-            stream=True,
+            contents=instruction,
+            config={"temperature": temperature, "max_output_tokens": max_tokens},
         )
         async for chunk in stream:
-            if not getattr(chunk, "choices", None):
+            yield getattr(chunk, "text", None) or ""
+        return
+    stream = await client.chat.completions.create(
+        model=model_name,
+        messages=[{"role": "user", "content": instruction}],
+        temperature=temperature,
+        max_completion_tokens=max_tokens,
+        stream=True,
+    )
+    async for chunk in stream:
+        if getattr(chunk, "choices", None):
+            yield getattr(chunk.choices[0].delta, "content", None) or ""
+
+
+async def _llm_translation_stream(
+    client, model_name, instruction, source_lang, target_lang, text, temperature,
+    max_tokens, *, provider="openai",
+):
+    """Translate through a provider-native LLM client, preserving transforms."""
+    langfuse = _get_langfuse()
+    observation = (
+        langfuse.start_as_current_observation(
+            name="stream_translation",
+            as_type="generation",
+            input={
+                "source_lang": source_lang,
+                "target_lang": target_lang,
+                "text": text,
+            },
+            model=model_name,
+            metadata={
+                "translation_provider": provider,
+                "stream": "true",
+                "pipeline_stage": "stream_translation",
+            },
+        )
+        if langfuse else nullcontext()
+    )
+    translated_parts: list[str] = []
+    with observation as span:
+        async for content in _raw_llm_translation_stream(
+            client, provider, model_name, instruction, temperature, max_tokens
+        ):
+            if not content:
                 continue
-            content = getattr(chunk.choices[0].delta, "content", None) or ""
-            if content:
-                content = _fix_dandas(content, target_lang)
-                content = _post_normalize_gu_translation(content, target_lang, strip_outer=False)
-                translated_parts.append(content)
-                yield content
-        observation.update(output="".join(translated_parts))
+            content = _fix_dandas(content, target_lang)
+            content = _post_normalize_gu_translation(content, target_lang, strip_outer=False)
+            translated_parts.append(content)
+            yield content
+        if span is not None:
+            span.update(output="".join(translated_parts))
 
 
 async def _translategemma_unary(descriptor, prompt, source_lang, target_lang, text, temperature, max_tokens):
@@ -871,49 +885,68 @@ async def _translategemma_unary(descriptor, prompt, source_lang, target_lang, te
                 return translated_text
 
 
-async def _llm_translation_unary(client, model_name, instruction, source_lang, target_lang, text, temperature, max_tokens):
-    """Cross-provider overflow (non-stream): chat.completions with the SAME
-    instruction, reading ``choices[0].message.content`` and applying the SAME
-    transforms."""
-    langfuse = _get_langfuse()
-
-    if not langfuse:
-        response = await client.chat.completions.create(
+async def _raw_llm_translation_unary(
+    client, provider, model_name, instruction, temperature, max_tokens
+):
+    if provider == "anthropic":
+        response = await client.messages.create(
             model=model_name,
             messages=[{"role": "user", "content": instruction}],
             temperature=temperature,
-            max_completion_tokens=max_tokens,
+            max_tokens=max_tokens,
         )
-        translated_text = (response.choices[0].message.content or "").strip()
-        translated_text = _fix_dandas(translated_text, target_lang)
-        translated_text = _post_normalize_gu_translation(translated_text, target_lang)
-        logger.info(f"Translation successful ({len(text)} -> {len(translated_text)} chars)")
-        return translated_text
-
-    with langfuse.start_as_current_observation(
-        name="text_translation",
-        as_type="generation",
-        input={
-            "source_lang": source_lang,
-            "target_lang": target_lang,
-            "text": text,
-        },
+        return "".join(
+            block.text for block in response.content
+            if getattr(block, "type", None) == "text" and getattr(block, "text", None)
+        )
+    if provider == "gemini":
+        response = await client.models.generate_content(
+            model=model_name,
+            contents=instruction,
+            config={"temperature": temperature, "max_output_tokens": max_tokens},
+        )
+        return getattr(response, "text", None) or ""
+    response = await client.chat.completions.create(
         model=model_name,
-        metadata={
-            "translation_provider": "llm-fallback",
-            "pipeline_stage": "text_translation",
-        },
-    ) as observation:
-        response = await client.chat.completions.create(
+        messages=[{"role": "user", "content": instruction}],
+        temperature=temperature,
+        max_completion_tokens=max_tokens,
+    )
+    return response.choices[0].message.content or ""
+
+
+async def _llm_translation_unary(
+    client, model_name, instruction, source_lang, target_lang, text, temperature,
+    max_tokens, *, provider="openai",
+):
+    """Translate once through a provider-native LLM client."""
+    langfuse = _get_langfuse()
+    observation = (
+        langfuse.start_as_current_observation(
+            name="text_translation",
+            as_type="generation",
+            input={
+                "source_lang": source_lang,
+                "target_lang": target_lang,
+                "text": text,
+            },
             model=model_name,
-            messages=[{"role": "user", "content": instruction}],
-            temperature=temperature,
-            max_completion_tokens=max_tokens,
+            metadata={
+                "translation_provider": provider,
+                "pipeline_stage": "text_translation",
+            },
         )
-        translated_text = (response.choices[0].message.content or "").strip()
+        if langfuse else nullcontext()
+    )
+    with observation as span:
+        translated_text = await _raw_llm_translation_unary(
+            client, provider, model_name, instruction, temperature, max_tokens
+        )
+        translated_text = translated_text.strip()
         translated_text = _fix_dandas(translated_text, target_lang)
         translated_text = _post_normalize_gu_translation(translated_text, target_lang)
-        observation.update(output=translated_text)
+        if span is not None:
+            span.update(output=translated_text)
         logger.info(f"Translation successful ({len(text)} -> {len(translated_text)} chars)")
         return translated_text
 
@@ -962,7 +995,8 @@ async def translate_text(
                 tier.handle, tg_prompt, source_lang, target_lang, text, temperature, max_tokens
             )
         return await _llm_translation_unary(
-            tier.handle, tier.model_name, instruction, source_lang, target_lang, text, temperature, max_tokens
+            tier.handle, tier.model_name, instruction, source_lang, target_lang, text,
+            temperature, max_tokens, provider=tier.provider,
         )
 
     execution = execution or await llm_core.context("-")
@@ -1153,7 +1187,8 @@ async def translate_text_stream_fast(
                 tier.handle, tg_prompt, source_lang, target_lang, text, temperature, max_tokens
             )
         return _llm_translation_stream(
-            tier.handle, tier.model_name, instruction, source_lang, target_lang, text, temperature, max_tokens
+            tier.handle, tier.model_name, instruction, source_lang, target_lang, text,
+            temperature, max_tokens, provider=tier.provider,
         )
 
     try:

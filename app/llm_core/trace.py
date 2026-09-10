@@ -1,4 +1,4 @@
-"""Per-turn pipeline-trace recorder — the RESOLVED config + routing decisions of
+"""Per-turn pipeline-trace recorder — the resolved config and served routes of
 one turn, surfaced on the Langfuse trace as a handful of COMPACT flat metadata
 keys.
 
@@ -14,10 +14,8 @@ dict it already hands to ``propagate_attributes`` / ``VoiceTrace.metadata``. The
 COMPLETE static config is logged once at boot by :func:`log_full_config`
 (``grep llm_core.full_config``).
 
-The ``pt`` instance is threaded EXPLICITLY (not read from the ContextVar at the
-emit site): the ContextVar does not survive Starlette's StreamingResponse
-async-generator boundary. The ContextVar is kept only for the best-effort deep
-recorders (health/concurrency/served-tier) that mutate ``pt`` mid-turn.
+The ``pt`` instance is threaded explicitly because the ContextVar does not
+survive Starlette's StreamingResponse async-generator boundary.
 
 SECRETS: records endpoints (already in logs), providers, model names and timeouts
 — and the *name* of a tier's api-key env var, never its value. It never reads or
@@ -53,8 +51,6 @@ class StepRecord:
     tier_chain: list[dict] = field(default_factory=list)  # ordered, primary-first
     tier_served_route: Optional[str] = None  # provider:model plus optional config label
     tier_served_index: Optional[int] = None  # 0 = primary, 1 = first fallback, ...
-    health: Optional[dict] = None        # {"pruned": [...], "breaker_states": {...}}
-    concurrency: Optional[dict] = None   # {"gauge", "max_concurrency", "deprioritized", ...}
 
     def to_dict(self) -> dict:
         served = None
@@ -63,12 +59,7 @@ class StepRecord:
                 "route": self.tier_served_route,
                 "index": self.tier_served_index,
             }
-        triggers: dict = {}
-        if self.health is not None:
-            triggers["health"] = self.health
-        if self.concurrency is not None:
-            triggers["concurrency"] = self.concurrency
-        out: dict = {
+        return {
             "provider": self.provider,
             "model": self.model,
             "endpoint": self.endpoint,
@@ -76,15 +67,11 @@ class StepRecord:
             "tier_served": served,
             "chain": self.tier_chain,
         }
-        if triggers:
-            out["triggers"] = triggers
-        return out
 
 
 @dataclass
 class PipelineTrace:
-    """Accumulates one turn's resolved profile, per-step tiers and trigger
-    outcomes. Built by :func:`begin`; drained by :meth:`to_metadata`."""
+    """Accumulates one turn's resolved profile, tiers, and served routes."""
 
     profile_name: Optional[str] = None
     profile_weight: Optional[int] = None
@@ -92,8 +79,7 @@ class PipelineTrace:
     flags: dict = field(default_factory=dict)
 
     def step(self, name: str) -> StepRecord:
-        """Get-or-create the record for a step (health/concurrency may touch it
-        before the resolved chain is recorded)."""
+        """Get or create the record for a step."""
         rec = self.steps.get(name)
         if rec is None:
             rec = StepRecord(step=name)
@@ -161,11 +147,8 @@ def record_profile(name: str, weight: Optional[int]) -> None:
 # ── EXPLICIT-instance API (contextvar-independent) ────────────────────────────
 # The ContextVar does NOT survive Starlette's StreamingResponse async-generator
 # consumption (each __anext__ step can run under a different context snapshot), so
-# an ``emit_to_trace()`` that read the contextvar got a fresh EMPTY PipelineTrace.
-# The request path therefore holds the ``pt`` returned by ``begin()`` and threads
-# it explicitly: populate the static must-have fields on it here, and pass it to
-# ``emit_to_trace(pt)``. Deep trigger/served recording via the contextvar stays
-# best-effort on top.
+# the request path holds the ``pt`` returned by ``begin()`` and threads it
+# explicitly to the final served-route recorder.
 def set_profile(pt: Optional[PipelineTrace], name: str, weight: Optional[int]) -> None:
     if pt is None:
         return
@@ -176,8 +159,7 @@ def set_profile(pt: Optional[PipelineTrace], name: str, weight: Optional[int]) -
 def set_step_primary(pt: Optional[PipelineTrace], step: Any, tier: Any) -> None:
     """Set a step's PRIMARY resolved tier (provider/model/endpoint/timeout) on an
     explicit trace from an execution target. Independent of the contextvar.
-    Preserves any served/trigger fields a deep recorder may have
-    already set on the same step."""
+    Preserves a served route already set on the same step."""
     if pt is None or tier is None:
         return
     name = getattr(step, "value", step)
@@ -237,40 +219,6 @@ def record_served(
     rec = pt.step(name)
     rec.tier_served_route = route
     rec.tier_served_index = index
-
-
-def record_health_prune(step: Any, pruned: list, breaker_states: dict) -> None:
-    """Health-filter outcome for a step: the endpoints pruned (breaker ``open``)
-    and the breaker state consulted per endpoint. Best-effort — mutates ``pt`` on
-    the current turn's context; the data surfaces via the compact metadata keys."""
-    pt = _CTX.get()
-    if pt is None:
-        return
-    name = getattr(step, "value", step)
-    pt.step(name).health = {"pruned": list(pruned), "breaker_states": dict(breaker_states)}
-
-
-def record_concurrency(
-    step: Any,
-    *,
-    gauge: Optional[int],
-    max_concurrency: Optional[int],
-    deprioritized: bool,
-    metrics_url: Optional[str],
-) -> None:
-    """Concurrency-gauge outcome for a step: the gauge read, the threshold, and
-    whether the vLLM tier was deprioritized. Best-effort — mutates ``pt`` on the
-    current turn's context; the data surfaces via the compact metadata keys."""
-    pt = _CTX.get()
-    if pt is None:
-        return
-    name = getattr(step, "value", step)
-    pt.step(name).concurrency = {
-        "gauge": gauge,
-        "max_concurrency": max_concurrency,
-        "deprioritized": bool(deprioritized),
-        "metrics_url": metrics_url,
-    }
 
 
 # ── compact trace-metadata keys (the path that actually lands) ────────────────

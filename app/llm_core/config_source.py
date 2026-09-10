@@ -243,6 +243,7 @@ def _try_load():
     # calling ONLY it here keeps this module byte-identical across chat and voice.
     try:
         from app.llm_core import runtime
+        cfg = runtime.normalize_config(cfg)
         runtime.validate_content(cfg)
     except Exception as e:  # invalid active content -> fail-closed; keep last-good
         _warn("pipeline config: content-invalid live config at %s (%s); keeping last-good", k, e)

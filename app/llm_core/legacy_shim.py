@@ -28,7 +28,6 @@ from app.llm_core.config_model import (
     NamedProfile,
     PipelineConfig,
     Provider,
-    ProfileCapabilities,
     Step,
     StepConfig,
     Tier,
@@ -98,6 +97,8 @@ def _pretranslation_model_default(provider: str) -> str:
         return _env("ANTHROPIC_PRETRANSLATION_MODEL", "claude-haiku-4-5") or "claude-haiku-4-5"
     if provider == "vllm":
         return _env("LLM_MODEL_NAME", "gemma-4-31b-it") or "gemma-4-31b-it"
+    if provider == "azure-openai":
+        return _env("AZURE_OPENAI_DEPLOYMENT_NAME", "gpt-4.1-mini") or "gpt-4.1-mini"
     return "gpt-4.1-mini"
 
 
@@ -113,6 +114,22 @@ def _managed_pretranslation_tier(timeout_ms: int) -> Tier:
         return Tier(provider=Provider.ANTHROPIC, model=model,
                     api_key_env="ANTHROPIC_API_KEY", timeout_ms=timeout_ms,
                     admission=AdmissionPolicy.MANAGED, label="managed-pretranslation")
+    if provider == "azure-openai":
+        return Tier(
+            provider=Provider.AZURE,
+            model=model,
+            endpoint=_env("AZURE_OPENAI_ENDPOINT"),
+            api_key_env="AZURE_OPENAI_API_KEY",
+            api_version=_env("AZURE_OPENAI_API_VERSION"),
+            timeout_ms=timeout_ms,
+            admission=AdmissionPolicy.MANAGED,
+            label="managed-pretranslation",
+        )
+    if provider != "openai":
+        raise ValueError(
+            f"PRETRANSLATION_PROVIDER={provider!r} is unsupported; expected "
+            "openai, azure-openai, anthropic, or vllm"
+        )
     return Tier(provider=Provider.OPENAI, model=model, endpoint=None,
                 api_key_env="OPENAI_API_KEY", timeout_ms=timeout_ms,
                 admission=AdmissionPolicy.MANAGED, label="managed-pretranslation")
@@ -162,26 +179,28 @@ def _post_translation_tiers(fallback_enabled: bool) -> list[Tier]:
     if not fallback_enabled:
         return [tg]
 
-    # Post-translation requires an OpenAI-compatible raw client. Keep the old
-    # provider when it is compatible, but let deployments select it independently
-    # from the agent. For Anthropic/Gemini, omit the optional overflow unless a
-    # compatible provider is explicitly configured.
+    # Keep same-provider deployments on their configured agent model. A provider
+    # switch gets that provider's default unless the operator names a model.
     agent_provider = (_env("LLM_PROVIDER", "openai") or "openai").lower()
     configured_provider = _env("POST_TRANSLATION_LLM_PROVIDER")
-    if configured_provider is None and agent_provider not in {"openai", "azure-openai", "vllm"}:
-        return [tg]
     provider = (configured_provider or agent_provider).lower()
-    if provider not in {"openai", "azure-openai", "vllm"}:
+    if provider not in {"openai", "azure-openai", "vllm", "anthropic", "gemini"}:
         raise ValueError(
-            "POST_TRANSLATION_LLM_PROVIDER must be openai, azure-openai, or vllm "
+            "POST_TRANSLATION_LLM_PROVIDER must be openai, azure-openai, vllm, "
+            "anthropic, or gemini "
             f"when fallback is enabled; got {provider!r}"
         )
     llm_ms = _int_env("FALLBACK_POST_TRANSLATION_LLM_TIMEOUT_MS", 30000)
     model_override = _env("POST_TRANSLATION_LLM_MODEL")
+    same_provider_model = (
+        _env("AZURE_OPENAI_DEPLOYMENT_NAME", _env("LLM_MODEL_NAME", "gpt-4.1"))
+        if agent_provider == "azure-openai"
+        else _env("LLM_MODEL_NAME")
+    ) if provider == agent_provider else None
     if provider == "vllm":
         fallback = Tier(
             provider=Provider.VLLM,
-            model=model_override or "gemma-4-31b-it",
+            model=model_override or same_provider_model or "gemma-4-31b-it",
             endpoint=_env("INFERENCE_ENDPOINT_URL"),
             api_key_env="INFERENCE_API_KEY",
             timeout_ms=llm_ms,
@@ -190,7 +209,7 @@ def _post_translation_tiers(fallback_enabled: bool) -> list[Tier]:
     elif provider == "azure-openai":
         fallback = Tier(
             provider=Provider.AZURE,
-            model=model_override or _env("AZURE_OPENAI_DEPLOYMENT_NAME", "gpt-4.1") or "gpt-4.1",
+            model=model_override or same_provider_model or _env("AZURE_OPENAI_DEPLOYMENT_NAME", "gpt-4.1") or "gpt-4.1",
             endpoint=_env("AZURE_OPENAI_ENDPOINT"),
             api_key_env="AZURE_OPENAI_API_KEY",
             api_version=_env("AZURE_OPENAI_API_VERSION"),
@@ -198,10 +217,28 @@ def _post_translation_tiers(fallback_enabled: bool) -> list[Tier]:
             admission=AdmissionPolicy.MANAGED,
             label="llm-fallback",
         )
+    elif provider == "anthropic":
+        fallback = Tier(
+            provider=Provider.ANTHROPIC,
+            model=model_override or same_provider_model or "claude-haiku-4-5",
+            api_key_env="ANTHROPIC_API_KEY",
+            timeout_ms=llm_ms,
+            admission=AdmissionPolicy.MANAGED,
+            label="llm-fallback",
+        )
+    elif provider == "gemini":
+        fallback = Tier(
+            provider=Provider.GEMINI,
+            model=model_override or same_provider_model or "gemini-2.5-flash",
+            api_key_env="GEMINI_API_KEY",
+            timeout_ms=llm_ms,
+            admission=AdmissionPolicy.MANAGED,
+            label="llm-fallback",
+        )
     else:
         fallback = Tier(
             provider=Provider.OPENAI,
-            model=model_override or "gpt-4.1",
+            model=model_override or same_provider_model or "gpt-4.1",
             api_key_env="OPENAI_API_KEY",
             timeout_ms=llm_ms,
             admission=AdmissionPolicy.MANAGED,
@@ -220,25 +257,15 @@ def _agent_concurrency_gate() -> ConcurrencyGate | None:
     ``AGENT_CONCURRENCY_METRICS_URL`` (the vLLM Prometheus ``/metrics``, e.g.
     ``http://10.185.25.197:8020/metrics``) arms the gate; ``CONCURRENCY_MAX`` (or
     10) is the in-flight threshold. Unset -> ``None`` -> the gauge is a harmless
-    no-op. Never derived by stripping ``/v1`` off the inference endpoint (plan §2)."""
+    no-op. ``CONCURRENCY_GAUGE_ENABLED=false`` remains the legacy kill switch.
+    Never derived by stripping ``/v1`` off the inference endpoint (plan §2)."""
+    enabled = (_env("CONCURRENCY_GAUGE_ENABLED", "true") or "true").strip().lower()
+    if enabled not in {"1", "true", "yes", "on"}:
+        return None
     metrics_url = _env("AGENT_CONCURRENCY_METRICS_URL")
     if not metrics_url:
         return None
     return ConcurrencyGate(metrics_url=metrics_url, max_concurrency=_int_env("CONCURRENCY_MAX", 10))
-
-
-def _capabilities(agent_tier: Tier) -> ProfileCapabilities:
-    override = _env("CHAT_HISTORY_MAX_TOKENS")
-    if override and override.isdigit():
-        history_max_tokens = int(override)
-    elif agent_tier.provider is Provider.VLLM and "gemma" in agent_tier.model.lower():
-        history_max_tokens = _int_env("CHAT_HISTORY_MAX_TOKENS_VLLM_GEMMA", 10_000)
-    else:
-        history_max_tokens = 80_000
-    return ProfileCapabilities(
-        requires_translation=agent_tier.provider is Provider.VLLM,
-        history_max_tokens=history_max_tokens,
-    )
 
 
 def synthesize_from_env() -> PipelineConfig:
@@ -270,7 +297,6 @@ def synthesize_from_env() -> PipelineConfig:
         managed = NamedProfile(
             name="managed",
             weight=100,
-            capabilities=_capabilities(managed_agent),
             steps=managed_steps(),
         )
         return PipelineConfig(
@@ -295,13 +321,11 @@ def synthesize_from_env() -> PipelineConfig:
     oss_profile = NamedProfile(
         name="oss",
         weight=pct,
-        capabilities=_capabilities(oss_steps[Step.AGENT].tiers[0]),
         steps=oss_steps,
     )
     managed_profile = NamedProfile(
         name="managed",
         weight=100 - pct,
-        capabilities=_capabilities(managed_agent),
         steps=managed_steps(),
     )
     return PipelineConfig(

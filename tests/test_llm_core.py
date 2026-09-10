@@ -121,6 +121,16 @@ def test_factory_builds_anthropic_pretranslation_client(monkeypatch):
     assert type(build_handle(tier, StepClientKind.PRE_TRANSLATION)).__name__ == "AsyncAnthropic"
 
 
+def test_factory_builds_gemini_translation_client(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    tier = Tier(
+        provider=Provider.GEMINI,
+        model="gemini-2.5-flash",
+        api_key_env="GEMINI_API_KEY",
+    )
+    assert hasattr(build_handle(tier, StepClientKind.PRE_TRANSLATION), "models")
+
+
 def test_factory_rejects_translategemma_for_agent():
     tier = Tier(provider=Provider.TRANSLATEGEMMA, model="tg", endpoint="http://x/v1")
     with pytest.raises(ValueError):
@@ -182,6 +192,20 @@ def test_shim_pretranslation_and_post_translation(monkeypatch):
     assert post.provider is Provider.TRANSLATEGEMMA
     assert post.endpoint == "http://localhost:18002/v1"
     assert post.model == "translategemma-27b-base"
+
+
+def test_shim_builds_azure_pretranslation_and_rejects_gemini(monkeypatch):
+    monkeypatch.delenv("OSS_INFERENCE_ENDPOINT_URL", raising=False)
+    monkeypatch.setenv("LLM_PROVIDER", "azure-openai")
+    monkeypatch.setenv("AZURE_OPENAI_DEPLOYMENT_NAME", "custom-deployment")
+    monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", "https://azure.example")
+    monkeypatch.setenv("AZURE_OPENAI_API_VERSION", "2025-01-01")
+    pre = synthesize_from_env().by_name("managed").steps[Step.PRE_TRANSLATION].tiers[0]
+    assert (pre.provider, pre.model) == (Provider.AZURE, "custom-deployment")
+
+    monkeypatch.setenv("LLM_PROVIDER", "gemini")
+    with pytest.raises(ValueError, match="PRETRANSLATION_PROVIDER='gemini'"):
+        synthesize_from_env()
 
 
 def test_shim_post_translation_tg_ttft_deadline(monkeypatch):
@@ -314,6 +338,15 @@ def test_no_concurrency_gate_without_env(monkeypatch):
     assert oss.steps[Step.AGENT].triggers.concurrency_gate is None
 
 
+def test_legacy_concurrency_kill_switch_disables_gate(monkeypatch):
+    monkeypatch.setenv("OSS_INFERENCE_ENDPOINT_URL", "http://oss:8020/v1")
+    monkeypatch.setenv("AGENT_CONCURRENCY_METRICS_URL", "http://oss:8020/metrics")
+    monkeypatch.setenv("CONCURRENCY_GAUGE_ENABLED", "false")
+
+    oss = synthesize_from_env().by_name("oss")
+    assert oss.steps[Step.AGENT].triggers.concurrency_gate is None
+
+
 def test_omitted_capabilities_preserve_vllm_gemma_behavior():
     from app.llm_core.config_model import NamedProfile, PipelineConfig, StepConfig
     from app.llm_core.execution import ExecutionContext
@@ -329,6 +362,24 @@ def test_omitted_capabilities_preserve_vllm_gemma_behavior():
     capabilities = ExecutionContext("s", cfg, "old-yaml").capabilities
     assert capabilities.requires_translation is True
     assert capabilities.history_max_tokens == 10_000
+
+
+def test_config_ingress_applies_plan_wide_history_defaults(monkeypatch):
+    from app.llm_core.config_model import NamedProfile, PipelineConfig, StepConfig
+
+    cfg = PipelineConfig(profiles=[NamedProfile(name="mixed", weight=100, steps={
+        Step.AGENT: StepConfig(tiers=[
+            Tier(provider=Provider.OPENAI, model="gpt"),
+            Tier(provider=Provider.VLLM, model="gemma-custom", endpoint="http://oss/v1"),
+        ])
+    })], fallback_enabled=True)
+    monkeypatch.setenv("CHAT_HISTORY_MAX_TOKENS_VLLM_GEMMA", "7777")
+    normalized = runtime.normalize_config(cfg)
+    assert normalized.by_name("mixed").capabilities.history_max_tokens == 7777
+
+    monkeypatch.setenv("CHAT_HISTORY_MAX_TOKENS", "12345")
+    normalized = runtime.normalize_config(cfg)
+    assert normalized.by_name("mixed").capabilities.history_max_tokens == 12345
 
 
 def test_partial_capabilities_merge_with_reachable_overflow():
@@ -359,6 +410,7 @@ def test_partial_capabilities_merge_with_reachable_overflow():
     capabilities = ExecutionContext("s", cfg, "mixed").capabilities
     assert capabilities.requires_translation is True
     assert capabilities.history_max_tokens == 20_000
+    assert cfg.step_plan(cfg.by_name("mixed"), Step.AGENT).concurrency_gate is None
 
     inactive = cfg.model_copy(update={
         "fallback_enabled": False,
@@ -373,7 +425,7 @@ def test_partial_capabilities_merge_with_reachable_overflow():
     })]})
     capabilities = ExecutionContext("s", cfg, "mixed").capabilities
     assert capabilities.requires_translation is False
-    assert capabilities.history_max_tokens == 10_000
+    assert capabilities.history_max_tokens == 80_000
 
 
 def test_admission_auto_preserves_managed_provider_policy():
@@ -423,25 +475,11 @@ def test_content_validation_checks_every_fallback_tier():
             )),
         )
     })], fallback_enabled=True)
-    with pytest.raises(ValueError, match="endpoint"):
-        runtime.validate_content(cfg)
-
-
-def test_validation_rejects_unsupported_posttranslation_provider():
-    from app.llm_core.config_model import NamedProfile, PipelineConfig, StepConfig
-
-    cfg = PipelineConfig(
-        profiles=[NamedProfile(name="managed", weight=100)],
-        defaults={Step.POST_TRANSLATION: StepConfig(tiers=[
-            Tier(provider=Provider.ANTHROPIC, model="claude-haiku")
-        ])},
-    )
-    with pytest.raises(ValueError, match="post-translation"):
-        runtime.validate_config(cfg)
+    runtime.validate_content(cfg)  # managed primary makes this gate unreachable
 
 
 @pytest.mark.parametrize("provider", ["anthropic", "gemini"])
-def test_agent_provider_does_not_set_posttranslation_protocol(monkeypatch, provider):
+def test_posttranslation_reuses_compatible_agent_model(monkeypatch, provider):
     monkeypatch.setenv("LLM_PROVIDER", provider)
     monkeypatch.setenv("LLM_MODEL_NAME", "agent-only-model")
     monkeypatch.setenv("FALLBACK_ENABLED", "false")
@@ -450,6 +488,8 @@ def test_agent_provider_does_not_set_posttranslation_protocol(monkeypatch, provi
     monkeypatch.setenv("GEMINI_API_KEY", "test-gemini-key")
     monkeypatch.delenv("OSS_INFERENCE_ENDPOINT_URL", raising=False)
     monkeypatch.delenv("PIPELINE_CONFIG_PATH", raising=False)
+    if provider == "gemini":
+        monkeypatch.setenv("PRETRANSLATION_PROVIDER", "openai")
     monkeypatch.setattr(runtime, "PIPELINE", None)
     monkeypatch.setattr(runtime, "BOOT_PIPELINE", None)
 
@@ -459,7 +499,9 @@ def test_agent_provider_does_not_set_posttranslation_protocol(monkeypatch, provi
 
     monkeypatch.setenv("FALLBACK_ENABLED", "true")
     post = runtime.configure().defaults[Step.POST_TRANSLATION].tiers
-    assert [tier.provider for tier in post] == [Provider.TRANSLATEGEMMA]
+    expected = Provider.ANTHROPIC if provider == "anthropic" else Provider.GEMINI
+    assert [tier.provider for tier in post] == [Provider.TRANSLATEGEMMA, expected]
+    assert post[1].model == "agent-only-model"
 
     monkeypatch.setenv("POST_TRANSLATION_LLM_PROVIDER", "openai")
     post = runtime.configure().defaults[Step.POST_TRANSLATION].tiers
@@ -468,18 +510,26 @@ def test_agent_provider_does_not_set_posttranslation_protocol(monkeypatch, provi
 
 
 @pytest.mark.parametrize(
-    ("provider", "expected"),
-    [("azure-openai", Provider.AZURE), ("vllm", Provider.VLLM)],
+    ("provider", "expected", "expected_model"),
+    [
+        ("azure-openai", Provider.AZURE, "custom-deployment"),
+        ("vllm", Provider.VLLM, "custom-agent"),
+    ],
 )
-def test_posttranslation_preserves_compatible_agent_provider(monkeypatch, provider, expected):
+def test_posttranslation_preserves_compatible_agent_provider(
+    monkeypatch, provider, expected, expected_model
+):
     monkeypatch.setenv("LLM_PROVIDER", provider)
+    monkeypatch.setenv("LLM_MODEL_NAME", "custom-agent")
     monkeypatch.setenv("FALLBACK_ENABLED", "true")
     monkeypatch.delenv("POST_TRANSLATION_LLM_PROVIDER", raising=False)
     monkeypatch.setenv("INFERENCE_ENDPOINT_URL", "http://vllm/v1")
     monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", "https://azure.example")
+    monkeypatch.setenv("AZURE_OPENAI_DEPLOYMENT_NAME", "custom-deployment")
     monkeypatch.setenv("AZURE_OPENAI_API_VERSION", "2025-01-01")
     post = synthesize_from_env().defaults[Step.POST_TRANSLATION].tiers
     assert post[1].provider is expected
+    assert post[1].model == expected_model
 
 
 def test_invalid_boot_config_is_not_published(monkeypatch, tmp_path):
