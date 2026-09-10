@@ -106,6 +106,14 @@ class TestPromptGuidance:
         assert "nearby market's price as the requested yard's price" in rendered.lower()
 
     @pytest.mark.parametrize("name", PROMPTS)
+    def test_nearest_local_guidance_omits_location_and_uses_profile(self, name):
+        rendered = self._render(name, True)
+        assert "Nearest / local to me" in rendered
+        assert "omit `location`" in rendered
+        assert "remembered place" in rendered.lower()
+        assert "profile district" in rendered.lower()
+
+    @pytest.mark.parametrize("name", PROMPTS)
     def test_it_says_not_to_ask_the_farmer_where_they_are(self, name):
         assert "do **not** ask the farmer where they are" in self._render(name, True).lower()
 

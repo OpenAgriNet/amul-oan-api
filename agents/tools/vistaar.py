@@ -254,14 +254,65 @@ def _deps(ctx: Optional[RunContext[FarmerContext]]) -> Optional[FarmerContext]:
     return getattr(ctx, "deps", None)
 
 
+# Phrases that mean "use my home/profile district", not the sticky place from an
+# earlier turn. Matched as substrings on the raw user query (casefold). Keep this
+# list tight: "near Anand" must NOT trip it — only first-person / nearest intent.
+_NEAREST_LOCAL_PHRASES = (
+    "nearest to me",
+    "closest to me",
+    "near me",
+    "my nearest",
+    "nearest apmc",
+    "nearest mandi",
+    "nearest yard",
+    "nearest market",
+    "closest apmc",
+    "closest mandi",
+    "closest yard",
+    "local apmc",
+    "local mandi",
+    "my local",
+)
+
+
+def _is_nearest_local_intent(query: Optional[str]) -> bool:
+    """True when the farmer is asking for nearest/local markets relative to them."""
+    text = (query or "").casefold()
+    if not text:
+        return False
+    return any(phrase in text for phrase in _NEAREST_LOCAL_PHRASES)
+
+
+async def _resolve_farmer_or_default(
+    deps: Optional[FarmerContext],
+) -> SearchLocation:
+    """Profile district if mapped; otherwise the Anand default."""
+    district = deps.get_farmer_district() if deps is not None else None
+    if district:
+        resolved = resolve_place(district)
+        if resolved is not None:
+            return SearchLocation(resolved, "farmer")
+        logger.warning("vistaar: unmapped farmer district=%r, using default", district)
+    return SearchLocation(DEFAULT_LOCATION, "default")
+
+
 async def _resolve_search_location(
-    ctx: Optional[RunContext[FarmerContext]], location: Optional[str]
+    ctx: Optional[RunContext[FarmerContext]],
+    location: Optional[str],
+    *,
+    prefer_farmer_profile: bool = False,
 ) -> tuple[Optional[SearchLocation], Optional[str]]:
     """Resolve where to search, most specific first.
 
-    Order: explicit argument → sticky session override → the farmer's own
-    district → the Anand default. Returns `(resolved, refusal)`; exactly one is
-    non-None.
+    Default order: explicit argument → sticky session override → the farmer's
+    own district → the Anand default.
+
+    When `prefer_farmer_profile` is True (nearest/local-to-me mandi asks with no
+    explicit location): explicit → farmer profile → sticky session → default.
+    Sticky is skipped only when a profile district is available, so "nearest to
+    me" after "prices in Anand" returns the farmer's district, not Anand.
+
+    Returns `(resolved, refusal)`; exactly one is non-None.
 
     Two rules that look like details and are not:
 
@@ -294,20 +345,18 @@ async def _resolve_search_location(
         await set_session_district_key(session_id, resolved.key)
         return SearchLocation(resolved, "explicit", requested_market), None
 
+    if prefer_farmer_profile:
+        farmer_where = await _resolve_farmer_or_default(deps)
+        if farmer_where.source == "farmer":
+            return farmer_where, None
+        # No usable profile district — fall through to sticky, then default
+        # (farmer_where is already the default; sticky may still be better).
+
     session_key = await get_session_district_key(session_id)
     if session_key:
         return SearchLocation(DISTRICTS[session_key], "session"), None
 
-    district = deps.get_farmer_district() if deps is not None else None
-    if district:
-        resolved = resolve_place(district)
-        if resolved is not None:
-            return SearchLocation(resolved, "farmer"), None
-        # A district string we cannot map is a table gap worth seeing in logs —
-        # it is the silent-fallthrough failure mode the normaliser exists for.
-        logger.warning("vistaar: unmapped farmer district=%r, using default", district)
-
-    return SearchLocation(DEFAULT_LOCATION, "default"), None
+    return await _resolve_farmer_or_default(deps), None
 
 
 def _location_phrase(where: SearchLocation, candidate: Candidate) -> str:
@@ -737,6 +786,9 @@ async def get_vistaar_mandi_prices(
     If the named place is not covered, the reply says so and names places that
     are. Pass that back to the farmer; do not retry with a different location.
 
+    When the farmer asks for nearest/local markets without naming a place, the
+    tool prefers their profile district over any sticky place from earlier turns.
+
     Args:
         ctx: authenticated farmer context used to resolve the default district.
         commodity_name: the commodity to price, e.g. "Tomato", "Onion", "Wheat".
@@ -753,7 +805,14 @@ async def get_vistaar_mandi_prices(
             wider than 30 days are trimmed to the most recent 30.
     Returns market prices per date (min / max / modal, market, arrival date).
     """
-    where, refusal = await _resolve_search_location(ctx, location)
+    prefer_farmer_profile = False
+    if not (location or "").strip():
+        deps = _deps(ctx)
+        query = getattr(deps, "query", None) if deps is not None else None
+        prefer_farmer_profile = _is_nearest_local_intent(query)
+    where, refusal = await _resolve_search_location(
+        ctx, location, prefer_farmer_profile=prefer_farmer_profile
+    )
     if refusal is not None:
         return refusal
     assert where is not None

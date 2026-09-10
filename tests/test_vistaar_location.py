@@ -191,9 +191,9 @@ def fake_cache():
         yield cache
 
 
-def ctx(district=None, session_id="s-1", village=None, state=None):
+def ctx(district=None, session_id="s-1", village=None, state=None, query="what is the price of onion"):
     return SimpleNamespace(deps=FarmerContext(
-        query="what is the price of onion",
+        query=query,
         session_id=session_id,
         farmer_district=district,
         farmer_village=village,
@@ -310,6 +310,131 @@ class TestRequestedMarketIntent:
         assert where.source == "session"
         assert where.location.key == "anand"
         assert where.requested_market_name is None
+
+
+class TestNearestLocalProfileOverride:
+    """Nearest/local-to-me asks must use farmer profile, not sticky place."""
+
+    def test_nearest_phrases_are_detected(self):
+        assert vistaar._is_nearest_local_intent(
+            "Tell me the price of tomatoes at my nearest APMC yard."
+        )
+        assert vistaar._is_nearest_local_intent("nearest to me")
+        assert vistaar._is_nearest_local_intent("tomato prices near me")
+        assert vistaar._is_nearest_local_intent("local mandi rates")
+        # Place proximity must not look like first-person nearest intent.
+        assert not vistaar._is_nearest_local_intent("prices near Anand")
+        assert not vistaar._is_nearest_local_intent("prices in Anand")
+        assert not vistaar._is_nearest_local_intent("")
+        assert not vistaar._is_nearest_local_intent(None)
+
+    @pytest.mark.asyncio
+    async def test_nearest_intent_prefers_profile_over_sticky(self, bpp, fake_cache):
+        # Seed sticky Anand, then ask nearest with a Kutch-profile farmer.
+        await vistaar.get_vistaar_mandi_prices(
+            ctx(district="kutch"), "Wheat", "Anand"
+        )
+        where, refusal = await vistaar._resolve_search_location(
+            ctx(
+                district="kutch",
+                query="Tell me the price of tomatoes at my nearest APMC yard.",
+            ),
+            None,
+            prefer_farmer_profile=True,
+        )
+        assert refusal is None
+        assert where is not None
+        assert where.source == "farmer"
+        assert where.location.key == "kutch"
+        assert where.requested_market_name is None
+
+    @pytest.mark.asyncio
+    async def test_mandi_tool_nearest_query_searches_profile_district(
+        self, bpp, fake_cache
+    ):
+        await vistaar.get_vistaar_mandi_prices(
+            ctx(district="kutch"), "Wheat", "Anand"
+        )
+        bpp.searches.clear()
+        out = await vistaar.get_vistaar_mandi_prices(
+            ctx(
+                district="kutch",
+                query="Tell me the price of tomatoes at my nearest APMC yard.",
+            ),
+            "Tomato",
+        )
+        assert bpp.searches, out
+        lat, lon, commodity, _ = bpp.searches[0]
+        assert commodity == "Tomato"
+        assert round(lat, 3) == round(DISTRICTS["kutch"].primary.lat, 3)
+        assert round(lon, 3) == round(DISTRICTS["kutch"].primary.lon, 3)
+
+    @pytest.mark.asyncio
+    async def test_non_nearest_followup_still_uses_sticky(self, bpp, fake_cache):
+        await vistaar.get_vistaar_mandi_prices(
+            ctx(district="kutch"), "Wheat", "Anand"
+        )
+        where, refusal = await vistaar._resolve_search_location(
+            ctx(district="kutch", query="and cotton?"),
+            None,
+        )
+        assert refusal is None
+        assert where is not None
+        assert where.source == "session"
+        assert where.location.key == "anand"
+
+    @pytest.mark.asyncio
+    async def test_explicit_location_still_beats_nearest_intent(self, bpp, fake_cache):
+        where, refusal = await vistaar._resolve_search_location(
+            ctx(
+                district="kutch",
+                query="nearest apmc near Junagadh",
+            ),
+            "Junagadh",
+            prefer_farmer_profile=True,
+        )
+        assert refusal is None
+        assert where is not None
+        assert where.source == "explicit"
+        assert where.location.key == "junagadh"
+
+    @pytest.mark.asyncio
+    async def test_nearest_without_profile_falls_back_to_sticky(
+        self, bpp, fake_cache
+    ):
+        await vistaar.get_vistaar_mandi_prices(
+            ctx(district=None), "Wheat", "Junagadh"
+        )
+        where, refusal = await vistaar._resolve_search_location(
+            ctx(district=None, query="nearest to me"),
+            None,
+            prefer_farmer_profile=True,
+        )
+        assert refusal is None
+        assert where is not None
+        assert where.source == "session"
+        assert where.location.key == "junagadh"
+
+    @pytest.mark.asyncio
+    async def test_weather_still_uses_sticky_when_query_is_nearest(
+        self, bpp, fake_cache
+    ):
+        # Nearest/profile override is mandi-only. Weather keeps sticky place.
+        await vistaar.get_vistaar_mandi_prices(
+            ctx(district="kutch"), "Wheat", "Anand"
+        )
+        bpp.searches.clear()
+        out = await vistaar.get_vistaar_weather(
+            ctx(
+                district="kutch",
+                query="nearest apmc to me, also weather?",
+            )
+        )
+        assert "Anand" in out or bpp.searches
+        assert bpp.searches
+        lat, lon, _, _ = bpp.searches[0]
+        assert round(lat, 3) == round(DISTRICTS["anand"].primary.lat, 3)
+        assert round(lon, 3) == round(DISTRICTS["anand"].primary.lon, 3)
 
 
 class TestExplicitYardFiltering:
