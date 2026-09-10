@@ -330,7 +330,7 @@ def _managed_pipeline(monkeypatch):
     monkeypatch.setenv("LLM_MODEL_NAME", "gpt-4.1")
     monkeypatch.setenv("TRANSLATEGEMMA_27B_BASE_ENDPOINT", "http://lb/v1")
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
-    runtime.configure(run_self_check=False)
+    runtime.configure()
     yield
 
 

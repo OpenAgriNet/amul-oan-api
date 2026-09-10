@@ -159,19 +159,51 @@ def _post_translation_tiers(fallback_enabled: bool) -> list[Tier]:
         ttft_ms=_int_env("FALLBACK_POST_TRANSLATION_TG_TTFT_MS", 5000),
         label="translategemma",
     )
-    # Post-translation is an OpenAI-compatible protocol and is deliberately
-    # independent of the agent provider. An Anthropic/Gemini agent deployment
-    # must not make this fallback unbuildable.
+    if not fallback_enabled:
+        return [tg]
+
+    # Post-translation requires an OpenAI-compatible raw client. Keep the old
+    # provider when it is compatible, but let deployments select it independently
+    # from the agent. Anthropic/Gemini must opt into one of these adapters.
+    agent_provider = (_env("LLM_PROVIDER", "openai") or "openai").lower()
+    provider = (_env("POST_TRANSLATION_LLM_PROVIDER", agent_provider) or agent_provider).lower()
+    if provider not in {"openai", "azure-openai", "vllm"}:
+        raise ValueError(
+            "POST_TRANSLATION_LLM_PROVIDER must be openai, azure-openai, or vllm "
+            f"when fallback is enabled; got {provider!r}"
+        )
     llm_ms = _int_env("FALLBACK_POST_TRANSLATION_LLM_TIMEOUT_MS", 30000)
-    llm_fallback = Tier(
-        provider=Provider.OPENAI,
-        model=_env("POST_TRANSLATION_LLM_MODEL", "gpt-4.1") or "gpt-4.1",
-        api_key_env="OPENAI_API_KEY",
-        timeout_ms=llm_ms,
-        admission=AdmissionPolicy.MANAGED,
-        label="llm-fallback",
-    )
-    return [tg, llm_fallback] if fallback_enabled else [tg]
+    model_override = _env("POST_TRANSLATION_LLM_MODEL")
+    if provider == "vllm":
+        fallback = Tier(
+            provider=Provider.VLLM,
+            model=model_override or _env("LLM_MODEL_NAME", "gemma-4-31b-it") or "gemma-4-31b-it",
+            endpoint=_env("INFERENCE_ENDPOINT_URL"),
+            api_key_env="INFERENCE_API_KEY",
+            timeout_ms=llm_ms,
+            label="llm-fallback",
+        )
+    elif provider == "azure-openai":
+        fallback = Tier(
+            provider=Provider.AZURE,
+            model=model_override or _env("AZURE_OPENAI_DEPLOYMENT_NAME", "gpt-4.1") or "gpt-4.1",
+            endpoint=_env("AZURE_OPENAI_ENDPOINT"),
+            api_key_env="AZURE_OPENAI_API_KEY",
+            api_version=_env("AZURE_OPENAI_API_VERSION"),
+            timeout_ms=llm_ms,
+            admission=AdmissionPolicy.MANAGED,
+            label="llm-fallback",
+        )
+    else:
+        fallback = Tier(
+            provider=Provider.OPENAI,
+            model=model_override or _env("LLM_MODEL_NAME", "gpt-4.1") or "gpt-4.1",
+            api_key_env="OPENAI_API_KEY",
+            timeout_ms=llm_ms,
+            admission=AdmissionPolicy.MANAGED,
+            label="llm-fallback",
+        )
+    return [tg, fallback]
 
 
 def _oss_configured() -> bool:

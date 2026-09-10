@@ -118,16 +118,16 @@ async def resolve_chain(
     from app.llm_core import trace as _trace
     _trace.record_profile(profile.name, profile.weight)
 
-    step_cfg = pipeline.step_config(profile, step)
-    if step_cfg is None:
+    plan = pipeline.step_plan(profile, step)
+    if plan is None:
         raise ValueError(f"no config for step={step.value} in profile={profile.name}")
 
-    tiers = list(step_cfg.tiers)
+    tiers = list(plan.tiers)
 
     # Reorder by load, possibly inserting the configured overflow tier.
     from app.llm_core import concurrency
     tiers = await concurrency.reprioritize_by_load(
-        step, tiers, step_cfg.triggers.concurrency_gate
+        step, tiers, plan.concurrency_gate
     )
 
     # Health-filter the final candidate set so a breaker-open overflow cannot be

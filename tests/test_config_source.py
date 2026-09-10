@@ -313,8 +313,8 @@ def test_no_redis_client_keeps_last_good(monkeypatch):
 
 
 def test_content_invalid_live_config_kept_last_good_and_warns(monkeypatch, fake, caplog):
-    """FAIL-CLOSED on bad CONTENT: a schema-valid but UNBUILDABLE live config
-    (validate_content raises via the resolvability probe) is treated like a read
+    """FAIL-CLOSED on bad content: a schema-valid but structurally invalid live config
+    (validate_content raises during active-plan validation) is treated like a read
     failure — last-good kept, WARNING logged, never applied, never raised."""
     import logging
     _enable(monkeypatch, refresh="0")

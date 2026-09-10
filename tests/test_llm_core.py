@@ -190,29 +190,6 @@ def test_shim_post_translation_tg_ttft_deadline(monkeypatch):
     assert tg2.ttft_ms == 3500 and tg2.timeout_ms == 60000
 
 
-# ── resolver ──────────────────────────────────────────────────────────────────
-
-# ── self-check (resolvability, non-fatal) ─────────────────────────────────────
-
-def test_self_check_is_non_fatal_on_unresolvable_step(monkeypatch):
-    """A client construction failure is logged rather than blocking startup."""
-    from app.llm_core import factory
-
-    runtime.configure(run_self_check=False)
-
-    def _boom(*args, **kwargs):
-        raise RuntimeError("cannot build handle in this env")
-
-    monkeypatch.setattr(factory, "build_handle", _boom)
-    runtime.self_check()
-
-
-def test_configure_runs_self_check_without_raising():
-    """Startup config load + self-check must be robust and return a valid config."""
-    cfg = runtime.configure()  # run_self_check defaults True
-    assert cfg is not None and len(cfg.profiles) >= 1
-
-
 def test_yaml_config_does_not_enable_fallback_implicitly():
     from app.llm_core.config_model import NamedProfile, PipelineConfig
 
@@ -362,10 +339,18 @@ def test_partial_capabilities_merge_with_reachable_overflow(monkeypatch):
         weight=100,
         capabilities=ProfileCapabilities(history_max_tokens=20_000),
         steps={Step.AGENT: agent},
-    )])
+    )], fallback_enabled=True)
     capabilities = ExecutionContext("s", cfg, "mixed").capabilities
     assert capabilities.requires_translation is True
     assert capabilities.history_max_tokens == 20_000
+
+    inactive = cfg.model_copy(update={
+        "fallback_enabled": False,
+        "profiles": [cfg.profiles[0].model_copy(update={"capabilities": None})],
+    })
+    capabilities = ExecutionContext("s", inactive, "mixed").capabilities
+    assert capabilities.requires_translation is False
+    assert capabilities.history_max_tokens == 80_000
 
     cfg = cfg.model_copy(update={"profiles": [cfg.profiles[0].model_copy(update={
         "capabilities": ProfileCapabilities(requires_translation=False)
@@ -386,8 +371,13 @@ def test_admission_auto_preserves_managed_provider_policy():
         Tier(provider=Provider.VLLM, model="gemma", endpoint="http://oss/v1"),
         StepClientKind.AGENT,
     )
+    translation = ExecutionTarget(
+        Tier(provider=Provider.TRANSLATEGEMMA, model="tg", endpoint="http://tg/v1"),
+        StepClientKind.TRANSLATEGEMMA,
+    )
     assert managed.admission is AdmissionPolicy.MANAGED
     assert local.admission is AdmissionPolicy.NONE
+    assert translation.kind == "oss"
 
 
 def test_content_validation_checks_every_fallback_tier():
@@ -400,9 +390,10 @@ def test_content_validation_checks_every_fallback_tier():
             Tier(provider=Provider.OPENAI, model="gpt-4.1", api_key_env="OPENAI_API_KEY"),
             Tier(provider=Provider.AZURE, model="broken-fallback"),
         ]),
-    })])
+    })], fallback_enabled=True)
     with pytest.raises(ValueError, match="azure-openai"):
         runtime.validate_content(cfg)
+    runtime.validate_content(cfg.model_copy(update={"fallback_enabled": False}))
 
     overflow = Tier(provider=Provider.VLLM, model="broken-overflow")
     cfg = PipelineConfig(profiles=[NamedProfile(name="managed", weight=100, steps={
@@ -412,7 +403,7 @@ def test_content_validation_checks_every_fallback_tier():
                 metrics_url="http://metrics", overflow_tier=overflow
             )),
         )
-    })])
+    })], fallback_enabled=True)
     with pytest.raises(ValueError, match="endpoint"):
         runtime.validate_content(cfg)
 
@@ -442,9 +433,29 @@ def test_agent_provider_does_not_set_posttranslation_protocol(monkeypatch, provi
     monkeypatch.setattr(runtime, "PIPELINE", None)
     monkeypatch.setattr(runtime, "BOOT_PIPELINE", None)
 
-    cfg = runtime.configure(run_self_check=False)
+    cfg = runtime.configure()
     post = cfg.defaults[Step.POST_TRANSLATION].tiers
     assert [tier.provider for tier in post] == [Provider.TRANSLATEGEMMA]
+
+    monkeypatch.setenv("FALLBACK_ENABLED", "true")
+    monkeypatch.setenv("POST_TRANSLATION_LLM_PROVIDER", "openai")
+    post = runtime.configure().defaults[Step.POST_TRANSLATION].tiers
+    assert [tier.provider for tier in post] == [Provider.TRANSLATEGEMMA, Provider.OPENAI]
+
+
+@pytest.mark.parametrize(
+    ("provider", "expected"),
+    [("azure-openai", Provider.AZURE), ("vllm", Provider.VLLM)],
+)
+def test_posttranslation_preserves_compatible_agent_provider(monkeypatch, provider, expected):
+    monkeypatch.setenv("LLM_PROVIDER", provider)
+    monkeypatch.setenv("FALLBACK_ENABLED", "true")
+    monkeypatch.delenv("POST_TRANSLATION_LLM_PROVIDER", raising=False)
+    monkeypatch.setenv("INFERENCE_ENDPOINT_URL", "http://vllm/v1")
+    monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", "https://azure.example")
+    monkeypatch.setenv("AZURE_OPENAI_API_VERSION", "2025-01-01")
+    post = synthesize_from_env().defaults[Step.POST_TRANSLATION].tiers
+    assert post[1].provider is expected
 
 
 def test_invalid_boot_config_is_not_published(monkeypatch, tmp_path):
@@ -466,6 +477,14 @@ profiles:
     monkeypatch.setenv("PIPELINE_CONFIG_PATH", str(path))
 
     with pytest.raises(runtime.BootRefused):
-        runtime.configure(run_self_check=False)
+        runtime.configure()
+    assert runtime.PIPELINE is previous
+    assert runtime.BOOT_PIPELINE is previous
+
+    monkeypatch.delenv("PIPELINE_CONFIG_PATH")
+    monkeypatch.setenv("FALLBACK_ENABLED", "false")
+    monkeypatch.setenv("REQUIRE_OVERFLOW_ARMED", "true")
+    with pytest.raises(runtime.BootRefused):
+        runtime.configure()
     assert runtime.PIPELINE is previous
     assert runtime.BOOT_PIPELINE is previous

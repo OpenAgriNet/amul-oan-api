@@ -12,6 +12,7 @@ public API and the eventual repo-merge stays a mechanical convergence.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from enum import Enum
 from typing import Optional
 
@@ -122,6 +123,27 @@ class StepConfig(BaseModel):
     model_config = {"frozen": True}
 
 
+@dataclass(frozen=True)
+class StepPlan:
+    """The immutable set of tiers that can execute for one configured step."""
+
+    step: Step
+    tiers: tuple[Tier, ...]
+    concurrency_gate: Optional[ConcurrencyGate]
+
+    @property
+    def candidates(self) -> tuple[Tier, ...]:
+        """Every reachable tier, including a separately configured overflow."""
+        overflow = (
+            self.concurrency_gate.overflow_tier
+            if self.concurrency_gate is not None
+            else None
+        )
+        if overflow is None or overflow in self.tiers:
+            return self.tiers
+        return (*self.tiers, overflow)
+
+
 class ProfileCapabilities(BaseModel):
     """Optional application-policy overrides for a named profile."""
 
@@ -168,3 +190,16 @@ class PipelineConfig(BaseModel):
     def step_config(self, profile: NamedProfile, step: Step) -> Optional[StepConfig]:
         """Resolve a step's config for a profile, falling back to defaults."""
         return profile.steps.get(step) or self.defaults.get(step)
+
+    def step_plan(self, profile: NamedProfile, step: Step) -> Optional[StepPlan]:
+        """Normalize one step to the tiers that can execute under current policy."""
+        configured = self.step_config(profile, step)
+        if configured is None:
+            return None
+        if not self.fallback_enabled:
+            return StepPlan(step, (configured.tiers[0],), None)
+        return StepPlan(
+            step,
+            tuple(configured.tiers),
+            configured.triggers.concurrency_gate,
+        )

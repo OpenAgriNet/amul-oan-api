@@ -267,7 +267,10 @@ def _gated_config():
             triggers=Triggers(concurrency_gate=_gate(10)),
         ),
     }
-    return PipelineConfig(profiles=[NamedProfile(name="oss", weight=100, steps=oss_steps)])
+    return PipelineConfig(
+        profiles=[NamedProfile(name="oss", weight=100, steps=oss_steps)],
+        fallback_enabled=True,
+    )
 
 
 def test_resolve_chain_deprioritizes_saturated_up_primary(monkeypatch):
@@ -399,7 +402,10 @@ def _overflow_gated_config():
             triggers=Triggers(concurrency_gate=_gate_with_overflow(10)),
         ),
     }
-    return PipelineConfig(profiles=[NamedProfile(name="oss", weight=100, steps=oss_steps)])
+    return PipelineConfig(
+        profiles=[NamedProfile(name="oss", weight=100, steps=oss_steps)],
+        fallback_enabled=True,
+    )
 
 
 def test_resolve_chain_places_overflow_target_at_front(monkeypatch):
@@ -430,7 +436,7 @@ def test_resolve_chain_prunes_open_overflow_endpoint(monkeypatch):
             tiers=[_oss_tier(), _managed_tier()],
             triggers=Triggers(concurrency_gate=_gate_with_overflow(10, overflow)),
         )
-    })])
+    })], fallback_enabled=True)
     monkeypatch.setattr(concurrency.settings, "concurrency_gauge_enabled", True)
     monkeypatch.setattr(health.settings, "health_breaker_enabled", True)
     _inject_gauge(monkeypatch, 20)

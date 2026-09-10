@@ -385,6 +385,11 @@ def config_to_dict(pipeline: Any) -> dict:
                 {
                     "metrics_url": getattr(gate, "metrics_url", None),
                     "max_concurrency": getattr(gate, "max_concurrency", None),
+                    "overflow_tier": (
+                        _tier(gate.overflow_tier)
+                        if getattr(gate, "overflow_tier", None) is not None
+                        else None
+                    ),
                 }
                 if gate is not None
                 else None

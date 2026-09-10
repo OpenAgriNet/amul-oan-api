@@ -64,10 +64,13 @@ def _cfg(pct=100, triggers=None) -> PipelineConfig:
         Step.AGENT: StepConfig(tiers=[_managed_tier()]),
         Step.MODERATION: StepConfig(tiers=[_managed_tier()]),
     }
-    return PipelineConfig(profiles=[
-        NamedProfile(name="oss", weight=pct, steps=oss_steps),
-        NamedProfile(name="managed", weight=100 - pct, steps=managed_steps),
-    ])
+    return PipelineConfig(
+        profiles=[
+            NamedProfile(name="oss", weight=pct, steps=oss_steps),
+            NamedProfile(name="managed", weight=100 - pct, steps=managed_steps),
+        ],
+        fallback_enabled=True,
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -116,7 +119,10 @@ def test_no_api_key_value_in_metadata():
 
 def test_no_secret_in_full_config_dump(caplog):
     import logging
-    cfg = _cfg(50)
+    overflow = Tier(provider=Provider.VLLM, model="overflow", endpoint="http://overflow/v1")
+    cfg = _cfg(50, Triggers(concurrency_gate=ConcurrencyGate(
+        metrics_url="http://metrics", overflow_tier=overflow
+    )))
     with caplog.at_level(logging.INFO):
         trace.log_full_config(cfg)
     text = "\n".join(r.getMessage() for r in caplog.records)
@@ -128,6 +134,8 @@ def test_no_secret_in_full_config_dump(caplog):
     dumped = trace.config_to_dict(cfg)
     assert {p["name"] for p in dumped["profiles"]} == {"oss", "managed"}
     assert "agent" in dumped["profiles"][0]["steps"]
+    gate = dumped["profiles"][0]["steps"]["agent"]["triggers"]["concurrency_gate"]
+    assert gate["overflow_tier"]["model"] == "overflow"
 
 
 # ── (c) fallback walker threads the served tier index ──────────────────────────

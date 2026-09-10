@@ -1,15 +1,14 @@
-"""Runtime holder + startup self-check for the unified pipeline.
+"""Runtime holder for the unified pipeline.
 
 ``configure()`` (called from the FastAPI lifespan) loads
 ``PIPELINE_CONFIG_PATH`` YAML when present, else synthesizes the config from the
-current env (``legacy_shim``), validates it, stores it in the module global
-``PIPELINE``, and runs the identity self-check. ``get_pipeline()`` lazily
+current env (``legacy_shim``), validates it, then atomically stores it in the
+module global ``PIPELINE``. ``get_pipeline()`` lazily
 configures on first use so request paths and tests never see ``None``.
 
-The startup self-check logs the resolved (provider, base URL, model, timeout)
-for every configured step and verifies that every primary handle can be built.
-Agents carry no construction-time model; this module is the only runtime model
-selection path.
+Provider clients remain lazy and are constructed only when an execution target is
+actually invoked. Agents carry no construction-time model; this module is the only
+runtime model selection path.
 """
 
 from __future__ import annotations
@@ -41,48 +40,55 @@ def _load_from_yaml(path: str) -> PipelineConfig:
 
 
 # Providers with a concrete pretranslation protocol adapter.
+_AGENT_OK = {"vllm", "openai", "azure-openai", "anthropic", "gemini"}
 _PRETRANSLATION_OK = {"vllm", "openai", "azure-openai", "anthropic"}
 _POST_TRANSLATION_OK = {"vllm", "openai", "azure-openai", "translategemma"}
 
 
-def _step_tiers(step_config):
-    yield from step_config.tiers
-    gate = step_config.triggers.concurrency_gate
-    if gate is not None and gate.overflow_tier is not None:
-        yield gate.overflow_tier
-
-
 def validate_config(pipeline: PipelineConfig) -> None:
-    """Fail fast when a configured tier has no protocol adapter."""
-    from app.llm_core.config_model import StepClientKind
-    from app.llm_core.factory import STEP_CLIENT_KIND
-
-    raw_steps = [
-        step
-        for step, kind in STEP_CLIENT_KIND.items()
-        if kind is StepClientKind.PRE_TRANSLATION
-    ]
+    """Structurally validate the normalized tiers that can execute."""
     problems: list[str] = []
     for profile in pipeline.profiles:
-        for step in raw_steps:
-            cfg = pipeline.step_config(profile, step)
-            if cfg is None:
+        for step in Step:
+            plan = pipeline.step_plan(profile, step)
+            if plan is None:
                 continue
-            for tier in _step_tiers(cfg):
-                if tier.provider.value not in _PRETRANSLATION_OK:
+            allowed = (
+                _PRETRANSLATION_OK
+                if step is Step.PRE_TRANSLATION
+                else _POST_TRANSLATION_OK
+                if step is Step.POST_TRANSLATION
+                else _AGENT_OK
+            )
+            adapter = {
+                Step.PRE_TRANSLATION: "pretranslation",
+                Step.POST_TRANSLATION: "post-translation",
+            }.get(step, step.value)
+            for tier in plan.candidates:
+                provider = tier.provider.value
+                if provider not in allowed:
                     problems.append(
                         f"profile={profile.name} step={step.value} "
-                        f"provider={tier.provider.value} has no pretranslation adapter "
-                        f"(allowed: {sorted(_PRETRANSLATION_OK)})"
+                        f"provider={provider} has no {adapter} adapter "
+                        f"(allowed: {sorted(allowed)})"
                     )
-        post = pipeline.step_config(profile, Step.POST_TRANSLATION)
-        if post is not None:
-            for tier in _step_tiers(post):
-                if tier.provider.value not in _POST_TRANSLATION_OK:
+                    continue
+                if tier.provider.value == "vllm" and not tier.endpoint:
                     problems.append(
-                        f"profile={profile.name} step={Step.POST_TRANSLATION.value} "
-                        f"provider={tier.provider.value} has no post-translation adapter "
-                        f"(allowed: {sorted(_POST_TRANSLATION_OK)})"
+                        f"profile={profile.name} step={step.value} provider=vllm "
+                        "requires endpoint"
+                    )
+                if tier.provider.value == "azure-openai" and (
+                    not tier.endpoint or not tier.api_version or not tier.api_key_env
+                ):
+                    problems.append(
+                        f"profile={profile.name} step={step.value} provider=azure-openai "
+                        "requires endpoint, api_version and api_key_env"
+                    )
+                if tier.provider.value == "translategemma" and not tier.endpoint:
+                    problems.append(
+                        f"profile={profile.name} step={step.value} "
+                        "provider=translategemma requires endpoint"
                     )
     if not problems:
         return
@@ -94,31 +100,8 @@ def validate_config(pipeline: PipelineConfig) -> None:
 
 
 def validate_content(cfg: PipelineConfig) -> None:
-    """Run the SAME content gates the boot path applies against a CANDIDATE config
-    (a live redis config, or an ops-script payload) BEFORE it goes live — raising on
-    any unbuildable content. This is the single validator both ``config_source``
-    (fail-CLOSED live load) and ``scripts/set_pipeline_config.py`` (refuse-to-write)
-    call, so a schema-valid but unbuildable config can never go live and break
-    requests.
-
-    Two checks, mirroring boot:
-      (a) ``validate_config(cfg)`` — provider/step legality; and
-      (b) a resolvability probe — for every profile, every configured step, and every
-          tier, build its handle; the factory raises on
-          an unbuildable tier (vllm tier with no endpoint, azure tier missing
-          api_key_env/api_version, etc.), exactly as the boot self-check would.
-
-    Raises (never swallows) so callers can fail closed."""
+    """Validate active config without constructing or caching provider clients."""
     validate_config(cfg)
-    from app.llm_core.factory import STEP_CLIENT_KIND, build_handle, tier_client_kind
-
-    for profile in cfg.profiles:
-        for step in Step:
-            step_config = cfg.step_config(profile, step)
-            if step_config is None:
-                continue
-            for tier in _step_tiers(step_config):
-                build_handle(tier, tier_client_kind(STEP_CLIENT_KIND[step], tier))
 
 
 def _truthy_env(name: str) -> bool:
@@ -128,12 +111,10 @@ def _truthy_env(name: str) -> bool:
 
 class BootRefused(RuntimeError):
     """Intentional hard-gate boot failure (e.g. REQUIRE_OVERFLOW_ARMED with overflow
-    DISARMED). Distinct type so the best-effort ``configure()`` call site in main.py
-    can re-raise it (a deliberate refusal to boot) while still swallowing genuine
-    non-fatal configure/self-check edge cases."""
+    DISARMED). The startup call site re-raises this instead of swallowing it."""
 
 
-def _assert_boot_posture() -> None:
+def _assert_boot_posture(pipeline: PipelineConfig) -> None:
     """Emit a LOUD one-line 'overflow ARMED / DISARMED' posture summary at boot.
 
     The whole overflow system — the OSS->managed attempt chain AND the health +
@@ -149,7 +130,7 @@ def _assert_boot_posture() -> None:
     def _onoff(b: bool) -> str:
         return "on" if b else "off"
 
-    fallback_on = bool(PIPELINE and PIPELINE.fallback_enabled)
+    fallback_on = pipeline.fallback_enabled
     if settings.concurrency_gauge_enabled:
         conc = "on(metrics_url set)" if settings.agent_concurrency_metrics_url else "on(metrics_url unset — no-op)"
     else:
@@ -175,8 +156,8 @@ def _assert_boot_posture() -> None:
             )
 
 
-def configure(*, run_self_check: bool = True) -> PipelineConfig:
-    """Load / synthesize the pipeline config, validate, store, self-check."""
+def configure() -> PipelineConfig:
+    """Load, normalize, validate, and atomically publish pipeline config."""
     global PIPELINE, BOOT_PIPELINE
     try:
         path = get_config_value("PIPELINE_CONFIG_PATH")
@@ -193,8 +174,11 @@ def configure(*, run_self_check: bool = True) -> PipelineConfig:
     except Exception as exc:
         raise BootRefused(f"llm_core boot config rejected: {exc}") from exc
 
-    # Publish only after every normal and overflow tier has validated. A rejected
-    # reload therefore leaves the previous known-good globals untouched.
+    # The posture gate is validation too: run it before the single commit point so
+    # any rejection leaves both known-good globals untouched.
+    _assert_boot_posture(candidate)
+
+    # Publish only after the complete candidate has passed.
     PIPELINE = candidate
     # Capture the boot config as the permanent fallback BEFORE any live redis
     # refresh can override PIPELINE (get_pipeline -> config_source.maybe_refresh).
@@ -206,10 +190,6 @@ def configure(*, run_self_check: bool = True) -> PipelineConfig:
     # in logs even before any turn arrives (`grep llm_core.full_config`).
     from app.llm_core import trace as _trace
     _trace.log_full_config(PIPELINE)
-    # Boot posture assertion: LOUD ARMED/DISARMED overflow summary (+ hard-gate via
-    # REQUIRE_OVERFLOW_ARMED). Placed after config load so a hard-gate raise fires
-    # before the (non-fatal) self-check.
-    _assert_boot_posture()
     # M2: note whether the live redis-backed config source is enabled (default OFF).
     # When on, weight changes PUT to the channel key take effect within the TTL with
     # no redeploy; when off, get_pipeline() serves the boot config only.
@@ -225,20 +205,13 @@ def configure(*, run_self_check: bool = True) -> PipelineConfig:
             "llm_core: live redis config source disabled (%s unset) — serving boot config only",
             config_source.ENABLED_ENV,
         )
-    if run_self_check:
-        try:
-            self_check()
-        except AssertionError:
-            raise
-        except Exception as exc:  # never break config load on a self-check bug
-            logger.warning("llm_core: self-check skipped (%s)", exc)
     return PIPELINE
 
 
 def get_pipeline() -> PipelineConfig:
     global PIPELINE
     if PIPELINE is None:
-        configure(run_self_check=False)
+        configure()
     assert PIPELINE is not None
     # M2 (live config): consult the redis-backed source. TTL-gated (hits redis at
     # most once per PIPELINE_CONFIG_REFRESH_S window) and fail-safe (any error ->
@@ -248,64 +221,3 @@ def get_pipeline() -> PipelineConfig:
     from app.llm_core import config_source
     PIPELINE = config_source.maybe_refresh(PIPELINE)
     return PIPELINE
-
-
-def _base_url(handle) -> Optional[str]:
-    b = getattr(handle, "base_url", None)
-    if b is None:
-        b = getattr(getattr(handle, "client", None), "base_url", None)
-    return str(b).rstrip("/") if b is not None else None
-
-
-def self_check() -> None:
-    """Startup validation: every profile's every step must resolve to a live
-    primary tier (build a handle without raising) for the current config.
-
-    This is the P4 successor to the P0/P1 identity self-check. There is no longer a
-    legacy wiring to compare against — the unified pipeline is the only path — so
-    the check now just logs the resolved (provider, base_url, model, timeout) per
-    configured step and WARNS on any step that fails to resolve. It is
-    intentionally non-fatal: a handle-build edge case (e.g. a fallback-tier key
-    absent in this env) must never block startup, exactly as the flag-off boot was
-    robust before. Genuine config-shape errors are already caught by
-    ``PipelineConfig``'s validator at load time.
-    """
-    from app.llm_core.factory import STEP_CLIENT_KIND, build_handle, tier_client_kind
-
-    pipeline = get_pipeline()
-    failures: list[str] = []
-
-    for profile in pipeline.profiles:
-        for step in Step:
-            step_cfg = pipeline.step_config(profile, step)
-            if step_cfg is None:
-                continue  # a profile need not configure every step (post-trans lives in defaults)
-            try:
-                # Resolve BY PROFILE NAME (N-way): a broken 3rd-profile tier (bad
-                # provider/endpoint/key) is caught here at boot, not just oss/managed.
-                tier = step_cfg.tiers[0]
-                handle = build_handle(
-                    tier, tier_client_kind(STEP_CLIENT_KIND[step], tier)
-                )
-                logger.info(
-                    "llm_core self-check profile=%s step=%s -> provider=%s base_url=%s model=%s timeout=%s",
-                    profile.name,
-                    step.value,
-                    tier.provider.value,
-                    _base_url(handle),
-                    tier.model,
-                    tier.timeout_ms / 1000.0 if tier.timeout_ms is not None else None,
-                )
-            except Exception as exc:
-                failures.append(f"{profile.name}/{step.value}: {type(exc).__name__}: {exc}")
-
-    if failures:
-        logger.warning(
-            "llm_core self-check: %d step(s) did not resolve in this env (non-fatal):\n  - %s",
-            len(failures), "\n  - ".join(failures),
-        )
-    else:
-        logger.info(
-            "llm_core self-check PASSED: every configured step resolves (profiles=%s)",
-            [p.name for p in pipeline.profiles],
-        )

@@ -296,11 +296,18 @@ def test_health_url_strips_v1():
 def test_distinct_endpoints_collects_self_hosted_only():
     from app.tasks import health_poller as hp
     from app.llm_core.config_model import (
-        NamedProfile, PipelineConfig, StepConfig,
+        ConcurrencyGate, NamedProfile, PipelineConfig, StepConfig, Triggers,
     )
 
+    overflow_ep = "http://10.185.25.199:8022/v1"
     oss_steps = {
-        Step.AGENT: StepConfig(tiers=[_oss_tier(AGENT_EP), _managed_tier()]),
+        Step.AGENT: StepConfig(
+            tiers=[_oss_tier(AGENT_EP), _managed_tier()],
+            triggers=Triggers(concurrency_gate=ConcurrencyGate(
+                metrics_url="http://metrics",
+                overflow_tier=_oss_tier(overflow_ep),
+            )),
+        ),
         Step.PRE_TRANSLATION: StepConfig(tiers=[_oss_tier(PRE_EP), _managed_tier()]),
     }
     managed_steps = {Step.AGENT: StepConfig(tiers=[_managed_tier()])}
@@ -312,9 +319,10 @@ def test_distinct_endpoints_collects_self_hosted_only():
             NamedProfile(name="managed", weight=40, steps=managed_steps),
         ],
         defaults={Step.POST_TRANSLATION: StepConfig(tiers=[tg])},
+        fallback_enabled=True,
     )
     eps = set(hp._distinct_endpoints(cfg))
-    assert eps == {AGENT_EP, PRE_EP, TG_EP}                # 3 independent boxes, no openai
+    assert eps == {AGENT_EP, PRE_EP, TG_EP, overflow_ep}
 
 
 class _FakeResp:
@@ -387,12 +395,15 @@ def _oss_moderation_pipeline():
                api_key_env="OSS_INFERENCE_API_KEY", timeout_ms=5000)
     managed = Tier(provider=Provider.OPENAI, model="gpt-4.1",
                    api_key_env="OPENAI_API_KEY", timeout_ms=20000)
-    return PipelineConfig(profiles=[
-        NamedProfile(name="oss", weight=100,
-                     steps={Step.MODERATION: StepConfig(tiers=[oss, managed])}),
-        NamedProfile(name="managed", weight=0,
-                     steps={Step.MODERATION: StepConfig(tiers=[managed])}),
-    ])
+    return PipelineConfig(
+        profiles=[
+            NamedProfile(name="oss", weight=100,
+                         steps={Step.MODERATION: StepConfig(tiers=[oss, managed])}),
+            NamedProfile(name="managed", weight=0,
+                         steps={Step.MODERATION: StepConfig(tiers=[managed])}),
+        ],
+        fallback_enabled=True,
+    )
 
 
 def test_fallback_resolve_chain_prunes_when_breaker_on(monkeypatch):

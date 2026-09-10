@@ -68,6 +68,7 @@ def two_profile_config(pct: int) -> PipelineConfig:
             NamedProfile(name="oss", weight=pct, steps=oss_steps),
             NamedProfile(name="managed", weight=100 - pct, steps=managed_steps),
         ],
+        fallback_enabled=True,
     )
 
 
@@ -290,7 +291,7 @@ def test_nway_three_profile_yaml_distributes_and_serves(monkeypatch):
     from app.llm_core import ExecutionContext, runtime
 
     monkeypatch.setenv("PIPELINE_CONFIG_PATH", _EXAMPLE_YAML)
-    cfg = runtime.configure(run_self_check=False)   # parse N NamedProfiles w/ per-step tiers
+    cfg = runtime.configure()   # parse N NamedProfiles w/ per-step tiers
     try:
         assert {p.name for p in cfg.profiles} == {"gemma", "qwen", "gpt"}
         assert [p.weight for p in cfg.profiles] == [5, 10, 85]
@@ -319,26 +320,4 @@ def test_nway_three_profile_yaml_distributes_and_serves(monkeypatch):
         # delenv BEFORE reconfigure so the global is restored to the env-shim (not the
         # yaml) for later tests — monkeypatch's own teardown runs only after this.
         monkeypatch.delenv("PIPELINE_CONFIG_PATH", raising=False)
-        runtime.configure(run_self_check=False)
-
-
-# ── self_check over ALL profiles: a broken 3rd-profile tier is reported, non-fatal ─
-
-def test_self_check_reports_broken_third_profile_nonfatal(monkeypatch, caplog):
-    """runtime.self_check iterates EVERY profile by name and resolves each configured
-    step's primary tier, so a broken 3rd-profile tier (here: a vLLM agent tier with no
-    endpoint -> factory raises at build) is caught at boot. It must WARN, not raise."""
-    import logging
-    from app.llm_core import runtime
-
-    broken_agent = Tier(provider=Provider.VLLM, model="broken", endpoint=None,
-                        api_key_env="OSS_INFERENCE_API_KEY", timeout_ms=8000)
-    cfg = PipelineConfig(profiles=[
-        NamedProfile(name="oss", weight=45, steps={Step.AGENT: StepConfig(tiers=[_oss_tier(), _managed_tier()])}),
-        NamedProfile(name="managed", weight=45, steps={Step.AGENT: StepConfig(tiers=[_managed_tier()])}),
-        NamedProfile(name="broken", weight=10, steps={Step.AGENT: StepConfig(tiers=[broken_agent])}),
-    ])
-    monkeypatch.setattr(runtime, "PIPELINE", cfg)
-    with caplog.at_level(logging.WARNING):
-        runtime.self_check()                 # must NOT raise (non-fatal)
-    assert "broken/agent" in caplog.text     # the broken 3rd profile is reported
+        runtime.configure()

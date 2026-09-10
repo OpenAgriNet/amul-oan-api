@@ -24,12 +24,10 @@ Design
   window it returns the caller's config unchanged (zero Redis I/O), so calling it
   on every request is cheap.
 * **Boot-time validation on the LIVE path (fail-CLOSED on bad content)** — a
-  live config is not merely schema-checked: after parse it is run through
-  ``runtime.validate_content`` (the SAME content gates the boot path applies —
-  provider/step legality + a resolvability probe that builds every normal and
-  concurrency-overflow tier). A schema-valid but UNBUILDABLE config (vllm tier with no
-  endpoint, absent ``api_key_env``, anthropic/gemini on a PRE_TRANSLATION step, a
-  profile missing a required step) is therefore REJECTED — treated exactly like a
+  live config is not merely schema-checked: after parse its normalized active
+  plans receive the same structural provider/endpoint checks as boot config.
+  Invalid active content (vLLM without an endpoint, incomplete Azure settings,
+  or a provider without the step adapter) is therefore REJECTED — treated like a
   read failure (last-good kept, rate-limited WARNING) so a bad push can never go
   live and break requests.
 * **Fail-safe (never raises to the caller)** — on a TRANSIENT read failure (redis
@@ -220,7 +218,7 @@ def _try_load():
         weights!=100 / content-invalid): the caller keeps the last-good config.
 
     Content validation makes the LIVE path FAIL-CLOSED: a schema-valid but
-    unbuildable config (``runtime.validate_content`` raises) is treated as a read
+    structurally invalid active config (``runtime.validate_content`` raises) is treated as a read
     failure so it can never go live."""
     client = _get_redis()
     if client is None:
@@ -239,15 +237,14 @@ def _try_load():
     except Exception as e:  # invalid JSON / ValidationError / weights!=100 -> transient
         _warn("pipeline config: invalid live config at %s (%s); keeping last-good", k, e)
         return None
-    # FAIL-CLOSED content gate: run the SAME checks the boot path applies (provider/
-    # step legality + a resolvability probe that builds every normal and overflow
-    # tier). A schema-valid but unbuildable config is rejected like a read failure
+    # FAIL-CLOSED content gate: run the same structural checks as boot against the
+    # normalized active plans. Invalid config is rejected like a read failure
     # so a bad push cannot go live. ``validate_content`` is per-repo in ``runtime``;
     # calling ONLY it here keeps this module byte-identical across chat and voice.
     try:
         from app.llm_core import runtime
         runtime.validate_content(cfg)
-    except Exception as e:  # unbuildable content -> fail-closed; keep last-good
+    except Exception as e:  # invalid active content -> fail-closed; keep last-good
         _warn("pipeline config: content-invalid live config at %s (%s); keeping last-good", k, e)
         return None
     logger.info(

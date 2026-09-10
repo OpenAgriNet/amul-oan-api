@@ -153,7 +153,11 @@ class ExecutionTarget:
 
     @property
     def kind(self) -> str:
-        return "oss" if self.tier.provider is Provider.VLLM else "managed"
+        return (
+            "oss"
+            if self.tier.provider in {Provider.VLLM, Provider.TRANSLATEGEMMA}
+            else "managed"
+        )
 
     @property
     def provider(self) -> str:
@@ -695,11 +699,7 @@ class ExecutionContext:
     def capabilities(self):
         from app.config import get_config_value
 
-        agent = self._step_config(Step.AGENT)
-        reachable = list(agent.tiers)
-        gate = agent.triggers.concurrency_gate
-        if gate is not None and gate.overflow_tier is not None:
-            reachable.append(gate.overflow_tier)
+        reachable = self._step_plan(Step.AGENT).candidates
         override = str(get_config_value("CHAT_HISTORY_MAX_TOKENS", ""))
         if override.isdigit():
             inferred_history = int(override)
@@ -725,13 +725,13 @@ class ExecutionContext:
             ),
         )
 
-    def _step_config(self, step: Step):
-        configured = self.config.step_config(self.profile, step)
-        if configured is None:
+    def _step_plan(self, step: Step):
+        plan = self.config.step_plan(self.profile, step)
+        if plan is None:
             raise ValueError(
                 f"no config for step={step.value} in profile={self.profile_name}"
             )
-        return configured
+        return plan
 
     def _target(self, step: Step, tier: Tier) -> ExecutionTarget:
         from app.llm_core.factory import STEP_CLIENT_KIND, tier_client_kind
@@ -739,7 +739,7 @@ class ExecutionContext:
         return ExecutionTarget(tier, tier_client_kind(STEP_CLIENT_KIND[step], tier))
 
     def info(self, step: Step) -> ModelInfo:
-        target = self._target(step, self._step_config(step).tiers[0])
+        target = self._target(step, self._step_plan(step).tiers[0])
         return ModelInfo(target.provider, target.model_name, target.kind)
 
     def begin_trace(self):
@@ -752,7 +752,7 @@ class ExecutionContext:
         for step in Step:
             try:
                 trace.set_step_primary(
-                    current, step, self._target(step, self._step_config(step).tiers[0])
+                    current, step, self._target(step, self._step_plan(step).tiers[0])
                 )
             except ValueError:
                 pass
@@ -783,7 +783,7 @@ class ExecutionContext:
         invoke: Callable[[ExecutionTarget], Awaitable[Any]],
     ) -> Any:
         if not self.config.fallback_enabled:
-            target = self._target(step, self._step_config(step).tiers[0])
+            target = self._target(step, self._step_plan(step).tiers[0])
             result = await invoke(target)
             self._record_direct_success(step, target)
             return result
@@ -807,7 +807,7 @@ class ExecutionContext:
         make_stream: Callable[[ExecutionTarget], AsyncIterator[Any]],
     ) -> AsyncIterator[Any]:
         if not self.config.fallback_enabled:
-            target = self._target(step, self._step_config(step).tiers[0])
+            target = self._target(step, self._step_plan(step).tiers[0])
             async for chunk in make_stream(target):
                 if chunk is not AGENT_ACTIVITY:
                     yield chunk

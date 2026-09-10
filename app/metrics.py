@@ -76,7 +76,8 @@ if _ENABLED:
         _reg_kw = {"registry": REGISTRY}
 
     # Which tier actually served a step (incremented where fallback commits/returns).
-    # kind = "oss" | "managed"; provider/model identify the concrete tier.
+    # kind = "oss" for self-hosted providers, otherwise "managed";
+    # provider/model identify the concrete route.
     _served_total = Counter(
         "llm_served_total",
         "Turns served, by step and the tier that actually served them.",
@@ -119,7 +120,7 @@ _BREAKER_STATE_CODES = {"closed": 0, "half_open": 1, "half-open": 1, "open": 2}
 
 
 def record_served(step: object, kind: object, provider: object, model: object) -> None:
-    """A step was served by ``kind`` (oss/managed) tier ``provider``/``model``.
+    """A step was served by ``kind`` (self-hosted/managed) route.
 
     Call at the point the walker commits/returns a result (``_record_served`` sites).
     The aggregate ``managed``-share over this counter is the system's core KPI."""
