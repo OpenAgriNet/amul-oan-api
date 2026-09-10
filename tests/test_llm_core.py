@@ -30,6 +30,20 @@ def _openai_model_types() -> tuple[str, ...]:
     return ("OpenAIChatModel", "OpenAIModel")
 
 
+def test_metrics_multiprocess_initializes_on_fresh_import(tmp_path):
+    import subprocess
+    import sys
+
+    env = os.environ.copy()
+    env["PROMETHEUS_MULTIPROC_DIR"] = str(tmp_path)
+    subprocess.run(
+        [sys.executable, "-c", "import app.metrics as m; assert m.REGISTRY is None"],
+        cwd=os.path.dirname(os.path.dirname(__file__)),
+        env=env,
+        check=True,
+    )
+
+
 # ── factory superset ──────────────────────────────────────────────────────────
 
 def test_factory_vllm_agent_builds_openai_model_with_base_url():
