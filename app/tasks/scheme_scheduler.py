@@ -27,22 +27,30 @@ def get_scheme_scheduler():
 def _create_scheduler():
     try:
         from apscheduler.schedulers.asyncio import AsyncIOScheduler
+        from apscheduler.triggers.combining import OrTrigger
         from apscheduler.triggers.cron import CronTrigger
     except ModuleNotFoundError:
         logger.exception("APScheduler dependency is unavailable for scheme scheduler")
         raise
 
+    tz = ZoneInfo(settings.timezone)
     logger.info("Creating scheme scheduler timezone=%s", settings.timezone)
-    scheduler = AsyncIOScheduler(timezone=ZoneInfo(settings.timezone))
+    scheduler = AsyncIOScheduler(timezone=tz)
     scheduler.add_job(
         refresh_all_scheme_sources,
-        trigger=CronTrigger(hour=0, minute=0, second=0, timezone=ZoneInfo(settings.timezone)),
+        trigger=OrTrigger([
+            CronTrigger(hour=4, minute=0, second=0, timezone=tz),
+            CronTrigger(hour=18, minute=0, second=0, timezone=tz),
+        ]),
         id="refresh_milk_producer_schemes",
         max_instances=1,
         coalesce=True,
         replace_existing=True,
     )
-    logger.info("Registered scheme scheduler job id=refresh_milk_producer_schemes cron=00:00:00 timezone=%s", settings.timezone)
+    logger.info(
+        "Registered scheme scheduler job id=refresh_milk_producer_schemes cron=04:00:00,18:00:00 timezone=%s",
+        settings.timezone,
+    )
     return scheduler
 
 
