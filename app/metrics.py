@@ -22,7 +22,6 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Optional
 
 from app.config import settings
 
@@ -36,6 +35,25 @@ logger = logging.getLogger(__name__)
 # (e.g. /tmp/prom_multiproc, a fresh dir per container) whenever workers > 1.
 _MULTIPROC_DIR = settings.prometheus_multiproc_dir
 
+# prometheus_client chooses its process-local or mmap-backed value class when it
+# is imported. Validate the directory, and reflect settings loaded from .env into
+# os.environ, before that choice is made. If setup fails, removing both supported
+# spellings makes the import below select normal in-process metrics.
+if _MULTIPROC_DIR:
+    try:
+        os.makedirs(_MULTIPROC_DIR, exist_ok=True)
+        os.environ["PROMETHEUS_MULTIPROC_DIR"] = _MULTIPROC_DIR
+    except OSError as exc:
+        logger.warning(
+            "Could not initialize PROMETHEUS_MULTIPROC_DIR=%s: %s; "
+            "using in-process metrics",
+            _MULTIPROC_DIR,
+            exc,
+        )
+        os.environ.pop("PROMETHEUS_MULTIPROC_DIR", None)
+        os.environ.pop("prometheus_multiproc_dir", None)
+        _MULTIPROC_DIR = None
+
 try:  # optional dependency — the pipeline runs fine without it (no-op mode)
     from prometheus_client import (
         CollectorRegistry,
@@ -48,19 +66,6 @@ try:  # optional dependency — the pipeline runs fine without it (no-op mode)
     _ENABLED = True
     if _MULTIPROC_DIR:
         from prometheus_client import multiprocess as _multiprocess
-
-        # Best-effort: ensure the shared dir exists (fresh per container, so no stale
-        # cross-restart files). Never fatal — fall back to in-process on any error.
-        try:
-            os.makedirs(_MULTIPROC_DIR, exist_ok=True)
-        except OSError as exc:
-            logger.warning(
-                "Could not initialize PROMETHEUS_MULTIPROC_DIR=%s: %s; "
-                "using in-process metrics",
-                _MULTIPROC_DIR,
-                exc,
-            )
-            _MULTIPROC_DIR = None
 except Exception:  # pragma: no cover - exercised only where the lib is absent
     _ENABLED = False
     _MULTIPROC_DIR = None

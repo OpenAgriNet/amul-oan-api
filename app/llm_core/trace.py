@@ -7,8 +7,8 @@ TRACING ONLY — this module changes NO pipeline behaviour.
 Landing path (important): this Langfuse SDK has **no** ``update_current_trace``,
 and the working ``propagate_attributes(metadata=...)`` path maps to OTEL span
 attributes whose values are SIZE-CAPPED (~128-256 chars) — a big nested blob is
-silently dropped. So the request path builds ``pt`` (via :func:`begin` +
-:func:`populate`) and merges :func:`compact_metadata` (short flat keys —
+silently dropped. So the request path builds ``pt`` via :func:`begin` and merges
+:func:`compact_metadata` (short flat keys —
 ``pipeline_profile`` / ``pipeline_flags`` / ``pc_<step>``) into the SAME metadata
 dict it already hands to ``propagate_attributes`` / ``VoiceTrace.metadata``. The
 COMPLETE static config is logged once at boot by :func:`log_full_config`
@@ -47,7 +47,7 @@ class StepRecord:
     model: Optional[str] = None          # primary tier's model name
     endpoint: Optional[str] = None       # primary tier's endpoint URL (or "managed")
     timeout_ms: Optional[int] = None     # primary tier's per-attempt timeout
-    tier_chain: list[dict] = field(default_factory=list)  # ordered, primary-first
+    kind: Optional[str] = None           # primary tier's kind ("oss"/"managed")
     tier_served_route: Optional[str] = None  # provider:model plus optional config label
     tier_served_index: Optional[int] = None  # 0 = primary, 1 = first fallback, ...
 
@@ -63,8 +63,8 @@ class StepRecord:
             "model": self.model,
             "endpoint": self.endpoint,
             "timeout_ms": self.timeout_ms,
+            "kind": self.kind,
             "tier_served": served,
-            "chain": self.tier_chain,
         }
 
 
@@ -135,18 +135,7 @@ def set_step_primary(pt: Optional[PipelineTrace], step: Any, tier: Any) -> None:
     rec.model = getattr(tier, "model_name", None)
     rec.endpoint = getattr(tier, "endpoint", None)
     rec.timeout_ms = _timeout_ms(tier)
-    if not rec.tier_chain:
-        rec.tier_chain = [_tier_summary(tier)]
-
-
-def _tier_summary(tier: Any) -> dict:
-    """A secret-free summary of an execution target."""
-    return {
-        "kind": getattr(tier, "kind", None),
-        "provider": getattr(tier, "provider", None),
-        "model": getattr(tier, "model_name", None),
-        "endpoint": getattr(tier, "endpoint", None),
-    }
+    rec.kind = getattr(tier, "kind", None)
 
 
 def _timeout_ms(tier: Any) -> Optional[int]:
@@ -211,17 +200,15 @@ def compact_metadata(pt: Optional[PipelineTrace]) -> dict:
         )
         for step_name, sv in (pc.get("steps") or {}).items():
             sv = sv or {}
-            chain = sv.get("chain") or [{}]
-            configured_kind = chain[0].get("kind")
             out[f"pc_{step_name}"] = (
                 f'{sv.get("provider")}:{sv.get("model")}@{sv.get("endpoint")}'
-                f'#{configured_kind}({sv.get("timeout_ms")}ms)'
+                f'#{sv.get("kind")}({sv.get("timeout_ms")}ms)'
             )
     except Exception as e:  # pragma: no cover - defensive
         logger.debug("llm_core.trace: compact_metadata failed: %s", e)
     # Hard-cap every value (a long endpoint/model can't exceed the OTEL cap and
     # silently drop the key) and drop None values (propagate_attributes expects
-    # string attribute values — a None profile on the populate-failure path must
+    # string attribute values — a missing profile must
     # never reach it).
     return {k: v[:_ATTR_CAP] for k, v in out.items() if isinstance(v, str)}
 

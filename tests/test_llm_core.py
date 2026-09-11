@@ -44,6 +44,38 @@ def test_metrics_multiprocess_initializes_on_fresh_import(tmp_path):
     )
 
 
+def test_metrics_invalid_multiprocess_dir_falls_back_with_samples(tmp_path):
+    import subprocess
+    import sys
+
+    blocked = tmp_path / "not-a-directory"
+    blocked.write_text("")
+    env = os.environ.copy()
+    env["PROMETHEUS_MULTIPROC_DIR"] = str(blocked / "metrics")
+    env.pop("prometheus_multiproc_dir", None)
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import app.metrics as m; "
+                "m.record_served('agent', 'managed', 'openai', 'gpt'); "
+                "print(m.render()[0].decode())"
+            ),
+        ],
+        cwd=os.path.dirname(os.path.dirname(__file__)),
+        env=env,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    sample = (
+        'llm_served_total{kind="managed",model="gpt",provider="openai",'
+        'step="agent"} 1.0'
+    )
+    assert sample in result.stdout
+
+
 # ── factory superset ──────────────────────────────────────────────────────────
 
 def test_factory_vllm_agent_builds_openai_model_with_base_url():
