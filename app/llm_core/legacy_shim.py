@@ -10,10 +10,11 @@ this is a parallel, additive reader.
 
 Profiles: ``[oss(weight=OSS_PIPELINE_PCT), managed(100-pct)]`` when OSS is
 configured (``OSS_INFERENCE_ENDPOINT_URL`` set), else ``[managed(100)]`` — matching
-``pipeline_router`` / ``oss_model_available()``. For the OSS profile each LLM step
-carries ``[oss, managed]`` tiers (mirroring ``fallback.attempt_chain``); managed
-carries ``[managed]``. Post-translation (TranslateGemma) is profile-invariant and
-lives in ``defaults``.
+``pipeline_router`` / ``oss_model_available()``. Chat hardcodes the ``oss``
+profile by name (keep ``OSS_PIPELINE_PCT=100`` so that profile is present).
+For the OSS profile each LLM step carries ``[oss, managed]`` tiers (mirroring
+``fallback.attempt_chain``); managed carries ``[managed]``. Post-translation
+(TranslateGemma) is profile-invariant and lives in ``defaults``.
 
 Kept free of ``agents.*`` / ``app.services.*`` imports — reads centralized
 ``app.config`` values only —

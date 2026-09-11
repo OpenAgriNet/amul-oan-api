@@ -2,8 +2,6 @@ from fastapi import APIRouter, Depends, BackgroundTasks
 from fastapi.responses import JSONResponse, StreamingResponse
 from app.auth.jwt_auth import get_chat_user
 from app.services.chat import stream_chat_messages
-from app.llm_core import split as _llm_split
-from app.config import settings
 from app.utils import _get_message_history
 from app.models.requests import ChatRequest
 from app.personas import history_session_id_for_persona, resolve_chat_persona
@@ -40,12 +38,9 @@ async def chat_endpoint(
     history = await _get_message_history(history_session_id)
     logger.debug(f"Retrieved message history for session {session_id} - length: {len(history)}")
 
-    # Sticky per-session routing via the unified weighted named-profile split
-    # (the only path). The routing token is the actual profile NAME (N-way), threaded
-    # downstream and served DIRECTLY (no oss/legacy collapse). With the env-synthesized
-    # config (OSS_PIPELINE_PCT -> profile weights) the profile is named oss/managed and
-    # this is the same bit-compatible sha256 bucket assignment as before.
-    pipeline_profile = await _llm_split.resolve_profile(session_id)
+    # OSS is primary for all chat traffic; managed remains the fallback tier inside
+    # the oss profile's step chains (when FALLBACK_ENABLED).
+    pipeline_profile = "oss"
 
     artifacts: list[dict] = []
     message_stream = stream_chat_messages(

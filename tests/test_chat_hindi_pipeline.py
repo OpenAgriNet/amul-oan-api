@@ -85,6 +85,19 @@ def test_hindi_source_uses_pretranslation_then_hindi_output(monkeypatch):
     monkeypatch.setattr(chat_service, "cache", _DummyCache())
     monkeypatch.setattr(chat_service, "trim_history", lambda *_args, **_kwargs: [])
     monkeypatch.setattr(chat_service, "format_message_pairs", lambda *_args, **_kwargs: "")
+    # Keep OSS-primary behaviour deterministic regardless of local pipeline config.
+    _oss_tier = SimpleNamespace(
+        kind="oss",
+        handle=object(),
+        provider="vllm",
+        model_name="gemma-test",
+    )
+    monkeypatch.setattr(
+        chat_service._llm_resolver, "primary_tier", lambda *_a, **_k: _oss_tier
+    )
+    monkeypatch.setattr(
+        chat_service._llm_resolver, "primary_handle", lambda *_a, **_k: _oss_tier.handle
+    )
 
     async def _fake_set_cache(*_args, **_kwargs):
         return None
@@ -147,7 +160,7 @@ def test_hindi_source_uses_pretranslation_then_hindi_output(monkeypatch):
             user_info={},
             background_tasks=BackgroundTasks(),
             use_translation_pipeline=True,
-            pipeline_profile="managed",
+            pipeline_profile="oss",
         ):
             chunks.append(chunk)
         return "".join(chunks)
@@ -159,7 +172,7 @@ def test_hindi_source_uses_pretranslation_then_hindi_output(monkeypatch):
         {
             "text": "मुझे अपनी गाय को कितना पानी पिलाना चाहिए?",
             "source_lang": "hi",
-            "provider": None,
+            "provider": "vllm",
         }
     ]
     assert moderation_messages and "How much water should I give my cow?" in moderation_messages[0]

@@ -246,7 +246,7 @@ async def stream_chat_messages(
     user_info: dict,
     background_tasks: BackgroundTasks,
     use_translation_pipeline: bool = True,
-    pipeline_profile: str = "managed",
+    pipeline_profile: str = "oss",
     persona: ChatPersona = "farmer",
     history_session_id: str | None = None,
     artifact_sink: list[dict[str, Any]] | None = None,
@@ -259,13 +259,10 @@ async def stream_chat_messages(
     # The turn's channel profile: what differs between delivery channels, resolved
     # once here rather than re-derived at each use site.
     profile = _profile_for(channel)
-    # The oss-vs-managed behavioural split is derived from the resolved AGENT primary
-    # tier KIND (not a variant string): a vllm/self-hosted primary (gemma, qwen, ...)
-    # materializes kind "oss"; a managed provider (openai/anthropic/gemini) -> "managed".
-    # So a qwen-on-vLLM profile correctly takes the OSS path and a gpt profile the
-    # managed path. With the 2-way env-shim (profile named oss/managed) this equals
-    # the old ``pipeline_variant == "oss"`` bit exactly (oss profile's agent tier is
-    # vllm -> kind "oss"; managed profile's is the managed provider -> "managed").
+    # Chat always receives pipeline_profile="oss" from the router. Behaviour still
+    # follows the AGENT primary tier KIND for that profile: vLLM/self-hosted ->
+    # kind "oss"; managed providers -> kind "managed". Managed remains available
+    # as a fallback tier inside the oss profile's step chains.
     agent_tier = _llm_resolver.primary_tier(_LlmStep.AGENT, pipeline_profile)
     is_oss = agent_tier.kind == "oss"
     use_translation_pipeline = bool(use_translation_pipeline) or is_oss
@@ -285,11 +282,7 @@ async def stream_chat_messages(
         )
     except Exception as _pt_exc:  # pragma: no cover - tracing must never break the turn
         logger.debug("pipeline_config populate skipped: %s", _pt_exc)
-    # Model selection is resolved by the unified pipeline (the only path): the
-    # agent + moderation handles, the provider, and the display model name all
-    # come from the resolved primary tier for this session's profile (agent_tier
-    # resolved above). For the current env this is the same provider/base_url/model
-    # the removed get_model_for_variant returned, generalized to the weighted split.
+    # Model selection comes from the profile's primary AGENT/MODERATION tiers.
     request_model = agent_tier.handle
     request_provider = agent_tier.provider
     request_model_name = agent_tier.model_name
