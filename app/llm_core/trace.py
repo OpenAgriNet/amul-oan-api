@@ -14,8 +14,8 @@ dict it already hands to ``propagate_attributes`` / ``VoiceTrace.metadata``. The
 COMPLETE static config is logged once at boot by :func:`log_full_config`
 (``grep llm_core.full_config``).
 
-The ``pt`` instance is threaded explicitly because the ContextVar does not
-survive Starlette's StreamingResponse async-generator boundary.
+The ``pt`` instance is threaded explicitly through the request and execution
+paths, including across Starlette's StreamingResponse generator boundary.
 
 SECRETS: records endpoints (already in logs), providers, model names and timeouts
 — and the *name* of a tier's api-key env var, never its value. It never reads or
@@ -28,7 +28,6 @@ repo mirrors this file byte-for-byte and the eventual repo-merge stays mechanica
 
 from __future__ import annotations
 
-import contextvars
 import json
 from dataclasses import dataclass, field
 from typing import Any, Optional
@@ -98,11 +97,6 @@ class PipelineTrace:
         }
 
 
-_CTX: contextvars.ContextVar[Optional[PipelineTrace]] = contextvars.ContextVar(
-    "llm_core_pipeline_trace", default=None
-)
-
-
 def snapshot_flags() -> dict:
     """The operational trigger flags that gate the pipeline — recorded so a turn's
     trace shows which machinery was even eligible to fire. The llm_core/profiles
@@ -117,38 +111,11 @@ def snapshot_flags() -> dict:
 
 
 def begin(profile_name: Optional[str] = None) -> PipelineTrace:
-    """Open a fresh per-turn recorder and install it in the context. Idempotent
-    per turn: the chat/voice request path calls this once, near the top, as soon
-    as the resolved profile NAME is known. ``profile_name`` seeds the profile so
-    ``pipeline_profile`` lands even before ``populate``/``record_profile`` refine it
-    (with the authoritative weight)."""
-    pt = PipelineTrace(profile_name=profile_name, flags=snapshot_flags())
-    _CTX.set(pt)
-    return pt
+    """Create the explicit per-turn recorder."""
+    return PipelineTrace(profile_name=profile_name, flags=snapshot_flags())
 
 
-def current() -> Optional[PipelineTrace]:
-    return _CTX.get()
-
-
-def clear() -> None:
-    _CTX.set(None)
-
-
-# ── record hooks (all no-op when no context is active) ────────────────────────
-def record_profile(name: str, weight: Optional[int]) -> None:
-    pt = _CTX.get()
-    if pt is None:
-        return
-    pt.profile_name = name
-    pt.profile_weight = weight
-
-
-# ── EXPLICIT-instance API (contextvar-independent) ────────────────────────────
-# The ContextVar does NOT survive Starlette's StreamingResponse async-generator
-# consumption (each __anext__ step can run under a different context snapshot), so
-# the request path holds the ``pt`` returned by ``begin()`` and threads it
-# explicitly to the final served-route recorder.
+# ── explicit-instance API ────────────────────────────────────────────────────
 def set_profile(pt: Optional[PipelineTrace], name: str, weight: Optional[int]) -> None:
     if pt is None:
         return
@@ -158,8 +125,8 @@ def set_profile(pt: Optional[PipelineTrace], name: str, weight: Optional[int]) -
 
 def set_step_primary(pt: Optional[PipelineTrace], step: Any, tier: Any) -> None:
     """Set a step's PRIMARY resolved tier (provider/model/endpoint/timeout) on an
-    explicit trace from an execution target. Independent of the contextvar.
-    Preserves a served route already set on the same step."""
+    explicit trace from an execution target. Preserves a served route already
+    set on the same step."""
     if pt is None or tier is None:
         return
     name = getattr(step, "value", step)
@@ -187,23 +154,6 @@ def _timeout_ms(tier: Any) -> Optional[int]:
     return int(round(t * 1000)) if t is not None else None
 
 
-def record_step_chain(step: Any, chain: list) -> None:
-    """Record the resolved tier chain for a step: primary tier's
-    provider/model/endpoint/timeout + the ordered chain. Served-tier state is
-    recorded only after an attempt succeeds."""
-    pt = _CTX.get()
-    if pt is None or not chain:
-        return
-    name = getattr(step, "value", step)
-    rec = pt.step(name)
-    primary = chain[0]
-    rec.provider = getattr(primary, "provider", None)
-    rec.model = getattr(primary, "model_name", None)
-    rec.endpoint = getattr(primary, "endpoint", None)
-    rec.timeout_ms = _timeout_ms(primary)
-    rec.tier_chain = [_tier_summary(t) for t in chain]
-
-
 def record_served(
     step: Any,
     route: Optional[str],
@@ -212,11 +162,10 @@ def record_served(
     trace_state: Optional[PipelineTrace] = None,
 ) -> None:
     """Record the route and chain index that produced the answer."""
-    pt = trace_state or _CTX.get()
-    if pt is None:
+    if trace_state is None:
         return
     name = getattr(step, "value", step)
-    rec = pt.step(name)
+    rec = trace_state.step(name)
     rec.tier_served_route = route
     rec.tier_served_index = index
 

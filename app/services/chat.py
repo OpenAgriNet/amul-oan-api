@@ -243,11 +243,8 @@ async def stream_chat_messages(
         or execution.capabilities.requires_translation
     )
     # Open the per-turn pipeline-config tracer and hold the EXPLICIT instance.
-    # The ContextVar does NOT survive Starlette's StreamingResponse async-generator
-    # consumption, so we populate the must-have static fields (profile, variant,
-    # flags, per-step PRIMARY tier) directly onto `pt` here and pass `pt` to every
-    # emit site — never relying on a contextvar read at emit time. Deep trigger /
-    # served-tier recording stays best-effort on top (via the contextvar).
+    # Populate the static fields directly and pass the trace state explicitly
+    # across Starlette's StreamingResponse async-generator boundary.
     try:
         pt = execution.begin_trace()
     except Exception as _pt_exc:  # pragma: no cover - tracing must never break the turn

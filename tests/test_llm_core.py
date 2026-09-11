@@ -204,6 +204,11 @@ def test_shim_builds_azure_pretranslation_and_rejects_gemini(monkeypatch):
     assert (pre.provider, pre.model) == (Provider.AZURE, "custom-deployment")
 
     monkeypatch.setenv("LLM_PROVIDER", "gemini")
+    monkeypatch.delenv("PRETRANSLATION_PROVIDER", raising=False)
+    pre = synthesize_from_env().by_name("managed").steps[Step.PRE_TRANSLATION].tiers[0]
+    assert pre.provider is Provider.OPENAI
+
+    monkeypatch.setenv("PRETRANSLATION_PROVIDER", "gemini")
     with pytest.raises(ValueError, match="PRETRANSLATION_PROVIDER='gemini'"):
         synthesize_from_env()
 
@@ -359,6 +364,7 @@ def test_omitted_capabilities_preserve_vllm_gemma_behavior():
         )]),
     })])
 
+    cfg = runtime.normalize_config(cfg)
     capabilities = ExecutionContext("s", cfg, "old-yaml").capabilities
     assert capabilities.requires_translation is True
     assert capabilities.history_max_tokens == 10_000
@@ -380,6 +386,20 @@ def test_config_ingress_applies_plan_wide_history_defaults(monkeypatch):
     monkeypatch.setenv("CHAT_HISTORY_MAX_TOKENS", "12345")
     normalized = runtime.normalize_config(cfg)
     assert normalized.by_name("mixed").capabilities.history_max_tokens == 12345
+
+
+def test_config_ingress_preserves_dormant_agentless_profile():
+    from app.llm_core.config_model import NamedProfile, PipelineConfig, StepConfig
+
+    cfg = PipelineConfig(profiles=[
+        NamedProfile(name="dormant", weight=0),
+        NamedProfile(name="managed", weight=100, steps={
+            Step.AGENT: StepConfig(tiers=[Tier(provider=Provider.OPENAI, model="gpt")])
+        }),
+    ])
+    normalized = runtime.normalize_config(cfg)
+    assert normalized.by_name("dormant").capabilities is None
+    runtime.validate_content(normalized)
 
 
 def test_partial_capabilities_merge_with_reachable_overflow():
@@ -407,22 +427,23 @@ def test_partial_capabilities_merge_with_reachable_overflow():
         capabilities=ProfileCapabilities(history_max_tokens=20_000),
         steps={Step.AGENT: agent},
     )], fallback_enabled=True)
+    cfg = runtime.normalize_config(cfg)
     capabilities = ExecutionContext("s", cfg, "mixed").capabilities
     assert capabilities.requires_translation is True
     assert capabilities.history_max_tokens == 20_000
     assert cfg.step_plan(cfg.by_name("mixed"), Step.AGENT).concurrency_gate is None
 
-    inactive = cfg.model_copy(update={
+    inactive = runtime.normalize_config(cfg.model_copy(update={
         "fallback_enabled": False,
         "profiles": [cfg.profiles[0].model_copy(update={"capabilities": None})],
-    })
+    }))
     capabilities = ExecutionContext("s", inactive, "mixed").capabilities
     assert capabilities.requires_translation is False
     assert capabilities.history_max_tokens == 80_000
 
-    cfg = cfg.model_copy(update={"profiles": [cfg.profiles[0].model_copy(update={
+    cfg = runtime.normalize_config(cfg.model_copy(update={"profiles": [cfg.profiles[0].model_copy(update={
         "capabilities": ProfileCapabilities(requires_translation=False)
-    })]})
+    })]}))
     capabilities = ExecutionContext("s", cfg, "mixed").capabilities
     assert capabilities.requires_translation is False
     assert capabilities.history_max_tokens == 80_000
@@ -488,12 +509,12 @@ def test_posttranslation_reuses_compatible_agent_model(monkeypatch, provider):
     monkeypatch.setenv("GEMINI_API_KEY", "test-gemini-key")
     monkeypatch.delenv("OSS_INFERENCE_ENDPOINT_URL", raising=False)
     monkeypatch.delenv("PIPELINE_CONFIG_PATH", raising=False)
-    if provider == "gemini":
-        monkeypatch.setenv("PRETRANSLATION_PROVIDER", "openai")
     monkeypatch.setattr(runtime, "PIPELINE", None)
     monkeypatch.setattr(runtime, "BOOT_PIPELINE", None)
 
     cfg = runtime.configure()
+    if provider == "gemini":
+        assert cfg.by_name("managed").steps[Step.PRE_TRANSLATION].tiers[0].provider is Provider.OPENAI
     post = cfg.defaults[Step.POST_TRANSLATION].tiers
     assert [tier.provider for tier in post] == [Provider.TRANSLATEGEMMA]
 

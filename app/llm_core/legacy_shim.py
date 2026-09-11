@@ -104,7 +104,15 @@ def _pretranslation_model_default(provider: str) -> str:
 
 def _managed_pretranslation_tier(timeout_ms: int) -> Tier:
     llm_provider = (_env("LLM_PROVIDER", "openai") or "openai").lower()
-    provider = (_env("PRETRANSLATION_PROVIDER", llm_provider) or llm_provider).lower()
+    configured_provider = _env("PRETRANSLATION_PROVIDER")
+    provider = (
+        configured_provider
+        or (
+            llm_provider
+            if llm_provider in {"openai", "azure-openai", "anthropic", "vllm"}
+            else "openai"
+        )
+    ).lower()
     model = _env("PRETRANSLATION_MODEL", _pretranslation_model_default(provider)) or _pretranslation_model_default(provider)
 
     if provider == "vllm":

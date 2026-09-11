@@ -694,7 +694,12 @@ class ExecutionContext:
 
     @cached_property
     def capabilities(self):
-        return self.config.effective_capabilities(self.profile)
+        capabilities = self.profile.capabilities
+        if capabilities is None:
+            raise ValueError(
+                f"profile={self.profile.name} has not been normalized"
+            )
+        return capabilities
 
     def _step_plan(self, step: Step):
         plan = self.config.step_plan(self.profile, step)
@@ -837,6 +842,6 @@ async def context(session_id: str) -> ExecutionContext:
     """Snapshot current config and resolve the session profile exactly once."""
     from app.llm_core import runtime, split
 
-    config = runtime.get_pipeline().model_copy(deep=True)
+    config = runtime.get_pipeline()
     profile_name = await split.resolve_profile(session_id, config)
     return ExecutionContext(session_id=session_id, config=config, profile_name=profile_name)

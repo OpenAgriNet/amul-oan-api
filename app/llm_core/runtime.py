@@ -132,7 +132,9 @@ def normalize_config(pipeline: PipelineConfig) -> PipelineConfig:
         "CHAT_HISTORY_MAX_TOKENS_VLLM_GEMMA", 10_000
     )
     profiles = [
-        profile.model_copy(update={
+        profile
+        if pipeline.step_plan(profile, Step.AGENT) is None
+        else profile.model_copy(update={
             "capabilities": pipeline.effective_capabilities(
                 profile,
                 history_default_tokens=history_default,

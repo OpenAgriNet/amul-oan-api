@@ -114,10 +114,6 @@ async def resolve_chain(
         name = await resolve_profile(session_id, pipeline)
     profile = _profile_for(pipeline, name)
 
-    # tracing-only (no behaviour change): the weighted profile this turn resolved.
-    from app.llm_core import trace as _trace
-    _trace.record_profile(profile.name, profile.weight)
-
     plan = pipeline.step_plan(profile, step)
     if plan is None:
         raise ValueError(f"no config for step={step.value} in profile={profile.name}")
@@ -141,6 +137,4 @@ async def resolve_chain(
         ExecutionTarget(tier, tier_client_kind(STEP_CLIENT_KIND[step], tier))
         for tier in tiers
     ]
-    # tracing-only: the resolved primary tier + full chain for this step.
-    _trace.record_step_chain(step, chain)
     return chain

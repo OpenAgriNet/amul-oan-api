@@ -27,7 +27,7 @@ import json
 
 import pytest
 
-from app.llm_core import ExecutionContext, trace, split
+from app.llm_core import ExecutionContext, trace
 from app.llm_core.config_model import (
     ConcurrencyGate,
     NamedProfile,
@@ -70,33 +70,8 @@ def _cfg(pct=100, triggers=None) -> PipelineConfig:
     )
 
 
-@pytest.fixture(autouse=True)
-def _fresh_ctx():
-    trace.clear()
-    yield
-    trace.clear()
-
-
-# ── (a) resolved profile + per-step tier populate the pipeline metadata ────────
-def test_resolve_chain_populates_profile_and_step(monkeypatch):
-    import asyncio
-    trace.begin("oss")
-    asyncio.run(split.resolve_chain("", Step.AGENT, _cfg(100)))
-
-    md = trace.current().to_metadata()
-    assert md["profile"] == {"name": "oss", "weight": 100}
-    step = md["steps"]["agent"]
-    assert step["provider"] == "vllm"
-    assert step["model"] == "gemma"
-    assert step["endpoint"] == "http://oss:8020/v1"
-    assert step["timeout_ms"] == 8000
-    assert step["tier_served"] is None
-    assert [t["kind"] for t in step["chain"]] == ["oss", "managed"]
-
-
 def test_flags_present_in_metadata():
-    trace.begin("legacy")
-    flags = trace.current().to_metadata()["flags"]
+    flags = trace.begin("legacy").to_metadata()["flags"]
     # P4 removed the llm_core/profiles kill-switches; only the operational triggers remain.
     assert set(flags) == {
         "health_breaker_enabled", "health_poller_enabled",
@@ -105,10 +80,8 @@ def test_flags_present_in_metadata():
 
 # ── (b) secrets never leak ─────────────────────────────────────────────────────
 def test_no_api_key_value_in_metadata():
-    import asyncio
-    trace.begin("oss")
-    asyncio.run(split.resolve_chain("", Step.AGENT, _cfg(100)))
-    blob = json.dumps(trace.current().to_metadata())
+    pt = ExecutionContext("", _cfg(100), "oss").begin_trace()
+    blob = json.dumps(pt.to_metadata())
     assert _SECRET not in blob
     # The env-var NAME is fine to trace; the VALUE must never appear.
     assert "OSS_INFERENCE_API_KEY" not in blob  # not even the name (metadata omits it)
@@ -143,8 +116,8 @@ def test_fallback_walker_records_served_index(monkeypatch, materialized_tier):
     oss = materialized_tier("oss", object(), model_name="gemma")
     managed = materialized_tier("managed", object(), model_name="gpt-4.1")
 
-    trace.begin("oss")
-    trace.record_step_chain(Step.AGENT, [oss, managed])  # seed primary=index0
+    pt = trace.begin("oss")
+    trace.set_step_primary(pt, Step.AGENT, oss)
 
     async def _run(a):
         if a.kind == "oss":
@@ -152,9 +125,11 @@ def test_fallback_walker_records_served_index(monkeypatch, materialized_tier):
         return "answer"
 
     out = asyncio.run(fb.execute_with_fallback(
-        step=Step.AGENT, session_id="s", run=_run, chain=[oss, managed]))
+        step=Step.AGENT, session_id="s", run=_run, chain=[oss, managed],
+        trace_state=pt,
+    ))
     assert out == "answer"
-    served = trace.current().to_metadata()["steps"]["agent"]["tier_served"]
+    served = pt.to_metadata()["steps"]["agent"]["tier_served"]
     assert served == {
         "route": "openai:gpt-4.1",
         "index": 1,
@@ -253,17 +228,3 @@ def test_no_update_current_trace_symbol_remains():
     src = __import__("inspect").getsource(trace)
     assert "update_current_trace(" not in src   # no CALL to the missing SDK method
     assert "import get_client" not in src
-
-
-# ── (e) no active context -> recorders are a cheap no-op ───────────────────────
-def test_recorders_noop_without_context():
-    import asyncio
-    trace.clear()
-    assert trace.current() is None
-    # None of these should raise or set anything.
-    trace.record_profile("oss", 100)
-    trace.record_step_chain(Step.AGENT, [])
-    trace.record_served(Step.AGENT, "managed", 1)
-    # split resolving with no context is still a clean no-op for tracing.
-    asyncio.run(split.resolve_chain("", Step.AGENT, _cfg(100)))
-    assert trace.current() is None
