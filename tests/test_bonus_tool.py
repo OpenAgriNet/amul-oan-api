@@ -109,6 +109,21 @@ class TestBonusTool:
 
         assert "No bonus records were found" in result
 
+    def test_not_found_empty_result_is_not_amcs_failure(self, monkeypatch):
+        """Backend maps 'Farmer bonus data not found' → []; tool must not show AMCS failure."""
+        _patch_farmers(monkeypatch, [_farmer()])
+        monkeypatch.setenv("PASHUGPT_TOKEN", "test-token")
+
+        async def not_found_as_empty(request, token):
+            return []
+
+        monkeypatch.setattr(bonus_tool, "get_farmer_bonus_amount_api", not_found_as_empty)
+        result = asyncio.run(bonus_tool.get_farmer_bonus_amount(_ctx()))
+
+        assert "No bonus records were found" in result
+        assert "AMCS" not in result
+        assert "Unable to fetch bonus amount details" not in result
+
     def test_all_provider_failures_return_temporary_failure(self, monkeypatch):
         _patch_farmers(monkeypatch, [_farmer()])
         monkeypatch.setenv("PASHUGPT_TOKEN", "test-token")

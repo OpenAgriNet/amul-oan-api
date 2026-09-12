@@ -830,8 +830,10 @@ async def get_farmer_bonus_amount_api(
 ) -> list[FarmerBonusAmountRecordModel] | None:
     """Fetches farmer bonus amount records (plain JSON array from GetFarmerBonusAmount).
 
-    Returns an empty list when the API responds 200 with `[]`. Returns None on
-    HTTP/parse/validation failure so callers can fan out across accounts.
+    Returns an empty list when the API responds 200 with `[]`, or when the
+    business body says farmer bonus data was not found. Returns None on
+    unsupported-union / HTTP/parse/validation failure so callers can fan out
+    across accounts.
     """
     api_url = f"{BASE_AMULPASHUDHAN}/GetFarmerBonusAmount"
 
@@ -877,6 +879,8 @@ async def get_farmer_bonus_amount_api(
                 body,
             )
         elif "Farmer bonus data not found" in body:
+            # No records for this account — treat as successful empty result so the
+            # tool can show "no bonus records" instead of a temporary failure.
             logger.info(
                 "[GetFarmerBonusAmount(%s,%s,%s)] :: No bonus data (status=%s): %s",
                 request.union_code,
@@ -885,6 +889,7 @@ async def get_farmer_bonus_amount_api(
                 e.response.status_code,
                 body,
             )
+            return []
         else:
             logger.error(
                 "[GetFarmerBonusAmount(%s,%s,%s)] :: Request failed with status code %s, "
