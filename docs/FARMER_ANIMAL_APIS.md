@@ -87,6 +87,47 @@ curl -X POST "https://banasmobileapi.amnex.com/api/FarmerVisitAPIKOS/GetOperated
 
 - Collection file: `Banas_Operated_Visit_New.postman_collection.json` (root of repo). Import into Postman to run the request; the collection contains the endpoint and example body.
 
+## GetFarmerBonusAmount (amulpashudhan)
+
+Fetches bonus amount(s) credited to a farmer for one or more periods. Used by the chat agent tool `get_farmer_bonus_amount` (signed-in only; codes come from authenticated mobile → farmer accounts, never from the LLM).
+
+| Backend       | Env var          | Endpoint |
+|---------------|------------------|----------|
+| amulpashudhan | `PASHUGPT_TOKEN` | `GET {AMULPASHUDHAN_BASE_URL}/GetFarmerBonusAmount` |
+
+**Request (query params)**
+
+- `unionCode` (string, required) — union / organization code (alphanumeric)
+- `societyCode` (string, required)
+- `farmerCode` (string, required)
+- Auth: `Authorization: Bearer {PASHUGPT_TOKEN}`, `Accept: application/json`
+
+**Success response (200)**
+
+A **plain JSON array** (not wrapped in `APIStatusCode` / `Message` / `Data`). Each item may include:
+
+- `societyCode`, `societyName`, `societyNameLocal`
+- `farmerCode`, `farmerName`, `farmerLocalName`
+- `bonusAmount` (decimal)
+- `fromDate`, `toDate` (ISO datetime strings)
+
+Empty array `[]` means no bonus records for that account.
+
+**Caveats**
+
+- Currently returns data only for unions whose master data source is **AMCS**. Unions sourced from Akashganga are not supported yet (business error: bonus amount not supported for that union’s data source).
+- There is **no Beckn / network path** for this endpoint; the tool calls PashuGPT directly.
+- The agent fans out one request per authenticated account and merges successful results.
+
+**Example**
+
+```bash
+curl --location \
+  "${AMULPASHUDHAN_BASE_URL}/GetFarmerBonusAmount?unionCode=0001&societyCode=2004&farmerCode=0001" \
+  --header 'accept: application/json' \
+  --header "Authorization: Bearer ${PASHUGPT_TOKEN}"
+```
+
 ## Exploration
 
 To capture raw responses from both APIs (for new phone/tag sets):
@@ -104,11 +145,11 @@ Edit `PHONE_NUMBERS` and `TAG_NUMBERS` in the script to probe different values.
 
 ## Env vars (summary)
 
-- `PASHUGPT_TOKEN`: amulpashudhan (farmer + animal).
+- `PASHUGPT_TOKEN`: amulpashudhan (farmer + animal + milk collection + bonus amount).
 - `PASHUGPT_TOKEN_2`: CVCC health API (see `get_cvcc_health_details`); not used by farmer/animal tools.
 - `PASHUGPT_TOKEN_3`: herdman.live (farmer + animal).
 
-At least one of `PASHUGPT_TOKEN` or `PASHUGPT_TOKEN_3` must be set for farmer and animal tools.
+At least one of `PASHUGPT_TOKEN` or `PASHUGPT_TOKEN_3` must be set for farmer and animal tools. Bonus amount requires `PASHUGPT_TOKEN`.
 
 ## Exploration summary (Jan 2026)
 
