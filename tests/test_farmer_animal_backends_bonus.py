@@ -127,6 +127,18 @@ class TestFarmerAnimalBackendsBonus:
 
         assert result is None
 
+    def test_farmer_bonus_data_not_found_returns_empty_list(self, monkeypatch):
+        _FakeAsyncClient.response = httpx.Response(
+            400,
+            text="Farmer bonus data not found.",
+            request=httpx.Request("GET", "https://example.test"),
+        )
+        monkeypatch.setattr(farmer_animal_backends.httpx, "AsyncClient", _FakeAsyncClient)
+
+        result = asyncio.run(get_farmer_bonus_amount_api(self._request(), "test-token"))
+
+        assert result == []
+
     def test_invalid_list_item_returns_none(self, monkeypatch):
         _FakeAsyncClient.response = httpx.Response(
             200,
