@@ -50,30 +50,34 @@ def test_metrics_invalid_multiprocess_dir_falls_back_with_samples(tmp_path):
 
     blocked = tmp_path / "not-a-directory"
     blocked.write_text("")
-    env = os.environ.copy()
-    env["PROMETHEUS_MULTIPROC_DIR"] = str(blocked / "metrics")
-    env.pop("prometheus_multiproc_dir", None)
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-c",
-            (
-                "import app.metrics as m; "
-                "m.record_served('agent', 'managed', 'openai', 'gpt'); "
-                "print(m.render()[0].decode())"
-            ),
-        ],
-        cwd=os.path.dirname(os.path.dirname(__file__)),
-        env=env,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
+    unwritable = tmp_path / "unwritable"
+    unwritable.mkdir(mode=0o555)
     sample = (
         'llm_served_total{kind="managed",model="gpt",provider="openai",'
         'step="agent"} 1.0'
     )
-    assert sample in result.stdout
+    for path in (blocked / "metrics", unwritable):
+        env = os.environ.copy()
+        env["PROMETHEUS_MULTIPROC_DIR"] = str(path)
+        env.pop("prometheus_multiproc_dir", None)
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                (
+                    "import app.metrics as m; "
+                    "m.record_served('agent', 'managed', 'openai', 'gpt'); "
+                    "assert m.REGISTRY is not None; "
+                    "print(m.render()[0].decode())"
+                ),
+            ],
+            cwd=os.path.dirname(os.path.dirname(__file__)),
+            env=env,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        assert sample in result.stdout
 
 
 # ── factory superset ──────────────────────────────────────────────────────────

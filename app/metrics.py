@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import logging
 import os
+import tempfile
 
 from app.config import settings
 
@@ -42,6 +43,8 @@ _MULTIPROC_DIR = settings.prometheus_multiproc_dir
 if _MULTIPROC_DIR:
     try:
         os.makedirs(_MULTIPROC_DIR, exist_ok=True)
+        with tempfile.NamedTemporaryFile(dir=_MULTIPROC_DIR):
+            pass
         os.environ["PROMETHEUS_MULTIPROC_DIR"] = _MULTIPROC_DIR
     except OSError as exc:
         logger.warning(
