@@ -3,10 +3,8 @@
 ``synthesize_from_env()`` reads the env exactly as the current wiring reads it —
 the former construction-time agent model wiring, ``translation.py``
 (pre/post-translation), ``pipeline_router`` (the OSS %-split) and the
-``FALLBACK_*`` timeouts — and emits an equivalent config so that, with
-``LLM_CORE_ENABLED`` on, the resolver reproduces the legacy provider / base_url /
-model / timeout for the current environment. No legacy env reading is removed;
-this is a parallel, additive reader.
+``FALLBACK_*`` timeouts — and emits an equivalent config for the core execution
+boundary.
 
 Profiles: ``[oss(weight=OSS_PIPELINE_PCT), managed(100-pct)]`` when OSS is
 configured (``OSS_INFERENCE_ENDPOINT_URL`` set), else ``[managed(100)]`` — matching
@@ -25,7 +23,7 @@ from __future__ import annotations
 import logging
 
 from app.llm_core.config_model import (
-    ApiStyle,
+    AdmissionPolicy,
     ConcurrencyGate,
     NamedProfile,
     PipelineConfig,
@@ -65,17 +63,21 @@ def _managed_agent_tier(timeout_ms: int, label: str) -> Tier:
                     api_key_env="INFERENCE_API_KEY", timeout_ms=timeout_ms, label=label)
     if provider == "anthropic":
         return Tier(provider=Provider.ANTHROPIC, model=model,
-                    api_key_env="ANTHROPIC_API_KEY", timeout_ms=timeout_ms, label=label)
+                    api_key_env="ANTHROPIC_API_KEY", timeout_ms=timeout_ms,
+                    admission=AdmissionPolicy.MANAGED, label=label)
     if provider == "gemini":
         return Tier(provider=Provider.GEMINI, model=model,
-                    api_key_env="GEMINI_API_KEY", timeout_ms=timeout_ms, label=label)
+                    api_key_env="GEMINI_API_KEY", timeout_ms=timeout_ms,
+                    admission=AdmissionPolicy.MANAGED, label=label)
     if provider == "azure-openai":
         return Tier(provider=Provider.AZURE, model=_env("AZURE_OPENAI_DEPLOYMENT_NAME", model) or model,
                     endpoint=_env("AZURE_OPENAI_ENDPOINT"), api_key_env="AZURE_OPENAI_API_KEY",
-                    api_version=_env("AZURE_OPENAI_API_VERSION"), timeout_ms=timeout_ms, label=label)
+                    api_version=_env("AZURE_OPENAI_API_VERSION"), timeout_ms=timeout_ms,
+                    admission=AdmissionPolicy.MANAGED, label=label)
     # default: openai
     return Tier(provider=Provider.OPENAI, model=model, endpoint=None,
-                api_key_env="OPENAI_API_KEY", timeout_ms=timeout_ms, label=label)
+                api_key_env="OPENAI_API_KEY", timeout_ms=timeout_ms,
+                admission=AdmissionPolicy.MANAGED, label=label)
 
 
 def _oss_agent_tier(timeout_ms: int, label: str) -> Tier:
@@ -95,12 +97,22 @@ def _pretranslation_model_default(provider: str) -> str:
         return _env("ANTHROPIC_PRETRANSLATION_MODEL", "claude-haiku-4-5") or "claude-haiku-4-5"
     if provider == "vllm":
         return _env("LLM_MODEL_NAME", "gemma-4-31b-it") or "gemma-4-31b-it"
+    if provider == "azure-openai":
+        return _env("AZURE_OPENAI_DEPLOYMENT_NAME", "gpt-4.1-mini") or "gpt-4.1-mini"
     return "gpt-4.1-mini"
 
 
 def _managed_pretranslation_tier(timeout_ms: int) -> Tier:
     llm_provider = (_env("LLM_PROVIDER", "openai") or "openai").lower()
-    provider = (_env("PRETRANSLATION_PROVIDER", llm_provider) or llm_provider).lower()
+    configured_provider = _env("PRETRANSLATION_PROVIDER")
+    provider = (
+        configured_provider
+        or (
+            llm_provider
+            if llm_provider in {"openai", "azure-openai", "anthropic", "vllm"}
+            else "openai"
+        )
+    ).lower()
     model = _env("PRETRANSLATION_MODEL", _pretranslation_model_default(provider)) or _pretranslation_model_default(provider)
 
     if provider == "vllm":
@@ -108,9 +120,27 @@ def _managed_pretranslation_tier(timeout_ms: int) -> Tier:
                     api_key_env="INFERENCE_API_KEY", timeout_ms=timeout_ms, label="managed-pretranslation")
     if provider == "anthropic":
         return Tier(provider=Provider.ANTHROPIC, model=model,
-                    api_key_env="ANTHROPIC_API_KEY", timeout_ms=timeout_ms, label="managed-pretranslation")
+                    api_key_env="ANTHROPIC_API_KEY", timeout_ms=timeout_ms,
+                    admission=AdmissionPolicy.MANAGED, label="managed-pretranslation")
+    if provider == "azure-openai":
+        return Tier(
+            provider=Provider.AZURE,
+            model=model,
+            endpoint=_env("AZURE_OPENAI_ENDPOINT"),
+            api_key_env="AZURE_OPENAI_API_KEY",
+            api_version=_env("AZURE_OPENAI_API_VERSION"),
+            timeout_ms=timeout_ms,
+            admission=AdmissionPolicy.MANAGED,
+            label="managed-pretranslation",
+        )
+    if provider != "openai":
+        raise ValueError(
+            f"PRETRANSLATION_PROVIDER={provider!r} is unsupported; expected "
+            "openai, azure-openai, anthropic, or vllm"
+        )
     return Tier(provider=Provider.OPENAI, model=model, endpoint=None,
-                api_key_env="OPENAI_API_KEY", timeout_ms=timeout_ms, label="managed-pretranslation")
+                api_key_env="OPENAI_API_KEY", timeout_ms=timeout_ms,
+                admission=AdmissionPolicy.MANAGED, label="managed-pretranslation")
 
 
 def _oss_pretranslation_tier(timeout_ms: int) -> Tier:
@@ -131,7 +161,7 @@ def _oss_pretranslation_tier(timeout_ms: int) -> Tier:
 # endpoint, never a client-side list. The overflow tier is the managed LLM doing
 # en→target translation via chat.completions with the SAME glossary/rules prompt;
 # it serves only when TranslateGemma fails before the first streamed token.
-def _post_translation_tiers() -> list[Tier]:
+def _post_translation_tiers(fallback_enabled: bool) -> list[Tier]:
     # TranslateGemma is fronted by an nginx LB, so post-translation reads the
     # SINGULAR endpoint. The old client-side plural list (+random.choice) is gone;
     # warn loudly if a stale env still sets only the plural var, which would
@@ -150,18 +180,79 @@ def _post_translation_tiers() -> list[Tier]:
     # but-alive TG overflows fast instead of blocking a voice turn for the full 60s.
     tg = Tier(
         provider=Provider.TRANSLATEGEMMA, model=model_id, endpoint=endpoint,
-        api_style=ApiStyle.TEXT_COMPLETION, timeout_ms=60000,
+        timeout_ms=60000,
         ttft_ms=_int_env("FALLBACK_POST_TRANSLATION_TG_TTFT_MS", 5000),
         label="translategemma",
     )
-    # Cross-provider overflow = the managed agent tier, but forced to CHAT api_style
-    # and given its own (shorter) first-token deadline. Reuses the managed builder so
-    # provider/model/key/endpoint track LLM_PROVIDER exactly.
+    if not fallback_enabled:
+        return [tg]
+
+    # Keep same-provider deployments on their configured agent model. A provider
+    # switch gets that provider's default unless the operator names a model.
+    agent_provider = (_env("LLM_PROVIDER", "openai") or "openai").lower()
+    configured_provider = _env("POST_TRANSLATION_LLM_PROVIDER")
+    provider = (configured_provider or agent_provider).lower()
+    if provider not in {"openai", "azure-openai", "vllm", "anthropic", "gemini"}:
+        raise ValueError(
+            "POST_TRANSLATION_LLM_PROVIDER must be openai, azure-openai, vllm, "
+            "anthropic, or gemini "
+            f"when fallback is enabled; got {provider!r}"
+        )
     llm_ms = _int_env("FALLBACK_POST_TRANSLATION_LLM_TIMEOUT_MS", 30000)
-    llm_fallback = _managed_agent_tier(llm_ms, "llm-fallback").model_copy(
-        update={"api_style": ApiStyle.CHAT}
-    )
-    return [tg, llm_fallback]
+    model_override = _env("POST_TRANSLATION_LLM_MODEL")
+    same_provider_model = (
+        _env("AZURE_OPENAI_DEPLOYMENT_NAME", _env("LLM_MODEL_NAME", "gpt-4.1"))
+        if agent_provider == "azure-openai"
+        else _env("LLM_MODEL_NAME")
+    ) if provider == agent_provider else None
+    if provider == "vllm":
+        fallback = Tier(
+            provider=Provider.VLLM,
+            model=model_override or same_provider_model or "gemma-4-31b-it",
+            endpoint=_env("INFERENCE_ENDPOINT_URL"),
+            api_key_env="INFERENCE_API_KEY",
+            timeout_ms=llm_ms,
+            label="llm-fallback",
+        )
+    elif provider == "azure-openai":
+        fallback = Tier(
+            provider=Provider.AZURE,
+            model=model_override or same_provider_model or _env("AZURE_OPENAI_DEPLOYMENT_NAME", "gpt-4.1") or "gpt-4.1",
+            endpoint=_env("AZURE_OPENAI_ENDPOINT"),
+            api_key_env="AZURE_OPENAI_API_KEY",
+            api_version=_env("AZURE_OPENAI_API_VERSION"),
+            timeout_ms=llm_ms,
+            admission=AdmissionPolicy.MANAGED,
+            label="llm-fallback",
+        )
+    elif provider == "anthropic":
+        fallback = Tier(
+            provider=Provider.ANTHROPIC,
+            model=model_override or same_provider_model or "claude-haiku-4-5",
+            api_key_env="ANTHROPIC_API_KEY",
+            timeout_ms=llm_ms,
+            admission=AdmissionPolicy.MANAGED,
+            label="llm-fallback",
+        )
+    elif provider == "gemini":
+        fallback = Tier(
+            provider=Provider.GEMINI,
+            model=model_override or same_provider_model or "gemini-2.5-flash",
+            api_key_env="GEMINI_API_KEY",
+            timeout_ms=llm_ms,
+            admission=AdmissionPolicy.MANAGED,
+            label="llm-fallback",
+        )
+    else:
+        fallback = Tier(
+            provider=Provider.OPENAI,
+            model=model_override or same_provider_model or "gpt-4.1",
+            api_key_env="OPENAI_API_KEY",
+            timeout_ms=llm_ms,
+            admission=AdmissionPolicy.MANAGED,
+            label="llm-fallback",
+        )
+    return [tg, fallback]
 
 
 def _oss_configured() -> bool:
@@ -174,7 +265,11 @@ def _agent_concurrency_gate() -> ConcurrencyGate | None:
     ``AGENT_CONCURRENCY_METRICS_URL`` (the vLLM Prometheus ``/metrics``, e.g.
     ``http://10.185.25.197:8020/metrics``) arms the gate; ``CONCURRENCY_MAX`` (or
     10) is the in-flight threshold. Unset -> ``None`` -> the gauge is a harmless
-    no-op. Never derived by stripping ``/v1`` off the inference endpoint (plan §2)."""
+    no-op. ``CONCURRENCY_GAUGE_ENABLED=false`` remains the legacy kill switch.
+    Never derived by stripping ``/v1`` off the inference endpoint (plan §2)."""
+    enabled = (_env("CONCURRENCY_GAUGE_ENABLED", "true") or "true").strip().lower()
+    if enabled not in {"1", "true", "yes", "on"}:
+        return None
     metrics_url = _env("AGENT_CONCURRENCY_METRICS_URL")
     if not metrics_url:
         return None
@@ -189,15 +284,13 @@ def synthesize_from_env() -> PipelineConfig:
     oss_pre_ms = _int_env("FALLBACK_PRETRANSLATION_OSS_TIMEOUT_MS", 10000)
     oss_sug_ms = _int_env("FALLBACK_SUGGESTIONS_OSS_TIMEOUT_MS", 6000)
 
-    fallback_enabled = str(get_config_value("FALLBACK_ENABLED", "false")).strip().lower() in {"1", "true", "yes", "on"}
-    sticky_ttl = _int_env("OSS_VARIANT_TTL", 60 * 60 * 24 * 7)
-
+    fallback_enabled = str(get_config_value("FALLBACK_ENABLED", "true")).strip().lower() in {"1", "true", "yes", "on"}
     # Managed tiers per step (single-tier managed profile).
     managed_agent = _managed_agent_tier(managed_ms, "managed-agent")
     managed_pre = _managed_pretranslation_tier(managed_ms)
 
     def managed_steps() -> dict:
-        agent_cfg = StepConfig(tiers=[managed_agent], triggers=Triggers(ttft_deadline_ms=managed_ms))
+        agent_cfg = StepConfig(tiers=[managed_agent])
         return {
             Step.AGENT: agent_cfg,
             Step.MODERATION: StepConfig(tiers=[managed_agent]),
@@ -205,15 +298,18 @@ def synthesize_from_env() -> PipelineConfig:
             Step.PRE_TRANSLATION: StepConfig(tiers=[managed_pre]),
         }
 
-    post_tiers = _post_translation_tiers()
+    post_tiers = _post_translation_tiers(fallback_enabled)
     defaults = {Step.POST_TRANSLATION: StepConfig(tiers=post_tiers)}
 
     if not _oss_configured():
-        managed = NamedProfile(name="managed", weight=100, steps=managed_steps())
+        managed = NamedProfile(
+            name="managed",
+            weight=100,
+            steps=managed_steps(),
+        )
         return PipelineConfig(
             profiles=[managed],
             defaults=defaults,
-            sticky_ttl_s=sticky_ttl,
             fallback_enabled=fallback_enabled,
         )
 
@@ -224,17 +320,24 @@ def synthesize_from_env() -> PipelineConfig:
     oss_steps = {
         Step.AGENT: StepConfig(
             tiers=[_oss_agent_tier(oss_chat_ms, "oss-agent"), managed_agent],
-            triggers=Triggers(ttft_deadline_ms=oss_chat_ms, concurrency_gate=agent_gate),
+            triggers=Triggers(concurrency_gate=agent_gate),
         ),
         Step.MODERATION: StepConfig(tiers=[_oss_agent_tier(oss_mod_ms, "oss-moderation"), managed_agent]),
         Step.SUGGESTIONS: StepConfig(tiers=[_oss_agent_tier(oss_sug_ms, "oss-suggestions"), managed_agent]),
         Step.PRE_TRANSLATION: StepConfig(tiers=[_oss_pretranslation_tier(oss_pre_ms), managed_pre]),
     }
-    oss_profile = NamedProfile(name="oss", weight=pct, steps=oss_steps)
-    managed_profile = NamedProfile(name="managed", weight=100 - pct, steps=managed_steps())
+    oss_profile = NamedProfile(
+        name="oss",
+        weight=pct,
+        steps=oss_steps,
+    )
+    managed_profile = NamedProfile(
+        name="managed",
+        weight=100 - pct,
+        steps=managed_steps(),
+    )
     return PipelineConfig(
         profiles=[oss_profile, managed_profile],
         defaults=defaults,
-        sticky_ttl_s=sticky_ttl,
         fallback_enabled=fallback_enabled,
     )

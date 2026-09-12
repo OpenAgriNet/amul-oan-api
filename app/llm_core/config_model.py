@@ -1,8 +1,8 @@
 """Config data model for the unified LLM pipeline (P0).
 
 Four inert-config concepts — ``Tier`` / ``StepConfig`` / ``NamedProfile`` /
-``PipelineConfig`` — plus the enums that discriminate provider, api-style, LLM
-step, and step-client-kind. Nothing here builds a client or reads a secret; a
+``PipelineConfig`` — plus the enums that discriminate provider, LLM step, and
+step-client-kind. Nothing here builds a client or reads a secret; a
 ``Tier`` merely *names* the secret env var (``api_key_env``) so keys never enter
 the config file. The factory turns tiers into live handles at resolve time.
 
@@ -12,6 +12,7 @@ public API and the eventual repo-merge stays a mechanical convergence.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from enum import Enum
 from typing import Optional
 
@@ -27,9 +28,10 @@ class Provider(str, Enum):
     TRANSLATEGEMMA = "translategemma"
 
 
-class ApiStyle(str, Enum):
-    CHAT = "chat"
-    TEXT_COMPLETION = "text_completion"
+class AdmissionPolicy(str, Enum):
+    AUTO = "auto"
+    NONE = "none"
+    MANAGED = "managed"
 
 
 class Step(str, Enum):
@@ -43,10 +45,10 @@ class Step(str, Enum):
 
 
 class StepClientKind(str, Enum):
-    """How the engine consumes a materialized tier at a call site."""
+    """How the engine consumes a tier at a call site."""
 
     AGENT = "agent"            # pydantic-ai Model (agent loop, chat moderation, suggestions)
-    RAW_OPENAI = "raw_openai"  # AsyncOpenAI client (pre-translation)
+    PRE_TRANSLATION = "pre_translation"  # provider-native raw client
     TRANSLATEGEMMA = "translategemma"  # aiohttp text-completion descriptor (post-translation)
 
 
@@ -54,7 +56,7 @@ class Tier(BaseModel):
     """One inert tier in a step's chain (primary first, fallbacks after).
 
     Frozen so it is hashable and usable as an ``lru_cache`` key in the factory.
-    ``api_key_env`` names the secret; the VALUE is read at materialize time via
+    ``api_key_env`` names the secret; the value is read when a handle is built via
     the centralized secret provider and never stored in pipeline config.
     """
 
@@ -62,7 +64,6 @@ class Tier(BaseModel):
     model: str
     endpoint: Optional[str] = None
     api_key_env: Optional[str] = None
-    api_style: ApiStyle = ApiStyle.CHAT
     timeout_ms: Optional[int] = None
     # Distinct FIRST-token deadline (ms) — bounds only the wait for the first
     # streamed token, independent of ``timeout_ms`` (the overall/total per-attempt
@@ -71,7 +72,7 @@ class Tier(BaseModel):
     # for the full 60s total. ``None`` -> the consumer falls back to ``timeout_ms``.
     ttft_ms: Optional[int] = None
     api_version: Optional[str] = None
-    max_tokens: Optional[int] = None
+    admission: AdmissionPolicy = AdmissionPolicy.AUTO
     label: Optional[str] = None
 
     model_config = {"frozen": True}
@@ -108,12 +109,11 @@ class ConcurrencyGate(BaseModel):
 
 
 class Triggers(BaseModel):
-    """Composable pre-flight trigger config. ``health_check`` is consumed by P2;
-    ``concurrency_gate`` by P3 (a step without one is untouched by the gauge)."""
+    """Composable pre-flight trigger config."""
 
-    ttft_deadline_ms: Optional[int] = None
-    health_check: bool = False
     concurrency_gate: Optional[ConcurrencyGate] = None
+
+    model_config = {"frozen": True}
 
 
 class StepConfig(BaseModel):
@@ -123,17 +123,50 @@ class StepConfig(BaseModel):
     model_config = {"frozen": True}
 
 
+@dataclass(frozen=True)
+class StepPlan:
+    """The immutable set of tiers that can execute for one configured step."""
+
+    tiers: tuple[Tier, ...]
+    concurrency_gate: Optional[ConcurrencyGate]
+
+    @property
+    def candidates(self) -> tuple[Tier, ...]:
+        """Every reachable tier, including a separately configured overflow."""
+        overflow = (
+            self.concurrency_gate.overflow_tier
+            if self.concurrency_gate is not None
+            else None
+        )
+        if overflow is None or overflow in self.tiers:
+            return self.tiers
+        return (*self.tiers, overflow)
+
+
+class ProfileCapabilities(BaseModel):
+    """Optional application-policy overrides for a named profile."""
+
+    requires_translation: Optional[bool] = None
+    history_max_tokens: Optional[int] = Field(default=None, gt=0)
+
+    model_config = {"frozen": True}
+
+
 class NamedProfile(BaseModel):
     name: str
     weight: int = Field(ge=0, le=100)
+    capabilities: Optional[ProfileCapabilities] = None
     steps: dict[Step, StepConfig] = {}
+
+    model_config = {"frozen": True}
 
 
 class PipelineConfig(BaseModel):
     profiles: list[NamedProfile]
     defaults: dict[Step, StepConfig] = {}
-    sticky_ttl_s: int = 604800
     fallback_enabled: bool = False
+
+    model_config = {"frozen": True}
 
     @model_validator(mode="after")
     def _validate(self) -> "PipelineConfig":
@@ -156,3 +189,49 @@ class PipelineConfig(BaseModel):
     def step_config(self, profile: NamedProfile, step: Step) -> Optional[StepConfig]:
         """Resolve a step's config for a profile, falling back to defaults."""
         return profile.steps.get(step) or self.defaults.get(step)
+
+    def step_plan(self, profile: NamedProfile, step: Step) -> Optional[StepPlan]:
+        """Normalize one step to the tiers that can execute under current policy."""
+        configured = self.step_config(profile, step)
+        if configured is None:
+            return None
+        if not self.fallback_enabled:
+            return StepPlan((configured.tiers[0],), None)
+        tiers = tuple(configured.tiers)
+        gate = configured.triggers.concurrency_gate
+        # The gauge describes the selected vLLM primary. A vLLM tier that is only
+        # reachable after a healthy managed primary must not reorder that primary.
+        if tiers[0].provider is not Provider.VLLM:
+            gate = None
+        return StepPlan(
+            tiers,
+            gate,
+        )
+
+    def effective_capabilities(
+        self,
+        profile: NamedProfile,
+        *,
+        history_default_tokens: int = 80_000,
+        history_vllm_gemma_tokens: int = 10_000,
+    ) -> ProfileCapabilities:
+        """Resolve application policy once from the active agent plan + overrides."""
+        plan = self.step_plan(profile, Step.AGENT)
+        if plan is None:
+            raise ValueError(f"profile={profile.name} has no agent plan")
+        is_vllm = [tier for tier in plan.candidates if tier.provider is Provider.VLLM]
+        configured = profile.capabilities
+        return ProfileCapabilities(
+            requires_translation=(
+                configured.requires_translation
+                if configured is not None and configured.requires_translation is not None
+                else bool(is_vllm)
+            ),
+            history_max_tokens=(
+                configured.history_max_tokens
+                if configured is not None and configured.history_max_tokens is not None
+                else history_vllm_gemma_tokens
+                if any("gemma" in tier.model.lower() for tier in is_vllm)
+                else history_default_tokens
+            ),
+        )

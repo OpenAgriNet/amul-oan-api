@@ -7,12 +7,12 @@ The bar these pin:
       tier is moved BEHIND the managed tier; below-threshold leaves order
       unchanged; the chain is never emptied and no tier is dropped.
   (b) fail-open — unreadable metrics (gauge ``None``) leave order unchanged (NOT a
-      forced flip to managed); a step without a configured gate is untouched;
-      flags-off is identity.
+      forced flip to managed); a step without a configured gate or vLLM primary
+      is untouched.
   (c) the metrics scrape sums ``num_requests_running + num_requests_waiting`` and
       is Redis-cached; a fetch failure -> ``None`` (the fail-open signal).
-  (d) composition: ``resolve_chain`` runs health-prune THEN concurrency-reorder,
-      so a DOWN tier pruned by P2 is gone and can never be reordered to the front,
+  (d) composition: ``resolve_chain`` runs concurrency-routing THEN health-prune,
+      so every final candidate — including an inserted overflow tier — is checked,
       while a saturated-but-UP vLLM primary is deprioritized (not dropped).
   (e) inverted-semantics note (plan §2): "primary" is only tier index 0; the
       filter reproduces bh's "flip to closed-source when gemma busy" as a pure
@@ -21,7 +21,7 @@ The bar these pin:
 Zero network: the gauge value is injected (``get_concurrency`` monkeypatched) for
 the reorder/composition tests; the scrape test stubs ``httpx.AsyncClient`` + an
 in-memory cache. Dummy OPENAI/OSS keys are set before importing app code (the
-factory reads keys at materialize time).
+factory reads keys when a handle is built).
 """
 
 import os
@@ -77,7 +77,6 @@ def _gate_with_overflow(max_concurrency=10, overflow=None):
 
 @pytest.fixture
 def gauge_on(monkeypatch):
-    monkeypatch.setattr(concurrency.settings, "concurrency_gauge_enabled", True)
     return monkeypatch
 
 
@@ -133,7 +132,7 @@ def test_never_empty_all_vllm_chain(gauge_on):
     assert len(out) == 2
 
 
-# ── (b) fail-open / no-gate / flag-off = identity ─────────────────────────────
+# ── (b) fail-open / no-gate / no-vLLM = identity ──────────────────────────────
 
 def test_unreadable_metrics_fail_open(gauge_on):
     _inject_gauge(gauge_on, None)                                  # metrics unreadable
@@ -149,12 +148,15 @@ def test_step_without_gate_untouched(gauge_on):
     assert out is tiers
 
 
-def test_flag_off_is_identity(monkeypatch):
-    monkeypatch.setattr(concurrency.settings, "concurrency_gauge_enabled", False)
-    _inject_gauge(monkeypatch, 99)                                 # saturated in the registry...
-    tiers = [_oss_tier(), _managed_tier()]
-    # ... but the filter is inert while the flag is off.
-    out = asyncio.run(concurrency.reprioritize_by_load(Step.AGENT, tiers, _gate(10)))
+def test_gate_does_not_measure_vllm_fallback(monkeypatch):
+    async def _unexpected(_url):
+        raise AssertionError("managed primary must not read a vLLM gauge")
+
+    monkeypatch.setattr(concurrency, "get_concurrency", _unexpected)
+    tiers = [_managed_tier(), _oss_tier()]
+    out = asyncio.run(
+        concurrency.reprioritize_by_load(Step.AGENT, tiers, _gate_with_overflow(10))
+    )
     assert out is tiers
 
 
@@ -257,7 +259,7 @@ def test_get_concurrency_cache_error_degrades_to_fetch(monkeypatch):
     assert asyncio.run(concurrency.get_concurrency(METRICS_URL)) == 12  # direct fetch, not broken
 
 
-# ── (d) composition: health-prune THEN concurrency-reorder in resolve_chain ────
+# ── (d) composition: concurrency-routing THEN health-prune in resolve_chain ───
 
 def _gated_config():
     """Single OSS profile whose AGENT step carries a ConcurrencyGate + [oss, managed]."""
@@ -267,13 +269,15 @@ def _gated_config():
             triggers=Triggers(concurrency_gate=_gate(10)),
         ),
     }
-    return PipelineConfig(profiles=[NamedProfile(name="oss", weight=100, steps=oss_steps)])
+    return PipelineConfig(
+        profiles=[NamedProfile(name="oss", weight=100, steps=oss_steps)],
+        fallback_enabled=True,
+    )
 
 
 def test_resolve_chain_deprioritizes_saturated_up_primary(monkeypatch):
     """Saturated but UP vLLM primary: health leaves it (closed), concurrency moves
     it behind managed -> managed tried first, but the vLLM tier is NOT dropped."""
-    monkeypatch.setattr(concurrency.settings, "concurrency_gauge_enabled", True)
     monkeypatch.setattr(health.settings, "health_breaker_enabled", False)
     monkeypatch.setattr(health.settings, "health_poller_enabled", False)
     _inject_gauge(monkeypatch, 20)                                 # saturated
@@ -283,11 +287,9 @@ def test_resolve_chain_deprioritizes_saturated_up_primary(monkeypatch):
     assert [c.kind for c in chain] == ["managed", "oss"]
 
 
-def test_resolve_chain_health_prune_then_concurrency_compose(monkeypatch):
-    """The composition proof: a DOWN vLLM tier is pruned by P2 FIRST, so it is
-    already gone when the concurrency reorder runs and can NEVER be reordered back
-    to the front — even though the box also reads as saturated."""
-    monkeypatch.setattr(concurrency.settings, "concurrency_gauge_enabled", True)
+def test_resolve_chain_concurrency_then_health_prune_compose(monkeypatch):
+    """A DOWN vLLM tier is absent from the final chain even when concurrency
+    routing also sees the endpoint as saturated."""
     monkeypatch.setattr(health.settings, "health_breaker_enabled", True)
     monkeypatch.setattr(health.settings, "health_poller_enabled", False)
     _inject_gauge(monkeypatch, 99)                                 # also saturated
@@ -297,22 +299,10 @@ def test_resolve_chain_health_prune_then_concurrency_compose(monkeypatch):
     health._registry.record_failure(OSS_EP)                        # OSS box DOWN -> pruned
 
     chain = asyncio.run(split.resolve_chain("", Step.AGENT, _gated_config()))
-    # prune -> [managed]; reorder sees no vLLM -> [managed]. Down OSS never at front.
+    # reorder -> [managed, oss]; prune -> [managed]. Down OSS never reaches execution.
     assert [c.provider for c in chain] == ["openai"]
     assert all(c.provider != "vllm" for c in chain)
     health.reset()
-
-
-def test_resolve_chain_untouched_when_gauge_off(monkeypatch):
-    """Flags off -> resolve_chain is byte-identical to the un-reordered chain."""
-    monkeypatch.setattr(concurrency.settings, "concurrency_gauge_enabled", False)
-    monkeypatch.setattr(health.settings, "health_breaker_enabled", False)
-    monkeypatch.setattr(health.settings, "health_poller_enabled", False)
-    _inject_gauge(monkeypatch, 99)                                 # would saturate if on
-
-    chain = asyncio.run(split.resolve_chain("", Step.AGENT, _gated_config()))
-    assert [c.provider for c in chain] == ["vllm", "openai"]       # primary stays primary
-    assert [c.kind for c in chain] == ["oss", "managed"]
 
 
 # ── (M3) separately-configurable concurrency-overflow model ───────────────────
@@ -400,14 +390,15 @@ def _overflow_gated_config():
             triggers=Triggers(concurrency_gate=_gate_with_overflow(10)),
         ),
     }
-    return PipelineConfig(profiles=[NamedProfile(name="oss", weight=100, steps=oss_steps)])
+    return PipelineConfig(
+        profiles=[NamedProfile(name="oss", weight=100, steps=oss_steps)],
+        fallback_enabled=True,
+    )
 
 
-def test_resolve_chain_overflow_tier_materializes_at_front(monkeypatch):
+def test_resolve_chain_places_overflow_target_at_front(monkeypatch):
     """End-to-end: saturated box + configured overflow_tier -> resolve_chain
-    materializes the overflow tier as a managed AGENT model at the FRONT, original
-    tiers following (proves the prepended tier flows through materialize cleanly)."""
-    monkeypatch.setattr(concurrency.settings, "concurrency_gauge_enabled", True)
+    places the overflow tier at the front with original tiers following."""
     monkeypatch.setattr(health.settings, "health_breaker_enabled", False)
     monkeypatch.setattr(health.settings, "health_poller_enabled", False)
     _inject_gauge(monkeypatch, 20)                                 # saturated
@@ -416,3 +407,28 @@ def test_resolve_chain_overflow_tier_materializes_at_front(monkeypatch):
     assert [c.model_name for c in chain] == ["gpt-4o-mini", "gemma", "gpt-4.1"]
     assert [c.provider for c in chain] == ["openai", "vllm", "openai"]
     assert [c.kind for c in chain] == ["managed", "oss", "managed"]  # overflow is a managed AGENT model
+
+
+def test_resolve_chain_prunes_open_overflow_endpoint(monkeypatch):
+    from app.llm_core.health import BreakerConfig
+
+    overflow_endpoint = "http://overflow:8020/v1"
+    overflow = Tier(
+        provider=Provider.VLLM,
+        model="overflow",
+        endpoint=overflow_endpoint,
+    )
+    cfg = PipelineConfig(profiles=[NamedProfile(name="oss", weight=100, steps={
+        Step.AGENT: StepConfig(
+            tiers=[_oss_tier(), _managed_tier()],
+            triggers=Triggers(concurrency_gate=_gate_with_overflow(10, overflow)),
+        )
+    })], fallback_enabled=True)
+    monkeypatch.setattr(health.settings, "health_breaker_enabled", True)
+    _inject_gauge(monkeypatch, 20)
+    health.reset(BreakerConfig(fail_threshold=1, cooldown_s=1e12))
+    health._registry.record_failure(overflow_endpoint)
+
+    chain = asyncio.run(split.resolve_chain("", Step.AGENT, cfg))
+    assert "overflow" not in [target.model_name for target in chain]
+    health.reset()

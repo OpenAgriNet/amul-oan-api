@@ -7,8 +7,8 @@ from fastapi import BackgroundTasks
 from agents.agrinet import agrinet_agent
 from agents.doctor import doctor_agent
 from agents.moderation import doctor_moderation_agent, moderation_agent
-from app.llm_core import resolver as _llm_resolver
-from app.llm_core.config_model import Step as _LlmStep
+from app import llm_core
+from app.llm_core import Step as _LlmStep
 from helpers.utils import get_logger
 from app.utils import (
     update_message_history,
@@ -17,8 +17,7 @@ from app.utils import (
     set_cache,
 )
 from app.tasks.suggestions import create_suggestions
-from app.config import get_config_value, settings
-from app.services.fallback import AGENT_ACTIVITY, execute_with_fallback, stream_with_fallback, with_first_token_deadline
+from app.config import settings
 from app.core.cache import cache
 from agents.deps import FarmerContext
 from agents.farmer_context import get_farmer_context_bundle_by_mobile
@@ -26,11 +25,9 @@ from agents.tools.farmer import normalize_phone_to_mobile
 from agents.tools.session_shc import get_session_shc_context
 from app.services.translation import (
     translate_text,
-    translate_to_english_pretranslation,
+    pretranslate_with_tier,
     translate_text_stream_fast,
     INDIAN_LANGUAGES,
-    PRETRANSLATION_PROVIDER,
-    PRETRANSLATION_MODEL,
 )
 from pydantic_ai.messages import ModelRequest, ModelResponse, UserPromptPart, TextPart
 from app.services.identity_profile import (
@@ -65,26 +62,6 @@ class SentenceSegmenter:
 
 
 sentence_segmenter = SentenceSegmenter()
-
-
-def _chat_history_trim_max_tokens(agent_provider: str, agent_model_name: str) -> int:
-    """Keep fewer past turns for smaller-context vLLM gemma backends so
-    system+tools+history+user fit.
-
-    Driven by the RESOLVED agent tier (provider + model), not a startup singleton:
-    a self-hosted vLLM gemma tier — whether the session's primary is the gemma
-    profile or the startup default is gemma-on-vLLM — gets the tighter gemma cap
-    (tune via CHAT_HISTORY_MAX_TOKENS_VLLM_GEMMA); everything else gets 80k. This
-    reproduces the old ``is_oss_gemma or is_startup_vllm_gemma`` decision now that
-    the tier is resolved by app/llm_core.
-    """
-    override = str(get_config_value("CHAT_HISTORY_MAX_TOKENS", ""))
-    if override.isdigit():
-        return int(override)
-    if (agent_provider or "").lower() == "vllm" and "gemma" in (agent_model_name or "").lower():
-        cap = str(get_config_value("CHAT_HISTORY_MAX_TOKENS_VLLM_GEMMA", "10000"))
-        return int(cap) if cap.isdigit() else 10_000
-    return 80_000
 
 
 def extract_complete_sentences(text: str):
@@ -246,54 +223,39 @@ async def stream_chat_messages(
     user_info: dict,
     background_tasks: BackgroundTasks,
     use_translation_pipeline: bool = True,
-    pipeline_profile: str = "managed",
     persona: ChatPersona = "farmer",
     history_session_id: str | None = None,
     artifact_sink: list[dict[str, Any]] | None = None,
     emit_artifact_frames: bool = True,
 ) -> AsyncGenerator[str, None]:
     """Async generator for streaming chat messages."""
+    execution = await llm_core.context(session_id)
+    pipeline_profile = execution.profile_name
     active_agent = doctor_agent if persona == "doctor" else agrinet_agent
     active_moderation_agent = doctor_moderation_agent if persona == "doctor" else moderation_agent
     message_history_session_id = history_session_id or session_id
     # The turn's channel profile: what differs between delivery channels, resolved
     # once here rather than re-derived at each use site.
     profile = _profile_for(channel)
-    # The oss-vs-managed behavioural split is derived from the resolved AGENT primary
-    # tier KIND (not a variant string): a vllm/self-hosted primary (gemma, qwen, ...)
-    # materializes kind "oss"; a managed provider (openai/anthropic/gemini) -> "managed".
-    # So a qwen-on-vLLM profile correctly takes the OSS path and a gpt profile the
-    # managed path. With the 2-way env-shim (profile named oss/managed) this equals
-    # the old ``pipeline_variant == "oss"`` bit exactly (oss profile's agent tier is
-    # vllm -> kind "oss"; managed profile's is the managed provider -> "managed").
-    agent_tier = _llm_resolver.primary_tier(_LlmStep.AGENT, pipeline_profile)
-    is_oss = agent_tier.kind == "oss"
-    use_translation_pipeline = bool(use_translation_pipeline) or is_oss
+    agent_info = execution.info(_LlmStep.AGENT)
+    use_translation_pipeline = (
+        bool(use_translation_pipeline)
+        or execution.capabilities.requires_translation
+    )
     # Open the per-turn pipeline-config tracer and hold the EXPLICIT instance.
-    # The ContextVar does NOT survive Starlette's StreamingResponse async-generator
-    # consumption, so we populate the must-have static fields (profile, variant,
-    # flags, per-step PRIMARY tier) directly onto `pt` here and pass `pt` to every
-    # emit site — never relying on a contextvar read at emit time. Deep trigger /
-    # served-tier recording stays best-effort on top (via the contextvar).
-    pt = _pipeline_trace.begin(pipeline_profile)
+    # Populate the static fields directly and pass the trace state explicitly
+    # across Starlette's StreamingResponse async-generator boundary.
     try:
-        from app.llm_core import resolver as _lr, runtime as _lrt
-        from app.llm_core.config_model import Step as _LS
-        _pipeline_trace.populate(
-            pt, _lrt.get_pipeline(), _lr.primary_tier, pipeline_profile,
-            (_LS.PRE_TRANSLATION, _LS.MODERATION, _LS.AGENT, _LS.SUGGESTIONS, _LS.POST_TRANSLATION),
-        )
+        pt = execution.begin_trace()
     except Exception as _pt_exc:  # pragma: no cover - tracing must never break the turn
         logger.debug("pipeline_config populate skipped: %s", _pt_exc)
+        pt = _pipeline_trace.begin(pipeline_profile)
     # Model selection is resolved by the unified pipeline (the only path): the
     # agent + moderation handles, the provider, and the display model name all
     # come from the resolved primary tier for this session's profile (agent_tier
     # resolved above). For the current env this is the same provider/base_url/model
     # the removed get_model_for_variant returned, generalized to the weighted split.
-    request_model = agent_tier.handle
-    request_provider = agent_tier.provider
-    request_model_name = agent_tier.model_name
-    moderation_model = _llm_resolver.primary_handle(_LlmStep.MODERATION, pipeline_profile)
+    request_model_name = agent_info.model_name
     # Langfuse: propagate session_id, metadata, and tags for dashboard filtering (max 200 chars per value)
     session_id_safe = (session_id or "")[:200]
     pipeline_name = "translation" if use_translation_pipeline else "default"
@@ -414,6 +376,7 @@ async def stream_chat_messages(
                             source_lang="english",
                             target_lang=target_lang,
                             max_output_chars=profile.response_max_chars,
+                            execution=execution,
                         )
                     except Exception as e:
                         logger.warning(
@@ -495,93 +458,40 @@ async def stream_chat_messages(
             if hindi_enabled:
                 pretranslation_source_langs |= {"hi", "hindi"}
             if use_translation_pipeline and source_lang.lower() in pretranslation_source_langs:
-                # OSS sessions force pre-translation onto the self-hosted vLLM endpoint
-                # (provider="vllm"); legacy keeps the configured PRETRANSLATION_PROVIDER
-                # (None => default). Equivalent to the resolved PRE_TRANSLATION primary
-                # tier: an OSS-endpoint tier for an OSS session, the managed tier
-                # otherwise.
-                pretrans_provider = "vllm" if is_oss else None
+                pretrans_info = execution.info(_LlmStep.PRE_TRANSLATION)
                 logger.info(
                     "request_id=%s translation_pipeline=True variant=%s pretranslating %s->en with %s/%s",
                     request_id,
                     pipeline_profile,
                     source_lang,
-                    pretrans_provider or PRETRANSLATION_PROVIDER,
-                    request_model_name if is_oss else PRETRANSLATION_MODEL,
+                    pretrans_info.provider,
+                    pretrans_info.model_name,
                 )
-                if settings.fallback_enabled:
-                    # Standard OSS -> managed fallback. Drops the legacy TranslateGemma
-                    # stopgap (decision #7): TranslateGemma is also self-hosted vLLM, so
-                    # it shared a failure domain with the OSS pretranslation it backed up.
-                    try:
-                        processing_query = await execute_with_fallback(
-                            pipeline="pretranslation",
-                            session_id=session_id_safe,
-                            profile_name=pipeline_profile,
-                            run=lambda a: translate_to_english_pretranslation(
-                                text=query,
-                                source_lang=source_lang,
-                                provider="vllm" if a.kind == "oss" else None,
-                            ),
-                        )
-                        processing_lang = "en"
-                        logger.info(
-                            "request_id=%s pretranslation_success=True source_preview=%s translated_preview=%s",
-                            request_id,
-                            query[:80],
-                            processing_query[:80],
-                        )
-                    except Exception as e:
-                        logger.error(
-                            "request_id=%s pretranslation_success=False (all tiers) source_lang=%s error=%s",
-                            request_id,
-                            source_lang,
-                            e,
-                        )
-                        processing_query = query
-                        processing_lang = target_lang
-                else:
-                    try:
-                        processing_query = await translate_to_english_pretranslation(
+                try:
+                    processing_query = await execution.run_adapter(
+                        _LlmStep.PRE_TRANSLATION,
+                        lambda tier: pretranslate_with_tier(
+                            tier,
                             text=query,
                             source_lang=source_lang,
-                            provider=pretrans_provider,
-                        )
-                        processing_lang = "en"
-                        logger.info(
-                            "request_id=%s pretranslation_success=True source_preview=%s translated_preview=%s",
-                            request_id,
-                            query[:80],
-                            processing_query[:80],
-                        )
-                    except Exception as e:
-                        logger.error(
-                            "request_id=%s pretranslation_success=False source_lang=%s error=%s",
-                            request_id,
-                            source_lang,
-                            e,
-                        )
-                        try:
-                            logger.info(
-                                "request_id=%s pretranslation_fallback=translategemma source_lang=%s",
-                                request_id,
-                                source_lang,
-                            )
-                            processing_query = await translate_text(
-                                text=query,
-                                source_lang=source_lang,
-                                target_lang="english",
-                            )
-                            processing_lang = "en"
-                        except Exception as fallback_error:
-                            logger.error(
-                                "request_id=%s pretranslation_fallback_failed=True source_lang=%s error=%s",
-                                request_id,
-                                source_lang,
-                                fallback_error,
-                            )
-                            processing_query = query
-                            processing_lang = target_lang
+                        ),
+                    )
+                    processing_lang = "en"
+                    logger.info(
+                        "request_id=%s pretranslation_success=True source_preview=%s translated_preview=%s",
+                        request_id,
+                        query[:80],
+                        processing_query[:80],
+                    )
+                except Exception as e:
+                    logger.error(
+                        "request_id=%s pretranslation_success=False source_lang=%s error=%s",
+                        request_id,
+                        source_lang,
+                        e,
+                    )
+                    processing_query = query
+                    processing_lang = target_lang
             if use_translation_pipeline and needs_output_translation:
                 # Agent responds in English; response will be translated to target_lang downstream
                 processing_lang = "en"
@@ -641,15 +551,11 @@ async def stream_chat_messages(
                     else nullcontext()
                 )
                 with _mod_obs_ctx as mod_obs:
-                    if settings.fallback_enabled:
-                        moderation_run = await execute_with_fallback(
-                            pipeline="moderation",
-                            session_id=session_id_safe,
-                            profile_name=pipeline_profile,
-                            run=lambda a: active_moderation_agent.run(user_message, model=a.model),
-                        )
-                    else:
-                        moderation_run = await active_moderation_agent.run(user_message, model=moderation_model)
+                    moderation_run = await execution.run(
+                        _LlmStep.MODERATION,
+                        active_moderation_agent,
+                        user_message,
+                    )
                     moderation_data = moderation_run.output
                     logger.info(
                         "request_id=%s moderation_category=%s moderation_action=%s",
@@ -673,7 +579,9 @@ async def stream_chat_messages(
                             # Mark pending and clear stale suggestions so callers wait for fresh output.
                             await set_cache(status_key, True, ttl=SUGGESTIONS_PENDING_TTL)
                             await cache.delete(suggestions_cache_key)
-                            background_tasks.add_task(create_suggestions, session_id, target_lang, pipeline_profile)
+                            background_tasks.add_task(
+                                create_suggestions, session_id, target_lang, execution
+                            )
                             logger.info("Successfully added suggestions task")
                         except Exception as e:
                             logger.error(f"Error adding suggestions task: {str(e)}")
@@ -748,7 +656,7 @@ async def stream_chat_messages(
             # loop, not via message_history. Suggestions already runs this way.
             trimmed_history = trim_history(
                 history,
-                max_tokens=_chat_history_trim_max_tokens(request_provider, request_model_name),
+                max_tokens=execution.capabilities.history_max_tokens,
                 include_system_prompts=False,
                 include_tool_calls=False
             )
@@ -789,48 +697,7 @@ async def stream_chat_messages(
                 # by the resolved tier's provider+model, plus a single downstream that
                 # sentence-batches + stream-translates (or passes English through). The
                 # disconnect-safe first-token-commit primitives are reused verbatim.
-                _stream_holder: dict = {}
-
-                async def _raw_agent_text_stream(provider, model):
-                    # (D) COMMIT-ON-FIRST-ACTIVITY. Both providers now iterate the agent via
-                    # agent.iter()+node.stream() (anthropic always required it — run_stream()
-                    # is unsupported for its tool loop; every other provider joins so the fix
-                    # is uniform for the OSS gemma tier where the slow 20s milk-collection
-                    # tool lives). The FIRST pydantic-ai model event — a tool-call part that
-                    # pydantic-ai emits BEFORE it runs the tools and long before the first
-                    # TEXT delta — is surfaced once as the AGENT_ACTIVITY sentinel.
-                    # with_first_token_deadline treats that sentinel as the first-token
-                    # commit, so a slow tool can no longer trip the TTFT deadline and force a
-                    # cross-tier re-run of side-effecting tools. The sentinel is swallowed by
-                    # the deadline wrapper and never reaches the client; TEXT extraction is
-                    # unchanged. Liveness is preserved: a truly hung endpoint emits no event,
-                    # so no sentinel arrives and the deadline still fires -> swap.
-                    # new_messages is captured before the run context closes.
-                    _activity_signaled = False
-                    async with active_agent.iter(
-                        user_prompt=user_message,
-                        message_history=trimmed_history,
-                        deps=deps,
-                        model=model,
-                    ) as agent_run:
-                        async for node in agent_run:
-                            if type(node).__name__ == 'ModelRequestNode':
-                                async with node.stream(agent_run.ctx) as request_stream:
-                                    async for event in request_stream:
-                                        if not _activity_signaled:
-                                            _activity_signaled = True
-                                            yield AGENT_ACTIVITY
-                                        event_type = type(event).__name__
-                                        text = None
-                                        if event_type == 'PartStartEvent' and hasattr(event, 'part'):
-                                            if type(event.part).__name__ == 'TextPart' and hasattr(event.part, 'content'):
-                                                text = event.part.content
-                                        elif event_type == 'PartDeltaEvent' and hasattr(event, 'delta'):
-                                            if type(event.delta).__name__ == 'TextPartDelta':
-                                                text = event.delta.content_delta
-                                        if text:
-                                            yield text
-                        _stream_holder["new_messages"] = agent_run.result.new_messages()
+                new_messages: list = []
 
                 async def _stream_to_client(english_src):
                     if needs_output_translation:
@@ -855,6 +722,7 @@ async def stream_chat_messages(
                                             source_lang="english",
                                             target_lang=target_lang,
                                             max_output_chars=deps.response_max_chars,
+                                            execution=execution,
                                         ):
                                             translated_output_chunks.append(translated_chunk)
                                             yield translated_chunk
@@ -876,6 +744,7 @@ async def stream_chat_messages(
                                     source_lang="english",
                                     target_lang=target_lang,
                                     max_output_chars=deps.response_max_chars,
+                                    execution=execution,
                                 ):
                                     translated_output_chunks.append(translated_chunk)
                                     yield translated_chunk
@@ -893,6 +762,7 @@ async def stream_chat_messages(
                                     source_lang="english",
                                     target_lang=target_lang,
                                     max_output_chars=deps.response_max_chars,
+                                    execution=execution,
                                 ):
                                     translated_output_chunks.append(translated_chunk)
                                     yield translated_chunk
@@ -905,33 +775,13 @@ async def stream_chat_messages(
                             raw_output_chunks.append(chunk)
                             yield chunk
 
-                if settings.fallback_enabled:
-                    # OSS -> managed first-token-commit fallback: swap tiers only BEFORE
-                    # the first token reaches the client. with_first_token_deadline bounds
-                    # time-to-first-token (disconnect-safe); after commit the stream runs
-                    # to completion on the resolved tier. Reused verbatim from fallback.py.
-                    async def _make_agent_text_stream(attempt):
-                        async for chunk in with_first_token_deadline(
-                            attempt, _raw_agent_text_stream(attempt.provider, attempt.model)
-                        ):
-                            yield chunk
-
-                    english_src = stream_with_fallback(
-                        pipeline="chat",
-                        session_id=session_id_safe,
-                        profile_name=pipeline_profile,
-                        make_stream=_make_agent_text_stream,
-                    )
-                else:
-                    # No fallback: stream the single resolved primary tier directly.
-                    # _raw_agent_text_stream still yields the internal AGENT_ACTIVITY
-                    # commit sentinel; with no with_first_token_deadline wrapper on this
-                    # path, strip it here so only text reaches _stream_to_client.
-                    async def _strip_activity(_src):
-                        async for _c in _src:
-                            if _c is not AGENT_ACTIVITY:
-                                yield _c
-                    english_src = _strip_activity(_raw_agent_text_stream(request_provider, request_model))
+                english_src = execution.stream(
+                    active_agent,
+                    user_message,
+                    message_history=trimmed_history,
+                    deps=deps,
+                    new_messages=new_messages,
+                )
 
                 if persona == "doctor":
                     english_src = _sanitize_doctor_stream(english_src)
@@ -945,7 +795,6 @@ async def stream_chat_messages(
                 async for _out in client_src:
                     yield _out
                 logger.info(f"Streaming complete for session {session_id}")
-                new_messages = _stream_holder.get("new_messages", [])
 
                 # Record trace output: translated response for translation pipeline, raw agent output otherwise.
                 if get_langfuse_client:

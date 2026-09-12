@@ -10,28 +10,29 @@ if str(ROOT) not in sys.path:
 
 def make_materialized_tier(kind, handle, *, model_name=None, provider=None,
                            endpoint=None, timeout=None):
-    """Build a MaterializedTier for tests (lazy import so env-before-import test
-    modules stay in control of import order)."""
-    from app.llm_core.factory import MaterializedTier
-    return MaterializedTier(
-        kind=kind,
-        handle=handle,
-        model_name=model_name or ("gemma-test" if kind == "oss" else "gpt-test"),
-        provider=provider or ("vllm" if kind == "oss" else "openai"),
-        endpoint=endpoint or ("http://oss:8020/v1" if kind == "oss" else "managed"),
-        timeout=timeout,
+    """Build a lazy execution target with a supplied fake handle."""
+    from app.llm_core.config_model import AdmissionPolicy, Provider, StepClientKind, Tier
+    from app.llm_core.execution import ExecutionTarget
+
+    provider_name = provider or ("vllm" if kind == "oss" else "openai")
+    tier = Tier(
+        provider=Provider(provider_name),
+        model=model_name or ("gemma-test" if kind == "oss" else "gpt-test"),
+        endpoint=endpoint if endpoint is not None else (
+            "http://oss:8020/v1" if kind == "oss" else None
+        ),
+        timeout_ms=int(timeout * 1000) if timeout is not None else None,
+        admission=AdmissionPolicy.MANAGED if kind == "managed" else AdmissionPolicy.NONE,
     )
+    target = ExecutionTarget(tier, StepClientKind.AGENT)
+    object.__setattr__(target, "handle", handle)
+    return target
 
 
-def install_variant_chain(monkeypatch, fb, *, oss_handle=None, managed_handle=None,
+def install_variant_chain(*, oss_handle=None, managed_handle=None,
                           oss_timeout=None, managed_timeout=None,
                           oss_endpoint="http://oss:8020/v1"):
-    """Replace ``fallback._resolve_chain`` (the seam the walkers read) with a
-    controlled, profile-name-keyed MaterializedTier chain: profile 'oss' -> [oss,
-    managed], anything else -> [managed]. Post-P4 the real chain comes from the
-    config-driven weighted-profile resolver (exercised in test_split); the walker
-    tests only need a deterministic chain to drive the classify/first-token-commit
-    logic, so they stub this seam."""
+    """Build a controlled lazy target chain for walker tests."""
     def _chain(profile_name):
         if profile_name == "oss":
             return [
@@ -41,27 +42,20 @@ def install_variant_chain(monkeypatch, fb, *, oss_handle=None, managed_handle=No
             ]
         return [make_materialized_tier("managed", managed_handle, timeout=managed_timeout)]
 
-    async def _resolve_chain(*, pipeline, session_id, profile_name):
-        return _chain(profile_name)
-
-    monkeypatch.setattr(fb, "_resolve_chain", _resolve_chain)
     return _chain
 
 
 @pytest.fixture
 def materialized_tier():
-    """The MaterializedTier builder, as a fixture (keeps import lazy)."""
+    """A lazy execution-target builder with an injected fake handle."""
     return make_materialized_tier
 
 
 @pytest.fixture
-def install_chain(monkeypatch):
-    """Install a controlled variant-keyed chain on ``fallback._resolve_chain``.
-    Usage: ``install_chain(oss_timeout=0.05)`` inside a test/fixture."""
-    from app.services import fallback as fb
-
+def install_chain():
+    """Return a controlled OSS-then-managed chain for walker tests."""
     def _install(**kw):
-        return install_variant_chain(monkeypatch, fb, **kw)
+        return install_variant_chain(**kw)("oss")
 
     return _install
 

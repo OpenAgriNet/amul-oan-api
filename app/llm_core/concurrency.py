@@ -49,14 +49,12 @@ Two aggregation/shed improvements over the naive single-scrape bang-bang:
      ceiling. (Normal Python runtime ``random`` — the "no ``Math.random()``"
      rule is about deterministic-config contexts, not this load shed.)
 
-Composition (fixed order, plan §2): ``health-prune -> concurrency-reorder ->
-materialize -> classify-walk``. Health prunes known-DOWN tiers FIRST, so a down
-tier is already gone before this reorder runs and can never be reordered back to
-the front — this filter only ever touches saturated-but-UP vLLM tiers.
+Composition (fixed order): ``concurrency-route -> health-prune -> target creation
+-> classify-walk``. Routing may insert an explicit overflow tier, then the health
+filter sees the complete candidate chain and removes any known-DOWN endpoint.
 
-Gated by ``CONCURRENCY_GAUGE_ENABLED`` (default off) and only active where a
-``ConcurrencyGate`` is configured on the step; both off => identity (zero
-behaviour change). Kept import-clean (stdlib + httpx + ``app.config`` + the app
+Enabled only where a ``ConcurrencyGate`` is configured on a vLLM-primary step;
+no gate or a managed primary means identity. Kept import-clean (stdlib + httpx + ``app.config`` + the app
 cache + ``config_model`` + ``app.metrics``) so the voice repo can mirror the same
 public API and the eventual repo-merge stays mechanical.
 """
@@ -242,9 +240,10 @@ async def reprioritize_by_load(
     drops a tier, never returns empty — only ever REORDERS. Returns ``tiers``
     unchanged (identity) when:
 
-    * ``CONCURRENCY_GAUGE_ENABLED`` is off;
     * the step has no ``ConcurrencyGate`` configured (``gate is None``) — a step
       without a gate is untouched;
+    * the selected primary is not vLLM — a later vLLM fallback is not the model
+      described by this gate and cannot displace a healthy managed primary;
     * the gauge is unreadable (``None``) — **fail-open**: treat as NOT saturated;
     * the probabilistic shed roll declines this call (below the ramp, or a losing
       draw inside the smooth band).
@@ -269,31 +268,16 @@ async def reprioritize_by_load(
     Shed probability rises with load (``_shed_probability``): a self-proportioning
     fraction near the cap, a hard 1.0 at/above it.
 
-    Runs on the already-HEALTH-PRUNED inert ``Tier`` list, BEFORE materialize, so
-    a tier the health filter already dropped is gone and can never be reordered
-    back to the front here.
+    Runs on inert ``Tier`` values before the final health prune and target creation.
     """
-    if not settings.concurrency_gauge_enabled:
-        return tiers
     if gate is None:
         return tiers            # step without a configured gate -> untouched
     if not tiers:
         return tiers
+    if not _is_vllm(tiers[0]):
+        return tiers            # the selected primary is not the measured vLLM
 
     gauge = await get_concurrency(gate.metrics_url)
-
-    # ── tracing-only (no behaviour change): record the gauge read + whether the
-    # vLLM tier was deprioritized onto the current turn's trace, at each outcome.
-    from app.llm_core import trace as _trace
-
-    def _record(deprioritized: bool) -> None:
-        _trace.record_concurrency(
-            step,
-            gauge=gauge,
-            max_concurrency=gate.max_concurrency,
-            deprioritized=deprioritized,
-            metrics_url=gate.metrics_url,
-        )
 
     if gauge is None:
         # Fail-open: metrics unreadable -> assume NOT saturated -> order unchanged.
@@ -302,14 +286,12 @@ async def reprioritize_by_load(
             "concurrency: metrics unreadable for step=%s (%s); fail-open, order unchanged",
             getattr(step, "value", step), gate.metrics_url,
         )
-        _record(False)
         return tiers
 
     # Probabilistic proportional shed: below the ramp -> never; in the band -> a
     # rising fraction; at/above the cap -> always. Smooths the 2s-cache herd flip.
     p = _shed_probability(gauge, gate.max_concurrency)
     if p <= 0.0 or random.random() >= p:
-        _record(False)
         return tiers            # this call does not shed -> primary stays primary
 
     # ── M3: separately-configurable overflow target ──────────────────────────
@@ -333,7 +315,6 @@ async def reprioritize_by_load(
             getattr(step, "value", step), gauge, gate.max_concurrency, p,
             getattr(overflow, "label", None) or getattr(overflow, "model", overflow),
         )
-        _record(True)
         metrics.record_deprioritized(step)  # no-op if prom lib absent; never raises
         return reordered
 
@@ -342,13 +323,11 @@ async def reprioritize_by_load(
     if not vllm or not others:
         # All-vLLM or no-vLLM chain: nothing to reorder behind. Never churn /
         # empty — a saturated-but-only vLLM tier still runs (degrade-safe).
-        _record(False)
         return tiers
 
     logger.info(
         "concurrency: step=%s vLLM gauge %d vs cap %d (p_shed=%.2f); deprioritizing %d vLLM tier(s) behind managed",
         getattr(step, "value", step), gauge, gate.max_concurrency, p, len(vllm),
     )
-    _record(True)
     metrics.record_deprioritized(step)  # no-op if prom lib absent; never raises
     return others + vllm

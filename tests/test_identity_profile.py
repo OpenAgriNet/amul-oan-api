@@ -75,7 +75,7 @@ def test_chat_identity_short_circuit_bypasses_moderation_and_translation(monkeyp
 
     monkeypatch.setattr(chat_module, "update_message_history", _fake_update_history)
     monkeypatch.setattr(chat_module.moderation_agent, "run", _unexpected_moderation)
-    monkeypatch.setattr(chat_module, "translate_to_english_pretranslation", _unexpected_pretranslation)
+    monkeypatch.setattr(chat_module, "pretranslate_with_tier", _unexpected_pretranslation)
 
     async def _collect():
         return [
@@ -91,7 +91,6 @@ def test_chat_identity_short_circuit_bypasses_moderation_and_translation(monkeyp
                 user_info={},
                 background_tasks=background_tasks,
                 use_translation_pipeline=True,
-                pipeline_profile="managed",
             )
         ]
 

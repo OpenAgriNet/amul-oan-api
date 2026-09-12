@@ -20,9 +20,13 @@ Design constraints:
 
 from __future__ import annotations
 
-from typing import Optional
+import logging
+import os
+import tempfile
 
 from app.config import settings
+
+logger = logging.getLogger(__name__)
 
 # Multi-worker aggregation: uvicorn/gunicorn with >1 worker gives each process its
 # OWN in-process registry, so a /metrics scrape hits only one worker and undercounts.
@@ -31,6 +35,27 @@ from app.config import settings
 # Leave it UNSET for single-worker deployments (simple in-process registry). Set it
 # (e.g. /tmp/prom_multiproc, a fresh dir per container) whenever workers > 1.
 _MULTIPROC_DIR = settings.prometheus_multiproc_dir
+
+# prometheus_client chooses its process-local or mmap-backed value class when it
+# is imported. Validate the directory, and reflect settings loaded from .env into
+# os.environ, before that choice is made. If setup fails, removing both supported
+# spellings makes the import below select normal in-process metrics.
+if _MULTIPROC_DIR:
+    try:
+        os.makedirs(_MULTIPROC_DIR, exist_ok=True)
+        with tempfile.NamedTemporaryFile(dir=_MULTIPROC_DIR):
+            pass
+        os.environ["PROMETHEUS_MULTIPROC_DIR"] = _MULTIPROC_DIR
+    except OSError as exc:
+        logger.warning(
+            "Could not initialize PROMETHEUS_MULTIPROC_DIR=%s: %s; "
+            "using in-process metrics",
+            _MULTIPROC_DIR,
+            exc,
+        )
+        os.environ.pop("PROMETHEUS_MULTIPROC_DIR", None)
+        os.environ.pop("prometheus_multiproc_dir", None)
+        _MULTIPROC_DIR = None
 
 try:  # optional dependency — the pipeline runs fine without it (no-op mode)
     from prometheus_client import (
@@ -44,13 +69,6 @@ try:  # optional dependency — the pipeline runs fine without it (no-op mode)
     _ENABLED = True
     if _MULTIPROC_DIR:
         from prometheus_client import multiprocess as _multiprocess
-
-        # Best-effort: ensure the shared dir exists (fresh per container, so no stale
-        # cross-restart files). Never fatal — fall back to in-process on any error.
-        try:
-            os.makedirs(_MULTIPROC_DIR, exist_ok=True)
-        except Exception:
-            _MULTIPROC_DIR = None
 except Exception:  # pragma: no cover - exercised only where the lib is absent
     _ENABLED = False
     _MULTIPROC_DIR = None
@@ -76,7 +94,8 @@ if _ENABLED:
         _reg_kw = {"registry": REGISTRY}
 
     # Which tier actually served a step (incremented where fallback commits/returns).
-    # kind = "oss" | "managed"; provider/model identify the concrete tier.
+    # kind = "oss" for self-hosted providers, otherwise "managed";
+    # provider/model identify the concrete route.
     _served_total = Counter(
         "llm_served_total",
         "Turns served, by step and the tier that actually served them.",
@@ -119,7 +138,7 @@ _BREAKER_STATE_CODES = {"closed": 0, "half_open": 1, "half-open": 1, "open": 2}
 
 
 def record_served(step: object, kind: object, provider: object, model: object) -> None:
-    """A step was served by ``kind`` (oss/managed) tier ``provider``/``model``.
+    """A step was served by ``kind`` (self-hosted/managed) route.
 
     Call at the point the walker commits/returns a result (``_record_served`` sites).
     The aggregate ``managed``-share over this counter is the system's core KPI."""

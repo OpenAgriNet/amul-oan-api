@@ -1,4 +1,4 @@
-"""Standard OSS -> managed fallback for LLM pipelines.
+"""LLM tier execution policy.
 
 See docs/oss-fallback-design.md. One mechanism, used by every unary pipeline
 (pretranslation, moderation, suggestions): a resolved pipeline *variant* becomes
@@ -7,15 +7,13 @@ otherwise — and ``execute_with_fallback`` walks it, classifying each failure,
 falling back on infrastructure errors, and recording every failure for the
 ``oss_fallback`` metric.
 
-Gated by ``settings.fallback_enabled`` (default off): when disabled, callers keep
-their existing code path, so merging this changes nothing until it is flipped on.
+This module is deliberately inside :mod:`app.llm_core`: application services do
+not choose tiers, inspect fallback flags, or implement retry loops.
 
 Core-chat streaming uses ``stream_with_fallback`` (first-token commit): an OSS
 failure *before* the first token swaps to managed transparently; once the first
 token has reached the caller a swap is impossible, so the error propagates.
-``with_first_token_deadline`` bounds time-to-first-token only (mid-stream tool
-round-trips / slow generation are unaffected) by isolating the agent stream in its
-own task + queue, so it stays disconnect-safe (see its docstring).
+The common stream state machine owns both time-to-first-token and commit state.
 """
 
 from __future__ import annotations
@@ -25,13 +23,21 @@ import random
 import time
 
 import anyio
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
+from functools import cached_property
 from typing import Any, AsyncIterator, Awaitable, Callable, Optional
 
 from app.config import settings
-from app.llm_core.config_model import Step
-from app.llm_core.factory import MaterializedTier
+from app.llm_core.config_model import (
+    AdmissionPolicy,
+    PipelineConfig,
+    Provider,
+    Step,
+    StepClientKind,
+    Tier,
+)
+from app.llm_core.factory import build_handle
 from app.llm_core import health
 from helpers.utils import get_logger
 
@@ -42,13 +48,6 @@ try:  # pragma: no cover - import guard
     import sentry_sdk as _sentry
 except Exception:  # pragma: no cover
     _sentry = None
-
-# Optional Langfuse trace tagging — best-effort.
-try:  # pragma: no cover - import guard
-    from langfuse import get_client as _get_langfuse_client
-except Exception:  # pragma: no cover
-    _get_langfuse_client = None
-
 
 class FallbackReason(str, Enum):
     """Why an OSS attempt failed. Drives the ``oss_fallback`` rate, sliced by
@@ -140,58 +139,62 @@ def classify(exc: BaseException) -> FallbackReason:
     return FallbackReason.UNKNOWN
 
 
-# ── config-driven chain (the only path after P4) ──────────────────────────────
-# Maps the pipeline label the walkers receive to an llm_core Step, so a session's
-# resolved weighted profile materializes that step's tiers (the config-driven
-# successor to the removed hardwired ``attempt_chain([oss, managed])``). The
-# materialized chain (list[MaterializedTier]) is what the walkers read: they only
-# touch .kind/.model/.model_name/.provider/.endpoint/.timeout, all carried by
-# MaterializedTier (the drop-in successor to the removed ``Attempt``).
-_PIPELINE_TO_STEP = {
-    "chat": Step.AGENT,
-    "moderation": Step.MODERATION,
-    "pretranslation": Step.PRE_TRANSLATION,
-    "suggestions": Step.SUGGESTIONS,
-}
+@dataclass(frozen=True)
+class ExecutionTarget:
+    """An inert resolved tier. Its client is built only when the walker reaches it."""
 
+    tier: Tier
+    client_kind: StepClientKind
 
-async def _resolve_chain(*, pipeline: str, session_id: str, profile_name: str) -> list:
-    """How the walkers receive their chain — always the config-driven pipeline.
+    @cached_property
+    def handle(self) -> Any:
+        return build_handle(self.tier, self.client_kind)
 
-    Resolves the session's sticky weighted profile, looks up the step's tiers, and
-    materializes them (primary first, never empty). Health pruning (the pre-flight
-    FILTER) and concurrency reordering happen inside ``split.resolve_chain`` — a
-    no-op unless a HEALTH_* / CONCURRENCY_GAUGE flag is on.
+    @property
+    def kind(self) -> str:
+        return (
+            "oss"
+            if self.tier.provider in {Provider.VLLM, Provider.TRANSLATEGEMMA}
+            else "managed"
+        )
 
-    ``profile_name`` is the routing token (the actual profile NAME) already resolved
-    at the router seam; the chain selects THAT profile directly.
+    @property
+    def provider(self) -> str:
+        return self.tier.provider.value
 
-    A config/Redis edge case must never break the fallback path: on any failure
-    (or an unmapped pipeline) it degrades to the resolver's managed-tier chain for
-    the step, so callers still get a non-empty chain and their terminal net
-    (moderation fail-closed, pretranslation safe-default, suggestions ``[]``)
-    remains the last line of defence."""
-    step = _PIPELINE_TO_STEP.get(pipeline)
-    if step is not None:
-        try:
-            from app.llm_core import split
-            # (C) Honor the profile NAME the router already resolved from the FULL
-            # session id. The walkers receive a 200-char-capped session id, so
-            # re-bucketing here on that capped id could pick a different profile
-            # than the primary path — threading the name selects the same profile
-            # without a second (divergent) bucket.
-            return await split.resolve_chain(
-                session_id, step, profile_name=profile_name
-            )  # health-pruned inside
-        except Exception as exc:  # never break the fallback path on a config edge
-            logger.warning(
-                "fallback: config chain resolve failed (pipeline=%s): %s; "
-                "degrading to managed tier", pipeline, exc,
-            )
+    @property
+    def model_name(self) -> str:
+        return self.tier.model
 
-    from app.llm_core import resolver as _resolver
-    degrade_step = step or Step.AGENT
-    return _resolver.resolve_chain(degrade_step)
+    @property
+    def route(self) -> str:
+        route = f"{self.provider}:{self.model_name}"
+        return f"{route}({self.tier.label})" if self.tier.label else route
+
+    @property
+    def endpoint(self) -> str:
+        return self.tier.endpoint or "managed"
+
+    @property
+    def timeout(self) -> Optional[float]:
+        return self.tier.timeout_ms / 1000.0 if self.tier.timeout_ms is not None else None
+
+    @property
+    def ttft(self) -> Optional[float]:
+        return self.tier.ttft_ms / 1000.0 if self.tier.ttft_ms is not None else None
+
+    @property
+    def admission(self) -> AdmissionPolicy:
+        if self.tier.admission is not AdmissionPolicy.AUTO:
+            return self.tier.admission
+        if self.tier.provider in {
+            Provider.OPENAI,
+            Provider.AZURE,
+            Provider.ANTHROPIC,
+            Provider.GEMINI,
+        }:
+            return AdmissionPolicy.MANAGED
+        return AdmissionPolicy.NONE
 
 
 @dataclass
@@ -267,13 +270,23 @@ def emit(event: FallbackEvent) -> None:
     # via a supported API (update_current_span) is a tracked follow-up.
 
 
-def _record_served(pipeline: str, kind: str, index: int) -> None:
+def _record_served(
+    step: Step,
+    target: ExecutionTarget,
+    index: int,
+    trace_state: Any = None,
+) -> None:
     """Tracing-only: thread the tier that actually served (kind + 0-based chain
     index) back to the current turn's pipeline-trace, keyed by the pipeline's
     Step. No-op when no trace context is active; never breaks the request path."""
     try:  # pragma: no cover - best effort
         from app.llm_core import trace as _trace
-        _trace.record_served(_PIPELINE_TO_STEP.get(pipeline, pipeline), kind, index)
+        _trace.record_served(
+            step,
+            target.route,
+            index,
+            trace_state=trace_state,
+        )
     except Exception:
         pass
 
@@ -369,26 +382,27 @@ def _retry_after_seconds(exc: BaseException) -> float:
 
 async def execute_with_fallback(
     *,
-    pipeline: str,
+    step: Step,
     session_id: str,
-    profile_name: str,
-    run: Callable[[MaterializedTier], Awaitable[Any]],
+    run: Callable[[ExecutionTarget], Awaitable[Any]],
+    chain: list[ExecutionTarget],
+    trace_state: Any = None,
 ) -> Any:
     """Run ``run(attempt)`` against each tier of the chain, falling back on a
     classified infrastructure failure and recording every failure via ``emit``.
 
-    ``run`` receives the active :class:`MaterializedTier` and returns the awaitable for that
+    ``run`` receives the active :class:`ExecutionTarget` and returns the awaitable for that
     tier (e.g. ``agent.run(..., model=attempt.model)``). Returns whatever ``run``
     returns. Re-raises when the failure is non-fallbackable or the chain is
     exhausted, so the caller's existing degrade path (moderation fail-closed,
     pretranslation safe-default, suggestions ``[]``) stays the terminal net.
     """
-    chain = await _resolve_chain(pipeline=pipeline, session_id=session_id, profile_name=profile_name)
+    pipeline = step.value
     try:
         for i, attempt in enumerate(chain):
             is_last = i == len(chain) - 1
             # (F) Cap concurrent MANAGED-tier admission; OSS tiers stay uncapped.
-            sem = _get_managed_sem() if attempt.kind == "managed" else None
+            sem = _get_managed_sem() if attempt.admission is AdmissionPolicy.MANAGED else None
             retried_rate_limit = False
             while True:
                 t0 = time.monotonic()
@@ -416,8 +430,8 @@ async def execute_with_fallback(
                         FallbackEvent(
                             pipeline=pipeline,
                             session_id=session_id,
-                            from_variant=attempt.kind,
-                            to_variant=chain[i + 1].kind if will_fall_back else None,
+                            from_variant=attempt.route,
+                            to_variant=chain[i + 1].route if will_fall_back else None,
                             reason=reason,
                             error_class=type(exc).__name__,
                             error_detail=str(exc)[:500],
@@ -440,7 +454,7 @@ async def execute_with_fallback(
                     # Clean success resets the breaker for this endpoint (P2). No-op unless
                     # HEALTH_BREAKER_ENABLED.
                     health.record_success(attempt.endpoint)
-                    _record_served(pipeline, attempt.kind, i)
+                    _record_served(step, attempt, i, trace_state)
                     from app import metrics
                     metrics.record_served(pipeline, attempt.kind, attempt.provider, attempt.model_name)
                     return result
@@ -460,10 +474,13 @@ async def execute_with_fallback(
             health.release_probe(_tier.endpoint)
 
 
-async def with_first_token_deadline(attempt: MaterializedTier, agen: AsyncIterator[Any]) -> AsyncIterator[Any]:
-    """Bound time-to-first-token only — safely across client disconnects.
+async def _attempt_events(
+    attempt: ExecutionTarget,
+    source: AsyncIterator[Any],
+) -> AsyncIterator[Any]:
+    """Drive one attempt in its own task and bound only its first event.
 
-    ``attempt.timeout`` bounds only the wait for the FIRST chunk; mid-stream gaps
+    ``attempt.ttft`` bounds only the wait for the FIRST event; mid-stream gaps
     after it (tool round-trips, slow generation) are NOT bounded — that is why we
     can't just shorten the model's httpx read-timeout, which can't tell a silent
     pre-first-token hang from a normal inter-token gap.
@@ -480,18 +497,15 @@ async def with_first_token_deadline(attempt: MaterializedTier, agen: AsyncIterat
     different task" / "aclose: generator already running". Validated against real
     ``run_stream`` incl. the disconnect path.
 
-    A pre-first-token timeout raises ``TimeoutError`` (``classify`` -> ``TIMEOUT``
-    -> fallbackable, so ``stream_with_fallback`` swaps before any token reached the
-    caller). Stream exceptions propagate unchanged. No-op when ``attempt.timeout``
-    is None (fallback disabled).
+    The event is returned unchanged, including ``AGENT_ACTIVITY``. The common
+    walker owns commit state and decides whether an event is externally visible.
     """
-    ttft = attempt.timeout
-    queue: asyncio.Queue = asyncio.Queue()
+    queue: asyncio.Queue = asyncio.Queue(maxsize=1)
     _CHUNK, _END, _ERR = 0, 1, 2
 
     async def _drain() -> None:
         try:
-            async for item in agen:
+            async for item in source:
                 await queue.put((_CHUNK, item))
         except asyncio.CancelledError:
             raise
@@ -502,25 +516,23 @@ async def with_first_token_deadline(attempt: MaterializedTier, agen: AsyncIterat
 
     task = asyncio.create_task(_drain())
     try:
+        deadline = attempt.ttft if attempt.ttft is not None else attempt.timeout
         try:
-            if ttft is not None:
-                kind, val = await asyncio.wait_for(queue.get(), ttft)
+            if deadline is not None:
+                kind, val = await asyncio.wait_for(queue.get(), deadline)
             else:
                 kind, val = await queue.get()
         except asyncio.TimeoutError:
             raise TimeoutError(
-                f"OSS first-token deadline exceeded ({ttft}s) [{attempt.kind}/{attempt.endpoint}]"
+                f"first-token deadline exceeded ({deadline}s) "
+                f"[{attempt.provider}/{attempt.endpoint}]"
             )
         while True:
             if kind == _END:
                 return
             if kind == _ERR:
                 raise val
-            # (D) The AGENT_ACTIVITY sentinel satisfies the first-token deadline (the
-            # endpoint is alive and working — a tool-call event precedes any text) but
-            # is INTERNAL: it commits the turn without being forwarded to the caller.
-            if val is not AGENT_ACTIVITY:
-                yield val
+            yield val
             kind, val = await queue.get()
     finally:
         # Single-task teardown: cancelling _drain unwinds run_stream's scope in its
@@ -532,23 +544,13 @@ async def with_first_token_deadline(attempt: MaterializedTier, agen: AsyncIterat
             await task
         except BaseException:
             pass
-
-
-async def _aclose(agen) -> None:
-    close = getattr(agen, "aclose", None)
-    if close is not None:
-        try:  # pragma: no cover - best effort cleanup
-            await close()
-        except Exception:
-            pass
-
-
 async def stream_with_fallback(
     *,
-    pipeline: str,
+    step: Step,
     session_id: str,
-    profile_name: str,
-    make_stream: Callable[[MaterializedTier], AsyncIterator[Any]],
+    make_stream: Callable[[ExecutionTarget], AsyncIterator[Any]],
+    chain: list[ExecutionTarget],
+    trace_state: Any = None,
 ) -> AsyncIterator[Any]:
     """Stream a chain tier with *first-token commit* semantics.
 
@@ -567,39 +569,27 @@ async def stream_with_fallback(
     Every classified failure is recorded via ``emit`` (``committed`` distinguishes
     pre- from post-commit).
     """
-    chain = await _resolve_chain(pipeline=pipeline, session_id=session_id, profile_name=profile_name)
-    last_exc: Optional[BaseException] = None
+    pipeline = step.value
     try:
         for i, attempt in enumerate(chain):
             is_last = i == len(chain) - 1
-            # (F) Cap concurrent MANAGED-tier admission; OSS tiers stay uncapped. The slot
-            # is held for the whole managed stream and released in `finally` — including on
-            # a client disconnect / aclose, which unwinds through this frame's finally.
-            sem = _get_managed_sem() if attempt.kind == "managed" else None
+            sem = _get_managed_sem() if attempt.admission is AdmissionPolicy.MANAGED else None
             retried_rate_limit = False
             while True:
                 t0 = time.monotonic()
                 committed = False
                 acquired = False
 
-                # IMPORTANT: consume make_stream here with a plain `async for` and never
-                # wrap THIS loop in an external timeout/cancel scope — pydantic-ai's
-                # run_stream opens an anyio cancel scope inside make_stream that stays open
-                # across the `yield`, so any scope spanning these yields unwinds out of order
-                # on aclose/disconnect ("cancel scope in a different task"). The plain
-                # semaphore `finally` below is NOT a cancel scope, so it is disconnect-safe.
-                # The time-to-first-token deadline is applied by callers wrapping make_stream
-                # in `with_first_token_deadline`, which isolates run_stream in its own task +
-                # queue precisely so no anyio scope is ever open at a `yield`.
                 try:
                     if sem is not None:
                         acquired = await _acquire_managed_slot(sem)
-                    async for chunk in make_stream(attempt):
+                    async for chunk in _attempt_events(attempt, make_stream(attempt)):
                         committed = True
-                        yield chunk
+                        if chunk is not AGENT_ACTIVITY:
+                            yield chunk
                     # Clean stream finish resets the breaker for this endpoint (P2).
                     health.record_success(attempt.endpoint)
-                    _record_served(pipeline, attempt.kind, i)
+                    _record_served(step, attempt, i, trace_state)
                     from app import metrics
                     metrics.record_served(pipeline, attempt.kind, attempt.provider, attempt.model_name)
                     return  # stream finished cleanly
@@ -613,7 +603,7 @@ async def stream_with_fallback(
                             FallbackEvent(
                                 pipeline=pipeline,
                                 session_id=session_id,
-                                from_variant=attempt.kind,
+                                from_variant=attempt.route,
                                 to_variant=None,
                                 reason=reason,
                                 error_class=type(exc).__name__,
@@ -637,8 +627,8 @@ async def stream_with_fallback(
                         FallbackEvent(
                             pipeline=pipeline,
                             session_id=session_id,
-                            from_variant=attempt.kind,
-                            to_variant=chain[i + 1].kind if will_fall_back else None,
+                            from_variant=attempt.route,
+                            to_variant=chain[i + 1].route if will_fall_back else None,
                             reason=reason,
                             error_class=type(exc).__name__,
                             error_detail=str(exc)[:500],
@@ -649,7 +639,6 @@ async def stream_with_fallback(
                             committed=False,
                         )
                     )
-                    last_exc = exc
                     # (F) Last tier hit 429 pre-commit with nothing behind it: ONE bounded
                     # retry honoring Retry-After. Safe because committed is False (no output
                     # reached the caller), so the retried stream can't duplicate anything.
@@ -675,6 +664,184 @@ async def stream_with_fallback(
         # the record_success/record_failure breaker transitions above.
         for _tier in chain:
             health.release_probe(_tier.endpoint)
-    # All tiers failed before commit (every fallbackable tier swapped, last raised).
-    if last_exc is not None:
-        raise last_exc
+
+
+# ── application API ──────────────────────────────────────────────────────────
+
+@dataclass(frozen=True)
+class ModelInfo:
+    provider: str
+    model_name: str
+    kind: str
+
+
+@dataclass(frozen=True)
+class ExecutionContext:
+    """Immutable model config and profile snapshot for one turn/session."""
+
+    session_id: str
+    config: PipelineConfig
+    profile_name: str
+    _trace_state: Any = field(default=None, init=False, repr=False, compare=False)
+
+    @property
+    def profile(self):
+        return (
+            self.config.by_name(self.profile_name)
+            or self.config.by_name("managed")
+            or self.config.profiles[0]
+        )
+
+    @cached_property
+    def capabilities(self):
+        capabilities = self.profile.capabilities
+        if capabilities is None:
+            raise ValueError(
+                f"profile={self.profile.name} has not been normalized"
+            )
+        return capabilities
+
+    def _step_plan(self, step: Step):
+        plan = self.config.step_plan(self.profile, step)
+        if plan is None:
+            raise ValueError(
+                f"no config for step={step.value} in profile={self.profile_name}"
+            )
+        return plan
+
+    def _target(self, step: Step, tier: Tier) -> ExecutionTarget:
+        from app.llm_core.factory import STEP_CLIENT_KIND, tier_client_kind
+
+        return ExecutionTarget(tier, tier_client_kind(STEP_CLIENT_KIND[step], tier))
+
+    def info(self, step: Step) -> ModelInfo:
+        target = self._target(step, self._step_plan(step).tiers[0])
+        return ModelInfo(target.provider, target.model_name, target.kind)
+
+    def begin_trace(self):
+        from app.llm_core import trace
+
+        if self._trace_state is not None:
+            return self._trace_state
+        current = trace.begin(self.profile_name)
+        trace.set_profile(current, self.profile.name, self.profile.weight)
+        for step in Step:
+            try:
+                trace.set_step_primary(
+                    current, step, self._target(step, self._step_plan(step).tiers[0])
+                )
+            except ValueError:
+                pass
+        object.__setattr__(self, "_trace_state", current)
+        return current
+
+    async def _chain(self, step: Step) -> list[ExecutionTarget]:
+        from app.llm_core import split
+
+        return await split.resolve_chain(
+            self.session_id,
+            step,
+            self.config,
+            profile_name=self.profile_name,
+        )
+
+    def _record_direct_success(self, step: Step, target: ExecutionTarget) -> None:
+        _record_served(step, target, 0, self._trace_state)
+        from app import metrics
+
+        metrics.record_served(
+            step.value, target.kind, target.provider, target.model_name
+        )
+
+    async def run_adapter(
+        self,
+        step: Step,
+        invoke: Callable[[ExecutionTarget], Awaitable[Any]],
+    ) -> Any:
+        if not self.config.fallback_enabled:
+            target = self._target(step, self._step_plan(step).tiers[0])
+            result = await invoke(target)
+            self._record_direct_success(step, target)
+            return result
+        return await execute_with_fallback(
+            step=step,
+            session_id=self.session_id[:200],
+            run=invoke,
+            chain=await self._chain(step),
+            trace_state=self._trace_state,
+        )
+
+    async def run(self, step: Step, agent: Any, prompt: str, **run_kwargs: Any) -> Any:
+        return await self.run_adapter(
+            step,
+            lambda target: agent.run(prompt, model=target.handle, **run_kwargs),
+        )
+
+    async def stream_adapter(
+        self,
+        step: Step,
+        make_stream: Callable[[ExecutionTarget], AsyncIterator[Any]],
+    ) -> AsyncIterator[Any]:
+        if not self.config.fallback_enabled:
+            target = self._target(step, self._step_plan(step).tiers[0])
+            async for chunk in make_stream(target):
+                if chunk is not AGENT_ACTIVITY:
+                    yield chunk
+            self._record_direct_success(step, target)
+            return
+        async for chunk in stream_with_fallback(
+            step=step,
+            session_id=self.session_id[:200],
+            make_stream=make_stream,
+            chain=await self._chain(step),
+            trace_state=self._trace_state,
+        ):
+            yield chunk
+
+    async def stream(
+        self,
+        agent: Any,
+        prompt: str,
+        *,
+        message_history: list,
+        deps: Any,
+        new_messages: list,
+    ) -> AsyncIterator[str]:
+        """Stream Agent text, committing on its first model activity event."""
+
+        async def raw(tier: ExecutionTarget) -> AsyncIterator[Any]:
+            activity_signaled = False
+            async with agent.iter(
+                user_prompt=prompt,
+                message_history=message_history,
+                deps=deps,
+                model=tier.handle,
+            ) as agent_run:
+                async for node in agent_run:
+                    if type(node).__name__ != "ModelRequestNode":
+                        continue
+                    async with node.stream(agent_run.ctx) as request_stream:
+                        async for event in request_stream:
+                            if not activity_signaled:
+                                activity_signaled = True
+                                yield AGENT_ACTIVITY
+                            event_type = type(event).__name__
+                            if event_type == "PartStartEvent" and type(event.part).__name__ == "TextPart":
+                                if event.part.content:
+                                    yield event.part.content
+                            elif event_type == "PartDeltaEvent" and type(event.delta).__name__ == "TextPartDelta":
+                                if event.delta.content_delta:
+                                    yield event.delta.content_delta
+                new_messages.extend(agent_run.result.new_messages())
+
+        async for chunk in self.stream_adapter(Step.AGENT, raw):
+            yield chunk
+
+
+async def context(session_id: str) -> ExecutionContext:
+    """Snapshot current config and resolve the session profile exactly once."""
+    from app.llm_core import runtime, split
+
+    config = runtime.get_pipeline()
+    profile_name = await split.resolve_profile(session_id, config)
+    return ExecutionContext(session_id=session_id, config=config, profile_name=profile_name)

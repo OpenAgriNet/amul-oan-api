@@ -1,74 +1,50 @@
-"""Wiring test: create_suggestions routes through execute_with_fallback when
-FALLBACK_ENABLED, falling back OSS->managed, and degrades to [] when all tiers fail."""
-
-import os
-
-os.environ.setdefault("OPENAI_API_KEY", "test-key")
+"""Suggestions delegates all model execution to llm_core."""
 
 import asyncio
 from types import SimpleNamespace
 
 import pytest
 
-import app.tasks.suggestions as sug
-from app.services import fallback as fb
+import app.tasks.suggestions as suggestions
 
 
 @pytest.fixture
-def oss_on(monkeypatch, install_chain):
-    monkeypatch.setattr(fb.settings, "fallback_enabled", True)
-    # config-driven chain: oss tier's handle "OSS", managed tier's handle "MANAGED"
-    # (the walker passes attempt.model=handle to suggestions_agent.run).
-    install_chain(oss_handle="OSS", managed_handle="MANAGED")
-    events = []
-    monkeypatch.setattr(fb, "emit", events.append)
-
-    # neutralize history / cache I/O so we isolate the fallback wiring
-    async def fake_hist(session_id):
+def isolated(monkeypatch):
+    async def fake_history(session_id):
         return []
 
-    async def fake_set_cache(*a, **k):
+    async def fake_set_cache(*args, **kwargs):
         return True
 
-    async def fake_delete(*a, **k):
+    async def fake_delete(*args, **kwargs):
         return None
 
-    monkeypatch.setattr(sug, "_get_message_history", fake_hist)
-    monkeypatch.setattr(sug, "set_cache", fake_set_cache)
-    monkeypatch.setattr(sug.cache, "delete", fake_delete)
-    return events
+    monkeypatch.setattr(suggestions, "_get_message_history", fake_history)
+    monkeypatch.setattr(suggestions, "set_cache", fake_set_cache)
+    monkeypatch.setattr(suggestions.cache, "delete", fake_delete)
 
 
-def test_suggestions_fall_back_to_managed(oss_on, monkeypatch):
-    async def fake_run(message, model=None):
-        if model == "OSS":
-            raise ConnectionError("vllm down")
-        return SimpleNamespace(output=["q1", "q2", "q3"])
+class _Execution:
+    def __init__(self, result=None, error=None):
+        self.result = result
+        self.error = error
 
-    monkeypatch.setattr(sug.suggestions_agent, "run", fake_run)
+    def info(self, step):
+        return SimpleNamespace(model_name="test-model")
 
-    out = asyncio.run(sug.create_suggestions("s1", "gu", "oss"))
-    assert out == ["q1", "q2", "q3"]
-    assert any(e.fell_back for e in oss_on)  # fell back OSS -> managed
-
-
-def test_suggestions_empty_when_all_tiers_fail(oss_on, monkeypatch):
-    async def fake_run(message, model=None):
-        raise ConnectionError("down")
-
-    monkeypatch.setattr(sug.suggestions_agent, "run", fake_run)
-
-    out = asyncio.run(sug.create_suggestions("s1", "gu", "oss"))
-    assert out == []  # both tiers fail -> create_suggestions degrades to []
+    async def run(self, *args, **kwargs):
+        if self.error:
+            raise self.error
+        return self.result
 
 
-def test_suggestions_success_on_oss_no_fallback(oss_on, monkeypatch):
-    async def fake_run(message, model=None):
-        assert model == "OSS"  # OSS session tries OSS first
-        return SimpleNamespace(output=["a", "b"])
+def test_suggestions_use_turn_execution_snapshot(isolated):
+    execution = _Execution(SimpleNamespace(output=["q1", "q2", "q3"]))
+    result = asyncio.run(suggestions.create_suggestions("s1", "gu", execution))
+    assert result == ["q1", "q2", "q3"]
 
-    monkeypatch.setattr(sug.suggestions_agent, "run", fake_run)
 
-    out = asyncio.run(sug.create_suggestions("s1", "gu", "oss"))
-    assert out == ["a", "b"]
-    assert oss_on == []  # no fallback event on success
+def test_suggestions_degrade_to_empty(isolated):
+    execution = _Execution(error=ConnectionError("all configured tiers are down"))
+    result = asyncio.run(suggestions.create_suggestions("s1", "gu", execution))
+    assert result == []

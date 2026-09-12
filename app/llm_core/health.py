@@ -3,7 +3,7 @@
 Two composable pieces feed one per-endpoint breaker, and one filter consumes it:
 
 * **Passive breaker** (fed by the fallback failure/success path in
-  ``app.services.fallback``): a ``FALLBACKABLE`` classified failure on a tier is a
+  ``app.llm_core.execution``): a ``FALLBACKABLE`` classified failure on a tier is a
   ``record_failure(endpoint)``; a clean success is a ``record_success(endpoint)``.
   The endpoint trips ``open`` on EITHER of two signals:
     * ``N`` **consecutive** failures (whole-box death — every request errors), OR
@@ -432,8 +432,8 @@ def record_failed_poll(endpoint: str) -> None:
 
 def _endpoint_of(tier: Any) -> Optional[str]:
     """Endpoint key for a tier-like object — works for the inert ``Tier``
-    (``.endpoint`` is the URL, or ``None`` for OpenAI) and for the materialized
-    ``Attempt`` / ``MaterializedTier`` (``.endpoint`` is the URL or ``"managed"``).
+    (``.endpoint`` is the URL, or ``None`` for OpenAI) and for the resolved
+    an execution target (``.endpoint`` is the URL or ``"managed"``).
     Only real self-hosted URLs ever key a breaker; ``None`` / ``"managed"`` are
     never tracked (we don't poll OpenAI), so they are never pruned here."""
     ep = getattr(tier, "endpoint", None)
@@ -445,41 +445,23 @@ def _endpoint_of(tier: Any) -> Optional[str]:
 def prune_unhealthy(step: Optional[Step], tiers: list) -> list:
     """Pre-flight FILTER: drop tiers whose endpoint is currently ``open``.
 
-    Runs BEFORE materialize (on inert ``Tier`` s in the config path) and also on
+    Runs before target creation (on inert ``Tier`` objects) and also on
     the legacy ``Attempt`` chain — both expose ``.endpoint``. **Never returns
     empty**: if every tier would be pruned, the input is returned unchanged
     (degrade-safe). No-op (identity) unless a health flag is on, which is what
     keeps the flags-off path byte-identical.
 
-    NOTE (P3 composition seam): this is the FIRST pre-flight filter. The P3
-    concurrency-gauge REORDER runs AFTER this prune and BEFORE materialize —
-    ``split.resolve_chain`` calls this, then leaves the reorder hook, then
-    materializes. Health prunes known-DOWN tiers; concurrency only DEPRIORITIZES
-    saturated (but up) tiers, so composing prune-then-reorder is order-safe."""
+    ``split.resolve_chain`` calls this after concurrency routing and before target
+    creation. That ordering ensures an inserted overflow tier is checked too. This
+    filter drops DOWN tiers; concurrency routing moves or inserts candidates."""
     if not (settings.health_breaker_enabled or settings.health_poller_enabled):
         return tiers
     if not tiers:
         return tiers
 
-    # ``is_open`` has a lazy open->half_open side effect, so evaluate it exactly
-    # once per tier and reuse the result for both the filter and the trace record.
+    # ``is_open`` has a lazy open->half_open side effect, so evaluate it once.
     open_by_tier = {id(t): _registry.is_open(_endpoint_of(t) or "") for t in tiers}
     kept = [t for t in tiers if not open_by_tier[id(t)]]
-
-    # ── tracing-only (no behaviour change): record which endpoints were pruned
-    # and the breaker state consulted per endpoint, onto the current turn's trace.
-    from app.llm_core import trace as _trace
-    if _trace.current() is not None:
-        pruned = [
-            ep for t in tiers
-            if open_by_tier[id(t)] and (ep := _endpoint_of(t)) is not None
-        ]
-        breaker_states = {
-            ep: _registry.state_of(ep).value
-            for t in tiers
-            if (ep := _endpoint_of(t)) is not None
-        }
-        _trace.record_health_prune(step, pruned, breaker_states)
 
     if not kept:
         # Contract: never return an empty chain. Every tier's endpoint is open —

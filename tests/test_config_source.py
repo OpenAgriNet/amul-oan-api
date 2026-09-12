@@ -18,7 +18,7 @@ The bar these pin:
 Zero real network: the redis client seam (``config_source._get_redis``) is
 monkeypatched to an in-memory fake; no test contacts a real redis. Dummy keys are
 set before importing app code to match the other llm_core test modules (the
-factory reads keys at build time), though these tests never materialize a tier.
+factory reads keys at build time), though these tests never build a handle.
 """
 
 import os
@@ -64,12 +64,7 @@ def _two_profile(pct: int) -> PipelineConfig:
 
 
 def _content_invalid() -> PipelineConfig:
-    """SCHEMA-valid (weight sums to 100, unique names) but UNBUILDABLE: a vllm AGENT
-    tier with NO endpoint. ``PipelineConfig(**data)`` accepts it, but the factory
-    raises at materialize time (``resolver.primary_tier`` -> build_handle), so the
-    boot-parity content probe in ``runtime.validate_content`` rejects it. AGENT is a
-    RAW-independent step configured identically in chat and voice, so this fixture is
-    byte-identical across the two repos."""
+    """Schema-valid but structurally invalid: a vLLM agent has no endpoint."""
     return PipelineConfig(profiles=[
         NamedProfile(name="oss", weight=100,
                      steps={Step.AGENT: StepConfig(tiers=[
@@ -313,8 +308,8 @@ def test_no_redis_client_keeps_last_good(monkeypatch):
 
 
 def test_content_invalid_live_config_kept_last_good_and_warns(monkeypatch, fake, caplog):
-    """FAIL-CLOSED on bad CONTENT: a schema-valid but UNBUILDABLE live config
-    (validate_content raises via the resolvability probe) is treated like a read
+    """FAIL-CLOSED on bad content: a schema-valid but structurally invalid live config
+    (validate_content raises during active-plan validation) is treated like a read
     failure — last-good kept, WARNING logged, never applied, never raised."""
     import logging
     _enable(monkeypatch, refresh="0")
@@ -324,6 +319,11 @@ def test_content_invalid_live_config_kept_last_good_and_warns(monkeypatch, fake,
         out = config_source.maybe_refresh(boot)   # must NOT raise; must NOT apply
     assert out is boot                             # kept last-good (fail-closed)
     assert "content-invalid" in caplog.text
+
+    monkeypatch.setenv("REQUIRE_OVERFLOW_ARMED", "true")
+    fake.store[config_source.key()] = _json_of(_two_profile(50))
+    config_source.reset()
+    assert config_source.maybe_refresh(boot) is boot
 
 
 # ── (d) TTL: two calls within one window hit redis at most once ────────────────

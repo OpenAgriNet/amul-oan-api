@@ -1,12 +1,11 @@
 """Unit tests for the unified LLM pipeline core (app/llm_core), P0.
 
-Covers: factory superset (each provider builds the right handle kind + carries
-base_url/key), shim identity (synthesize_from_env reproduces the legacy env
-wiring), resolver returns a non-empty chain, and the default-OFF flag posture.
+Covers the provider factory, env-config synthesis, startup validation, and the
+default-OFF fallback posture.
 
 Zero network: building a pydantic-ai Model / AsyncOpenAI client is lazy (no call
 is made), and no test invokes a model. The dummy key is read only by factory
-handles materialized inside these tests.
+handles built inside these tests.
 """
 
 import os
@@ -15,24 +14,70 @@ os.environ.setdefault("OPENAI_API_KEY", "test-openai-key")
 
 import pytest
 
-from app.llm_core import (
+from app.llm_core.config_model import (
     Provider,
     Step,
     StepClientKind,
     Tier,
-    ApiStyle,
-    build_handle,
-    materialize,
-    synthesize_from_env,
-    resolver,
-    runtime,
 )
-from app.llm_core.factory import TGDescriptor, MaterializedTier
+from app.llm_core.factory import TGDescriptor, build_handle
+from app.llm_core.legacy_shim import synthesize_from_env
+from app.llm_core import runtime
 
 
 def _openai_model_types() -> tuple[str, ...]:
     # pydantic-ai 1.x -> OpenAIChatModel; older -> OpenAIModel.
     return ("OpenAIChatModel", "OpenAIModel")
+
+
+def test_metrics_multiprocess_initializes_on_fresh_import(tmp_path):
+    import subprocess
+    import sys
+
+    env = os.environ.copy()
+    env["PROMETHEUS_MULTIPROC_DIR"] = str(tmp_path)
+    subprocess.run(
+        [sys.executable, "-c", "import app.metrics as m; assert m.REGISTRY is None"],
+        cwd=os.path.dirname(os.path.dirname(__file__)),
+        env=env,
+        check=True,
+    )
+
+
+def test_metrics_invalid_multiprocess_dir_falls_back_with_samples(tmp_path):
+    import subprocess
+    import sys
+
+    blocked = tmp_path / "not-a-directory"
+    blocked.write_text("")
+    unwritable = tmp_path / "unwritable"
+    unwritable.mkdir(mode=0o555)
+    sample = (
+        'llm_served_total{kind="managed",model="gpt",provider="openai",'
+        'step="agent"} 1.0'
+    )
+    for path in (blocked / "metrics", unwritable):
+        env = os.environ.copy()
+        env["PROMETHEUS_MULTIPROC_DIR"] = str(path)
+        env.pop("prometheus_multiproc_dir", None)
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                (
+                    "import app.metrics as m; "
+                    "m.record_served('agent', 'managed', 'openai', 'gpt'); "
+                    "assert m.REGISTRY is not None; "
+                    "print(m.render()[0].decode())"
+                ),
+            ],
+            cwd=os.path.dirname(os.path.dirname(__file__)),
+            env=env,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        assert sample in result.stdout
 
 
 # ── factory superset ──────────────────────────────────────────────────────────
@@ -81,11 +126,11 @@ def test_factory_gemini_agent_builds_model():
     assert type(handle).__name__ in ("GoogleModel", "GeminiModel")
 
 
-def test_factory_raw_openai_client_carries_api_key_and_base_url():
+def test_factory_pretranslation_client_carries_api_key_and_base_url():
     os.environ["OSS_INFERENCE_API_KEY"] = "dummy-oss"
     tier = Tier(provider=Provider.VLLM, model="gemma-4-31b-it",
                 endpoint="http://10.0.0.1:8020/v1", api_key_env="OSS_INFERENCE_API_KEY")
-    client = build_handle(tier, StepClientKind.RAW_OPENAI)
+    client = build_handle(tier, StepClientKind.PRE_TRANSLATION)
     assert type(client).__name__ == "AsyncOpenAI"
     assert str(client.base_url).rstrip("/") == "http://10.0.0.1:8020/v1"
     assert client.api_key == "dummy-oss"
@@ -93,7 +138,7 @@ def test_factory_raw_openai_client_carries_api_key_and_base_url():
 
 def test_factory_translategemma_builds_descriptor():
     tier = Tier(provider=Provider.TRANSLATEGEMMA, model="translategemma-27b-base",
-                endpoint="http://localhost:18002/v1", api_style=ApiStyle.TEXT_COMPLETION)
+                endpoint="http://localhost:18002/v1")
     desc = build_handle(tier, StepClientKind.TRANSLATEGEMMA)
     assert isinstance(desc, TGDescriptor)
     assert desc.completions_url == "http://localhost:18002/v1/completions"
@@ -102,10 +147,24 @@ def test_factory_translategemma_builds_descriptor():
 
 # ── legality enforcement ──────────────────────────────────────────────────────
 
-def test_factory_rejects_anthropic_for_raw_openai():
-    tier = Tier(provider=Provider.ANTHROPIC, model="claude-haiku-4-5")
-    with pytest.raises(ValueError):
-        build_handle(tier, StepClientKind.RAW_OPENAI)
+def test_factory_builds_anthropic_pretranslation_client(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    tier = Tier(
+        provider=Provider.ANTHROPIC,
+        model="claude-haiku-4-5",
+        api_key_env="ANTHROPIC_API_KEY",
+    )
+    assert type(build_handle(tier, StepClientKind.PRE_TRANSLATION)).__name__ == "AsyncAnthropic"
+
+
+def test_factory_builds_gemini_translation_client(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    tier = Tier(
+        provider=Provider.GEMINI,
+        model="gemini-2.5-flash",
+        api_key_env="GEMINI_API_KEY",
+    )
+    assert hasattr(build_handle(tier, StepClientKind.PRE_TRANSLATION), "models")
 
 
 def test_factory_rejects_translategemma_for_agent():
@@ -121,20 +180,6 @@ def test_factory_rejects_openai_for_translategemma_kind():
 
 
 # ── materialize ───────────────────────────────────────────────────────────────
-
-def test_materialize_preserves_order_and_timeout():
-    tiers = [
-        Tier(provider=Provider.VLLM, model="gemma", endpoint="http://oss:8020/v1", timeout_ms=8000),
-        Tier(provider=Provider.OPENAI, model="gpt-4.1", timeout_ms=20000),
-    ]
-    mts = materialize(StepClientKind.AGENT, tiers)
-    assert len(mts) == 2
-    assert isinstance(mts[0], MaterializedTier)
-    assert mts[0].timeout == 8.0 and mts[1].timeout == 20.0
-    # .model back-compat property returns the handle
-    assert mts[0].model is mts[0].handle
-    assert mts[0].provider == "vllm" and mts[1].provider == "openai"
-
 
 # ── shim identity ─────────────────────────────────────────────────────────────
 
@@ -181,9 +226,27 @@ def test_shim_pretranslation_and_post_translation(monkeypatch):
     assert pre.provider is Provider.OPENAI and pre.model == "gpt-4.1-mini"
     post = cfg.defaults[Step.POST_TRANSLATION].tiers[0]
     assert post.provider is Provider.TRANSLATEGEMMA
-    assert post.api_style is ApiStyle.TEXT_COMPLETION
     assert post.endpoint == "http://localhost:18002/v1"
     assert post.model == "translategemma-27b-base"
+
+
+def test_shim_builds_azure_pretranslation_and_rejects_gemini(monkeypatch):
+    monkeypatch.delenv("OSS_INFERENCE_ENDPOINT_URL", raising=False)
+    monkeypatch.setenv("LLM_PROVIDER", "azure-openai")
+    monkeypatch.setenv("AZURE_OPENAI_DEPLOYMENT_NAME", "custom-deployment")
+    monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", "https://azure.example")
+    monkeypatch.setenv("AZURE_OPENAI_API_VERSION", "2025-01-01")
+    pre = synthesize_from_env().by_name("managed").steps[Step.PRE_TRANSLATION].tiers[0]
+    assert (pre.provider, pre.model) == (Provider.AZURE, "custom-deployment")
+
+    monkeypatch.setenv("LLM_PROVIDER", "gemini")
+    monkeypatch.delenv("PRETRANSLATION_PROVIDER", raising=False)
+    pre = synthesize_from_env().by_name("managed").steps[Step.PRE_TRANSLATION].tiers[0]
+    assert pre.provider is Provider.OPENAI
+
+    monkeypatch.setenv("PRETRANSLATION_PROVIDER", "gemini")
+    with pytest.raises(ValueError, match="PRETRANSLATION_PROVIDER='gemini'"):
+        synthesize_from_env()
 
 
 def test_shim_post_translation_tg_ttft_deadline(monkeypatch):
@@ -206,69 +269,25 @@ def test_shim_post_translation_tg_ttft_deadline(monkeypatch):
     assert tg2.ttft_ms == 3500 and tg2.timeout_ms == 60000
 
 
-def test_shim_agent_resolves_to_env_managed_tier(monkeypatch):
-    """Resolver's AGENT primary reflects the env-synthesized managed tier
-    (provider + model come from LLM_PROVIDER / LLM_MODEL_NAME)."""
-    monkeypatch.delenv("OSS_INFERENCE_ENDPOINT_URL", raising=False)
-    monkeypatch.setenv("LLM_PROVIDER", "openai")
-    monkeypatch.setenv("LLM_MODEL_NAME", "gpt-4.1")
-    runtime.configure(run_self_check=False)
-    mt = resolver.primary_tier(Step.AGENT, "legacy")
-    assert mt.provider == "openai"
-    assert mt.model_name == "gpt-4.1"
-    assert mt.handle is not None
+def test_yaml_config_does_not_enable_fallback_implicitly():
+    from app.llm_core.config_model import NamedProfile, PipelineConfig
 
-
-# ── resolver ──────────────────────────────────────────────────────────────────
-
-def test_resolver_returns_non_empty_chain():
-    runtime.configure(run_self_check=False)
-    chain = resolver.resolve_chain(Step.AGENT, "legacy")
-    assert len(chain) >= 1
-    assert chain[0].handle is not None
-    # post-translation resolves to a TG descriptor
-    post = resolver.resolve_chain(Step.POST_TRANSLATION, "legacy")
-    assert isinstance(post[0].handle, TGDescriptor)
-
-
-def test_resolver_falls_back_to_managed_when_oss_profile_absent():
-    runtime.configure(run_self_check=False)
-    # current env has no OSS profile -> asking for oss variant still resolves.
-    chain = resolver.resolve_chain(Step.AGENT, "oss")
-    assert len(chain) >= 1
-
-
-# ── self-check (resolvability, non-fatal) ─────────────────────────────────────
-
-def test_self_check_is_non_fatal_on_unresolvable_step(monkeypatch):
-    """The P4 self-check logs+warns on a step that fails to resolve; it must NOT
-    raise (a materialize edge case must never block startup)."""
-    runtime.configure(run_self_check=False)
-
-    def _boom(step, variant="legacy"):
-        raise RuntimeError("cannot build handle in this env")
-
-    monkeypatch.setattr(resolver, "primary_tier", _boom)
-    # No exception — self_check swallows resolve failures into a warning log.
-    runtime.self_check()
-
-
-def test_configure_runs_self_check_without_raising():
-    """Startup config load + self-check must be robust and return a valid config."""
-    cfg = runtime.configure()  # run_self_check defaults True
-    assert cfg is not None and len(cfg.profiles) >= 1
+    cfg = PipelineConfig(profiles=[NamedProfile(name="managed", weight=100)])
+    assert cfg.fallback_enabled is False
+    with pytest.raises(ValueError, match="no agent plan"):
+        runtime.validate_content(cfg)
 
 
 # ── (D) vLLM/OSS tier without an endpoint must RAISE (not silently build OpenAI) ─
 
-def test_vllm_raw_openai_without_endpoint_raises():
-    """A vLLM RAW_OPENAI tier missing its endpoint raises instead of building an
+def test_vllm_pretranslation_without_endpoint_raises():
+    """A vLLM PRE_TRANSLATION tier missing its endpoint raises instead of building an
     OpenAI-default client — preserving the legacy fail-OPEN behaviour when OSS is
     unconfigured (moderation/pretranslation catch the raise and fail open)."""
     tier = Tier(provider=Provider.VLLM, model="gemma-4-31b-it",
                 api_key_env="OSS_INFERENCE_API_KEY")  # endpoint omitted
     with pytest.raises(ValueError, match="endpoint"):
-        build_handle(tier, StepClientKind.RAW_OPENAI)
+        build_handle(tier, StepClientKind.PRE_TRANSLATION)
 
 
 def test_vllm_agent_without_endpoint_raises():
@@ -280,14 +299,14 @@ def test_vllm_agent_without_endpoint_raises():
 
 
 def test_openai_raw_without_endpoint_is_fine():
-    """An OpenAI (managed) RAW_OPENAI tier legitimately has no endpoint (base_url
+    """An OpenAI (managed) PRE_TRANSLATION tier legitimately has no endpoint (base_url
     None => OpenAI proper) and must NOT raise."""
     tier = Tier(provider=Provider.OPENAI, model="gpt-4.1", api_key_env="OPENAI_API_KEY")
-    client = build_handle(tier, StepClientKind.RAW_OPENAI)
+    client = build_handle(tier, StepClientKind.PRE_TRANSLATION)
     assert client is not None
 
 
-# ── (E) startup config validation rejects an anthropic RAW_OPENAI step ──────────
+# ── startup config validation for pretranslation adapters ────────────────────
 
 def _cfg_with_pretranslation_provider(provider: Provider) -> "object":
     from app.llm_core.config_model import (
@@ -302,30 +321,20 @@ def _cfg_with_pretranslation_provider(provider: Provider) -> "object":
     return PipelineConfig(profiles=[NamedProfile(name="managed", weight=100, steps=steps)])
 
 
-def test_validate_config_rejects_anthropic_raw_pretranslation_when_enforced():
-    """PRE_TRANSLATION is RAW_OPENAI; an anthropic tier there would crash per-request,
-    so validate_config raises at startup when LLM_CORE_ENABLED (enforce=True)."""
+def test_validate_config_accepts_anthropic_pretranslation():
     cfg = _cfg_with_pretranslation_provider(Provider.ANTHROPIC)
-    with pytest.raises(ValueError, match="RAW_OPENAI"):
-        runtime.validate_config(cfg, enforce=True)
+    runtime.validate_config(cfg)
 
 
-def test_validate_config_rejects_gemini_raw_pretranslation_when_enforced():
+def test_validate_config_rejects_gemini_pretranslation_when_enforced():
     cfg = _cfg_with_pretranslation_provider(Provider.GEMINI)
-    with pytest.raises(ValueError, match="RAW_OPENAI"):
-        runtime.validate_config(cfg, enforce=True)
-
-
-def test_validate_config_warns_not_raises_when_flag_off():
-    """Flag-off boot on the legacy path (which handles anthropic pretranslation
-    itself) must NOT be broken — validate_config only warns."""
-    cfg = _cfg_with_pretranslation_provider(Provider.ANTHROPIC)
-    runtime.validate_config(cfg, enforce=False)  # no raise
+    with pytest.raises(ValueError, match="pretranslation"):
+        runtime.validate_config(cfg)
 
 
 def test_validate_config_accepts_openai_and_vllm_raw_pretranslation():
     cfg = _cfg_with_pretranslation_provider(Provider.OPENAI)
-    runtime.validate_config(cfg, enforce=True)  # openai is RAW_OPENAI-legal
+    runtime.validate_config(cfg)  # openai is PRE_TRANSLATION-legal
     from app.llm_core.config_model import (
         NamedProfile, PipelineConfig, StepConfig, Tier as _Tier,
     )
@@ -336,7 +345,7 @@ def test_validate_config_accepts_openai_and_vllm_raw_pretranslation():
         Step.AGENT: StepConfig(tiers=[agent]),
         Step.PRE_TRANSLATION: StepConfig(tiers=[vllm_pre]),
     })])
-    runtime.validate_config(cfg2, enforce=True)  # vllm is RAW_OPENAI-legal
+    runtime.validate_config(cfg2)  # vllm is PRE_TRANSLATION-legal
 
 
 # ── (ENABLE) concurrency gate is attached from AGENT_CONCURRENCY_METRICS_URL ────
@@ -368,3 +377,245 @@ def test_no_concurrency_gate_without_env(monkeypatch):
     cfg = synthesize_from_env()
     oss = cfg.by_name("oss")
     assert oss.steps[Step.AGENT].triggers.concurrency_gate is None
+
+
+def test_legacy_concurrency_kill_switch_disables_gate(monkeypatch):
+    monkeypatch.setenv("OSS_INFERENCE_ENDPOINT_URL", "http://oss:8020/v1")
+    monkeypatch.setenv("AGENT_CONCURRENCY_METRICS_URL", "http://oss:8020/metrics")
+    monkeypatch.setenv("CONCURRENCY_GAUGE_ENABLED", "false")
+
+    oss = synthesize_from_env().by_name("oss")
+    assert oss.steps[Step.AGENT].triggers.concurrency_gate is None
+
+
+def test_omitted_capabilities_preserve_vllm_gemma_behavior():
+    from app.llm_core.config_model import NamedProfile, PipelineConfig, StepConfig
+    from app.llm_core.execution import ExecutionContext
+
+    cfg = PipelineConfig(profiles=[NamedProfile(name="old-yaml", weight=100, steps={
+        Step.AGENT: StepConfig(tiers=[Tier(
+            provider=Provider.VLLM,
+            model="gemma-4-31b-it",
+            endpoint="http://oss:8020/v1",
+        )]),
+    })])
+
+    cfg = runtime.normalize_config(cfg)
+    capabilities = ExecutionContext("s", cfg, "old-yaml").capabilities
+    assert capabilities.requires_translation is True
+    assert capabilities.history_max_tokens == 10_000
+
+
+def test_config_ingress_applies_plan_wide_history_defaults(monkeypatch):
+    from app.llm_core.config_model import NamedProfile, PipelineConfig, StepConfig
+
+    cfg = PipelineConfig(profiles=[NamedProfile(name="mixed", weight=100, steps={
+        Step.AGENT: StepConfig(tiers=[
+            Tier(provider=Provider.OPENAI, model="gpt"),
+            Tier(provider=Provider.VLLM, model="gemma-custom", endpoint="http://oss/v1"),
+        ])
+    })], fallback_enabled=True)
+    monkeypatch.setenv("CHAT_HISTORY_MAX_TOKENS_VLLM_GEMMA", "7777")
+    normalized = runtime.normalize_config(cfg)
+    assert normalized.by_name("mixed").capabilities.history_max_tokens == 7777
+
+    monkeypatch.setenv("CHAT_HISTORY_MAX_TOKENS", "12345")
+    normalized = runtime.normalize_config(cfg)
+    assert normalized.by_name("mixed").capabilities.history_max_tokens == 12345
+
+
+def test_config_ingress_preserves_dormant_agentless_profile():
+    from app.llm_core.config_model import NamedProfile, PipelineConfig, StepConfig
+
+    cfg = PipelineConfig(profiles=[
+        NamedProfile(name="dormant", weight=0),
+        NamedProfile(name="managed", weight=100, steps={
+            Step.AGENT: StepConfig(tiers=[Tier(provider=Provider.OPENAI, model="gpt")])
+        }),
+    ])
+    normalized = runtime.normalize_config(cfg)
+    assert normalized.by_name("dormant").capabilities is None
+    runtime.validate_content(normalized)
+
+
+def test_partial_capabilities_merge_with_reachable_overflow():
+    from app.llm_core.config_model import (
+        ConcurrencyGate, NamedProfile, PipelineConfig, ProfileCapabilities,
+        StepConfig, Triggers,
+    )
+    from app.llm_core.execution import ExecutionContext
+
+    overflow = Tier(
+        provider=Provider.VLLM, model="gemma", endpoint="http://overflow/v1"
+    )
+    agent = StepConfig(
+        tiers=[
+            Tier(provider=Provider.OPENAI, model="gpt"),
+            Tier(provider=Provider.VLLM, model="qwen", endpoint="http://qwen/v1"),
+        ],
+        triggers=Triggers(concurrency_gate=ConcurrencyGate(
+            metrics_url="http://metrics", overflow_tier=overflow
+        )),
+    )
+    cfg = PipelineConfig(profiles=[NamedProfile(
+        name="mixed",
+        weight=100,
+        capabilities=ProfileCapabilities(history_max_tokens=20_000),
+        steps={Step.AGENT: agent},
+    )], fallback_enabled=True)
+    cfg = runtime.normalize_config(cfg)
+    capabilities = ExecutionContext("s", cfg, "mixed").capabilities
+    assert capabilities.requires_translation is True
+    assert capabilities.history_max_tokens == 20_000
+    assert cfg.step_plan(cfg.by_name("mixed"), Step.AGENT).concurrency_gate is None
+
+    inactive = runtime.normalize_config(cfg.model_copy(update={
+        "fallback_enabled": False,
+        "profiles": [cfg.profiles[0].model_copy(update={"capabilities": None})],
+    }))
+    capabilities = ExecutionContext("s", inactive, "mixed").capabilities
+    assert capabilities.requires_translation is False
+    assert capabilities.history_max_tokens == 80_000
+
+    cfg = runtime.normalize_config(cfg.model_copy(update={"profiles": [cfg.profiles[0].model_copy(update={
+        "capabilities": ProfileCapabilities(requires_translation=False)
+    })]}))
+    capabilities = ExecutionContext("s", cfg, "mixed").capabilities
+    assert capabilities.requires_translation is False
+    assert capabilities.history_max_tokens == 80_000
+
+
+def test_admission_auto_preserves_managed_provider_policy():
+    from app.llm_core.config_model import AdmissionPolicy
+    from app.llm_core.execution import ExecutionTarget
+
+    managed = ExecutionTarget(
+        Tier(provider=Provider.OPENAI, model="gpt-4.1"), StepClientKind.AGENT
+    )
+    local = ExecutionTarget(
+        Tier(provider=Provider.VLLM, model="gemma", endpoint="http://oss/v1"),
+        StepClientKind.AGENT,
+    )
+    translation = ExecutionTarget(
+        Tier(provider=Provider.TRANSLATEGEMMA, model="tg", endpoint="http://tg/v1"),
+        StepClientKind.TRANSLATEGEMMA,
+    )
+    assert managed.admission is AdmissionPolicy.MANAGED
+    assert local.admission is AdmissionPolicy.NONE
+    assert translation.kind == "oss"
+
+
+def test_content_validation_checks_every_fallback_tier():
+    from app.llm_core.config_model import (
+        ConcurrencyGate, NamedProfile, PipelineConfig, StepConfig, Triggers,
+    )
+
+    cfg = PipelineConfig(profiles=[NamedProfile(name="managed", weight=100, steps={
+        Step.AGENT: StepConfig(tiers=[
+            Tier(provider=Provider.OPENAI, model="gpt-4.1", api_key_env="OPENAI_API_KEY"),
+            Tier(provider=Provider.AZURE, model="broken-fallback"),
+        ]),
+    })], fallback_enabled=True)
+    with pytest.raises(ValueError, match="azure-openai"):
+        runtime.validate_content(cfg)
+    runtime.validate_content(cfg.model_copy(update={"fallback_enabled": False}))
+
+    overflow = Tier(provider=Provider.VLLM, model="broken-overflow")
+    cfg = PipelineConfig(profiles=[NamedProfile(name="managed", weight=100, steps={
+        Step.AGENT: StepConfig(
+            tiers=[
+                Tier(provider=Provider.OPENAI, model="gpt-4.1"),
+                Tier(provider=Provider.VLLM, model="qwen", endpoint="http://qwen/v1"),
+            ],
+            triggers=Triggers(concurrency_gate=ConcurrencyGate(
+                metrics_url="http://metrics", overflow_tier=overflow
+            )),
+        )
+    })], fallback_enabled=True)
+    runtime.validate_content(cfg)  # managed primary makes this gate unreachable
+
+
+@pytest.mark.parametrize("provider", ["anthropic", "gemini"])
+def test_posttranslation_reuses_compatible_agent_model(monkeypatch, provider):
+    monkeypatch.setenv("LLM_PROVIDER", provider)
+    monkeypatch.setenv("LLM_MODEL_NAME", "agent-only-model")
+    monkeypatch.setenv("FALLBACK_ENABLED", "false")
+    monkeypatch.setenv("OPENAI_API_KEY", "test-openai-key")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-anthropic-key")
+    monkeypatch.setenv("GEMINI_API_KEY", "test-gemini-key")
+    monkeypatch.delenv("OSS_INFERENCE_ENDPOINT_URL", raising=False)
+    monkeypatch.delenv("PIPELINE_CONFIG_PATH", raising=False)
+    monkeypatch.setattr(runtime, "PIPELINE", None)
+    monkeypatch.setattr(runtime, "BOOT_PIPELINE", None)
+
+    cfg = runtime.configure()
+    if provider == "gemini":
+        assert cfg.by_name("managed").steps[Step.PRE_TRANSLATION].tiers[0].provider is Provider.OPENAI
+    post = cfg.defaults[Step.POST_TRANSLATION].tiers
+    assert [tier.provider for tier in post] == [Provider.TRANSLATEGEMMA]
+
+    monkeypatch.setenv("FALLBACK_ENABLED", "true")
+    post = runtime.configure().defaults[Step.POST_TRANSLATION].tiers
+    expected = Provider.ANTHROPIC if provider == "anthropic" else Provider.GEMINI
+    assert [tier.provider for tier in post] == [Provider.TRANSLATEGEMMA, expected]
+    assert post[1].model == "agent-only-model"
+
+    monkeypatch.setenv("POST_TRANSLATION_LLM_PROVIDER", "openai")
+    post = runtime.configure().defaults[Step.POST_TRANSLATION].tiers
+    assert [tier.provider for tier in post] == [Provider.TRANSLATEGEMMA, Provider.OPENAI]
+    assert post[1].model == "gpt-4.1"
+
+
+@pytest.mark.parametrize(
+    ("provider", "expected", "expected_model"),
+    [
+        ("azure-openai", Provider.AZURE, "custom-deployment"),
+        ("vllm", Provider.VLLM, "custom-agent"),
+    ],
+)
+def test_posttranslation_preserves_compatible_agent_provider(
+    monkeypatch, provider, expected, expected_model
+):
+    monkeypatch.setenv("LLM_PROVIDER", provider)
+    monkeypatch.setenv("LLM_MODEL_NAME", "custom-agent")
+    monkeypatch.setenv("FALLBACK_ENABLED", "true")
+    monkeypatch.delenv("POST_TRANSLATION_LLM_PROVIDER", raising=False)
+    monkeypatch.setenv("INFERENCE_ENDPOINT_URL", "http://vllm/v1")
+    monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", "https://azure.example")
+    monkeypatch.setenv("AZURE_OPENAI_DEPLOYMENT_NAME", "custom-deployment")
+    monkeypatch.setenv("AZURE_OPENAI_API_VERSION", "2025-01-01")
+    post = synthesize_from_env().defaults[Step.POST_TRANSLATION].tiers
+    assert post[1].provider is expected
+    assert post[1].model == expected_model
+
+
+def test_invalid_boot_config_is_not_published(monkeypatch, tmp_path):
+    previous = synthesize_from_env()
+    path = tmp_path / "pipeline.yaml"
+    path.write_text("""
+fallback_enabled: true
+profiles:
+  - name: managed
+    weight: 100
+    steps:
+      agent:
+        tiers:
+          - {provider: openai, model: gpt-4.1}
+          - {provider: azure-openai, model: broken}
+""")
+    monkeypatch.setattr(runtime, "PIPELINE", previous)
+    monkeypatch.setattr(runtime, "BOOT_PIPELINE", previous)
+    monkeypatch.setenv("PIPELINE_CONFIG_PATH", str(path))
+
+    with pytest.raises(runtime.BootRefused):
+        runtime.configure()
+    assert runtime.PIPELINE is previous
+    assert runtime.BOOT_PIPELINE is previous
+
+    monkeypatch.delenv("PIPELINE_CONFIG_PATH")
+    monkeypatch.setenv("FALLBACK_ENABLED", "false")
+    monkeypatch.setenv("REQUIRE_OVERFLOW_ARMED", "true")
+    with pytest.raises(runtime.BootRefused):
+        runtime.configure()
+    assert runtime.PIPELINE is previous
+    assert runtime.BOOT_PIPELINE is previous

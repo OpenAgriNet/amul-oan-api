@@ -472,28 +472,12 @@ class Settings(BaseSettings):
     # OSS_LLM_MODEL_NAME) by app/llm_core/legacy_shim.py. The env vars stay; the
     # duplicate settings attributes + the pipeline_router that read them are gone.
 
-    # Standard OSS -> managed overflow/fallback (see docs/oss-fallback-design.md).
-    # ARMS the whole overflow system: the OSS->managed attempt chain AND the health
-    # + concurrency guards (which fire ONLY via the fallback walkers) are inert
-    # while this is off. Post-P4 the unified pipeline is the ONLY path (legacy
-    # deleted), so shipping with overflow off makes no sense — DEFAULTS TRUE. Envs
-    # that deliberately want it off can still set FALLBACK_ENABLED=false.
-    fallback_enabled: bool = os.getenv("FALLBACK_ENABLED", "true").strip().lower() in {
-        "1", "true", "yes", "on"
-    }
-    # Per-pipeline OSS time-to-respond budgets before falling back to managed.
-    fallback_chat_oss_timeout_ms: int = int(os.getenv("FALLBACK_CHAT_OSS_TIMEOUT_MS", "8000"))
-    fallback_moderation_oss_timeout_ms: int = int(os.getenv("FALLBACK_MODERATION_OSS_TIMEOUT_MS", "5000"))
-    fallback_pretranslation_oss_timeout_ms: int = int(os.getenv("FALLBACK_PRETRANSLATION_OSS_TIMEOUT_MS", "10000"))
-    fallback_suggestions_oss_timeout_ms: int = int(os.getenv("FALLBACK_SUGGESTIONS_OSS_TIMEOUT_MS", "6000"))
-    # Deadline for the managed (fallback) tier.
-    fallback_managed_timeout_ms: int = int(os.getenv("FALLBACK_MANAGED_TIMEOUT_MS", "20000"))
-
     # The unified LLM pipeline (app/llm_core) is now the ONLY model-selection path
     # — the LLM_CORE_ENABLED / PROFILES_ENABLED kill-switches (P0/P1 identity gates)
     # were removed at P4. The weighted-profile split + config-driven fallback chain
-    # are always live. Operational trigger flags (HEALTH_* / CONCURRENCY_GAUGE_*)
-    # below remain as real toggles.
+    # are always live. Health keeps explicit operational toggles; execution sees
+    # concurrency only through a configured ConcurrencyGate. The env shim still
+    # honors CONCURRENCY_GAUGE_ENABLED=false by omitting that gate.
     # Health filter — pre-flight chain FILTER (llm_core P2). Two independent
     # kill-switches, both default OFF (zero behaviour change when off):
     #   * HEALTH_BREAKER_ENABLED — the passive circuit-breaker, fed by the
@@ -524,27 +508,13 @@ class Settings(BaseSettings):
     health_fail_rate_window: int = 20
     health_fail_rate_threshold: float = 0.5
     health_probe_max_s: float = 30.0
-    # Concurrency-gauge trigger — pre-flight REORDER filter (llm_core P3). Default
-    # OFF (zero behaviour change when off). When on, a step carrying an explicit
-    # ConcurrencyGate (metrics_url + max_concurrency) has its vLLM tier
-    # DEPRIORITIZED behind the managed tier while that box's in-flight
+    # Concurrency-gauge trigger — pre-flight REORDER filter (llm_core P3). A step
+    # with a vLLM primary and an explicit ConcurrencyGate (metrics_url +
+    # max_concurrency) has that primary DEPRIORITIZED while the box's in-flight
     # (running+waiting) requests are at/above max_concurrency — so managed is tried
     # first under load. Unreadable metrics FAIL OPEN (order unchanged), never a
     # forced flip to managed. Never drops a tier and never empties the chain;
-    # orthogonal to the sticky split and composes AFTER the health prune.
-    concurrency_gauge_enabled: bool = os.getenv("CONCURRENCY_GAUGE_ENABLED", "true").strip().lower() in {
-        "1", "true", "yes", "on"
-    }
-    # Explicit vLLM Prometheus /metrics URL that arms the AGENT-step concurrency
-    # gate (P3). When set, synthesize_from_env() attaches a ConcurrencyGate to the
-    # OSS agent step so the vLLM tier is deprioritized under load. When unset, the
-    # gauge is a harmless no-op even with CONCURRENCY_GAUGE_ENABLED on (no gate =>
-    # nothing to reorder). NOT derived by stripping /v1 off the inference endpoint
-    # (that was bh's fragile derivation); this is given explicitly.
-    agent_concurrency_metrics_url: Optional[str] = os.getenv("AGENT_CONCURRENCY_METRICS_URL")
-    # In-flight (running+waiting) threshold at/above which the gate deprioritizes
-    # the vLLM tier. Shared by the shim when it builds the gate.
-    concurrency_max: int = int(os.getenv("CONCURRENCY_MAX", "10"))
+    # orthogonal to the sticky split and composes BEFORE the health prune.
     # Short TTL (seconds) for the shared Redis cache of a vLLM engine's in-flight
     # count (mirrors bh's ~2s), and the per-probe metrics HTTP timeout.
     concurrency_metrics_cache_ttl_s: int = int(os.getenv("CONCURRENCY_METRICS_CACHE_TTL_S", "2"))
