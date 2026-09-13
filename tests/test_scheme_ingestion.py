@@ -8,6 +8,13 @@ import pytest
 import app.services.scheme_ingestion as si
 
 
+def _stub_empty_prior_pdf_cache(monkeypatch):
+    async def _empty(_source_key, redis_client=None):
+        return {}
+
+    monkeypatch.setattr(si, "_load_prior_pdf_records_by_url", _empty)
+
+
 def test_scheme_sources_read_urls_from_settings():
     assert si.BANAS_SITE_ORIGIN == si.settings.banas_scheme_site_origin
     assert si.BANAS_SOURCE.source_url == si.settings.banas_scheme_documents_api_url
@@ -341,11 +348,218 @@ def test_build_banas_record_returns_expected_schema(monkeypatch):
         "scheme_url",
         "content",
         "content_type",
+        "content_hash",
         "source_name",
         "last_refreshed_at",
     }
     assert record["content"] == "OCR text"
     assert record["content_type"] == "pdf"
+    assert record["content_hash"] == si._hash_pdf_bytes(b"pdf")
+
+
+def test_build_pdf_record_skips_ocr_when_url_and_hash_match(monkeypatch):
+    pdf_bytes = b"unchanged-pdf"
+    content_hash = si._hash_pdf_bytes(pdf_bytes)
+    scheme_url = "https://example.com/scheme.pdf"
+
+    async def fake_fetch_bytes(_client, _url):
+        return pdf_bytes
+
+    ocr_calls = []
+
+    async def fake_extract(_client, _pdf_bytes):
+        ocr_calls.append(_pdf_bytes)
+        return "should-not-be-used"
+
+    monkeypatch.setattr(si, "fetch_bytes", fake_fetch_bytes)
+    monkeypatch.setattr(si, "extract_text_from_pdf_bytes", fake_extract)
+
+    record = asyncio.run(
+        si._build_pdf_record(
+            client=SimpleNamespace(),
+            source=si.BANAS_SOURCE,
+            scheme_title="Test Scheme",
+            scheme_url=scheme_url,
+            last_refreshed_at="2026-07-01T00:00:00Z",
+            prior_records_by_url={
+                scheme_url: {
+                    "content": "cached OCR text",
+                    "content_hash": content_hash,
+                    "content_type": "pdf",
+                }
+            },
+        )
+    )
+
+    assert record is not None
+    assert record["content"] == "cached OCR text"
+    assert record["content_hash"] == content_hash
+    assert ocr_calls == []
+
+
+def test_build_pdf_record_runs_ocr_when_hash_changes(monkeypatch):
+    scheme_url = "https://example.com/scheme.pdf"
+
+    async def fake_fetch_bytes(_client, _url):
+        return b"new-pdf-bytes"
+
+    ocr_calls = []
+
+    async def fake_extract(_client, _pdf_bytes):
+        ocr_calls.append(_pdf_bytes)
+        return "fresh OCR text"
+
+    monkeypatch.setattr(si, "fetch_bytes", fake_fetch_bytes)
+    monkeypatch.setattr(si, "extract_text_from_pdf_bytes", fake_extract)
+
+    record = asyncio.run(
+        si._build_pdf_record(
+            client=SimpleNamespace(),
+            source=si.BANAS_SOURCE,
+            scheme_title="Test Scheme",
+            scheme_url=scheme_url,
+            last_refreshed_at="2026-07-01T00:00:00Z",
+            prior_records_by_url={
+                scheme_url: {
+                    "content": "old OCR text",
+                    "content_hash": si._hash_pdf_bytes(b"old-pdf-bytes"),
+                    "content_type": "pdf",
+                }
+            },
+        )
+    )
+
+    assert record is not None
+    assert record["content"] == "fresh OCR text"
+    assert record["content_hash"] == si._hash_pdf_bytes(b"new-pdf-bytes")
+    assert ocr_calls == [b"new-pdf-bytes"]
+
+
+def test_build_pdf_record_runs_ocr_for_new_url(monkeypatch):
+    async def fake_fetch_bytes(_client, _url):
+        return b"pdf-bytes"
+
+    ocr_calls = []
+
+    async def fake_extract(_client, _pdf_bytes):
+        ocr_calls.append(_pdf_bytes)
+        return "OCR text"
+
+    monkeypatch.setattr(si, "fetch_bytes", fake_fetch_bytes)
+    monkeypatch.setattr(si, "extract_text_from_pdf_bytes", fake_extract)
+
+    record = asyncio.run(
+        si._build_pdf_record(
+            client=SimpleNamespace(),
+            source=si.BANAS_SOURCE,
+            scheme_title="New Scheme",
+            scheme_url="https://example.com/new.pdf",
+            last_refreshed_at="2026-07-01T00:00:00Z",
+            prior_records_by_url={
+                "https://example.com/old.pdf": {
+                    "content": "old OCR text",
+                    "content_hash": si._hash_pdf_bytes(b"old"),
+                    "content_type": "pdf",
+                }
+            },
+        )
+    )
+
+    assert record is not None
+    assert record["content"] == "OCR text"
+    assert ocr_calls == [b"pdf-bytes"]
+
+
+def test_build_pdf_record_runs_ocr_when_prior_hash_missing(monkeypatch):
+    scheme_url = "https://example.com/scheme.pdf"
+    pdf_bytes = b"same-bytes"
+
+    async def fake_fetch_bytes(_client, _url):
+        return pdf_bytes
+
+    ocr_calls = []
+
+    async def fake_extract(_client, _pdf_bytes):
+        ocr_calls.append(_pdf_bytes)
+        return "OCR after migration"
+
+    monkeypatch.setattr(si, "fetch_bytes", fake_fetch_bytes)
+    monkeypatch.setattr(si, "extract_text_from_pdf_bytes", fake_extract)
+
+    record = asyncio.run(
+        si._build_pdf_record(
+            client=SimpleNamespace(),
+            source=si.BANAS_SOURCE,
+            scheme_title="Legacy Scheme",
+            scheme_url=scheme_url,
+            last_refreshed_at="2026-07-01T00:00:00Z",
+            prior_records_by_url={
+                scheme_url: {
+                    "content": "legacy OCR text",
+                    "content_type": "pdf",
+                }
+            },
+        )
+    )
+
+    assert record is not None
+    assert record["content"] == "OCR after migration"
+    assert record["content_hash"] == si._hash_pdf_bytes(pdf_bytes)
+    assert ocr_calls == [pdf_bytes]
+
+
+def test_prior_pdf_records_by_url_keeps_pdfs_with_content():
+    prior = si._prior_pdf_records_by_url(
+        [
+            {"scheme_url": "https://example.com/a.pdf", "content": "A", "content_type": "pdf"},
+            {"scheme_url": "https://example.com/b.pdf", "content": "", "content_type": "pdf"},
+            {"scheme_url": "https://example.com/c.html", "content": "C", "content_type": "html"},
+            {"scheme_url": "https://example.com/d.pdf", "content": "D", "content_type": "pdf"},
+            "not-a-dict",
+        ]
+    )
+    assert set(prior.keys()) == {"https://example.com/a.pdf", "https://example.com/d.pdf"}
+
+
+def test_ingest_banas_source_passes_prior_records_to_build(monkeypatch):
+    links = [
+        {"scheme_title": "Scheme A", "scheme_url": "https://example.com/a.pdf"},
+    ]
+
+    async def fake_fetch_json(_client, _url):
+        return []
+
+    async def fake_load(_source_key, redis_client=None):
+        return {
+            "https://example.com/a.pdf": {
+                "content": "cached",
+                "content_hash": "abc",
+                "content_type": "pdf",
+            }
+        }
+
+    seen_prior = []
+
+    async def fake_build(**kwargs):
+        seen_prior.append(kwargs.get("prior_records_by_url"))
+        return {"scheme_title": kwargs["scheme_title"]}
+
+    monkeypatch.setattr(si, "fetch_json", fake_fetch_json)
+    monkeypatch.setattr(si, "parse_banas_scheme_links", lambda _payload: links)
+    monkeypatch.setattr(si, "_load_prior_pdf_records_by_url", fake_load)
+    monkeypatch.setattr(si, "_build_banas_record", fake_build)
+
+    records = asyncio.run(si._ingest_banas_source(si.BANAS_SOURCE, SimpleNamespace()))
+    assert len(records) == 1
+    assert seen_prior == [
+        {
+            "https://example.com/a.pdf": {
+                "content": "cached",
+                "content_hash": "abc",
+                "content_type": "pdf",
+            }
+        }
+    ]
 
 
 def test_extract_text_from_pdf_bytes_raises_when_all_pages_fail(monkeypatch):
@@ -813,6 +1027,7 @@ def test_ingest_banas_source_heartbeats_lock_per_pdf(monkeypatch):
     async def fake_fetch_json(_client, _url):
         return []
 
+    _stub_empty_prior_pdf_cache(monkeypatch)
     monkeypatch.setattr(si, "fetch_json", fake_fetch_json)
     monkeypatch.setattr(si, "parse_banas_scheme_links", lambda _payload: links)
 
@@ -848,6 +1063,7 @@ def test_ingest_banas_source_skips_heartbeat_without_token(monkeypatch):
     async def fake_fetch_json(_client, _url):
         return []
 
+    _stub_empty_prior_pdf_cache(monkeypatch)
     monkeypatch.setattr(si, "fetch_json", fake_fetch_json)
     monkeypatch.setattr(
         si,
@@ -885,6 +1101,7 @@ def test_ingest_banas_source_raises_when_batch_coverage_too_low(monkeypatch):
     async def fake_fetch_json(_client, _url):
         return []
 
+    _stub_empty_prior_pdf_cache(monkeypatch)
     monkeypatch.setattr(si, "fetch_json", fake_fetch_json)
     monkeypatch.setattr(si, "parse_banas_scheme_links", lambda _payload: links)
 
@@ -1017,6 +1234,7 @@ def test_ingest_sumul_source_heartbeats_lock(monkeypatch):
     async def fake_fetch_html(_client, _url):
         return "<html></html>"
 
+    _stub_empty_prior_pdf_cache(monkeypatch)
     monkeypatch.setattr(si, "fetch_html", fake_fetch_html)
     monkeypatch.setattr(si, "parse_sumul_scheme_links", lambda _html: links)
 
@@ -1051,6 +1269,7 @@ def test_ingest_sumul_source_skips_heartbeat_without_token(monkeypatch):
     async def fake_fetch_html(_client, _url):
         return "<html></html>"
 
+    _stub_empty_prior_pdf_cache(monkeypatch)
     monkeypatch.setattr(si, "fetch_html", fake_fetch_html)
     monkeypatch.setattr(
         si,
@@ -1085,6 +1304,7 @@ def test_ingest_sumul_source_raises_when_coverage_too_low(monkeypatch):
     async def fake_fetch_html(_client, _url):
         return "<html></html>"
 
+    _stub_empty_prior_pdf_cache(monkeypatch)
     monkeypatch.setattr(si, "fetch_html", fake_fetch_html)
     monkeypatch.setattr(si, "parse_sumul_scheme_links", lambda _html: links)
 
@@ -1112,6 +1332,7 @@ def test_ingest_sursagar_source_heartbeats_lock(monkeypatch):
     async def fake_fetch_html(_client, _url):
         return "<html></html>"
 
+    _stub_empty_prior_pdf_cache(monkeypatch)
     monkeypatch.setattr(si, "fetch_html", fake_fetch_html)
     monkeypatch.setattr(si, "parse_sursagar_scheme_links", lambda _html: links)
 
@@ -1151,6 +1372,7 @@ def test_ingest_sursagar_source_raises_when_coverage_too_low(monkeypatch):
     async def fake_fetch_html(_client, _url):
         return "<html></html>"
 
+    _stub_empty_prior_pdf_cache(monkeypatch)
     monkeypatch.setattr(si, "fetch_html", fake_fetch_html)
     monkeypatch.setattr(si, "parse_sursagar_scheme_links", lambda _html: links)
 
@@ -1242,6 +1464,7 @@ def test_ingest_sabar_source_heartbeats_lock(monkeypatch):
     async def fake_fetch_html(_client, _url):
         return "<html></html>"
 
+    _stub_empty_prior_pdf_cache(monkeypatch)
     monkeypatch.setattr(si, "fetch_html", fake_fetch_html)
     monkeypatch.setattr(si, "parse_sabar_scheme_links", lambda _html: links)
 
@@ -1276,6 +1499,7 @@ def test_ingest_sabar_source_skips_heartbeat_without_token(monkeypatch):
     async def fake_fetch_html(_client, _url):
         return "<html></html>"
 
+    _stub_empty_prior_pdf_cache(monkeypatch)
     monkeypatch.setattr(si, "fetch_html", fake_fetch_html)
     monkeypatch.setattr(
         si,
@@ -1310,6 +1534,7 @@ def test_ingest_sabar_source_raises_when_coverage_too_low(monkeypatch):
     async def fake_fetch_html(_client, _url):
         return "<html></html>"
 
+    _stub_empty_prior_pdf_cache(monkeypatch)
     monkeypatch.setattr(si, "fetch_html", fake_fetch_html)
     monkeypatch.setattr(si, "parse_sabar_scheme_links", lambda _html: links)
 
