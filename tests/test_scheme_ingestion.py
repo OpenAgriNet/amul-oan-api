@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import json
 from types import SimpleNamespace
 
 import httpx
@@ -328,7 +329,20 @@ def test_build_banas_record_returns_expected_schema(monkeypatch):
     async def fake_extract(_client, _pdf_bytes):
         return "OCR text"
 
+    async def fake_structure(_client, raw_text):
+        assert raw_text == "OCR text"
+        return {
+            "document_date": "2016-05-27",
+            "summary": "Cooling system subsidy",
+            "eligibility": "Regular milk pourers",
+            "benefits": "40% subsidy",
+            "how_to_apply": "Apply via society",
+            "rates": "",
+            "additional": "",
+        }
+
     monkeypatch.setattr(si, "extract_text_from_pdf_bytes", fake_extract)
+    monkeypatch.setattr(si, "structure_scheme_content", fake_structure)
 
     record = asyncio.run(
         si._build_banas_record(
@@ -346,18 +360,83 @@ def test_build_banas_record_returns_expected_schema(monkeypatch):
         "source_url",
         "scheme_title",
         "scheme_url",
-        "content",
         "content_type",
         "content_hash",
         "source_name",
         "last_refreshed_at",
+        "structure_version",
+        "document_date",
+        "summary",
+        "eligibility",
+        "benefits",
+        "how_to_apply",
+        "rates",
+        "additional",
     }
-    assert record["content"] == "OCR text"
+    assert "content" not in record
+    assert record["summary"] == "Cooling system subsidy"
     assert record["content_type"] == "pdf"
+    assert record["structure_version"] == si.SCHEME_STRUCTURE_VERSION
     assert record["content_hash"] == si._hash_pdf_bytes(b"pdf")
 
 
-def test_build_pdf_record_skips_ocr_when_url_and_hash_match(monkeypatch):
+def test_build_pdf_record_skips_ocr_when_url_hash_and_structure_match(monkeypatch):
+    pdf_bytes = b"unchanged-pdf"
+    content_hash = si._hash_pdf_bytes(pdf_bytes)
+    scheme_url = "https://example.com/scheme.pdf"
+
+    async def fake_fetch_bytes(_client, _url):
+        return pdf_bytes
+
+    ocr_calls = []
+    structure_calls = []
+
+    async def fake_extract(_client, _pdf_bytes):
+        ocr_calls.append(_pdf_bytes)
+        return "should-not-be-used"
+
+    async def fake_structure(_client, raw_text):
+        structure_calls.append(raw_text)
+        return si._empty_structured_fields()
+
+    monkeypatch.setattr(si, "fetch_bytes", fake_fetch_bytes)
+    monkeypatch.setattr(si, "extract_text_from_pdf_bytes", fake_extract)
+    monkeypatch.setattr(si, "structure_scheme_content", fake_structure)
+
+    record = asyncio.run(
+        si._build_pdf_record(
+            client=SimpleNamespace(),
+            source=si.BANAS_SOURCE,
+            scheme_title="Test Scheme",
+            scheme_url=scheme_url,
+            last_refreshed_at="2026-07-01T00:00:00Z",
+            prior_records_by_url={
+                scheme_url: {
+                    "content_hash": content_hash,
+                    "content_type": "pdf",
+                    "structure_version": si.SCHEME_STRUCTURE_VERSION,
+                    "summary": "cached summary",
+                    "eligibility": "cached eligibility",
+                    "benefits": "",
+                    "how_to_apply": "",
+                    "rates": "",
+                    "additional": "note",
+                    "document_date": "2020-01-01",
+                }
+            },
+        )
+    )
+
+    assert record is not None
+    assert record["summary"] == "cached summary"
+    assert record["eligibility"] == "cached eligibility"
+    assert record["content_hash"] == content_hash
+    assert "content" not in record
+    assert ocr_calls == []
+    assert structure_calls == []
+
+
+def test_build_pdf_record_restructures_legacy_content_without_ocr(monkeypatch):
     pdf_bytes = b"unchanged-pdf"
     content_hash = si._hash_pdf_bytes(pdf_bytes)
     scheme_url = "https://example.com/scheme.pdf"
@@ -371,8 +450,21 @@ def test_build_pdf_record_skips_ocr_when_url_and_hash_match(monkeypatch):
         ocr_calls.append(_pdf_bytes)
         return "should-not-be-used"
 
+    async def fake_structure(_client, raw_text):
+        assert raw_text == "legacy OCR text"
+        return {
+            "document_date": "",
+            "summary": "from legacy",
+            "eligibility": "",
+            "benefits": "",
+            "how_to_apply": "",
+            "rates": "",
+            "additional": "",
+        }
+
     monkeypatch.setattr(si, "fetch_bytes", fake_fetch_bytes)
     monkeypatch.setattr(si, "extract_text_from_pdf_bytes", fake_extract)
+    monkeypatch.setattr(si, "structure_scheme_content", fake_structure)
 
     record = asyncio.run(
         si._build_pdf_record(
@@ -383,7 +475,7 @@ def test_build_pdf_record_skips_ocr_when_url_and_hash_match(monkeypatch):
             last_refreshed_at="2026-07-01T00:00:00Z",
             prior_records_by_url={
                 scheme_url: {
-                    "content": "cached OCR text",
+                    "content": "legacy OCR text",
                     "content_hash": content_hash,
                     "content_type": "pdf",
                 }
@@ -392,8 +484,7 @@ def test_build_pdf_record_skips_ocr_when_url_and_hash_match(monkeypatch):
     )
 
     assert record is not None
-    assert record["content"] == "cached OCR text"
-    assert record["content_hash"] == content_hash
+    assert record["summary"] == "from legacy"
     assert ocr_calls == []
 
 
@@ -409,8 +500,21 @@ def test_build_pdf_record_runs_ocr_when_hash_changes(monkeypatch):
         ocr_calls.append(_pdf_bytes)
         return "fresh OCR text"
 
+    async def fake_structure(_client, raw_text):
+        assert raw_text == "fresh OCR text"
+        return {
+            "document_date": "",
+            "summary": "fresh summary",
+            "eligibility": "",
+            "benefits": "",
+            "how_to_apply": "",
+            "rates": "",
+            "additional": "",
+        }
+
     monkeypatch.setattr(si, "fetch_bytes", fake_fetch_bytes)
     monkeypatch.setattr(si, "extract_text_from_pdf_bytes", fake_extract)
+    monkeypatch.setattr(si, "structure_scheme_content", fake_structure)
 
     record = asyncio.run(
         si._build_pdf_record(
@@ -421,16 +525,17 @@ def test_build_pdf_record_runs_ocr_when_hash_changes(monkeypatch):
             last_refreshed_at="2026-07-01T00:00:00Z",
             prior_records_by_url={
                 scheme_url: {
-                    "content": "old OCR text",
+                    "summary": "old summary",
                     "content_hash": si._hash_pdf_bytes(b"old-pdf-bytes"),
                     "content_type": "pdf",
+                    "structure_version": si.SCHEME_STRUCTURE_VERSION,
                 }
             },
         )
     )
 
     assert record is not None
-    assert record["content"] == "fresh OCR text"
+    assert record["summary"] == "fresh summary"
     assert record["content_hash"] == si._hash_pdf_bytes(b"new-pdf-bytes")
     assert ocr_calls == [b"new-pdf-bytes"]
 
@@ -445,8 +550,20 @@ def test_build_pdf_record_runs_ocr_for_new_url(monkeypatch):
         ocr_calls.append(_pdf_bytes)
         return "OCR text"
 
+    async def fake_structure(_client, raw_text):
+        return {
+            "document_date": "",
+            "summary": "new scheme",
+            "eligibility": "",
+            "benefits": "",
+            "how_to_apply": "",
+            "rates": "",
+            "additional": "",
+        }
+
     monkeypatch.setattr(si, "fetch_bytes", fake_fetch_bytes)
     monkeypatch.setattr(si, "extract_text_from_pdf_bytes", fake_extract)
+    monkeypatch.setattr(si, "structure_scheme_content", fake_structure)
 
     record = asyncio.run(
         si._build_pdf_record(
@@ -457,16 +574,17 @@ def test_build_pdf_record_runs_ocr_for_new_url(monkeypatch):
             last_refreshed_at="2026-07-01T00:00:00Z",
             prior_records_by_url={
                 "https://example.com/old.pdf": {
-                    "content": "old OCR text",
+                    "summary": "old",
                     "content_hash": si._hash_pdf_bytes(b"old"),
                     "content_type": "pdf",
+                    "structure_version": si.SCHEME_STRUCTURE_VERSION,
                 }
             },
         )
     )
 
     assert record is not None
-    assert record["content"] == "OCR text"
+    assert record["summary"] == "new scheme"
     assert ocr_calls == [b"pdf-bytes"]
 
 
@@ -483,8 +601,21 @@ def test_build_pdf_record_runs_ocr_when_prior_hash_missing(monkeypatch):
         ocr_calls.append(_pdf_bytes)
         return "OCR after migration"
 
+    async def fake_structure(_client, raw_text):
+        assert raw_text == "OCR after migration"
+        return {
+            "document_date": "",
+            "summary": "migrated",
+            "eligibility": "",
+            "benefits": "",
+            "how_to_apply": "",
+            "rates": "",
+            "additional": "",
+        }
+
     monkeypatch.setattr(si, "fetch_bytes", fake_fetch_bytes)
     monkeypatch.setattr(si, "extract_text_from_pdf_bytes", fake_extract)
+    monkeypatch.setattr(si, "structure_scheme_content", fake_structure)
 
     record = asyncio.run(
         si._build_pdf_record(
@@ -503,9 +634,99 @@ def test_build_pdf_record_runs_ocr_when_prior_hash_missing(monkeypatch):
     )
 
     assert record is not None
-    assert record["content"] == "OCR after migration"
+    assert record["summary"] == "migrated"
     assert record["content_hash"] == si._hash_pdf_bytes(pdf_bytes)
     assert ocr_calls == [pdf_bytes]
+
+
+def test_build_pdf_record_skips_when_structure_fails(monkeypatch):
+    async def fake_fetch_bytes(_client, _url):
+        return b"pdf"
+
+    async def fake_extract(_client, _pdf_bytes):
+        return "OCR text"
+
+    async def fake_structure(_client, raw_text):
+        raise si.SchemeParseError("bad json")
+
+    monkeypatch.setattr(si, "fetch_bytes", fake_fetch_bytes)
+    monkeypatch.setattr(si, "extract_text_from_pdf_bytes", fake_extract)
+    monkeypatch.setattr(si, "structure_scheme_content", fake_structure)
+
+    record = asyncio.run(
+        si._build_pdf_record(
+            client=SimpleNamespace(),
+            source=si.BANAS_SOURCE,
+            scheme_title="Broken",
+            scheme_url="https://example.com/scheme.pdf",
+            last_refreshed_at="2026-07-01T00:00:00Z",
+        )
+    )
+    assert record is None
+
+
+def test_parse_structure_json_payload_accepts_object():
+    parsed = si._parse_structure_json_payload(
+        '{"summary":"S","eligibility":"E","benefits":"","how_to_apply":"","rates":"","additional":"","document_date":""}'
+    )
+    assert parsed["summary"] == "S"
+    assert parsed["eligibility"] == "E"
+
+
+def test_parse_structure_json_payload_rejects_missing_summary():
+    with pytest.raises(si.SchemeParseError, match="missing summary"):
+        si._parse_structure_json_payload(
+            '{"summary":"","eligibility":"","benefits":"","how_to_apply":"","rates":"","additional":"","document_date":""}'
+        )
+
+
+def test_structure_scheme_content_posts_json_and_parses(monkeypatch):
+    monkeypatch.setattr(si.settings, "scheme_structure_endpoint_url", "http://vllm-host:8000")
+    monkeypatch.setattr(si.settings, "scheme_structure_model", "gemma-4-31b-it")
+    monkeypatch.setattr(si.settings, "scheme_structure_api_key", "test-key")
+    monkeypatch.setattr(si.settings, "scheme_structure_timeout_seconds", 30.0)
+    monkeypatch.setattr(si.settings, "scheme_structure_max_output_tokens", 512)
+    monkeypatch.setattr(si.settings, "scheme_structure_max_attempts", 2)
+
+    calls = []
+
+    class _FakeResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self):
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "document_date": "2026-01-01",
+                                    "summary": "Feed price circular",
+                                    "eligibility": "",
+                                    "benefits": "",
+                                    "how_to_apply": "",
+                                    "rates": "Rs 1200 / bag",
+                                    "additional": "",
+                                }
+                            )
+                        }
+                    }
+                ]
+            }
+
+    class _FakeClient:
+        async def post(self, url, headers=None, json=None, timeout=None):
+            calls.append({"url": url, "headers": headers, "json": json, "timeout": timeout})
+            return _FakeResponse()
+
+    structured = asyncio.run(si.structure_scheme_content(_FakeClient(), "raw circular text"))
+    assert structured["summary"] == "Feed price circular"
+    assert structured["rates"] == "Rs 1200 / bag"
+    assert len(calls) == 1
+    assert calls[0]["url"] == "http://vllm-host:8000/v1/chat/completions"
+    assert calls[0]["headers"]["Authorization"] == "Bearer test-key"
+    assert calls[0]["json"]["model"] == "gemma-4-31b-it"
 
 
 def test_prior_pdf_records_by_url_keeps_pdfs_with_content():
@@ -514,7 +735,12 @@ def test_prior_pdf_records_by_url_keeps_pdfs_with_content():
             {"scheme_url": "https://example.com/a.pdf", "content": "A", "content_type": "pdf"},
             {"scheme_url": "https://example.com/b.pdf", "content": "", "content_type": "pdf"},
             {"scheme_url": "https://example.com/c.html", "content": "C", "content_type": "html"},
-            {"scheme_url": "https://example.com/d.pdf", "content": "D", "content_type": "pdf"},
+            {
+                "scheme_url": "https://example.com/d.pdf",
+                "summary": "D",
+                "content_type": "pdf",
+                "structure_version": 1,
+            },
             "not-a-dict",
         ]
     )
@@ -532,9 +758,10 @@ def test_ingest_banas_source_passes_prior_records_to_build(monkeypatch):
     async def fake_load(_source_key, redis_client=None):
         return {
             "https://example.com/a.pdf": {
-                "content": "cached",
+                "summary": "cached",
                 "content_hash": "abc",
                 "content_type": "pdf",
+                "structure_version": 1,
             }
         }
 
@@ -554,9 +781,10 @@ def test_ingest_banas_source_passes_prior_records_to_build(monkeypatch):
     assert seen_prior == [
         {
             "https://example.com/a.pdf": {
-                "content": "cached",
+                "summary": "cached",
                 "content_hash": "abc",
                 "content_type": "pdf",
+                "structure_version": 1,
             }
         }
     ]
