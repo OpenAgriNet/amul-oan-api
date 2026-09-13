@@ -44,6 +44,37 @@ SCHEME_OCR_RETRY_MAX_DELAY_SECONDS = max(
     SCHEME_OCR_RETRY_BASE_DELAY_SECONDS,
     float(getattr(settings, "scheme_ocr_retry_max_delay_seconds", 2.0)),
 )
+SCHEME_STRUCTURE_VERSION = 2
+SCHEME_STRUCTURE_FIELDS = (
+    "document_date",
+    "summary",
+    "eligibility",
+    "benefits",
+    "how_to_apply",
+    "rates",
+    "additional",
+)
+SCHEME_STRUCTURE_SYSTEM_PROMPT = (
+    "You extract structured milk-producer scheme / circular facts from OCR or HTML text.\n"
+    "Return ONLY a single JSON object with exactly these string keys:\n"
+    "document_date, summary, eligibility, benefits, how_to_apply, rates, additional.\n"
+    "Rules:\n"
+    "- Keep text in the source language of the document (often Gujarati; sometimes English).\n"
+    "- Prefer fidelity over brevity: keep important details unsummarized. Do not compress "
+    "or paraphrase away amounts, dates, conditions, rates, or procedural steps.\n"
+    "- summary: what this document/scheme is about. Include the full relevant description "
+    "from the source; it may be multiple paragraphs. Do not force a 1-3 sentence limit.\n"
+    "- eligibility: who qualifies / conditions; empty string if N/A.\n"
+    "- benefits: subsidy, payout, or what the member gets; empty string if N/A.\n"
+    "- how_to_apply: process and required documents; empty string if N/A.\n"
+    "- rates: price/fee tables when present (preserve table detail); empty string if N/A.\n"
+    "- additional: other farmer-relevant facts that do not fit above.\n"
+    "- document_date: ISO date YYYY-MM-DD when clearly present; else empty string.\n"
+    "- Cut only irrelevant noise: logos, image captions, inaugurations, ceremonial language, "
+    "long letterhead/address blocks, CC lists, pure formatting artifacts.\n"
+    "- Do not invent facts. Use empty strings for missing fields.\n"
+    "- Do not wrap the JSON in markdown fences."
+)
 _RETRYABLE_OCR_STATUS_CODES = {408, 409, 425, 429, 500, 502, 503, 504}
 # Exact text of datalab-to/chandra PROMPT_MAPPING["ocr_layout"] (chandra/prompts.py).
 SCHEME_OCR_LAYOUT_PROMPT = (
@@ -365,8 +396,107 @@ def _hash_pdf_bytes(pdf_bytes: bytes) -> str:
     return hashlib.sha256(pdf_bytes).hexdigest()
 
 
+def _hash_text_content(text: str) -> str:
+    return hashlib.sha256((text or "").encode("utf-8")).hexdigest()
+
+
+def _empty_structured_fields() -> dict[str, str]:
+    return {field: "" for field in SCHEME_STRUCTURE_FIELDS}
+
+
+def _coerce_structured_fields(payload: dict[str, Any]) -> dict[str, str]:
+    coerced = _empty_structured_fields()
+    for field in SCHEME_STRUCTURE_FIELDS:
+        value = payload.get(field, "")
+        if value is None:
+            coerced[field] = ""
+        elif isinstance(value, (dict, list)):
+            coerced[field] = json.dumps(value, ensure_ascii=False) if value else ""
+        else:
+            coerced[field] = str(value).strip()
+    return coerced
+
+
+def _parse_structure_json_payload(raw_text: str) -> dict[str, str]:
+    text = (raw_text or "").strip()
+    if not text:
+        raise SchemeParseError("empty structure model response")
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.IGNORECASE)
+        text = re.sub(r"\s*```$", "", text)
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise SchemeParseError("structure model response is not valid JSON") from exc
+    if not isinstance(parsed, dict):
+        raise SchemeParseError("structure model response JSON must be an object")
+    coerced = _coerce_structured_fields(parsed)
+    if not coerced["summary"]:
+        raise SchemeParseError("structure model response missing summary")
+    return coerced
+
+
+def _prior_has_reusable_structure(prior: dict[str, Any], content_hash: str) -> bool:
+    if prior.get("content_hash") != content_hash:
+        return False
+    if prior.get("structure_version") != SCHEME_STRUCTURE_VERSION:
+        return False
+    summary = prior.get("summary")
+    return isinstance(summary, str) and bool(summary.strip())
+
+
+def _structured_fields_from_prior(prior: dict[str, Any]) -> dict[str, str]:
+    return _coerce_structured_fields({field: prior.get(field, "") for field in SCHEME_STRUCTURE_FIELDS})
+
+
+def _assemble_scheme_record(
+    source: SchemeSource,
+    *,
+    scheme_title: str,
+    scheme_url: str,
+    content_type: str,
+    content_hash: str,
+    last_refreshed_at: str,
+    structured: dict[str, str],
+) -> dict[str, Any]:
+    return {
+        "union_name": source.union_name,
+        "source_url": source.source_url,
+        "scheme_title": scheme_title,
+        "scheme_url": scheme_url,
+        "content_type": content_type,
+        "content_hash": content_hash,
+        "source_name": source.source_name,
+        "last_refreshed_at": last_refreshed_at,
+        "structure_version": SCHEME_STRUCTURE_VERSION,
+        **structured,
+    }
+
+
+def _resolve_structure_endpoint() -> str:
+    endpoint = (
+        settings.scheme_structure_endpoint_url
+        or settings.oss_inference_endpoint_url
+        or ""
+    ).strip()
+    if not endpoint:
+        raise SchemeDependencyError(
+            "SCHEME_STRUCTURE_ENDPOINT_URL or OSS_INFERENCE_ENDPOINT_URL is not configured"
+        )
+    return _normalize_ocr_endpoint(endpoint)
+
+
+def _resolve_structure_model() -> str:
+    model = (settings.scheme_structure_model or settings.oss_llm_model_name or "gemma-4-31b-it").strip()
+    return model or "gemma-4-31b-it"
+
+
+def _resolve_structure_api_key() -> str | None:
+    return settings.scheme_structure_api_key or settings.oss_inference_api_key
+
+
 def _prior_pdf_records_by_url(records: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
-    """Build scheme_url -> prior PDF record map for OCR dedupe lookups."""
+    """Build scheme_url -> prior PDF record map for OCR/structure dedupe lookups."""
     prior: dict[str, dict[str, Any]] = {}
     for record in records:
         if not isinstance(record, dict):
@@ -377,7 +507,10 @@ def _prior_pdf_records_by_url(records: list[dict[str, Any]]) -> dict[str, dict[s
         if not isinstance(scheme_url, str) or not scheme_url.strip():
             continue
         content = record.get("content")
-        if not isinstance(content, str) or not content:
+        summary = record.get("summary")
+        has_raw = isinstance(content, str) and bool(content)
+        has_structured = isinstance(summary, str) and bool(summary.strip())
+        if not has_raw and not has_structured:
             continue
         prior[scheme_url] = record
     return prior
@@ -400,6 +533,27 @@ async def _load_prior_pdf_records_by_url(source_key: str, redis_client=None) -> 
         source_key,
         len(prior),
     )
+    return prior
+
+
+async def _load_prior_records_by_url(source_key: str, redis_client=None) -> dict[str, dict[str, Any]]:
+    """Load all prior cached records keyed by scheme_url (PDF + HTML)."""
+    try:
+        cached = await get_cached_source_records(source_key, redis_client=redis_client)
+    except SchemeIngestionError as exc:
+        logger.warning(
+            "Unable to load prior scheme cache source_key=%s error=%s",
+            source_key,
+            exc,
+        )
+        return {}
+    prior: dict[str, dict[str, Any]] = {}
+    for record in cached:
+        if not isinstance(record, dict):
+            continue
+        scheme_url = record.get("scheme_url")
+        if isinstance(scheme_url, str) and scheme_url.strip():
+            prior[scheme_url] = record
     return prior
 
 
@@ -1199,6 +1353,103 @@ def _normalize_ocr_endpoint(endpoint: str) -> str:
     return base
 
 
+async def structure_scheme_content(client: httpx.AsyncClient, raw_text: str) -> dict[str, str]:
+    """Structure OCR/HTML text into compact scheme fields via Gemma/vLLM JSON chat."""
+    text = (raw_text or "").strip()
+    if not text:
+        raise SchemeParseError("cannot structure empty scheme content")
+
+    endpoint = _resolve_structure_endpoint()
+    model = _resolve_structure_model()
+    api_key = _resolve_structure_api_key()
+    timeout_seconds = float(settings.scheme_structure_timeout_seconds)
+    max_tokens = int(settings.scheme_structure_max_output_tokens)
+    max_attempts = max(1, int(settings.scheme_structure_max_attempts))
+    headers = {"Content-Type": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
+    payload = {
+        "model": model,
+        "temperature": 0,
+        "max_tokens": max_tokens,
+        "messages": [
+            {"role": "system", "content": SCHEME_STRUCTURE_SYSTEM_PROMPT},
+            {
+                "role": "user",
+                "content": (
+                    "Extract structured fields from this scheme/circular text.\n\n"
+                    f"{text}"
+                ),
+            },
+        ],
+    }
+
+    last_error: Exception | None = None
+    for attempt in range(1, max_attempts + 1):
+        logger.info(
+            "Structuring scheme content endpoint=%s model=%s attempt=%s/%s content_length=%s",
+            endpoint,
+            model,
+            attempt,
+            max_attempts,
+            len(text),
+        )
+        try:
+            response = await client.post(
+                f"{endpoint}/v1/chat/completions",
+                headers=headers,
+                json=payload,
+                timeout=timeout_seconds,
+            )
+            response.raise_for_status()
+            body = response.json()
+            choices = body.get("choices") if isinstance(body, dict) else None
+            if not isinstance(choices, list) or not choices:
+                raise SchemeParseError("structure model response missing choices")
+            message = choices[0].get("message") if isinstance(choices[0], dict) else None
+            content = message.get("content") if isinstance(message, dict) else None
+            if not isinstance(content, str):
+                raise SchemeParseError("structure model response missing message content")
+            structured = _parse_structure_json_payload(content)
+            logger.info(
+                "Structured scheme content summary_length=%s eligibility_length=%s benefits_length=%s",
+                len(structured["summary"]),
+                len(structured["eligibility"]),
+                len(structured["benefits"]),
+            )
+            return structured
+        except SchemeParseError as exc:
+            last_error = exc
+            logger.warning(
+                "Scheme structure parse failed attempt=%s/%s error=%s",
+                attempt,
+                max_attempts,
+                exc,
+            )
+        except httpx.HTTPError as exc:
+            last_error = SchemeFetchError(f"structure request failed: {exc}")
+            logger.warning(
+                "Scheme structure HTTP failed attempt=%s/%s error=%s",
+                attempt,
+                max_attempts,
+                exc,
+            )
+        except Exception as exc:
+            last_error = SchemeParseError(f"structure request failed unexpectedly: {exc}")
+            logger.exception(
+                "Scheme structure unexpected failure attempt=%s/%s",
+                attempt,
+                max_attempts,
+            )
+        if attempt < max_attempts:
+            await asyncio.sleep(min(2.0, 0.5 * attempt))
+
+    if isinstance(last_error, SchemeIngestionError):
+        raise last_error
+    raise SchemeParseError("scheme structure failed") from last_error
+
+
 async def _post_ocr_page(
     client: httpx.AsyncClient,
     ocr_endpoint: str,
@@ -1438,53 +1689,66 @@ async def _build_pdf_record(
     last_refreshed_at: str,
     prior_records_by_url: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any] | None:
-    """Download a single PDF, OCR it (unless unchanged), and return a scheme record dict."""
+    """Download a PDF, OCR+structure it (unless unchanged), return a scheme record."""
     logger.info("Building PDF scheme record source=%s title=%s url=%s", source.source_name, scheme_title, scheme_url)
     try:
         pdf_bytes = await fetch_bytes(client, scheme_url)
         content_hash = _hash_pdf_bytes(pdf_bytes)
         prior = (prior_records_by_url or {}).get(scheme_url)
+
+        if prior is not None and _prior_has_reusable_structure(prior, content_hash):
+            logger.info(
+                "Scheme PDF OCR+structure skipped due to matching hash and structure_version "
+                "source=%s title=%s url=%s content_hash=%s",
+                source.source_name,
+                scheme_title,
+                scheme_url,
+                content_hash,
+            )
+            return _assemble_scheme_record(
+                source,
+                scheme_title=scheme_title,
+                scheme_url=scheme_url,
+                content_type="pdf",
+                content_hash=content_hash,
+                last_refreshed_at=last_refreshed_at,
+                structured=_structured_fields_from_prior(prior),
+            )
+
+        raw_content: str | None = None
         if prior is not None:
             prior_hash = prior.get("content_hash")
-            prior_content = prior.get("content")
+            prior_raw = prior.get("content")
             if (
                 isinstance(prior_hash, str)
                 and prior_hash
                 and prior_hash == content_hash
-                and isinstance(prior_content, str)
-                and prior_content
+                and isinstance(prior_raw, str)
+                and prior_raw.strip()
             ):
                 logger.info(
-                    "Scheme PDF OCR skipped due to matching content hash source=%s title=%s url=%s content_hash=%s",
+                    "Scheme PDF OCR skipped; restructuring legacy cached content "
+                    "source=%s title=%s url=%s content_hash=%s",
                     source.source_name,
                     scheme_title,
                     scheme_url,
                     content_hash,
                 )
-                return {
-                    "union_name": source.union_name,
-                    "source_url": source.source_url,
-                    "scheme_title": scheme_title,
-                    "scheme_url": scheme_url,
-                    "content": prior_content,
-                    "content_type": "pdf",
-                    "content_hash": content_hash,
-                    "source_name": source.source_name,
-                    "last_refreshed_at": last_refreshed_at,
-                }
-            if not isinstance(prior_hash, str) or not prior_hash:
+                raw_content = prior_raw
+            elif not isinstance(prior_hash, str) or not prior_hash:
                 ocr_reason = "missing_prior_hash"
             elif prior_hash != content_hash:
                 ocr_reason = "content_hash_changed"
             else:
-                ocr_reason = "missing_prior_content"
-            logger.info(
-                "Scheme PDF OCR required source=%s title=%s url=%s reason=%s",
-                source.source_name,
-                scheme_title,
-                scheme_url,
-                ocr_reason,
-            )
+                ocr_reason = "missing_prior_content_for_restructure"
+            if raw_content is None:
+                logger.info(
+                    "Scheme PDF OCR required source=%s title=%s url=%s reason=%s",
+                    source.source_name,
+                    scheme_title,
+                    scheme_url,
+                    ocr_reason,
+                )
         else:
             logger.info(
                 "Scheme PDF OCR required source=%s title=%s url=%s reason=new_scheme_url",
@@ -1492,40 +1756,64 @@ async def _build_pdf_record(
                 scheme_title,
                 scheme_url,
             )
-        content = await extract_text_from_pdf_bytes(client, pdf_bytes)
+
+        if raw_content is None:
+            raw_content = await extract_text_from_pdf_bytes(client, pdf_bytes)
+        if not raw_content:
+            logger.warning(
+                "Skipping scheme PDF due to empty extracted content source=%s title=%s url=%s",
+                source.source_name,
+                scheme_title,
+                scheme_url,
+            )
+            return None
+
+        structured = await structure_scheme_content(client, raw_content)
     except SchemeDependencyError:
         raise
     except SchemeFetchError as exc:
-        logger.warning("Skipping scheme PDF due to fetch error source=%s title=%s url=%s error=%s", source.source_name, scheme_title, scheme_url, exc)
+        logger.warning(
+            "Skipping scheme PDF due to fetch error source=%s title=%s url=%s error=%s",
+            source.source_name,
+            scheme_title,
+            scheme_url,
+            exc,
+        )
         return None
     except SchemeParseError as exc:
-        logger.warning("Skipping scheme PDF due to parse error source=%s title=%s url=%s error=%s", source.source_name, scheme_title, scheme_url, exc)
+        logger.warning(
+            "Skipping scheme PDF due to parse/structure error source=%s title=%s url=%s error=%s",
+            source.source_name,
+            scheme_title,
+            scheme_url,
+            exc,
+        )
         return None
     except Exception:
-        logger.exception("Unexpected error while building scheme PDF record source=%s title=%s url=%s", source.source_name, scheme_title, scheme_url)
-        return None
-    if not content:
-        logger.warning("Skipping scheme PDF due to empty extracted content source=%s title=%s url=%s", source.source_name, scheme_title, scheme_url)
+        logger.exception(
+            "Unexpected error while building scheme PDF record source=%s title=%s url=%s",
+            source.source_name,
+            scheme_title,
+            scheme_url,
+        )
         return None
 
     logger.info(
-        "Built PDF scheme record source=%s title=%s content_length=%s content_hash=%s",
+        "Built structured PDF scheme record source=%s title=%s content_hash=%s summary_length=%s",
         source.source_name,
         scheme_title,
-        len(content),
         content_hash,
+        len(structured["summary"]),
     )
-    return {
-        "union_name": source.union_name,
-        "source_url": source.source_url,
-        "scheme_title": scheme_title,
-        "scheme_url": scheme_url,
-        "content": content,
-        "content_type": "pdf",
-        "content_hash": content_hash,
-        "source_name": source.source_name,
-        "last_refreshed_at": last_refreshed_at,
-    }
+    return _assemble_scheme_record(
+        source,
+        scheme_title=scheme_title,
+        scheme_url=scheme_url,
+        content_type="pdf",
+        content_hash=content_hash,
+        last_refreshed_at=last_refreshed_at,
+        structured=structured,
+    )
 
 
 # Keep backward-compatible alias used by tests.
@@ -1655,7 +1943,11 @@ async def _ingest_sabar_source(
     return await _ingest_pdf_source(source, link_records, client, lock_token=lock_token, redis_client=redis_client)
 
 
-async def _ingest_sarhad_source(source: SchemeSource, client: httpx.AsyncClient) -> list[dict[str, Any]]:
+async def _ingest_sarhad_source(
+    source: SchemeSource,
+    client: httpx.AsyncClient,
+    redis_client=None,
+) -> list[dict[str, Any]]:
     logger.info("Starting Sarhad scheme ingestion source=%s url=%s", source.cache_key, source.source_url)
     html = await fetch_html(client, source.source_url)
     sections = parse_sarhad_scheme_sections(html)
@@ -1663,19 +1955,48 @@ async def _ingest_sarhad_source(source: SchemeSource, client: httpx.AsyncClient)
         logger.warning("No Sarhad scheme sections parsed source=%s", source.cache_key)
         raise SchemeParseError("no Sarhad scheme sections parsed")
     last_refreshed_at = _utcnow_iso()
-    records = [
-        {
-            "union_name": source.union_name,
-            "source_url": source.source_url,
-            "scheme_title": section["scheme_title"],
-            "scheme_url": f"{source.source_url}#{_slugify_fragment(section['scheme_title'])}" if _slugify_fragment(section["scheme_title"]) else source.source_url,
-            "content": section["content"],
-            "content_type": "html",
-            "source_name": source.source_name,
-            "last_refreshed_at": last_refreshed_at,
-        }
-        for section in sections
-    ]
+    prior_records_by_url = await _load_prior_records_by_url(source.cache_key, redis_client=redis_client)
+    records: list[dict[str, Any]] = []
+    for section in sections:
+        scheme_title = section["scheme_title"]
+        fragment = _slugify_fragment(scheme_title)
+        scheme_url = f"{source.source_url}#{fragment}" if fragment else source.source_url
+        raw_content = section["content"]
+        content_hash = _hash_text_content(raw_content)
+        prior = prior_records_by_url.get(scheme_url)
+        try:
+            if prior is not None and _prior_has_reusable_structure(prior, content_hash):
+                logger.info(
+                    "Sarhad structure skipped due to matching content hash source=%s title=%s",
+                    source.cache_key,
+                    scheme_title,
+                )
+                structured = _structured_fields_from_prior(prior)
+            else:
+                structured = await structure_scheme_content(client, raw_content)
+        except SchemeDependencyError:
+            raise
+        except SchemeIngestionError as exc:
+            logger.warning(
+                "Skipping Sarhad scheme due to structure error source=%s title=%s error=%s",
+                source.cache_key,
+                scheme_title,
+                exc,
+            )
+            continue
+        records.append(
+            _assemble_scheme_record(
+                source,
+                scheme_title=scheme_title,
+                scheme_url=scheme_url,
+                content_type="html",
+                content_hash=content_hash,
+                last_refreshed_at=last_refreshed_at,
+                structured=structured,
+            )
+        )
+    if not records:
+        raise SchemeParseError("no Sarhad scheme records structured")
     logger.info("Completed Sarhad scheme ingestion source=%s record_count=%s", source.cache_key, len(records))
     return records
 
@@ -1706,7 +2027,7 @@ async def refresh_scheme_source(source: SchemeSource, redis_client=None, client:
             SABAR_SOURCE.source_name: _ingest_sabar_source,
         }
         if source.source_name == SARHAD_SOURCE.source_name:
-            records = await _ingest_sarhad_source(source, client)
+            records = await _ingest_sarhad_source(source, client, redis_client=redis_client)
         else:
             ingest_fn = _PDF_INGEST_MAP.get(source.source_name)
             if ingest_fn is None:
