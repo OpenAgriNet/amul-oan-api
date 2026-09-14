@@ -24,24 +24,17 @@ logger = get_logger(__name__)
 async def prepare_get_farmer_bonus_amount(
     ctx: RunContext[FarmerContext], tool_def: ToolDefinition
 ) -> ToolDefinition | None:
-    """Hide get_farmer_bonus_amount unless a farmer is resolved.
+    """Hide get_farmer_bonus_amount unless the caller is authenticated.
 
-    The tool needs union/society/farmer codes that only exist in the farmer
-    context (populated when a farmer record is resolved). With no farmer context
-    the LLM has no codes and would otherwise hallucinate placeholders that
-    reach the live backend. farmer_unions is non-empty exactly when a farmer
-    was resolved, so we gate on it (mirrors milk collection / union schemes).
+    Account codes are resolved server-side from the authenticated mobile during
+    execution (get_farmer_data_by_mobile -> authenticated_accounts). Requiring
+    union display names here would hide a valid lookup when unionName is absent
+    even though union/society/farmer codes still exist.
     """
-    farmer_unions = [
-        cleaned
-        for cleaned in ((u or "").strip().lower() for u in (ctx.deps.farmer_unions or []))
-        if cleaned
-    ]
-    if farmer_unions and (getattr(ctx.deps, "mobile", None) or "").strip():
+    if (getattr(ctx.deps, "mobile", None) or "").strip():
         return tool_def
     logger.info(
-        "Hiding get_farmer_bonus_amount tool because farmer_unions is empty "
-        "or authenticated mobile is missing (no resolved farmer context)"
+        "Hiding get_farmer_bonus_amount tool because authenticated mobile is missing"
     )
     return None
 
@@ -179,16 +172,32 @@ async def get_farmer_bonus_amount(ctx: RunContext[FarmerContext]) -> str:
         return_exceptions=True,
     )
 
-    # Empty list [] is a successful "no records" response; None / exceptions are failures.
-    successes: list[list[FarmerBonusAmountRecordModel]] = [
-        response
-        for response in outcomes
-        if response is not None and not isinstance(response, BaseException)
-    ]
+    # Empty list [] is a successful "no records" response; None / exceptions are
+    # account-level failures. Preserve partial-failure state to avoid reporting
+    # incomplete financial data as complete/no-records.
+    successes: list[list[FarmerBonusAmountRecordModel]] = []
+    failed_accounts = 0
+    for outcome in outcomes:
+        if outcome is None or isinstance(outcome, BaseException):
+            failed_accounts += 1
+            continue
+        successes.append(outcome)
     if not successes:
         logger.info(
             "Farmer bonus amount lookup failed for all authenticated accounts "
             "(count=%s)",
+            len(accounts),
+        )
+        return (
+            "Bonus amount lookup failed.\n\n"
+            "Unable to fetch bonus amount details at the moment. "
+            "Bonus lookup is only available for unions whose data source is AMCS; "
+            "if your union uses a different source, this may not be supported yet."
+        )
+    if failed_accounts:
+        logger.warning(
+            "Farmer bonus amount lookup incomplete: failed_accounts=%s total_accounts=%s",
+            failed_accounts,
             len(accounts),
         )
         return (
