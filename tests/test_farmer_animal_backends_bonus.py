@@ -150,3 +150,15 @@ class TestFarmerAnimalBackendsBonus:
         result = asyncio.run(get_farmer_bonus_amount_api(self._request(), "test-token"))
 
         assert result is None
+
+    def test_unexpected_dict_shape_returns_none(self, monkeypatch):
+        _FakeAsyncClient.response = httpx.Response(
+            200,
+            json=[{"Message": "unexpected shape"}],
+            request=httpx.Request("GET", "https://example.test"),
+        )
+        monkeypatch.setattr(farmer_animal_backends.httpx, "AsyncClient", _FakeAsyncClient)
+
+        result = asyncio.run(get_farmer_bonus_amount_api(self._request(), "test-token"))
+
+        assert result is None

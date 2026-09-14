@@ -28,7 +28,9 @@ class FarmerBonusAmountRecordModel(BaseModel):
     farmer_code: str | None = Field(None, alias="farmerCode")
     farmer_name: str | None = Field(None, alias="farmerName")
     farmer_local_name: str | None = Field(None, alias="farmerLocalName")
-    bonus_amount: float | int | None = Field(None, alias="bonusAmount")
+    # Required for a meaningful financial record; unexpected payload shapes
+    # should fail validation and follow the backend failure path.
+    bonus_amount: float | int = Field(..., alias="bonusAmount")
     # API returns ISO datetime strings (e.g. "2026-04-01T00:00:00"); keep as str.
-    from_date: str | None = Field(None, alias="fromDate")
-    to_date: str | None = Field(None, alias="toDate")
+    from_date: str = Field(..., alias="fromDate")
+    to_date: str = Field(..., alias="toDate")
