@@ -1,6 +1,9 @@
 import os
 import sys
 
+import pytest
+from pydantic import ValidationError
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from app.models.bonus import (
@@ -49,16 +52,27 @@ class TestBonusModel:
             bonus_amount=10,
             farmer_name="X",
             society_code="2004",
+            from_date="2026-04-01T00:00:00",
+            to_date="2026-04-01T00:00:00",
         )
 
         assert record.model_dump(by_alias=True)["bonusAmount"] == 10
         assert record.model_dump(by_alias=True)["farmerName"] == "X"
 
-    def test_bonus_record_ignores_unknown_keys_and_defaults_missing(self):
+    def test_bonus_record_ignores_unknown_keys(self):
         record = FarmerBonusAmountRecordModel.model_validate(
-            {"bonusAmount": 1, "unknown": True}
+            {
+                "bonusAmount": 1,
+                "fromDate": "2026-04-01T00:00:00",
+                "toDate": "2026-04-01T00:00:00",
+                "unknown": True,
+            }
         )
 
         assert record.bonus_amount == 1
         assert record.society_name is None
-        assert record.from_date is None
+        assert record.from_date == "2026-04-01T00:00:00"
+
+    def test_bonus_record_rejects_unexpected_shape_without_required_fields(self):
+        with pytest.raises(ValidationError):
+            FarmerBonusAmountRecordModel.model_validate({"Message": "unexpected shape"})
