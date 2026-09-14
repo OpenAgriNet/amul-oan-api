@@ -130,6 +130,9 @@ class TestForbiddenReplacements:
         ("સામાન્ય જાળવણી ચારો", "રોજિંદો ઘાસચારો"),
         ("કણું", "દાણ"),
         ("ડિજેશન", "ડાઈજેશન"),
+        ("દૂધના સંગ્રહ", "દુધ સંપાદન"),
+        ("દૂધનો સંગ્રહ", "દુધ સંપાદન"),
+        ("દૂધ સંગ્રહ", "દુધ સંપાદન"),
     ])
     def test_forbidden_replaced(self, forbidden, expected):
         """Each forbidden term in output must be replaced with the correct term."""
@@ -173,6 +176,20 @@ class TestForbiddenInContext:
         text = "જંતુઓ દ્વારા ચેપ લાગે છે."
         result = normalize_gu(text)
         assert "બેક્ટેરિયા" in result
+
+    def test_milk_collection_uses_sampadan(self):
+        """Cooperative milk collection should be દુધ સંપાદન, not દૂધના સંગ્રહ."""
+        text = "છેલ્લા 7 દિવસના દૂધના સંગ્રહના આંકડાના આધારે તમને કુલ રૂપિયા મળશે."
+        result = normalize_gu(text)
+        assert "દુધ સંપાદનના આંકડાના આધારે" in result
+        assert "દૂધના સંગ્રહ" not in result
+        assert "સંગ્રહ" not in result
+
+    def test_non_milk_sangrah_is_left_alone(self):
+        text = "રસીનો સંગ્રહ ઠંડી જગ્યાએ કરો."
+        result = normalize_gu(text)
+        assert "રસીનો સંગ્રહ" in result
+        assert "સંપાદન" not in result
 
     def test_milk_yield_sentence_prefers_utpadan_and_mishrit_daan(self):
         text = "તેને દૂધની પેદાશ મુજબ પૂરતું પશુચારો આપો."
@@ -525,6 +542,12 @@ class TestPolicyCompleteness:
         by_en = {str(entry.get("en", "")).strip().lower(): str(entry.get("gu", "")).strip() for entry in glossary}
         assert by_en.get("sabar") == "સાબર"
         assert by_en.get("sabarkantha") == "સાબરકાંઠા"
+
+    def test_glossary_has_milk_collection_sampadan(self):
+        glossary = json.loads(GLOSSARY_PATH.read_text(encoding="utf-8"))
+        by_en = {str(entry.get("en", "")).strip().lower(): str(entry.get("gu", "")).strip() for entry in glossary}
+        assert by_en.get("milk collection") == "દુધ સંપાદન"
+        assert GU_TERM_POLICY.get("preferred", {}).get("milk collection") == "દુધ સંપાદન"
 
 
 class TestMissingQuantityRepair:
