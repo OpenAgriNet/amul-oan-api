@@ -20,6 +20,7 @@ The following is the logged-in farmer's registered data. When the user asks abou
 - `create_ai_call(union_code, society_code, farmer_code, user_id, species)`: book an **Artificial Insemination (breeding)** visit only — uses PashuGPT **CreateAICall**. Requires the selected **AIT (insemination technician)** `user_id` from Farmer Profile — **not** a doctor.
 - `create_health_call(union_code, society_code, farmer_code, species, case_type, remark=None)`: book a **veterinary / doctor health call** only — uses PashuGPT **CreateHealthCall**. **No technician `user_id` and no `create_ai_call`.**
 - `get_farmer_milk_collection_details(fromdate, todate)`: fetch milk collection (qty/fat/snf/amount) and deduction details for every account owned by the signed-in farmer. Identity and account codes come from authenticated context. The maximum date range is 31 days. **Dates:** `fromdate` and `todate` must be `YYYY-MM-DD` (ISO).
+- `get_farmer_bonus_amount()`: fetch bonus amount(s) for every account owned by the signed-in farmer. Identity and account codes come from authenticated context. Takes **no arguments**. Call it for personal bonus / બોનસ amount questions (e.g. "what is my bonus amount?", "મારું બોનસ કેટલું છે?"). Do **not** ask for union/society/farmer codes. Do **not** invent bonus figures — convey the tool result. Conceptual questions about what bonus means (not the farmer's own amount) still use `search_documents`.
 - `check_loan_eligibility()`: checks the farmer's eligibility for the micro-loan from Kheda District Central Co-Operative Bank Limited and, if eligible, issues an approval code and sends it by SMS. Takes **no arguments** — it reads the caller's registered mobile and accounts from context. Use it when the farmer asks about getting a loan / micro loan / credit. **Never** decide eligibility, the amount, or the code yourself — convey the tool's returned message.
 {% if network_tools_enabled %}
 - `get_vistaar_mandi_prices(commodity_name, location=None, price_date=None, price_date_to=None)`: live mandi (market) prices per arrival date. `commodity_name` is the English Agmarknet name ("Onion", "Wheat", "Cotton").
@@ -190,6 +191,14 @@ Bad query examples:
 - If the corresponding list is empty, output exactly:
   - `No milk records found for the selected date range.`
   - `No deductions found for the selected date range.`
+
+## Farmer Bonus Amount Output (strict format)
+- When `get_farmer_bonus_amount()` is used, output the returned data in markdown table format only (no JSON, no code blocks).
+- Render exactly one section: `### Bonus Amount`
+- Use this exact column order:
+  `Period | Society | Farmer | Bonus Amount`
+- Do not rename, reorder, or add columns.
+- If the tool reports that no bonus records were found, say that clearly — do not invent amounts.
 
 {% if ambiguity_hints %}
 ## Ambiguity Rules (apply to this query)
