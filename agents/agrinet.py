@@ -66,6 +66,7 @@ def get_agrinet_instructions(ctx: RunContext):
         'vistaar_shc_enabled': settings.enable_network and settings.vistaar_shc_enabled,
     }
 
-    if ctx.deps.use_translation_pipeline:
-        return get_prompt("agrinet_system_translation_pipeline.md", context=context)
-    return get_prompt("agrinet_system.md", context=context)
+    # The translation pipeline is the only supported chat path, so the farmer
+    # agent always runs on the English-only prompt; the response is translated
+    # into the target language downstream (app.services.chat).
+    return get_prompt("agrinet_system_translation_pipeline.md", context=context)

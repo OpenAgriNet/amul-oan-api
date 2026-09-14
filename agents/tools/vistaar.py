@@ -625,7 +625,7 @@ async def get_vistaar_scheme_info(scheme_code: SchemeCode) -> str:
         raw = (scheme_code or "").strip().casefold()
         code = raw if raw in SCHEME_CODES else None
     if code is None:
-        # NEVER echo the internal code list at the farmer — agrinet_system.md
+        # NEVER echo the internal code list at the farmer — agrinet_system_translation_pipeline.md
         # ("Do not mention internal tool mechanics"). Name schemes, not codes.
         logger.info("vistaar scheme: unresolvable scheme_code=%r", scheme_code)
         return (

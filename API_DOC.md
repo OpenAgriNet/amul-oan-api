@@ -17,7 +17,6 @@ Handles chat sessions between a user and the AI assistant.
   - `source_lang`: The source language of the query. Defaults to `gu`.
   - `target_lang`: The target language for the response. Defaults to `gu`.
   - `user_id`: User identifier. Defaults to `anonymous`.
-  - `use_translation_pipeline`: Optional. When `true`, uses Gemma-based pre/post translation: query→English→agent→target_lang. Requires TranslateGemma vLLM endpoints. See [Translation Pipeline API](docs/TRANSLATION_PIPELINE_API.md).
 
 - **Response**:
   - **Content-Type**: `text/event-stream`
@@ -25,7 +24,7 @@ Handles chat sessions between a user and the AI assistant.
   - No SSE envelope; each chunk is plain text.
 
 - **Description**:
-  - Initiates a chat session with the AI assistant. Uses the `agrinet_agent` to process the query and streams the response. When `use_translation_pipeline=true`, the query is translated to English, the agent responds in English, and the response is translated to `target_lang` before streaming.
+  - Initiates a chat session with the AI assistant. Uses the `agrinet_agent` to process the query and streams the response. Every chat turn runs the Gemma-based translation pipeline: the query is translated to English, the agent responds in English, and the response is translated to `target_lang` before streaming. Requires TranslateGemma vLLM endpoints. See [Translation Pipeline API](docs/TRANSLATION_PIPELINE_API.md).
 
 ### 2. suggestions (GET)
 Handles suggestions for questions for the farmer to ask.

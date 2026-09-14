@@ -127,7 +127,7 @@ def test_longest_alias_wins():
 
 
 def test_scheme_names_sentence_leaks_no_internal_codes():
-    """agrinet_system.md: "Do not mention internal tool mechanics". The
+    """agrinet_system_translation_pipeline.md: "Do not mention internal tool mechanics". The
     farmer-visible fallback names schemes, never codes."""
     sentence = scheme_names_sentence()
     assert "Kisan Credit Card" in sentence

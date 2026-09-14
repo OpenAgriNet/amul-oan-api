@@ -28,7 +28,8 @@ import agents.farmer_context as farmer_ctx
 import agents.services.farmer_cache as farmer_cache
 
 
-PROMPTS = ("agrinet_system.md", "agrinet_system_translation_pipeline.md")
+# The translation pipeline is the only chat path, so there is a single farmer prompt.
+PROMPTS = ("agrinet_system_translation_pipeline.md",)
 BANNED_UNION_ALIASES = ("sarhad", "kutch", "kachchh", "kutchh")
 
 
@@ -280,11 +281,14 @@ def test_prompts_keep_technician_selection_for_allowed_unions(name):
     assert "When AI technician options are available, ask the user which technician they want to select." in rendered
 
 
-def test_default_prompt_lists_localized_ban_lines():
-    rendered = _render_prompt("agrinet_system.md")
+def test_prompt_states_the_ban_line_in_english_and_defers_localization():
+    # The farmer agent now always answers in English and the output-translation
+    # step localizes the ban line, so the prompt must NOT inline the gu/hi
+    # variants — that is what app.models.union maps at translation time.
+    rendered = _render_prompt("agrinet_system_translation_pipeline.md")
     assert UNION_BANNED_MESSAGE in rendered
-    assert UNION_BANNED_MESSAGE_GU in rendered
-    assert UNION_BANNED_MESSAGE_HI in rendered
+    assert UNION_BANNED_MESSAGE_GU not in rendered
+    assert UNION_BANNED_MESSAGE_HI not in rendered
 
 
 # ── create_ai_call hard block ─────────────────────────────────────────────────

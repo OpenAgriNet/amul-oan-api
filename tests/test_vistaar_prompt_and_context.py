@@ -77,7 +77,8 @@ class TestFarmerLocationCollection:
 
 
 class TestPromptGuidance:
-    PROMPTS = ("agrinet_system.md", "agrinet_system_translation_pipeline.md")
+    # The translation pipeline is the only chat path, so there is a single farmer prompt.
+    PROMPTS = ("agrinet_system_translation_pipeline.md",)
 
     @staticmethod
     def _render(name, network, shc=False):
@@ -103,9 +104,8 @@ class TestPromptGuidance:
 
     @pytest.mark.parametrize("name", PROMPTS)
     def test_price_and_weather_are_steered_away_from_document_search(self, name):
-        # agrinet_system.md rule 3 and the pipeline prompt's routing rule 3 both
-        # sent `market` / `weather` to search_documents first, which describes a
-        # mandi question exactly.
+        # The pipeline prompt's routing rule 3 sent `market` / `weather` to
+        # search_documents first, which describes a mandi question exactly.
         rendered = self._render(name, True)
         assert "do not search first" in rendered
         assert "live data" in rendered
