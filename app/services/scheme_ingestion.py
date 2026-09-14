@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import json
 import re
 import time
@@ -358,6 +359,48 @@ def _slugify_fragment(value: str) -> str:
     normalized = _normalize_title(value).casefold()
     normalized = re.sub(r"[^a-z0-9]+", "-", normalized)
     return normalized.strip("-")
+
+
+def _hash_pdf_bytes(pdf_bytes: bytes) -> str:
+    return hashlib.sha256(pdf_bytes).hexdigest()
+
+
+def _prior_pdf_records_by_url(records: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """Build scheme_url -> prior PDF record map for OCR dedupe lookups."""
+    prior: dict[str, dict[str, Any]] = {}
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        if record.get("content_type") != "pdf":
+            continue
+        scheme_url = record.get("scheme_url")
+        if not isinstance(scheme_url, str) or not scheme_url.strip():
+            continue
+        content = record.get("content")
+        if not isinstance(content, str) or not content:
+            continue
+        prior[scheme_url] = record
+    return prior
+
+
+async def _load_prior_pdf_records_by_url(source_key: str, redis_client=None) -> dict[str, dict[str, Any]]:
+    """Load prior cached PDF records for a source. Cache errors yield an empty map."""
+    try:
+        cached = await get_cached_source_records(source_key, redis_client=redis_client)
+    except SchemeIngestionError as exc:
+        logger.warning(
+            "Unable to load prior scheme cache for OCR dedupe source_key=%s error=%s",
+            source_key,
+            exc,
+        )
+        return {}
+    prior = _prior_pdf_records_by_url(cached)
+    logger.info(
+        "Loaded prior PDF records for OCR dedupe source_key=%s prior_count=%s",
+        source_key,
+        len(prior),
+    )
+    return prior
 
 
 def _build_prefixed_key(namespace: str, key: str) -> str:
@@ -1393,11 +1436,62 @@ async def _build_pdf_record(
     scheme_title: str,
     scheme_url: str,
     last_refreshed_at: str,
+    prior_records_by_url: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any] | None:
-    """Download a single PDF, OCR it, and return a scheme record dict (or None on failure)."""
+    """Download a single PDF, OCR it (unless unchanged), and return a scheme record dict."""
     logger.info("Building PDF scheme record source=%s title=%s url=%s", source.source_name, scheme_title, scheme_url)
     try:
         pdf_bytes = await fetch_bytes(client, scheme_url)
+        content_hash = _hash_pdf_bytes(pdf_bytes)
+        prior = (prior_records_by_url or {}).get(scheme_url)
+        if prior is not None:
+            prior_hash = prior.get("content_hash")
+            prior_content = prior.get("content")
+            if (
+                isinstance(prior_hash, str)
+                and prior_hash
+                and prior_hash == content_hash
+                and isinstance(prior_content, str)
+                and prior_content
+            ):
+                logger.info(
+                    "Scheme PDF OCR skipped due to matching content hash source=%s title=%s url=%s content_hash=%s",
+                    source.source_name,
+                    scheme_title,
+                    scheme_url,
+                    content_hash,
+                )
+                return {
+                    "union_name": source.union_name,
+                    "source_url": source.source_url,
+                    "scheme_title": scheme_title,
+                    "scheme_url": scheme_url,
+                    "content": prior_content,
+                    "content_type": "pdf",
+                    "content_hash": content_hash,
+                    "source_name": source.source_name,
+                    "last_refreshed_at": last_refreshed_at,
+                }
+            if not isinstance(prior_hash, str) or not prior_hash:
+                ocr_reason = "missing_prior_hash"
+            elif prior_hash != content_hash:
+                ocr_reason = "content_hash_changed"
+            else:
+                ocr_reason = "missing_prior_content"
+            logger.info(
+                "Scheme PDF OCR required source=%s title=%s url=%s reason=%s",
+                source.source_name,
+                scheme_title,
+                scheme_url,
+                ocr_reason,
+            )
+        else:
+            logger.info(
+                "Scheme PDF OCR required source=%s title=%s url=%s reason=new_scheme_url",
+                source.source_name,
+                scheme_title,
+                scheme_url,
+            )
         content = await extract_text_from_pdf_bytes(client, pdf_bytes)
     except SchemeDependencyError:
         raise
@@ -1407,14 +1501,20 @@ async def _build_pdf_record(
     except SchemeParseError as exc:
         logger.warning("Skipping scheme PDF due to parse error source=%s title=%s url=%s error=%s", source.source_name, scheme_title, scheme_url, exc)
         return None
-    except Exception as exc:
+    except Exception:
         logger.exception("Unexpected error while building scheme PDF record source=%s title=%s url=%s", source.source_name, scheme_title, scheme_url)
         return None
     if not content:
         logger.warning("Skipping scheme PDF due to empty extracted content source=%s title=%s url=%s", source.source_name, scheme_title, scheme_url)
         return None
 
-    logger.info("Built PDF scheme record source=%s title=%s content_length=%s", source.source_name, scheme_title, len(content))
+    logger.info(
+        "Built PDF scheme record source=%s title=%s content_length=%s content_hash=%s",
+        source.source_name,
+        scheme_title,
+        len(content),
+        content_hash,
+    )
     return {
         "union_name": source.union_name,
         "source_url": source.source_url,
@@ -1422,6 +1522,7 @@ async def _build_pdf_record(
         "scheme_url": scheme_url,
         "content": content,
         "content_type": "pdf",
+        "content_hash": content_hash,
         "source_name": source.source_name,
         "last_refreshed_at": last_refreshed_at,
     }
@@ -1444,6 +1545,7 @@ async def _ingest_banas_source(
         logger.warning("No Banas scheme links parsed source=%s", source.cache_key)
         raise SchemeParseError("no Banas scheme links parsed")
     last_refreshed_at = _utcnow_iso()
+    prior_records_by_url = await _load_prior_pdf_records_by_url(source.cache_key, redis_client=redis_client)
     logger.info(
         "Processing Banas PDFs sequentially source=%s record_count=%s",
         source.cache_key,
@@ -1457,6 +1559,7 @@ async def _ingest_banas_source(
             scheme_title=record["scheme_title"],
             scheme_url=record["scheme_url"],
             last_refreshed_at=last_refreshed_at,
+            prior_records_by_url=prior_records_by_url,
         )
         if built_record:
             final_records.append(built_record)
@@ -1485,6 +1588,7 @@ async def _ingest_pdf_source(
     if not link_records:
         raise SchemeParseError(f"no {source.source_name} scheme links parsed")
     last_refreshed_at = _utcnow_iso()
+    prior_records_by_url = await _load_prior_pdf_records_by_url(source.cache_key, redis_client=redis_client)
     logger.info(
         "Processing %s PDFs sequentially source=%s record_count=%s",
         source.source_name,
@@ -1499,6 +1603,7 @@ async def _ingest_pdf_source(
             scheme_title=record["scheme_title"],
             scheme_url=record["scheme_url"],
             last_refreshed_at=last_refreshed_at,
+            prior_records_by_url=prior_records_by_url,
         )
         if built_record:
             final_records.append(built_record)
