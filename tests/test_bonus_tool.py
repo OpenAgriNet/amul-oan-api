@@ -137,6 +137,60 @@ class TestBonusTool:
         assert "Unable to fetch bonus amount details at the moment." in result
         assert "AMCS" in result
 
+    def test_mixed_empty_and_failure_returns_temporary_failure(self, monkeypatch):
+        _patch_farmers(
+            monkeypatch,
+            [
+                _farmer(),
+                _farmer(societyCode="2005", farmerCode="0002"),
+            ],
+        )
+        monkeypatch.setenv("PASHUGPT_TOKEN", "test-token")
+
+        async def mixed_api(request, token):
+            if request.farmer_code == "0001":
+                return []
+            return None
+
+        monkeypatch.setattr(bonus_tool, "get_farmer_bonus_amount_api", mixed_api)
+        result = asyncio.run(bonus_tool.get_farmer_bonus_amount(_ctx()))
+
+        assert "Unable to fetch bonus amount details at the moment." in result
+        assert "No bonus records were found" not in result
+
+    def test_mixed_data_and_failure_returns_temporary_failure(self, monkeypatch):
+        _patch_farmers(
+            monkeypatch,
+            [
+                _farmer(),
+                _farmer(societyCode="2005", farmerCode="0002"),
+            ],
+        )
+        monkeypatch.setenv("PASHUGPT_TOKEN", "test-token")
+
+        async def mixed_api(request, token):
+            if request.farmer_code == "0001":
+                return [
+                    FarmerBonusAmountRecordModel.model_validate(
+                        {
+                            "societyCode": "2004",
+                            "societyName": "SOC_0001",
+                            "farmerCode": "0001",
+                            "farmerName": "F_0001",
+                            "bonusAmount": 100,
+                            "fromDate": "2026-04-01T00:00:00",
+                            "toDate": "2026-04-01T00:00:00",
+                        }
+                    )
+                ]
+            return None
+
+        monkeypatch.setattr(bonus_tool, "get_farmer_bonus_amount_api", mixed_api)
+        result = asyncio.run(bonus_tool.get_farmer_bonus_amount(_ctx()))
+
+        assert "Unable to fetch bonus amount details at the moment." in result
+        assert "fetched successfully" not in result
+
     def test_missing_token_returns_provider_not_configured(self, monkeypatch):
         _patch_farmers(monkeypatch, [_farmer()])
         monkeypatch.setattr(bonus_tool, "get_config_value", lambda name: None)
@@ -188,7 +242,7 @@ class TestBonusTool:
         assert "| 2026-04-01 - 2026-04-01 | SOC_0001 | F_0001 | 100.00 |" in result
         assert "| 2026-04-01 - 2026-04-01 | SOC_0002 | F_0002 | 200.00 |" in result
 
-    def test_partial_rows_are_none_safe(self, monkeypatch):
+    def test_optional_label_fields_fallback_to_dashes(self, monkeypatch):
         _patch_farmers(monkeypatch, [_farmer()])
         monkeypatch.setenv("PASHUGPT_TOKEN", "test-token")
 
@@ -199,9 +253,9 @@ class TestBonusTool:
                     society_name=None,
                     farmer_code=None,
                     farmer_name=None,
-                    bonus_amount=None,
-                    from_date=None,
-                    to_date=None,
+                    bonus_amount=0,
+                    from_date="2026-04-01T00:00:00",
+                    to_date="2026-04-01T00:00:00",
                 )
             ]
 
@@ -209,4 +263,4 @@ class TestBonusTool:
         result = asyncio.run(bonus_tool.get_farmer_bonus_amount(_ctx()))
 
         assert "fetched successfully" in result
-        assert "| - - - | - | - | - |" in result
+        assert "| 2026-04-01 - 2026-04-01 | - | - | 0.00 |" in result

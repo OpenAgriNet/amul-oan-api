@@ -15,12 +15,8 @@ def _ctx(unions, mobile="9000000000"):
     )
 
 
-def test_prepare_hides_tool_without_resolved_farmer_or_authenticated_mobile():
+def test_prepare_hides_tool_without_authenticated_mobile():
     sentinel = object()
-    assert (
-        asyncio.run(bonus_tool.prepare_get_farmer_bonus_amount(_ctx([]), sentinel))
-        is None
-    )
     assert (
         asyncio.run(
             bonus_tool.prepare_get_farmer_bonus_amount(_ctx(["banas"], None), sentinel)
@@ -29,7 +25,15 @@ def test_prepare_hides_tool_without_resolved_farmer_or_authenticated_mobile():
     )
 
 
-def test_prepare_shows_tool_for_authenticated_resolved_farmer():
+def test_prepare_shows_tool_for_authenticated_mobile_even_without_union_name():
+    sentinel = object()
+    assert (
+        asyncio.run(bonus_tool.prepare_get_farmer_bonus_amount(_ctx([]), sentinel))
+        is sentinel
+    )
+
+
+def test_prepare_shows_tool_for_authenticated_farmer_with_union():
     sentinel = object()
     assert (
         asyncio.run(
