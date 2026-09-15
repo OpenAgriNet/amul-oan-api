@@ -14,19 +14,26 @@ def test_scheme_sources_read_urls_from_settings():
     assert si.SARHAD_SOURCE.source_url == si.settings.sarhad_scheme_source_url
     assert si.SUMUL_SOURCE.source_url == si.settings.sumul_scheme_source_url
     assert si.SURSAGAR_SOURCE.source_url == si.settings.sursagar_scheme_source_url
+    assert si.SABAR_SOURCE.source_url == si.settings.sabar_scheme_source_url
 
 
 def test_scheme_site_origins_derive_from_configured_source_urls(monkeypatch):
     monkeypatch.setattr(si, "SUMUL_SITE_ORIGIN", "https://sumul-custom.test")
     monkeypatch.setattr(si, "SURSAGAR_SITE_ORIGIN", "https://sursagar-custom.test")
+    monkeypatch.setattr(si, "SABAR_SITE_ORIGIN", "https://sabar-custom.test")
 
     sumul_records = si.parse_sumul_scheme_links('<a href="files/a.pdf">Download</a>')
     sursagar_records = si.parse_sursagar_scheme_links(
         '<a href="/Farmer/DownloadMilkProducerFile?file=test.pdf" class="btn">view</a>'
     )
+    sabar_records = si.parse_sabar_scheme_links(
+        '<h5 class="sabar-soc-title-1">Scheme</h5>'
+        '<a href="/wp-content/uploads/2026/09/custom.pdf">Download</a>'
+    )
 
     assert sumul_records[0]["scheme_url"] == "https://sumul-custom.test/files/a.pdf"
     assert sursagar_records[0]["scheme_url"] == "https://sursagar-custom.test/Farmer/DownloadMilkProducerFile?file=test.pdf"
+    assert sabar_records[0]["scheme_url"] == "https://sabar-custom.test/wp-content/uploads/2026/09/custom.pdf"
 
 
 class _FakePixmap:
