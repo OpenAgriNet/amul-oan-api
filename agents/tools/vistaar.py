@@ -198,6 +198,15 @@ async def _vistaar_search(intent: dict) -> list[dict]:
 _YARD_WORD = re.compile(r"(?i)\b(apmc|mandi|yard)\b")
 _YARD_SUFFIXES = ("apmc", "mandi", "yard")
 _NON_ALNUM = re.compile(r"[^a-z0-9]+")
+# BPP / farmer parentheticals and filler tokens shared by place canonicalization
+# (resolve fallback) and market-row matching. Whole-word filler first so
+# "APMC Halvad" / "Deesa Veg Yard" become the town, not "apmchalvad" / "deesaveg".
+_PAREN_RE = re.compile(r"\(.*?\)")
+_MARKET_FILLER = re.compile(
+    r"(?i)\b(apmc|mandi|yard|veg|vegetable|market)\b"
+)
+# Glued tokens after non-alnum collapse ("AnandAPMC", "APMCHALVAD").
+_GLUED_YARD_TOKENS = _YARD_SUFFIXES + ("veg", "vegetable", "market")
 
 
 def _extract_requested_market_name(location: Optional[str]) -> Optional[str]:
@@ -219,6 +228,49 @@ def _extract_requested_market_name(location: Optional[str]) -> Optional[str]:
     if not has_marker:
         return None
     return asked
+
+
+def _canonicalize_explicit_yard_place(location: Optional[str]) -> Optional[str]:
+    """Strip yard markers to a town/district core for `resolve_place`.
+
+    `normalize_place` only strips *suffix* apmc/mandi and never strips yard/veg,
+    so prefix forms ("APMC Halvad") and Veg Yard ("Deesa Veg Yard") fail GPS
+    resolve before `_markets_match` can run. This returns the place core for a
+    one-shot fallback; the original phrase stays on `requested_market_name`.
+
+    Returns None when stripping leaves nothing usable.
+    """
+    text = (location or "").strip()
+    if not text:
+        return None
+
+    no_paren = _PAREN_RE.sub(" ", text)
+    word_stripped = _MARKET_FILLER.sub(" ", no_paren)
+    core_words = " ".join(word_stripped.split())
+
+    # Always run the glued-token loop too: word-boundary filler misses
+    # "APMCHALVAD" / "AnandAPMC", and a non-empty word residue must not skip
+    # that path (returning the unstripped string would still fail resolve).
+    base = core_words if core_words else text
+    squeezed = _NON_ALNUM.sub("", base.casefold())
+    changed = True
+    while changed and squeezed:
+        changed = False
+        for token in _GLUED_YARD_TOKENS:
+            if squeezed.startswith(token) and len(squeezed) > len(token):
+                squeezed = squeezed[len(token) :]
+                changed = True
+            if squeezed.endswith(token) and len(squeezed) > len(token):
+                squeezed = squeezed[: -len(token)]
+                changed = True
+    if not squeezed:
+        return None
+
+    # Prefer the readable word core when it is already just the town
+    # ("Halvad", "Deesa"); otherwise return the squeezed core for resolve.
+    if core_words and _NON_ALNUM.sub("", core_words.casefold()) == squeezed:
+        return core_words
+    return squeezed
 
 
 @dataclass(frozen=True)
@@ -326,8 +378,10 @@ async def _resolve_search_location(
 
     Explicit yard phrases ("Anand APMC") still resolve GPS via the district
     table (suffixes stripped), but `requested_market_name` keeps the yard
-    phrase for mandi row matching. Session stickiness stores only the district
-    key, so a follow-up without a new location does not keep yard intent.
+    phrase for mandi row matching. Forms that `normalize_place` cannot strip
+    (prefix APMC, Veg Yard) get one canonicalize retry before refusal.
+    Session stickiness stores only the district key, so a follow-up without a
+    new location does not keep yard intent.
     """
     deps = _deps(ctx)
     session_id = getattr(deps, "session_id", None)
@@ -337,6 +391,20 @@ async def _resolve_search_location(
         # Capture yard intent before resolve_place strips apmc/mandi suffixes.
         requested_market = _extract_requested_market_name(asked)
         resolved = resolve_place(asked)
+        if resolved is None and requested_market:
+            # Prefix / Veg Yard forms fail normalize_place; strip markers once
+            # and retry. Keep the original phrase on requested_market_name.
+            core = _canonicalize_explicit_yard_place(asked)
+            if core and core.casefold() != asked.casefold():
+                resolved = resolve_place(core)
+                if resolved is not None:
+                    logger.info(
+                        "vistaar location resolved via yard canonicalize "
+                        "asked=%r core=%r key=%s",
+                        asked,
+                        core,
+                        resolved.key,
+                    )
         if resolved is None:
             logger.info("vistaar location unresolved asked=%r", asked)
             return None, unknown_place_message(asked)
@@ -560,15 +628,9 @@ def _market_label(t: dict[str, str]) -> str:
 
 # BPP market names often carry a parenthetical qualifier after the town:
 #   "Anand(Veg,Yard,Anand) APMC", "Khambhat(Veg Yard Khambhat) APMC".
-_PAREN_RE = re.compile(r"\(.*?\)")
-# Whole-word filler removed before squeezing so "APMC HALVAD" / "Deesa Veg Yard"
-# collapse to the town, not "apmchalvad" / "deesaveg".
-_MARKET_FILLER = re.compile(
-    r"(?i)\b(apmc|mandi|yard|veg|vegetable|market)\b"
-)
-# Glued tokens still need prefix/suffix stripping after non-alnum collapse
-# ("AnandAPMC", "APMCHALVAD").
-_GLUED_YARD_TOKENS = _YARD_SUFFIXES + ("veg", "vegetable", "market")
+# Parenthetical / filler / glued-token stripping lives with the yard constants
+# above (_PAREN_RE, _MARKET_FILLER, _GLUED_YARD_TOKENS) and is shared with
+# `_canonicalize_explicit_yard_place`.
 
 # Same-yard spelling / transliteration variants only. NEVER map a district name
 # onto a yard town (e.g. sabarkantha↛himatnagar, kheda↛nadiad) — that would
