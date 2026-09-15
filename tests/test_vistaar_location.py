@@ -77,6 +77,8 @@ MARKETS = [
     _Market("Junagadh APMC", "Junagadh", "Gujarat", 21.522, 70.458, ["Wheat", "Groundnut"]),
     _Market("Jetpur APMC", "Rajkot", "Gujarat", 21.754, 70.619, ["Cotton", "Onion"]),
     _Market("Deesa Veg Yard", "Banaskantha", "Gujarat", 24.260, 72.180, ["Onion"]),
+    # Prefix-form ask "APMC Halvad" must reach this yard via Morbi GPS (~37 km).
+    _Market("Halvad APMC", "Morbi", "Gujarat", 23.015, 71.180, ["Onion"]),
     # Cross-STATE, and legitimately so: Palanpur -> Abu Road is 48.8 km.
     _Market("Abu Road APMC", "Sirohi", "Rajasthan", 24.480, 72.780, ["Onion"]),
     # 106 km from Bhuj — outside Kutch's HQ catchment, inside Bhachau's.
@@ -310,6 +312,110 @@ class TestRequestedMarketIntent:
         assert where.source == "session"
         assert where.location.key == "anand"
         assert where.requested_market_name is None
+
+
+class TestExplicitYardResolveCanonicalize:
+    """Prefix / Veg Yard forms must resolve end-to-end, not die at place lookup.
+
+    Matcher-only tests already cover APMC Halvad ↔ Halvad APMC. The review gap
+    is that resolve_place failed before matching ran; these exercise the full
+    resolve → search → filter path.
+    """
+
+    def test_canonicalize_strips_prefix_and_veg_yard_to_town_core(self):
+        assert vistaar._canonicalize_explicit_yard_place("APMC Halvad") == "Halvad"
+        assert vistaar._canonicalize_explicit_yard_place("Deesa Veg Yard") == "Deesa"
+        assert vistaar._canonicalize_explicit_yard_place("Halvad APMC") == "Halvad"
+        assert vistaar._canonicalize_explicit_yard_place("APMCHALVAD") == "halvad"
+
+    @pytest.mark.asyncio
+    async def test_prefix_apmc_resolves_district_and_keeps_yard_phrase(self, fake_cache):
+        where, refusal = await vistaar._resolve_search_location(
+            ctx(district="anand"), "APMC Halvad"
+        )
+        assert refusal is None
+        assert where is not None
+        assert where.location.key == "morbi"
+        assert where.source == "explicit"
+        assert where.requested_market_name == "APMC Halvad"
+        assert where.explicit_yard is True
+
+    @pytest.mark.asyncio
+    async def test_veg_yard_resolves_district_and_keeps_yard_phrase(self, fake_cache):
+        where, refusal = await vistaar._resolve_search_location(
+            ctx(district="anand"), "Deesa Veg Yard"
+        )
+        assert refusal is None
+        assert where is not None
+        assert where.location.key == "banaskantha"
+        assert where.requested_market_name == "Deesa Veg Yard"
+        assert where.explicit_yard is True
+
+    @pytest.mark.asyncio
+    async def test_suffix_halvad_apmc_still_resolves(self, fake_cache):
+        # Regression: the form that already worked must keep working.
+        where, refusal = await vistaar._resolve_search_location(
+            ctx(district="anand"), "Halvad APMC"
+        )
+        assert refusal is None
+        assert where is not None
+        assert where.location.key == "morbi"
+        assert where.requested_market_name == "Halvad APMC"
+
+    @pytest.mark.asyncio
+    async def test_unknown_explicit_yard_is_refused_not_substituted(
+        self, bpp, fake_cache
+    ):
+        out = await vistaar.get_vistaar_mandi_prices(
+            ctx(district="junagadh"), "Onion", "APMC Timbuktu"
+        )
+        assert "do not have market coverage" in out
+        assert "Timbuktu" in out
+        assert "Junagadh APMC" not in out
+        assert bpp.searches == [], "unresolvable yard must not reach the BPP"
+
+    @pytest.mark.asyncio
+    async def test_prefix_apmc_halvad_returns_halvad_prices_end_to_end(
+        self, bpp, fake_cache
+    ):
+        out = await vistaar.get_vistaar_mandi_prices(
+            ctx(district="anand"), "Onion", "APMC Halvad"
+        )
+        assert "do not have market coverage" not in out
+        assert "at APMC Halvad" in out
+        assert "Halvad APMC, Morbi, Gujarat" in out
+        assert "modal 2000" in out
+        assert bpp.searches, "resolved yard must search the BPP"
+        lat, lon, commodity, _ = bpp.searches[0]
+        assert commodity == "Onion"
+        assert round(lat, 3) == round(DISTRICTS["morbi"].primary.lat, 3)
+        assert round(lon, 3) == round(DISTRICTS["morbi"].primary.lon, 3)
+
+    @pytest.mark.asyncio
+    async def test_deesa_veg_yard_returns_deesa_prices_end_to_end(
+        self, bpp, fake_cache
+    ):
+        out = await vistaar.get_vistaar_mandi_prices(
+            ctx(district="anand"), "Onion", "Deesa Veg Yard"
+        )
+        assert "do not have market coverage" not in out
+        assert "at Deesa Veg Yard" in out
+        assert "Deesa Veg Yard, Banaskantha, Gujarat" in out
+        assert "modal 2000" in out
+        # Must not fall through to a silent nearby/profile substitute.
+        assert "Anand APMC" not in out
+        assert "Abu Road" not in out
+
+    @pytest.mark.asyncio
+    async def test_suffix_halvad_apmc_still_returns_prices_end_to_end(
+        self, bpp, fake_cache
+    ):
+        out = await vistaar.get_vistaar_mandi_prices(
+            ctx(district="anand"), "Onion", "Halvad APMC"
+        )
+        assert "at Halvad APMC" in out
+        assert "Halvad APMC, Morbi, Gujarat" in out
+        assert "modal 2000" in out
 
 
 class TestNearestLocalProfileOverride:
