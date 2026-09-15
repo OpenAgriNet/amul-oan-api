@@ -83,7 +83,7 @@ class TestPromptGuidance:
     @staticmethod
     def _render(name, network, shc=False):
         return get_prompt(name, context={
-            "today_date": "13-08-2026", "today_datetime": "13-08-2026 10:00",
+            "today_date": "13-08-2026",
             "farmer_context": None, "ambiguity_hints": None,
             "response_max_chars": None, "loan_max_amount": "5,000",
             "loan_interest_rate_pct": "7", "network_tools_enabled": network,

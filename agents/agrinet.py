@@ -1,5 +1,5 @@
 from pydantic_ai import Agent, RunContext
-from helpers.utils import get_prompt, get_today_date_str, get_today_datetime_str
+from helpers.utils import get_prompt, get_today_date_str
 from app.config import get_config_value, settings
 from agents.tools import TOOLS
 from agents.tools.terms import get_ambiguity_hints_for_query
@@ -46,7 +46,6 @@ def get_agrinet_instructions(ctx: RunContext):
 
     context = {
         'today_date': get_today_date_str(),
-        'today_datetime': get_today_datetime_str(),
         'farmer_context': farmer_context if farmer_context else None,
         'ambiguity_hints': ambiguity_hints if ambiguity_hints else None,
         'response_max_chars': ctx.deps.get_response_max_chars(),
