@@ -107,7 +107,7 @@ def _drive(monkeypatch, *, agent_raises=False, stop_after=None):
             query="મારી ગાયને કેટલું પાણી આપવું?", session_id="outcome",
             source_lang="gu", target_lang="gu", channel="web",
             user_id="+919876543210", history=[], user_info={},
-            background_tasks=BackgroundTasks(), use_translation_pipeline=True,
+            background_tasks=BackgroundTasks(),
         )
         n = 0
         async for _ in gen:

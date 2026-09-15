@@ -39,13 +39,6 @@ def get_today_date_str() -> str:
     return today.strftime('%A, %d %B %Y')
 
 
-def get_today_datetime_str() -> str:
-    """Get current date and time as a string in Asia/Kolkata."""
-    ist = pytz.timezone('Asia/Kolkata')
-    now = datetime.now(ist)
-    return now.strftime('%A, %d %B %Y %I:%M %p %Z')
-
-
 def get_logger(name):
     """Get logger object."""
     logger = logging.getLogger(name)

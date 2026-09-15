@@ -93,7 +93,7 @@ def _drive(monkeypatch, *, query, moderation):
             query=query, session_id="short-circuit",
             source_lang="gu", target_lang="gu", channel="web",
             user_id="+919876543210", history=[], user_info={},
-            background_tasks=BackgroundTasks(), use_translation_pipeline=True,
+            background_tasks=BackgroundTasks(),
             pipeline_profile="managed",
         )
         async for chunk in gen:

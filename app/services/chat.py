@@ -173,6 +173,10 @@ async def _sanitize_doctor_stream(source):
 
 logger = get_logger(__name__)
 SUGGESTIONS_PENDING_TTL = 30
+# The Gemma pre/post-translation pipeline is the only chat execution path.
+# Kept as a named constant purely so existing Langfuse trace names, tags and
+# metadata keep the value dashboards already filter on.
+_PIPELINE_NAME = "translation"
 GENERIC_UNAVAILABLE_MESSAGE_EN = (
     "I am unable to process your request right now. Please try again later."
 )
@@ -222,7 +226,6 @@ async def stream_chat_messages(
     history: list,
     user_info: dict,
     background_tasks: BackgroundTasks,
-    use_translation_pipeline: bool = True,
     persona: ChatPersona = "farmer",
     history_session_id: str | None = None,
     artifact_sink: list[dict[str, Any]] | None = None,
@@ -238,10 +241,6 @@ async def stream_chat_messages(
     # once here rather than re-derived at each use site.
     profile = _profile_for(channel)
     agent_info = execution.info(_LlmStep.AGENT)
-    use_translation_pipeline = (
-        bool(use_translation_pipeline)
-        or execution.capabilities.requires_translation
-    )
     # Open the per-turn pipeline-config tracer and hold the EXPLICIT instance.
     # Populate the static fields directly and pass the trace state explicitly
     # across Starlette's StreamingResponse async-generator boundary.
@@ -258,14 +257,13 @@ async def stream_chat_messages(
     request_model_name = agent_info.model_name
     # Langfuse: propagate session_id, metadata, and tags for dashboard filtering (max 200 chars per value)
     session_id_safe = (session_id or "")[:200]
-    pipeline_name = "translation" if use_translation_pipeline else "default"
     # Prefer phone from JWT (weburl-minted tokens) over the query-param user_id
     effective_user_id = (
         (user_info.get("phone") or user_info.get("sub")) if user_info else None
     ) or user_id or "anonymous"
     effective_user_id = effective_user_id[:200]
     langfuse_metadata = {
-        "pipeline": pipeline_name,
+        "pipeline": _PIPELINE_NAME,
         "channel": (channel or "web")[:200],
         "source_lang": (source_lang or "unknown").lower()[:200],
         "target_lang": (target_lang or "unknown").lower()[:200],
@@ -274,7 +272,7 @@ async def stream_chat_messages(
         "persona": persona,
     }
     langfuse_tags = [
-        f"pipeline:{pipeline_name}",
+        f"pipeline:{_PIPELINE_NAME}",
         f"pipeline_profile:{pipeline_profile}",
         f"persona:{persona}",
     ]
@@ -289,9 +287,6 @@ async def stream_chat_messages(
         propagate_attributes(
             session_id=session_id_safe,
             user_id=effective_user_id,
-            #trace_name=f"chat.{pipeline_name}",
-            #the above line causes all the traces to be named chat.translation
-            #if the use_translation_pipeline is true, chat.default if false.
             metadata=langfuse_metadata,
             tags=langfuse_tags,
         )
@@ -308,7 +303,7 @@ async def stream_chat_messages(
     # has gaps, and why turn-level scores never landed.
     _root_ctx = (
         get_langfuse_client().start_as_current_observation(
-            name=f"chat.{pipeline_name}", as_type="span"
+            name=f"chat.{_PIPELINE_NAME}", as_type="span"
         )
         if get_langfuse_client
         else nullcontext()
@@ -330,7 +325,6 @@ async def stream_chat_messages(
                             "channel": channel,
                             "source_lang": source_lang,
                             "target_lang": target_lang,
-                            "use_translation_pipeline": use_translation_pipeline,
                             "persona": persona,
                         }
                     )
@@ -452,15 +446,15 @@ async def stream_chat_messages(
 
             processing_query = query
             processing_lang = target_lang
-            needs_output_translation = use_translation_pipeline and target_lang.lower() in output_translation_langs
+            needs_output_translation = target_lang.lower() in output_translation_langs
 
             pretranslation_source_langs = {"gu", "gujarati"}
             if hindi_enabled:
                 pretranslation_source_langs |= {"hi", "hindi"}
-            if use_translation_pipeline and source_lang.lower() in pretranslation_source_langs:
+            if source_lang.lower() in pretranslation_source_langs:
                 pretrans_info = execution.info(_LlmStep.PRE_TRANSLATION)
                 logger.info(
-                    "request_id=%s translation_pipeline=True variant=%s pretranslating %s->en with %s/%s",
+                    "request_id=%s variant=%s pretranslating %s->en with %s/%s",
                     request_id,
                     pipeline_profile,
                     source_lang,
@@ -492,7 +486,7 @@ async def stream_chat_messages(
                     )
                     processing_query = query
                     processing_lang = target_lang
-            if use_translation_pipeline and needs_output_translation:
+            if needs_output_translation:
                 # Agent responds in English; response will be translated to target_lang downstream
                 processing_lang = "en"
 
@@ -513,7 +507,6 @@ async def stream_chat_messages(
                 farmer_district=farmer_location.get("district") or None,
                 farmer_village=farmer_location.get("village") or None,
                 farmer_state=farmer_location.get("state") or None,
-                use_translation_pipeline=use_translation_pipeline,
                 response_max_chars=profile.response_max_chars,
                 supports_rich_artifacts=(channel or "web").lower() == "web",
                 mobile=loan_mobile,
@@ -542,10 +535,9 @@ async def stream_chat_messages(
                             "model_name": request_model_name,
                             "query": user_message,
                             "session_id": session_id_safe,
-                            "use_translation_pipeline": bool(use_translation_pipeline),
                         },
                         model=request_model_name,
-                        metadata={"pipeline": pipeline_name},
+                        metadata={"pipeline": _PIPELINE_NAME},
                     )
                     if _lf_mod
                     else nullcontext()
@@ -681,7 +673,7 @@ async def stream_chat_messages(
                     },
                     model=request_model_name,
                     metadata={
-                        "pipeline": pipeline_name,
+                        "pipeline": _PIPELINE_NAME,
                         "pipeline_profile": pipeline_profile,
                         "persona": persona,
                     },

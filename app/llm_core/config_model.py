@@ -146,7 +146,6 @@ class StepPlan:
 class ProfileCapabilities(BaseModel):
     """Optional application-policy overrides for a named profile."""
 
-    requires_translation: Optional[bool] = None
     history_max_tokens: Optional[int] = Field(default=None, gt=0)
 
     model_config = {"frozen": True}
@@ -222,11 +221,6 @@ class PipelineConfig(BaseModel):
         is_vllm = [tier for tier in plan.candidates if tier.provider is Provider.VLLM]
         configured = profile.capabilities
         return ProfileCapabilities(
-            requires_translation=(
-                configured.requires_translation
-                if configured is not None and configured.requires_translation is not None
-                else bool(is_vllm)
-            ),
             history_max_tokens=(
                 configured.history_max_tokens
                 if configured is not None and configured.history_max_tokens is not None
