@@ -13,6 +13,14 @@ IDENTITY_QUERY_PATTERNS: Final[tuple[str, ...]] = (
     r"તમારું\s+પરિચય\s+આપો",
     r"તમારો\s+પરિચય\s+આપો",
     r"સરલાબેન\s+કોણ\s+છે",
+    # Bengali. ``কে`` ("who") is also the start of কেমন/কেন ("how"/"why"), so it
+    # must not run on into another Bengali letter. ``পরিচ\S*`` accepts both
+    # encodings of য় (U+09DF, or U+09AF + nukta) in পরিচয়.
+    r"আপনি\s+কে(?![\u0980-\u09FF])",
+    r"তুমি\s+কে(?![\u0980-\u09FF])",
+    r"সরলাবেন\s+কে(?![\u0980-\u09FF])",
+    r"আপনার\s+পরিচ\S*\s+দিন",
+    r"তোমার\s+পরিচ\S*\s+দাও",
 )
 
 _IDENTITY_QUERY_REGEX: Final[re.Pattern[str]] = re.compile(
@@ -78,12 +86,74 @@ _GUJARATI_ROWS: Final[tuple[tuple[str, str], ...]] = (
     ("મારું વચન", "હું ડેરી ખેડૂતોને માહિતી અને માર્ગદર્શન આપવા માટે ૨૪×૭ ઉપલબ્ધ છું."),
 )
 
+_BENGALI_ROWS: Final[tuple[tuple[str, str], ...]] = (
+    ("নাম", "সরলাবেন"),
+    ("ভূমিকা", "দুধ উৎপাদকদের জন্য আমুলের AI ডিজিটাল সহায়ক"),
+    ("জন্ম তারিখ", "11 ফেব্রুয়ারি 2026"),
+    ("প্রতিষ্ঠান", "আমুল"),
+    ("উপলব্ধতা", "080-35453545 নম্বরে চ্যাট, ভয়েস কল ও হোয়াটসঅ্যাপে 24x7"),
+    (
+        "আমার সম্পর্কে",
+        "নমস্কার! আমি সরলাবেন — দুধ উৎপাদক, ডেয়ারি কৃষক এবং সমবায় সমিতির সদস্যদের সাহায্য করার জন্য তৈরি আমুলের AI-চালিত ডিজিটাল সঙ্গী।",
+    ),
+    (
+        "উদ্দেশ্য",
+        "আমার উদ্দেশ্য হল সময়মতো তথ্য, কাজের পরামর্শ এবং ডিজিটাল সহায়তা দিয়ে ডেয়ারি কৃষকদের এগিয়ে নিয়ে যাওয়া — যা পশুর স্বাস্থ্য, দুধের উৎপাদন এবং খামারের লাভ বাড়াতে সাহায্য করে।",
+    ),
+    (
+        "দক্ষতার ক্ষেত্র",
+        "পশুপালন ব্যবস্থাপনা; দুধ উৎপাদন ও মান উন্নয়ন; পশুর পুষ্টি ও খাদ্য ব্যবস্থাপনা; টিকাকরণ ও রোগ প্রতিরোধ; প্রাথমিক পশুচিকিৎসা পরামর্শ ও রোগ সচেতনতা; প্রজনন ও গর্ভধারণ ব্যবস্থাপনা; ডেয়ারি সমবায় পরিষেবা ও সদস্য সহায়তা; ডেয়ারি পরামর্শ ও উন্নত খামার পদ্ধতি",
+    ),
+    (
+        "আমি কাদের সেবা করি",
+        "দুধ উৎপাদক; ডেয়ারি কৃষক; সমবায় সমিতির সদস্য; পশুপালক; গ্রামীণ ডেয়ারি উদ্যোক্তা",
+    ),
+    (
+        "আমার মূল্যবোধ",
+        "কৃষক প্রথম; নির্ভরযোগ্য ও বিশ্বস্ত পরামর্শ; সমবায়ের চেতনা; সবার জন্য সহজলভ্যতা; নিরন্তর শেখা ও উদ্ভাবন",
+    ),
+    ("আমার প্রতিশ্রুতি", "আমি ডেয়ারি কৃষকদের তথ্য ও পরামর্শ দিতে 24x7 উপলব্ধ।"),
+)
+
 _ENGLISH_QUOTE: Final[str] = (
     "\"Your trusted digital dairy companion, inspired by Amul's cooperative values and dedicated to supporting every milk producer.\""
 )
 _GUJARATI_QUOTE: Final[str] = (
     "\"તમારી વિશ્વસનીય ડિજિટલ ડેરી સાથી — અમૂલના સહકારી મૂલ્યોથી પ્રેરિત અને દરેક દૂધ ઉત્પાદકને સહાય કરવા સમર્પિત.\""
 )
+_BENGALI_QUOTE: Final[str] = (
+    "\"আপনার বিশ্বস্ত ডিজিটাল ডেয়ারি সঙ্গী — আমুলের সমবায় মূল্যবোধে অনুপ্রাণিত এবং প্রত্যেক দুধ উৎপাদকের পাশে থাকতে নিবেদিত।\""
+)
+
+_ROWS_BY_LANGUAGE: Final[dict[str, tuple[tuple[str, str], ...]]] = {
+    "en": _ENGLISH_ROWS,
+    "gu": _GUJARATI_ROWS,
+    "bn": _BENGALI_ROWS,
+}
+_QUOTE_BY_LANGUAGE: Final[dict[str, str]] = {
+    "en": _ENGLISH_QUOTE,
+    "gu": _GUJARATI_QUOTE,
+    "bn": _BENGALI_QUOTE,
+}
+_TABLE_HEADER_BY_LANGUAGE: Final[dict[str, str]] = {
+    "en": "| Field | Details |",
+    "gu": "| ક્ષેત્ર | વિગતો |",
+    "bn": "| ক্ষেত্র | বিবরণ |",
+}
+_DOCTOR_IDENTITY_BY_LANGUAGE: Final[dict[str, str]] = {
+    "en": (
+        "I am Amul Veterinary Assistant, an AI clinical decision-support assistant "
+        "for veterinary doctors working with cattle, buffalo, and calves."
+    ),
+    "gu": (
+        "હું અમૂલ વેટરનરી આસિસ્ટન્ટ છું—ગાય, ભેંસ અને વાછરડાં માટે "
+        "પશુચિકિત્સકોને દસ્તાવેજ-આધારિત ક્લિનિકલ નિર્ણય સહાય આપતો AI સહાયક."
+    ),
+    "bn": (
+        "আমি আমুল ভেটেরিনারি অ্যাসিস্ট্যান্ট—গরু, মহিষ ও বাছুরের চিকিৎসায় "
+        "পশুচিকিৎসকদের নথি-ভিত্তিক ক্লিনিক্যাল সিদ্ধান্তে সাহায্যকারী একটি AI সহায়ক।"
+    ),
+}
 
 
 # Connective/filler words that commonly bridge an identity phrase to unrelated
@@ -95,6 +165,7 @@ _IDENTITY_FILLER_WORDS: Final[frozenset[str]] = frozenset(
         "and", "please", "also", "hey", "hi", "hello", "so", "just", "ok", "okay",
         "tell", "me", "can", "you", "could", "would", "will", "the", "a", "an",
         "અને", "કૃપા", "કરીને", "મને", "કહો", "જરા", "તો",
+        "এবং", "আর", "অনুগ্রহ", "করে", "আমাকে", "বলুন", "বলো", "একটু", "তো", "নমস্কার",
     }
 )
 
@@ -129,34 +200,26 @@ def is_identity_query(query: str) -> bool:
 def _select_identity_language(source_lang: str, target_lang: str, query: str) -> str:
     src = (source_lang or "").strip().lower()
     tgt = (target_lang or "").strip().lower()
+    if tgt in {"bn", "bengali"}:
+        return "bn"
     if src in {"gu", "gujarati"} or tgt in {"gu", "gujarati"}:
         return "gu"
+    if src in {"bn", "bengali"}:
+        return "bn"
     if re.search(r"[\u0A80-\u0AFF]", query or ""):
         return "gu"
+    if re.search(r"[\u0980-\u09FF]", query or ""):
+        return "bn"
     return "en"
 
 
 def build_identity_profile_table(source_lang: str, target_lang: str, query: str) -> str:
     language = _select_identity_language(source_lang, target_lang, query)
-    rows = _GUJARATI_ROWS if language == "gu" else _ENGLISH_ROWS
-    quote = _GUJARATI_QUOTE if language == "gu" else _ENGLISH_QUOTE
-
-    table_rows = [f"| {field} | {details} |" for field, details in rows]
-    if language == "gu":
-        table = "\n".join(["| ક્ષેત્ર | વિગતો |", "|---|---|", *table_rows])
-    else:
-        table = "\n".join(["| Field | Details |", "|---|---|", *table_rows])
-    return f"{table}\n\n{quote}"
+    table_rows = [f"| {field} | {details} |" for field, details in _ROWS_BY_LANGUAGE[language]]
+    table = "\n".join([_TABLE_HEADER_BY_LANGUAGE[language], "|---|---|", *table_rows])
+    return f"{table}\n\n{_QUOTE_BY_LANGUAGE[language]}"
 
 
 def build_doctor_identity_response(source_lang: str, target_lang: str, query: str) -> str:
     """Return a deterministic Doctor identity without invoking SarlaBen/RAG."""
-    if _select_identity_language(source_lang, target_lang, query) == "gu":
-        return (
-            "હું અમૂલ વેટરનરી આસિસ્ટન્ટ છું—ગાય, ભેંસ અને વાછરડાં માટે "
-            "પશુચિકિત્સકોને દસ્તાવેજ-આધારિત ક્લિનિકલ નિર્ણય સહાય આપતો AI સહાયક."
-        )
-    return (
-        "I am Amul Veterinary Assistant, an AI clinical decision-support assistant "
-        "for veterinary doctors working with cattle, buffalo, and calves."
-    )
+    return _DOCTOR_IDENTITY_BY_LANGUAGE[_select_identity_language(source_lang, target_lang, query)]
