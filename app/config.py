@@ -284,6 +284,28 @@ class Settings(BaseSettings):
     # non-load-bearing (2h is generous slack; voice's old 24h was incidental).
     history_cache_ttl_seconds: int = int(os.getenv("HISTORY_CACHE_TTL_SECONDS", str(60 * 60 * 2)))
     suggestions_cache_ttl: int = 60 * 30    # 30 minutes
+    # Successful Beckn reads used by agent tools. These are deliberately short
+    # absolute TTLs; empty/not-found responses share the shorter negative TTL.
+    agent_ai_technician_cache_ttl_seconds: int = Field(
+        default=60 * 15,
+        validation_alias="AGENT_AI_TECHNICIAN_CACHE_TTL_SECONDS",
+    )
+    agent_farmer_cache_ttl_seconds: int = Field(
+        default=60 * 15,
+        validation_alias="AGENT_FARMER_CACHE_TTL_SECONDS",
+    )
+    agent_animal_cache_ttl_seconds: int = Field(
+        default=60 * 15,
+        validation_alias="AGENT_ANIMAL_CACHE_TTL_SECONDS",
+    )
+    agent_cvcc_cache_ttl_seconds: int = Field(
+        default=60 * 5,
+        validation_alias="AGENT_CVCC_CACHE_TTL_SECONDS",
+    )
+    agent_negative_cache_ttl_seconds: int = Field(
+        default=60,
+        validation_alias="AGENT_NEGATIVE_CACHE_TTL_SECONDS",
+    )
     # Session-ownership locking (voice call concurrency) — consumed by app/utils.py
     # once the voice surface folds in; inert on the chat path.
     session_owner_ttl_seconds: int = int(os.getenv("SESSION_OWNER_TTL_SECONDS", "120"))
@@ -653,6 +675,11 @@ class Settings(BaseSettings):
         "farmer_refresh_queue_batch_size": ("FARMER_REFRESH_QUEUE_BATCH_SIZE", 20, 1, None),
         "farmer_refresh_retry_base_seconds": ("FARMER_REFRESH_RETRY_BASE_SECONDS", 60, 1, None),
         "farmer_refresh_retry_max_seconds": ("FARMER_REFRESH_RETRY_MAX_SECONDS", 60 * 60, 1, None),
+        "agent_ai_technician_cache_ttl_seconds": ("AGENT_AI_TECHNICIAN_CACHE_TTL_SECONDS", 60 * 15, 1, None),
+        "agent_farmer_cache_ttl_seconds": ("AGENT_FARMER_CACHE_TTL_SECONDS", 60 * 15, 1, None),
+        "agent_animal_cache_ttl_seconds": ("AGENT_ANIMAL_CACHE_TTL_SECONDS", 60 * 15, 1, None),
+        "agent_cvcc_cache_ttl_seconds": ("AGENT_CVCC_CACHE_TTL_SECONDS", 60 * 5, 1, None),
+        "agent_negative_cache_ttl_seconds": ("AGENT_NEGATIVE_CACHE_TTL_SECONDS", 60, 1, None),
         "beckn_operation_ttl_seconds": ("BECKN_OPERATION_TTL_SECONDS", 60 * 60 * 24, 60, None),
         "beckn_callback_max_body_bytes": ("BECKN_CALLBACK_MAX_BODY_BYTES", 2 * 1024 * 1024, 1024, 5 * 1024 * 1024),
         "shc_html_max_bytes": ("SHC_HTML_MAX_BYTES", 1024 * 1024, 1024, 2 * 1024 * 1024),
@@ -675,6 +702,11 @@ class Settings(BaseSettings):
         "farmer_refresh_queue_batch_size",
         "farmer_refresh_retry_base_seconds",
         "farmer_refresh_retry_max_seconds",
+        "agent_ai_technician_cache_ttl_seconds",
+        "agent_farmer_cache_ttl_seconds",
+        "agent_animal_cache_ttl_seconds",
+        "agent_cvcc_cache_ttl_seconds",
+        "agent_negative_cache_ttl_seconds",
         "beckn_operation_ttl_seconds",
         "beckn_callback_max_body_bytes",
         "shc_html_max_bytes",

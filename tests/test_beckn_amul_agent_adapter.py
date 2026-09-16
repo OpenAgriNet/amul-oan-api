@@ -6,6 +6,14 @@ from agents.tools.beckn import amul as adapter
 from agents.tools.beckn.operations import BecknActionResult, OperationState
 
 
+@pytest.fixture(autouse=True)
+def _avoid_redis_for_adapter_unit_tests(monkeypatch):
+    async def load_directly(**kwargs):
+        return await kwargs["loader"]()
+
+    monkeypatch.setattr(adapter, "get_or_load", load_directly)
+
+
 def _result(payload, state=OperationState.SUCCEEDED):
     return BecknActionResult(SimpleNamespace(state=state), payload)
 
@@ -89,6 +97,91 @@ def test_farmer_mapper_rejects_completed_payload_without_accounts():
         adapter._farmer_models_from_payload(
             payload, authenticated_mobile="9000000000"
         )
+
+
+def test_cached_model_round_trip_preserves_validation_alias_fields():
+    farmer = adapter.FarmerModel.model_validate({
+        "unionName": "Kaira",
+        "unionCode": "U1",
+        "farmerName": "Farmer One",
+        "tagNo": "TAG-1,TAG-2",
+    })
+
+    decoded = adapter._load_model_list(
+        adapter._dump_model_list([farmer]),
+        adapter.FarmerModel,
+    )
+
+    assert decoded == [farmer]
+
+
+@pytest.mark.asyncio
+async def test_agent_read_adapters_share_the_central_cache_interface(monkeypatch):
+    observed = []
+
+    async def cached(**kwargs):
+        observed.append((kwargs["policy"], kwargs["force_refresh"]))
+        return await kwargs["loader"]()
+
+    async def no_farmers(*args, **kwargs):
+        return []
+
+    async def no_animal(*args, **kwargs):
+        return None
+
+    async def no_cvcc(*args, **kwargs):
+        return None
+
+    async def no_technicians(*args, **kwargs):
+        return []
+
+    monkeypatch.setattr(adapter, "get_or_load", cached)
+    monkeypatch.setattr(adapter, "_fetch_authenticated_farmers_live", no_farmers)
+    monkeypatch.setattr(adapter, "_fetch_animal_profile_live", no_animal)
+    monkeypatch.setattr(adapter, "_fetch_cvcc_health_live", no_cvcc)
+    monkeypatch.setattr(adapter, "_search_ai_technicians_live", no_technicians)
+
+    await adapter.fetch_authenticated_farmers("9000000000")
+    await adapter.fetch_animal_profile("TAG", union_code="U1")
+    await adapter.fetch_cvcc_health("TAG", union_code="U1")
+    await adapter.search_ai_technicians(
+        union_code="U1",
+        society_code="S1",
+        force_refresh=True,
+    )
+
+    assert observed == [
+        (adapter.FARMER_CACHE_POLICY, False),
+        (adapter.ANIMAL_CACHE_POLICY, False),
+        (adapter.CVCC_CACHE_POLICY, False),
+        (adapter.AI_TECHNICIAN_CACHE_POLICY, True),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_booking_account_resolution_always_refreshes_farmer_ownership(monkeypatch):
+    observed = {}
+
+    async def farmers(mobile, **kwargs):
+        observed.update(kwargs)
+        return [adapter.FarmerModel.model_validate({
+            "unionCode": "U1",
+            "societyCode": "S1",
+            "farmerCode": "F1",
+        })]
+
+    monkeypatch.setattr(adapter, "fetch_authenticated_farmers", farmers)
+    account = await adapter.resolve_authenticated_account(
+        "9000000000",
+        union_code="U1",
+        society_code="S1",
+        farmer_code="F1",
+        session_id="session",
+        tool_call_id="tool",
+    )
+
+    assert account is not None
+    assert observed["force_refresh"] is True
 
 
 @pytest.mark.asyncio
@@ -205,6 +298,10 @@ async def test_banas_children_are_associated_to_their_visit(monkeypatch):
         async def init_animal_profile(self, **kwargs):
             return _result(payload)
 
+    async def unexpected_cache(**kwargs):
+        raise AssertionError("Banas visits must not use the response cache")
+
+    monkeypatch.setattr(adapter, "get_or_load", unexpected_cache)
     monkeypatch.setattr(adapter, "get_beckn_operation_client", lambda: Client())
     visits = await adapter.fetch_banas_visits("TAG", union_code="U1")
 

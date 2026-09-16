@@ -65,7 +65,7 @@ async def fetch_farmer_info_with_outcome(
     if not mobile:
         return None, FarmerFetchOutcome.ERROR
     try:
-        farmers = await fetch_authenticated_farmers(mobile)
+        farmers = await fetch_authenticated_farmers(mobile, force_refresh=True)
     except Exception as exc:
         logger.warning("Beckn farmer profile lookup failed for %s: %s", mobile, exc)
         return None, FarmerFetchOutcome.ERROR

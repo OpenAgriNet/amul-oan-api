@@ -594,6 +594,7 @@ async def _fetch_ai_technicians(records: list[FarmerRecord]) -> list[dict]:
             technicians = await search_ai_technicians(
                 union_code=union_code,
                 society_code=society_code,
+                force_refresh=True,
             )
             return (union_code, society_code), technicians
         except Exception as e:

@@ -260,6 +260,7 @@ async def create_ai_call(
             society_code=account.society_code,
             session_id=session_id,
             tool_call_id=tool_call_id,
+            force_refresh=True,
         )
         technician = next((candidate for candidate in technicians if candidate.userId == user_id), None)
         if technician is None or not technician.userId:

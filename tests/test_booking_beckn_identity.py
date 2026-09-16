@@ -47,6 +47,7 @@ async def test_ai_confirm_uses_canonical_owned_account_and_discovered_technician
 
     async def technicians(**kwargs):
         assert kwargs["union_code"] == "CANON-U"
+        assert kwargs["force_refresh"] is True
         return [beckn_amul.AITechnicianRecord(userId=TECH_ID, fullName="Technician")]
 
     captured = {}

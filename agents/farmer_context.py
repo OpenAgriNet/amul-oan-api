@@ -150,13 +150,12 @@ async def _get_ai_technicians_for_farmer(
 
     # Directed search/on_search transaction to the single Amul BPP. The union
     # and society values came from the authenticated farmer callback, never
-    # from a model tool argument. ``force_refresh`` is retained in the internal
-    # signature while callers migrate; Beckn operation idempotency owns reuse.
-    _ = force_refresh
+    # from a model tool argument.
     try:
         technicians = await search_ai_technicians(
             union_code=farmer.union_code,
             society_code=farmer.society_code,
+            force_refresh=force_refresh,
         )
     except Exception as exc:
         logger.warning("AI technician Beckn lookup failed: %s", exc)
