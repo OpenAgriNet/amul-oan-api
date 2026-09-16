@@ -4,19 +4,12 @@ Uses amulpashudhan.com and returns normalized snake_case animal data.
 """
 from app.models.animal import AnimalModel
 import json
-import os
 from typing import Optional
 
 from helpers.utils import get_logger
+from app.config import get_config_value
 
 from agents.tools.farmer_animal_backends import fetch_animal_amulpashudhan
-
-# Herdman fallback is temporarily disabled. Keep the previous imports commented
-# out so the old path is easy to restore.
-# from agents.tools.farmer_animal_backends import (
-#     fetch_animal_herdman,
-#     merge_animal_data,
-# )
 
 logger = get_logger(__name__)
 
@@ -34,7 +27,7 @@ async def get_animal_data_by_tag(tag: str) -> AnimalModel | None:
     if not tag:
         return None
 
-    token1 = os.getenv("PASHUGPT_TOKEN")
+    token1 = get_config_value("PASHUGPT_TOKEN")
     if not token1:
         logger.error("PASHUGPT_TOKEN is not set")
         return None
@@ -67,22 +60,9 @@ async def get_animal_by_tag(tag: str, society_name: Optional[str] = None) -> str
     _ = society_name
     animal = await get_animal_data_by_tag(tag)
 
-    # Herdman fallback is temporarily disabled. Keep the old flow commented out
-    # instead of removing it completely.
-    # token3 = os.getenv("PASHUGPT_TOKEN_3")
-    # fallback: Optional[Dict[str, Any]] = None
-    # if token3 and society_name == "Mehsana":
-    #     try:
-    #         fallback = await fetch_animal_herdman(tag, token3)
-    #         if fallback:
-    #             logger.info(f"Animal data for tag {tag}: got from herdman")
-    #     except Exception as e:
-    #         logger.warning(f"herdman animal API error for tag {tag}: {e}")
-    # merged = merge_animal_data(animal, fallback)
-
     if not animal:
         logger.info(f"No animal data found for tag {tag}")
         return f"Animal details for tag {tag}:\n\nNo animal data found for this tag number."
 
-    formatted = json.dumps(animal, indent=2, ensure_ascii=False)
+    formatted = json.dumps(animal.model_dump(), indent=2, ensure_ascii=False)
     return f"Animal details for tag {tag}:\n\n{formatted}"

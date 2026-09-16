@@ -12,7 +12,7 @@ from pydantic import BaseModel, ConfigDict
 
 
 class AnimalRecord(BaseModel):
-    """Canonical animal record normalized from amulpashudhan and herdman APIs."""
+    """Canonical animal record normalized from the amulpashudhan API."""
 
     model_config = ConfigDict(extra="allow")
 
@@ -25,11 +25,6 @@ class AnimalRecord(BaseModel):
     lactationNo: Optional[Union[int, str]] = None
     lastBreedingActivity: Optional[str] = None
     lastHealthActivity: Optional[str] = None
-    lastPD: Optional[str] = None
-    lastCalvingDate: Optional[str] = None
-    farmerComplaint: Optional[str] = None
-    diagnosis: Optional[str] = None
-    medicineGiven: Optional[str] = None
 
 
 class FarmerRecord(BaseModel):
@@ -122,6 +117,16 @@ class FarmerDataEnvelope(BaseModel):
             fetchedAt=datetime.now(timezone.utc).isoformat(),
             source=source,
             lookupStatus="not_found",
+        )
+
+    @classmethod
+    def unknown(cls, source: str = "api") -> "FarmerDataEnvelope":
+        """Return an empty envelope for ambiguous/failed upstream lookups."""
+        return cls(
+            farmers=[],
+            fetchedAt=datetime.now(timezone.utc).isoformat(),
+            source=source,
+            lookupStatus="unknown",
         )
 
     def to_summary(self) -> FarmerSummary:

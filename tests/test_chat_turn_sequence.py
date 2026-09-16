@@ -83,9 +83,9 @@ class _Run:
 
 
 def _drive(monkeypatch, *, source_lang="gu", target_lang="gu",
-           fallback_enabled=False, moderation_action="allow",
+           moderation_action="allow",
            moderation_category="valid_agricultural", user_info=None,
-           requested_persona=None):
+           persona="farmer"):
     """Run one turn with every stage instrumented, and return the stage order."""
     seen: list[str] = []
 
@@ -94,14 +94,13 @@ def _drive(monkeypatch, *, source_lang="gu", target_lang="gu",
             seen.append(name)
         return _mark
 
-    monkeypatch.setattr(chat_service.settings, "fallback_enabled", fallback_enabled)
     monkeypatch.setattr(chat_service, "propagate_attributes", None)
     monkeypatch.setattr(chat_service, "get_langfuse_client", None)
     monkeypatch.setattr(chat_service, "cache", _Cache())
     monkeypatch.setattr(chat_service, "trim_history", lambda *_a, **_kw: [])
     monkeypatch.setattr(chat_service, "format_message_pairs", lambda *_a, **_kw: "")
 
-    async def _pretranslate(text, *_a, **_kw):
+    async def _pretranslate(_tier, *, text, **_kw):
         seen.append("pretranslation")
         return "How much water should I give my cow?"
 
@@ -142,7 +141,7 @@ def _drive(monkeypatch, *, source_lang="gu", target_lang="gu",
     async def _set_cache(*_a, **_kw):
         return None
 
-    monkeypatch.setattr(chat_service, "translate_to_english_pretranslation", _pretranslate)
+    monkeypatch.setattr(chat_service, "pretranslate_with_tier", _pretranslate)
     monkeypatch.setattr(chat_service.moderation_agent, "run", _moderate)
     monkeypatch.setattr(chat_service.doctor_moderation_agent, "run", _doctor_moderate)
     monkeypatch.setattr(chat_service.agrinet_agent, "iter", _agent_iter)
@@ -165,9 +164,7 @@ def _drive(monkeypatch, *, source_lang="gu", target_lang="gu",
             history=[],
             user_info=user_info or {},
             background_tasks=BackgroundTasks(),
-            use_translation_pipeline=True,
-            pipeline_profile="managed",
-            requested_persona=requested_persona,
+            persona=persona,
         ):
             out.append(chunk)
         return "".join(out)
@@ -178,9 +175,8 @@ def _drive(monkeypatch, *, source_lang="gu", target_lang="gu",
 _TRACKED = ("pretranslation", "moderation", "agent", "output_translation")
 
 
-@pytest.mark.parametrize("fallback_enabled", [False, True])
-def test_gujarati_turn_stage_order(monkeypatch, fallback_enabled):
-    output, stages = _drive(monkeypatch, fallback_enabled=fallback_enabled)
+def test_gujarati_turn_stage_order(monkeypatch):
+    output, stages = _drive(monkeypatch)
 
     assert output, "the turn produced no output"
     # EXACT sequence, not a subsequence: a stage running twice is a duplicated
@@ -207,8 +203,7 @@ def test_english_turn_skips_translation_stages(monkeypatch):
     assert "agent" in stages
 
 
-@pytest.mark.parametrize("fallback_enabled", [False, True])
-def test_blocked_moderation_never_reaches_the_agent(monkeypatch, fallback_enabled):
+def test_blocked_moderation_never_reaches_the_agent(monkeypatch):
     """The hard gate. A blocked query must decline without running the agent.
 
     Without this case the lock pins only the happy path, and deleting the gate at
@@ -216,7 +211,6 @@ def test_blocked_moderation_never_reaches_the_agent(monkeypatch, fallback_enable
     """
     output, stages = _drive(
         monkeypatch,
-        fallback_enabled=fallback_enabled,
         moderation_action="block",
         moderation_category="non_agricultural",
     )
@@ -232,6 +226,7 @@ def test_doctor_jwt_routes_to_doctor_agent_without_farmer_context(monkeypatch):
         monkeypatch,
         source_lang="en",
         target_lang="en",
+        persona="doctor",
         user_info={
             "phone": "9375028676",
             "user_type": "doctor",

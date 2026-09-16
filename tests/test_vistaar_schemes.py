@@ -11,7 +11,7 @@ Three things are pinned here:
      hand-rolled schema — a Literal that the tool machinery quietly widens to a
      bare string would otherwise look fine.
   2. The farmer never sees `Unknown scheme code '…'. Valid codes: …`.
-     agrinet_system.md forbids exposing internal tool mechanics.
+     agrinet_system_translation_pipeline.md forbids exposing internal tool mechanics.
   3. A failed seeker leg is distinguished from an empty catalogue. Reading only
      `results.<leg>` and dropping `errors` is what made the `moa` timeout flap
      render as a confident "No mandi prices were found…".

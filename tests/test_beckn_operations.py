@@ -344,7 +344,8 @@ async def test_shc_init_is_directed_and_waits_for_on_init(monkeypatch):
     from app.services import beckn_operations as module
 
     monkeypatch.setattr(module.settings, "beckn_bap_caller_url", "http://onix/bap/caller")
-    monkeypatch.setattr(module.settings, "beckn_transaction_bridge_token", "transaction-secret")
+    monkeypatch.setattr(module.settings, "beckn_transaction_bridge_token", None)
+    monkeypatch.setattr(module.settings, "beckn_callback_transactions_enabled", False)
     monkeypatch.setattr(module.settings, "beckn_bap_uri", "https://bap.example/bap/receiver")
     monkeypatch.setattr(module.settings, "vistaar_bpp_id", "provider-network-vistaar.da.gov.in")
     monkeypatch.setattr(module.settings, "vistaar_bpp_uri", "https://provider-network-vistaar.da.gov.in")
@@ -363,6 +364,7 @@ async def test_shc_init_is_directed_and_waits_for_on_init(monkeypatch):
 
     assert result.ok
     assert http_client.url == "http://onix/bap/caller/init"
+    assert http_client.headers == {}
     sent = http_client.payload
     assert sent["context"]["action"] == "init"
     assert sent["context"]["domain"] == "schemes:vistaar"
@@ -382,7 +384,7 @@ async def test_private_farmer_and_animal_init_match_bpp_contracts(monkeypatch):
     farmer_store = BecknOperationStore(MemoryRedis(), ttl_seconds=3600)
     farmer_http = ActionCallbackDuringPostClient(farmer_store, "on_init")
     farmer = await BecknOperationClient(farmer_store, farmer_http).init_farmer_profile(
-        provider_id="herdman",
+        provider_id="amulpashudhan",
         mobile="+910000000000",
         session_id="session",
         tool_call_id="farmer-call",
@@ -391,7 +393,7 @@ async def test_private_farmer_and_animal_init_match_bpp_contracts(monkeypatch):
     farmer_order = farmer_http.payload["message"]["order"]
     assert farmer_http.url.endswith("/init")
     assert farmer_http.payload["context"]["domain"] == "data:amul-farmer-profile"
-    assert farmer_order["provider"] == {"id": "herdman"}
+    assert farmer_order["provider"] == {"id": "amulpashudhan"}
     assert farmer_order["items"][0]["id"] == "farmer-profile"
     assert farmer_order["fulfillments"][0]["customer"]["contact"]["phone"] == "+910000000000"
 
@@ -410,6 +412,31 @@ async def test_private_farmer_and_animal_init_match_bpp_contracts(monkeypatch):
     assert animal_order["items"][0]["id"] == "animal-health-history"
     assert animal_order["items"][0]["tags"][0]["value"] == "TEST-TAG"
     assert animal_order["fulfillments"][0]["customer"]["person"]["tags"][0]["value"] == "TEST-UNION"
+
+
+@pytest.mark.asyncio
+async def test_retired_provider_is_rejected_for_farmer_and_animal_init(monkeypatch):
+    from app.services import beckn_operations as module
+
+    _configure_amul(monkeypatch, module)
+    client = BecknOperationClient(
+        BecknOperationStore(MemoryRedis(), ttl_seconds=3600),
+        ActionCallbackDuringPostClient(BecknOperationStore(MemoryRedis(), ttl_seconds=3600), "on_init"),
+    )
+    with pytest.raises(ValueError):
+        await client.init_farmer_profile(
+            provider_id="herdman",
+            mobile="+910000000000",
+            session_id="session",
+            tool_call_id="farmer-call",
+        )
+    with pytest.raises(ValueError):
+        await client.init_animal_profile(
+            provider_id="herdman",
+            tag_id="TEST-TAG",
+            session_id="session",
+            tool_call_id="animal-call",
+        )
 
 
 @pytest.mark.asyncio
@@ -524,7 +551,7 @@ async def test_shc_callback_gate_does_not_enable_booking_callbacks(monkeypatch):
 
     monkeypatch.setattr(router_module.settings, "beckn_callback_transactions_enabled", False)
     monkeypatch.setattr(router_module.settings, "vistaar_shc_enabled", True)
-    monkeypatch.setattr(router_module.settings, "beckn_callback_token", "secret")
+    monkeypatch.setattr(router_module.settings, "beckn_callback_token", None)
     monkeypatch.setattr(router_module, "get_beckn_operation_store", lambda: Store())
 
     booking = await router_module.receive_callback("on_confirm", _callback(), None)
@@ -532,7 +559,7 @@ async def test_shc_callback_gate_does_not_enable_booking_callbacks(monkeypatch):
 
     payload = _callback()
     payload["context"].update({"domain": "schemes:vistaar", "action": "on_init"})
-    shc_callback = await router_module.receive_callback("on_init", payload, "secret")
+    shc_callback = await router_module.receive_callback("on_init", payload, None)
     assert shc_callback.status_code == 200
     assert json.loads(shc_callback.body)["message"]["ack"]["status"] == "ACK"
     assert calls["n"] == 1

@@ -12,8 +12,8 @@ Design
 ------
 * **Redis key** ``llm_pipeline_config:{channel}`` holds the JSON of a
   ``PipelineConfig`` (``model_dump(mode="json")``). Secrets are NEVER in it — a
-  tier only names its ``api_key_env``; the VALUE is read from the environment at
-  materialize time, exactly as for the boot config.
+  tier only names its ``api_key_env``; the VALUE is read from the centralized
+  Vault/environment secret provider when a handle is built.
 * **channel** — ``PIPELINE_CHANNEL`` env, defaulting to the repo's identity
   (``voice`` if the ``Step`` enum has the voice-only ``non_meaningful`` step,
   else ``chat``) so each deployment self-identifies without any per-repo code
@@ -24,12 +24,10 @@ Design
   window it returns the caller's config unchanged (zero Redis I/O), so calling it
   on every request is cheap.
 * **Boot-time validation on the LIVE path (fail-CLOSED on bad content)** — a
-  live config is not merely schema-checked: after parse it is run through
-  ``runtime.validate_content`` (the SAME content gates the boot path applies —
-  provider/step legality + a resolvability probe that builds every profile/step
-  primary handle). A schema-valid but UNBUILDABLE config (vllm tier with no
-  endpoint, absent ``api_key_env``, anthropic/gemini on a RAW_OPENAI step, a
-  profile missing a required step) is therefore REJECTED — treated exactly like a
+  live config is not merely schema-checked: after parse its normalized active
+  plans receive the same structural provider/endpoint checks as boot config.
+  Invalid active content (vLLM without an endpoint, incomplete Azure settings,
+  or a provider without the step adapter) is therefore REJECTED — treated like a
   read failure (last-good kept, rate-limited WARNING) so a bad push can never go
   live and break requests.
 * **Fail-safe (never raises to the caller)** — on a TRANSIENT read failure (redis
@@ -63,12 +61,12 @@ at most once per window with a short socket timeout.
 from __future__ import annotations
 
 import json
-import os
 import time
 from typing import Optional
 
 from helpers.utils import get_logger
 from app.llm_core.config_model import PipelineConfig, Step
+from app.config import get_config_value
 
 logger = get_logger(__name__)
 
@@ -101,15 +99,8 @@ _last_good: Optional[PipelineConfig] = None
 _last_warn_monotonic: float = 0.0
 _redis_client = None                   # lazily built; None until first use
 _redis_init_failed: bool = False       # latch so we don't retry a broken import
-# Reentrancy guard: the LIVE-path content validation (``runtime.validate_content``)
-# resolves the candidate config through ``resolver`` -> ``runtime.get_pipeline`` ->
-# back into ``maybe_refresh``. While that probe runs, ``maybe_refresh`` must be an
-# identity no-op (return ``current``) so it neither re-reads redis nor recurses.
-_suppress_refresh: bool = False
-
-
 def _truthy(name: str) -> bool:
-    v = os.getenv(name)
+    v = get_config_value(name)
     return v is not None and v.strip().lower() in {"1", "true", "yes", "on"}
 
 
@@ -121,7 +112,7 @@ def enabled() -> bool:
 def channel() -> str:
     """The config channel this deployment reads — ``PIPELINE_CHANNEL`` or the
     repo default (``chat`` / ``voice``). Chat and voice read distinct keys."""
-    v = os.getenv(CHANNEL_ENV)
+    v = get_config_value(CHANNEL_ENV)
     v = v.strip() if v else ""
     return v or _DEFAULT_CHANNEL
 
@@ -137,7 +128,7 @@ def refresh_interval_s() -> float:
     negative) window would otherwise GET redis on EVERY request (defeating the TTL
     and putting a blocking read on every hot-path call), so clamp it to the
     default."""
-    raw = os.getenv(REFRESH_ENV)
+    raw = get_config_value(REFRESH_ENV)
     if raw is None or not raw.strip():
         return _DEFAULT_REFRESH_S
     try:
@@ -153,7 +144,7 @@ def redis_timeout_s() -> float:
     the app-wide ``redis_socket_timeout`` (up to 10s): this read sits on the request
     hot path (once per TTL window), so a slow/down redis must cost ≤0.5s, not 10s. A
     bad or non-positive value degrades to the default rather than raising."""
-    raw = os.getenv(TIMEOUT_ENV)
+    raw = get_config_value(TIMEOUT_ENV)
     if raw is None or not raw.strip():
         return _DEFAULT_REDIS_TIMEOUT_S
     try:
@@ -227,7 +218,7 @@ def _try_load():
         weights!=100 / content-invalid): the caller keeps the last-good config.
 
     Content validation makes the LIVE path FAIL-CLOSED: a schema-valid but
-    unbuildable config (``runtime.validate_content`` raises) is treated as a read
+    structurally invalid active config (``runtime.validate_content`` raises) is treated as a read
     failure so it can never go live."""
     client = _get_redis()
     if client is None:
@@ -246,15 +237,15 @@ def _try_load():
     except Exception as e:  # invalid JSON / ValidationError / weights!=100 -> transient
         _warn("pipeline config: invalid live config at %s (%s); keeping last-good", k, e)
         return None
-    # FAIL-CLOSED content gate: run the SAME checks the boot path applies (provider/
-    # step legality + a resolvability probe that builds each profile/step primary
-    # handle). A schema-valid but unbuildable config is rejected like a read failure
+    # FAIL-CLOSED content gate: run the same structural checks as boot against the
+    # normalized active plans. Invalid config is rejected like a read failure
     # so a bad push cannot go live. ``validate_content`` is per-repo in ``runtime``;
     # calling ONLY it here keeps this module byte-identical across chat and voice.
     try:
         from app.llm_core import runtime
+        cfg = runtime.normalize_config(cfg)
         runtime.validate_content(cfg)
-    except Exception as e:  # unbuildable content -> fail-closed; keep last-good
+    except Exception as e:  # invalid active content -> fail-closed; keep last-good
         _warn("pipeline config: content-invalid live config at %s (%s); keeping last-good", k, e)
         return None
     logger.info(
@@ -271,7 +262,6 @@ def maybe_refresh(current: PipelineConfig) -> PipelineConfig:
 
     Contract:
       * source disabled -> immediate identity (no redis client built);
-      * a validation probe is in flight (reentrant call) -> identity no-op;
       * within the TTL window -> return ``current`` (zero redis I/O — ``current``
         is already the last-good config, since ``runtime`` stores our return);
       * past the TTL -> GET the key:
@@ -281,10 +271,7 @@ def maybe_refresh(current: PipelineConfig) -> PipelineConfig:
           - a transient failure (redis down / invalid / content-invalid) keeps the
             last-good (``current``) serving.
     """
-    global _last_refresh_monotonic, _last_good, _suppress_refresh
-    if _suppress_refresh:
-        # Reentrant call from a content-validation probe: never re-read or recurse.
-        return current
+    global _last_refresh_monotonic, _last_good
     if not enabled():
         return current
 
@@ -294,11 +281,7 @@ def maybe_refresh(current: PipelineConfig) -> PipelineConfig:
         return current
 
     _last_refresh_monotonic = now
-    _suppress_refresh = True  # guard the validate_content probe inside _try_load
-    try:
-        loaded = _try_load()
-    finally:
-        _suppress_refresh = False
+    loaded = _try_load()
 
     if loaded is _KEY_ABSENT:
         # Cleared / never-set -> revert to the BOOT config (NOT the last LIVE one),
@@ -323,10 +306,9 @@ def reset() -> None:
     in a test, or to force the next ``maybe_refresh`` to re-read). Not called on
     the request path."""
     global _last_refresh_monotonic, _last_good, _last_warn_monotonic
-    global _redis_client, _redis_init_failed, _suppress_refresh
+    global _redis_client, _redis_init_failed
     _last_refresh_monotonic = 0.0
     _last_good = None
     _last_warn_monotonic = 0.0
     _redis_client = None
     _redis_init_failed = False
-    _suppress_refresh = False

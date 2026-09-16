@@ -28,7 +28,8 @@ import agents.farmer_context as farmer_ctx
 import agents.services.farmer_cache as farmer_cache
 
 
-PROMPTS = ("agrinet_system.md", "agrinet_system_translation_pipeline.md")
+# The translation pipeline is the only chat path, so there is a single farmer prompt.
+PROMPTS = ("agrinet_system_translation_pipeline.md",)
 BANNED_UNION_ALIASES = ("sarhad", "kutch", "kachchh", "kutchh")
 
 
@@ -40,7 +41,7 @@ def test_union_banned_message_is_the_agreed_farmer_facing_string():
 
 def _render_prompt(name):
     return get_prompt(name, context={
-        "today_date": "15-08-2026", "today_datetime": "15-08-2026 10:00",
+        "today_date": "15-08-2026",
         "farmer_context": None, "ambiguity_hints": None,
         "response_max_chars": None, "loan_max_amount": "5,000",
         "loan_interest_rate_pct": "7", "network_tools_enabled": True,
@@ -62,7 +63,7 @@ def _append_markdown(farmer, monkeypatch):
         calls["n"] += 1
         return [_tech()]
 
-    monkeypatch.setattr(farmer_ctx, "get_ai_technicians_by_society_api", fake_api)
+    monkeypatch.setattr(farmer_ctx, "get_ai_technicians_by_society_cached", fake_api)
     lines = []
     asyncio.run(farmer_ctx._append_ai_technicians_markdown(lines, farmer))
     return "\n".join(lines), calls["n"]
@@ -110,7 +111,7 @@ def test_farmer_context_bundle_for_sarhad_omits_technicians(monkeypatch):
 
     monkeypatch.setattr(farmer_ctx, "get_farmer_data_by_mobile", fake_farmers)
     monkeypatch.setattr(farmer_ctx, "_append_union_scheme_summary_markdown", fake_schemes)
-    monkeypatch.setattr(farmer_ctx, "get_ai_technicians_by_society_api", fake_api)
+    monkeypatch.setattr(farmer_ctx, "get_ai_technicians_by_society_cached", fake_api)
 
     markdown, unions, _location = asyncio.run(
         farmer_ctx.get_farmer_context_bundle_by_mobile("9876543210")
@@ -131,7 +132,7 @@ def _fetch_cache(records, monkeypatch):
         return [_tech()]
 
     monkeypatch.setenv("PASHUGPT_TOKEN", "tok")
-    monkeypatch.setattr(farmer_cache, "get_ai_technicians_by_society_api", fake_api)
+    monkeypatch.setattr(farmer_cache, "get_ai_technicians_by_society_cached", fake_api)
     return asyncio.run(farmer_cache._fetch_ai_technicians(records)), calls
 
 
@@ -163,6 +164,101 @@ def test_cache_fetches_technicians_for_kaira_and_skips_kutch(monkeypatch):
     assert groups[0]["technicians"][0]["userId"] == "ait-1"
 
 
+def test_cache_dedupes_lookup_for_same_union_and_society(monkeypatch):
+    records = [
+        FarmerRecord(
+            unionName="kaira", unionCode="1", societyCode="S-Kaira", farmerCode="F-1",
+            farmerName="Farmer One",
+        ),
+        FarmerRecord(
+            unionName="kaira", unionCode="1", societyCode="S-Kaira", farmerCode="F-2",
+            farmerName="Farmer Two",
+        ),
+    ]
+    groups, calls = _fetch_cache(records, monkeypatch)
+    assert calls == [("1", "S-Kaira")]
+    assert len(groups) == 2
+    assert groups[0]["farmerCode"] == "F-1"
+    assert groups[1]["farmerCode"] == "F-2"
+    assert groups[0]["technicians"][0]["userId"] == "ait-1"
+    assert groups[1]["technicians"][0]["userId"] == "ait-1"
+
+
+def test_cache_fetches_unique_pairs_concurrently(monkeypatch):
+    records = [
+        FarmerRecord(
+            unionName="kaira", unionCode="1", societyCode="S1", farmerCode="F-1", farmerName="Farmer One"
+        ),
+        FarmerRecord(
+            unionName="kaira", unionCode="2", societyCode="S2", farmerCode="F-2", farmerName="Farmer Two"
+        ),
+    ]
+    state = {"inflight": 0, "max_inflight": 0}
+    seen_pairs = set()
+    both_started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def fake_api(query, token):
+        pair = (query.union_code, query.society_code)
+        seen_pairs.add(pair)
+        state["inflight"] += 1
+        state["max_inflight"] = max(state["max_inflight"], state["inflight"])
+        if len(seen_pairs) == 2:
+            both_started.set()
+        await release.wait()
+        state["inflight"] -= 1
+        return [_tech()]
+
+    async def _run():
+        task = asyncio.create_task(farmer_cache._fetch_ai_technicians(records))
+        await asyncio.wait_for(both_started.wait(), timeout=0.5)
+        release.set()
+        return await task
+
+    monkeypatch.setenv("PASHUGPT_TOKEN", "tok")
+    monkeypatch.setattr(farmer_cache, "get_ai_technicians_by_society_cached", fake_api)
+    groups = asyncio.run(_run())
+
+    assert state["max_inflight"] == 2
+    assert seen_pairs == {("1", "S1"), ("2", "S2")}
+    assert len(groups) == 2
+
+
+def test_cache_isolates_failure_to_only_failed_pair(monkeypatch):
+    records = [
+        FarmerRecord(
+            unionName="kaira", unionCode="1", societyCode="S1", farmerCode="F-1", farmerName="Farmer One"
+        ),
+        FarmerRecord(
+            unionName="kaira", unionCode="2", societyCode="S2", farmerCode="F-2", farmerName="Farmer Two"
+        ),
+        FarmerRecord(
+            unionName="kaira", unionCode="1", societyCode="S1", farmerCode="F-3", farmerName="Farmer Three"
+        ),
+    ]
+
+    async def fake_api(query, token):
+        if (query.union_code, query.society_code) == ("2", "S2"):
+            raise RuntimeError("upstream timeout")
+        return [
+            AITechnicianBySocietyRecord(
+                userId="ait-s1",
+                fullName="S1 Technician",
+                mobileNumber="9000000001",
+            )
+        ]
+
+    monkeypatch.setenv("PASHUGPT_TOKEN", "tok")
+    monkeypatch.setattr(farmer_cache, "get_ai_technicians_by_society_cached", fake_api)
+    groups = asyncio.run(farmer_cache._fetch_ai_technicians(records))
+
+    by_farmer = {group["farmerCode"]: group for group in groups}
+    assert by_farmer["F-1"]["technicians"][0]["userId"] == "ait-s1"
+    assert by_farmer["F-3"]["technicians"][0]["userId"] == "ait-s1"
+    assert by_farmer["F-2"]["technicians"] is None
+    assert by_farmer["F-2"]["techniciansLookupFailed"] is True
+
+
 @pytest.mark.parametrize("name", PROMPTS)
 def test_prompts_put_union_ban_ahead_of_technician_selection(name):
     rendered = _render_prompt(name)
@@ -185,11 +281,14 @@ def test_prompts_keep_technician_selection_for_allowed_unions(name):
     assert "When AI technician options are available, ask the user which technician they want to select." in rendered
 
 
-def test_default_prompt_lists_localized_ban_lines():
-    rendered = _render_prompt("agrinet_system.md")
+def test_prompt_states_the_ban_line_in_english_and_defers_localization():
+    # The farmer agent now always answers in English and the output-translation
+    # step localizes the ban line, so the prompt must NOT inline the gu/hi
+    # variants — that is what app.models.union maps at translation time.
+    rendered = _render_prompt("agrinet_system_translation_pipeline.md")
     assert UNION_BANNED_MESSAGE in rendered
-    assert UNION_BANNED_MESSAGE_GU in rendered
-    assert UNION_BANNED_MESSAGE_HI in rendered
+    assert UNION_BANNED_MESSAGE_GU not in rendered
+    assert UNION_BANNED_MESSAGE_HI not in rendered
 
 
 # ── create_ai_call hard block ─────────────────────────────────────────────────
