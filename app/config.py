@@ -4,13 +4,14 @@ import logging
 import math
 from pathlib import Path
 from typing import Any, ClassVar, List, Optional
-from pydantic import AliasChoices, Field, ValidationInfo, field_validator
+from pydantic import AliasChoices, Field, ValidationInfo, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from dotenv import load_dotenv
 
 # Load environment variables from .env file
 load_dotenv()
 _config_logger = logging.getLogger(__name__)
+_scheme_ocr_page_batch_size_deprecation_logged = False
 
 
 def _get_bool_env(name: str, default: bool = False) -> bool:
@@ -508,6 +509,43 @@ class Settings(BaseSettings):
     scheme_require_union_auth: bool = os.getenv("SCHEME_REQUIRE_UNION_AUTH", "true").strip().lower() in {
         "1", "true", "yes", "on"
     }
+    # Union scheme ingestion source URLs. The scheduler populates the Redis
+    # catalog consumed by the union-scheme Beckn provider.
+    banas_scheme_site_origin: str = Field(
+        default="https://www.banasdairy.coop",
+        validation_alias="BANAS_SCHEME_SITE_ORIGIN",
+    )
+    banas_scheme_documents_api_url: str = Field(
+        default="https://www.banasdairy.coop/api/documents",
+        validation_alias="BANAS_SCHEME_DOCUMENTS_API_URL",
+    )
+    sarhad_scheme_source_url: str = Field(
+        default="https://sarhaddairy.coop/for-our-milk-producers/",
+        validation_alias="SARHAD_SCHEME_SOURCE_URL",
+    )
+    sumul_scheme_source_url: str = Field(
+        default="https://www.sumul.com/farmer-section.html",
+        validation_alias="SUMUL_SCHEME_SOURCE_URL",
+    )
+    sursagar_scheme_source_url: str = Field(
+        default="https://sursagardairy.com/Farmer/MilkProducers",
+        validation_alias="SURSAGAR_SCHEME_SOURCE_URL",
+    )
+    # PDF pages are rendered locally and sent one page per request to a stock
+    # Chandra OpenAI-compatible endpoint.
+    scheme_ocr_endpoint_url: Optional[str] = os.getenv("SCHEME_OCR_ENDPOINT_URL")
+    scheme_ocr_timeout_seconds: float = float(os.getenv("SCHEME_OCR_TIMEOUT_SECONDS", "120"))
+    scheme_pdf_render_dpi: int = int(os.getenv("SCHEME_PDF_RENDER_DPI", "200"))
+    scheme_lock_ttl_seconds: int = Field(default=60 * 60, validation_alias="SCHEME_LOCK_TTL_SECONDS")
+    scheme_http_timeout_seconds: float = Field(default=30.0, validation_alias="SCHEME_HTTP_TIMEOUT_SECONDS")
+    scheme_pdf_max_render_pages: int = Field(default=30, validation_alias="SCHEME_PDF_MAX_RENDER_PAGES")
+    scheme_ocr_prompt_type: str = os.getenv("SCHEME_OCR_PROMPT_TYPE", "ocr_layout")
+    scheme_ocr_max_output_tokens: int = Field(default=12284, validation_alias="SCHEME_OCR_MAX_OUTPUT_TOKENS")
+    scheme_ocr_concurrency: int = Field(default=4, validation_alias="SCHEME_OCR_CONCURRENCY")
+    # Deprecated compatibility alias; use SCHEME_OCR_CONCURRENCY for new deployments.
+    scheme_ocr_page_batch_size: int = Field(default=4, validation_alias="SCHEME_OCR_PAGE_BATCH_SIZE")
+    scheme_ocr_max_failed_page_ratio: float = Field(default=0.15, validation_alias="SCHEME_OCR_MAX_FAILED_PAGE_RATIO")
+    scheme_banas_min_record_coverage_ratio: float = Field(default=0.85, validation_alias="SCHEME_BANAS_MIN_RECORD_COVERAGE_RATIO")
 
     # Ambiguity-term fuzzy-match cutoff (0-1) for get_ambiguity_hints_for_query.
     # Overridable via env; defaults to 0.80 (prior hard-coded behaviour).
@@ -669,6 +707,11 @@ class Settings(BaseSettings):
     # Config hardening policy: malformed numeric env values warn and fall back to
     # defaults; parseable but out-of-range values are clamped to safe bounds.
     _SAFE_INT_FIELDS: ClassVar[dict[str, tuple[str, int, int | None, int | None]]] = {
+        "scheme_lock_ttl_seconds": ("SCHEME_LOCK_TTL_SECONDS", 60 * 60, 1, None),
+        "scheme_pdf_max_render_pages": ("SCHEME_PDF_MAX_RENDER_PAGES", 30, 1, None),
+        "scheme_ocr_max_output_tokens": ("SCHEME_OCR_MAX_OUTPUT_TOKENS", 12284, 1, None),
+        "scheme_ocr_concurrency": ("SCHEME_OCR_CONCURRENCY", 4, 1, 8),
+        "scheme_ocr_page_batch_size": ("SCHEME_OCR_PAGE_BATCH_SIZE", 4, 1, 8),
         "health_call_cooldown_ttl_seconds": ("HEALTH_CALL_COOLDOWN_TTL_SECONDS", 60 * 30, 1, None),
         "vistaar_max_items": ("VISTAAR_MAX_ITEMS", 20, 1, None),
         "farmer_refresh_lock_ttl_seconds": ("FARMER_REFRESH_LOCK_TTL_SECONDS", 60 * 5, 1, None),
@@ -687,6 +730,9 @@ class Settings(BaseSettings):
         "beckn_forward_connect_attempts": ("BECKN_FORWARD_CONNECT_ATTEMPTS", 2, 1, 5),
     }
     _SAFE_FLOAT_FIELDS: ClassVar[dict[str, tuple[str, float, float | None, float | None]]] = {
+        "scheme_http_timeout_seconds": ("SCHEME_HTTP_TIMEOUT_SECONDS", 30.0, 0.001, None),
+        "scheme_ocr_max_failed_page_ratio": ("SCHEME_OCR_MAX_FAILED_PAGE_RATIO", 0.15, 0.0, 1.0),
+        "scheme_banas_min_record_coverage_ratio": ("SCHEME_BANAS_MIN_RECORD_COVERAGE_RATIO", 0.85, 0.0, 1.0),
         "vistaar_default_lat": ("VISTAAR_DEFAULT_LAT", 22.55, -90.0, 90.0),
         "vistaar_default_lon": ("VISTAAR_DEFAULT_LON", 72.93, -180.0, 180.0),
         "farmer_backend_http_timeout_seconds": ("FARMER_BACKEND_HTTP_TIMEOUT_SECONDS", 30.0, 0.001, None),
@@ -696,6 +742,11 @@ class Settings(BaseSettings):
         "beckn_forward_retry_delay_seconds": ("BECKN_FORWARD_RETRY_DELAY_SECONDS", 0.2, 0.0, 5.0),
     }
     @field_validator(
+        "scheme_lock_ttl_seconds",
+        "scheme_pdf_max_render_pages",
+        "scheme_ocr_max_output_tokens",
+        "scheme_ocr_concurrency",
+        "scheme_ocr_page_batch_size",
         "health_call_cooldown_ttl_seconds",
         "vistaar_max_items",
         "farmer_refresh_lock_ttl_seconds",
@@ -726,6 +777,9 @@ class Settings(BaseSettings):
         )
 
     @field_validator(
+        "scheme_http_timeout_seconds",
+        "scheme_ocr_max_failed_page_ratio",
+        "scheme_banas_min_record_coverage_ratio",
         "vistaar_default_lat",
         "vistaar_default_lon",
         "farmer_backend_http_timeout_seconds",
@@ -748,6 +802,11 @@ class Settings(BaseSettings):
 
     @field_validator(
         "amulpashudhan_base_url",
+        "banas_scheme_site_origin",
+        "banas_scheme_documents_api_url",
+        "sarhad_scheme_source_url",
+        "sumul_scheme_source_url",
+        "sursagar_scheme_source_url",
         mode="before",
     )
     @classmethod
@@ -755,5 +814,28 @@ class Settings(BaseSettings):
         if value is None:
             return ""
         return str(value).rstrip("/")
+
+    @model_validator(mode="after")
+    def _resolve_scheme_ocr_concurrency(self):
+        """Prefer SCHEME_OCR_CONCURRENCY; retain the old batching env as an alias."""
+        global _scheme_ocr_page_batch_size_deprecation_logged
+        concurrency_raw = os.getenv("SCHEME_OCR_CONCURRENCY")
+        if concurrency_raw is not None and str(concurrency_raw).strip():
+            return self
+
+        self.scheme_ocr_concurrency = self.scheme_ocr_page_batch_size
+        batch_raw = os.getenv("SCHEME_OCR_PAGE_BATCH_SIZE")
+        if (
+            batch_raw is not None
+            and str(batch_raw).strip()
+            and not _scheme_ocr_page_batch_size_deprecation_logged
+        ):
+            _config_logger.warning(
+                "SCHEME_OCR_PAGE_BATCH_SIZE is deprecated; use "
+                "SCHEME_OCR_CONCURRENCY=%s instead (aliased for now)",
+                self.scheme_ocr_concurrency,
+            )
+            _scheme_ocr_page_batch_size_deprecation_logged = True
+        return self
 
 settings = Settings()
