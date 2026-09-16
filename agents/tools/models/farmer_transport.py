@@ -33,7 +33,9 @@ class FarmerRecord(BaseModel):
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
     farmerName: Optional[str] = None
+    farmerGujaratiName: Optional[str] = None
     societyName: Optional[str] = None
+    societyGujaratiName: Optional[str] = None
     farmerCode: Optional[str] = None
     totalAnimals: Optional[int] = None
     tagNo: Optional[str] = None
@@ -49,7 +51,9 @@ class FarmerRecord(BaseModel):
                 "union_name": "unionName",
                 "union_code": "unionCode",
                 "farmer_name": "farmerName",
+                "farmer_gujarati_name": "farmerGujaratiName",
                 "society_name": "societyName",
+                "society_gujarati_name": "societyGujaratiName",
                 "society_code": "societyCode",
                 "mobile_number": "mobileNumber",
                 "farmer_code": "farmerCode",

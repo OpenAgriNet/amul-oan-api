@@ -106,10 +106,10 @@ def _append_farmer_markdown(lines: list[str], farmer: FarmerModel, index: int) -
     lines.append("")
     lines.append(f"## Farmer {index}")
     profile_fields = [
-        ("Farmer name", farmer.farmer_name),
+        ("Farmer name", farmer.display_farmer_name),
         ("Mobile number", farmer.mobile_number),
         ("Farmer code", farmer.farmer_code),
-        ("Society name", farmer.society_name),
+        ("Society name", farmer.display_society_name),
         ("Society code", farmer.society_code),
         ("Union name", farmer.union_name),
         ("Union code", farmer.union_code),
@@ -168,11 +168,12 @@ async def _get_ai_technicians_for_farmer(
 
     unique_technicians: dict[str, str] = {}
     for technician in technicians:
-        key = technician.userId or f"{technician.fullName}|{technician.mobileNumber}"
+        display_name = getattr(technician, "display_full_name", None) or technician.fullName
+        key = technician.userId or f"{display_name}|{technician.mobileNumber}"
         if key in unique_technicians:
             continue
         unique_technicians[key] = (
-            f"- **Name:** {technician.fullName} | "
+            f"- **Name:** {display_name} | "
             f"**Mobile number:** {technician.mobileNumber} | "
             f"**user_id:** {technician.userId}"
         )
