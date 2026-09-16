@@ -167,13 +167,11 @@ def test_settings_non_finite_floats_fallback_to_defaults(monkeypatch):
 
 def test_settings_normalize_backend_base_urls(monkeypatch):
     monkeypatch.setenv("AMULPASHUDHAN_BASE_URL", "https://example.test/root/")
-    monkeypatch.setenv("HERDMAN_BASE_URL", "https://herdman.test/api///")
     monkeypatch.setenv("BANAS_MOBILE_BASE_URL", "https://banas.test/visit/")
     monkeypatch.setenv("CVCC_BASE_URL", "https://cvcc.test/path/")
 
     cfg = Settings()
     assert cfg.amulpashudhan_base_url == "https://example.test/root"
-    assert cfg.herdman_base_url == "https://herdman.test/api"
     assert cfg.banas_mobile_base_url == "https://banas.test/visit"
     assert cfg.cvcc_base_url == "https://cvcc.test/path"
 

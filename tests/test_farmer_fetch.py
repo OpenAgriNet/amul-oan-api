@@ -4,9 +4,8 @@ Written BEFORE the Inc 3.2 refactor (extract a shared raw-dict helper; keep
 `fetch_farmer_amulpashudhan → FarmerModel` byte-identical; add
 `fetch_farmer_info_raw → FarmerRecord`). These tests capture today's behavior of:
   - fetch_farmer_amulpashudhan: camelCase API → FarmerModel + normalization, caching, 204/error → None
-  - fetch_farmer_herdman: "Farmer"-wrapped response → list[FarmerModel]
   - merge_farmer_data: dedup by society_name+farmer_name, union preserved
-  - get_farmer_data_by_mobile: orchestration (amulpashudhan; herdman only for MEHSANA)
+  - get_farmer_data_by_mobile: orchestration over the amulpashudhan backend
 They MUST stay green across the refactor (the FarmerModel domain path is unchanged).
 """
 import os
@@ -151,17 +150,6 @@ def test_amulpashudhan_error_returns_none(monkeypatch):
     assert out is None
 
 
-# ── fetch_farmer_herdman ──────────────────────────────────────────────────────
-
-def test_herdman_maps_farmer_wrapper_to_farmermodel(monkeypatch):
-    _patch_cache_miss(monkeypatch)
-    _patch_http(monkeypatch, _FakeResp(json_data={"Farmer": [dict(_AMUL_ROW)]}))
-    out = asyncio.run(backends.fetch_farmer_herdman("9999999999", "tok3"))
-    assert out is not None and len(out) == 1
-    assert out[0].farmer_name == "ramesh"
-    assert out[0].union_name == "kaira"
-
-
 # ── merge_farmer_data ─────────────────────────────────────────────────────────
 
 def test_merge_keeps_distinct_farmers(monkeypatch):
@@ -182,30 +170,32 @@ def test_merge_dedupes_same_society_and_name_preserving_union():
 
 # ── get_farmer_data_by_mobile orchestration ───────────────────────────────────
 
-def test_get_farmer_data_amulpashudhan_only_for_non_mehsana(monkeypatch):
+def test_get_farmer_data_uses_amulpashudhan_only(monkeypatch):
     monkeypatch.setenv("PASHUGPT_TOKEN", "tok1")
-    monkeypatch.setenv("PASHUGPT_TOKEN_3", "tok3")
     rec = FarmerModel.model_validate({"societyName": "S-A", "farmerName": "Ravi", "unionName": "Kaira"})
-    herdman_called = {"v": False}
 
     async def fake_amul(mobile, token):
         return [rec]
 
-    async def fake_herdman(mobile, token):
-        herdman_called["v"] = True
-        return None
-
     monkeypatch.setattr(farmer_mod, "fetch_farmer_amulpashudhan", fake_amul)
-    monkeypatch.setattr(farmer_mod, "fetch_farmer_herdman", fake_herdman)
 
     out = asyncio.run(farmer_mod.get_farmer_data_by_mobile("9999999999"))
     assert out is not None and len(out) == 1 and out[0].union_name == "kaira"
-    assert herdman_called["v"] is False  # herdman only consulted for MEHSANA
+
+
+def test_get_farmer_data_none_when_no_token(monkeypatch):
+    monkeypatch.delenv("PASHUGPT_TOKEN", raising=False)
+
+    async def forbidden(mobile, token):
+        raise AssertionError("no backend must be called without PASHUGPT_TOKEN")
+
+    monkeypatch.setattr(farmer_mod, "fetch_farmer_amulpashudhan", forbidden)
+    out = asyncio.run(farmer_mod.get_farmer_data_by_mobile("9999999999"))
+    assert out is None
 
 
 def test_get_farmer_data_none_when_no_records(monkeypatch):
     monkeypatch.setenv("PASHUGPT_TOKEN", "tok1")
-    monkeypatch.delenv("PASHUGPT_TOKEN_3", raising=False)
 
     async def fake_amul(mobile, token):
         return None
@@ -302,7 +292,6 @@ def test_fetch_farmer_info_raw_drops_empty_rows(monkeypatch):
 
 def test_fetch_farmer_info_raw_none_when_no_token(monkeypatch):
     monkeypatch.delenv("PASHUGPT_TOKEN", raising=False)
-    monkeypatch.delenv("PASHUGPT_TOKEN_3", raising=False)
     _patch_raw(monkeypatch, [dict(_AMUL_ROW)])
     out = asyncio.run(farmer_mod.fetch_farmer_info_raw("9999999999"))
     assert out is None
@@ -325,29 +314,10 @@ def test_fetch_farmer_info_raw_none_for_empty_mobile(monkeypatch):
     assert out is None
 
 
-# ── fetch_farmer_info_raw herdman gating (Inc 3.2b-iii: MEHSANA-only) ──────────
-# Team decision (2026-06-08): herdman is pulled ONLY for MEHSANA — chat's gating
-# is canonical; voice's herdman-for-everyone was unintended.
-
-_MEHSANA_ROW = {
-    "unionName": "Mehsana", "societyName": "S-M", "farmerName": "Ramesh",
-    "farmerCode": "F1", "mobileNumber": "9999999999", "tagNo": "123", "totalAnimals": 1,
-}
-_HERDMAN_ROW = {
-    "unionName": "Mehsana", "societyName": "S-H", "farmerName": "Geeta",
-    "farmerCode": "F2", "tagNo": "789", "totalAnimals": 2,
-}
-
-
-def _patch_herdman_raw(monkeypatch, value):
-    async def fake(mobile, token, **kwargs):
-        return value
-    monkeypatch.setattr(farmer_mod, "_fetch_farmer_herdman_raw", fake)
-
+# ── fetch_farmer_info_with_outcome (explicit provider outcome) ──────────────
 
 def test_fetch_farmer_info_with_outcome_empty_payload_is_error(monkeypatch):
     monkeypatch.setenv("PASHUGPT_TOKEN", "tok1")
-    monkeypatch.delenv("PASHUGPT_TOKEN_3", raising=False)
     _patch_raw(monkeypatch, [])
 
     records, outcome = asyncio.run(farmer_mod.fetch_farmer_info_with_outcome("9999999999"))
@@ -358,7 +328,6 @@ def test_fetch_farmer_info_with_outcome_empty_payload_is_error(monkeypatch):
 
 def test_fetch_farmer_info_with_outcome_found_payload_is_found(monkeypatch):
     monkeypatch.setenv("PASHUGPT_TOKEN", "tok1")
-    monkeypatch.delenv("PASHUGPT_TOKEN_3", raising=False)
     _patch_raw(monkeypatch, [dict(_AMUL_ROW)])
 
     records, outcome = asyncio.run(farmer_mod.fetch_farmer_info_with_outcome("9999999999"))
@@ -366,103 +335,6 @@ def test_fetch_farmer_info_with_outcome_found_payload_is_found(monkeypatch):
     assert outcome == farmer_mod.FarmerFetchOutcome.FOUND
     assert records is not None and len(records) == 1
     assert records[0].farmerName == "Ramesh"
-
-
-def test_fetch_farmer_info_raw_calls_herdman_for_mehsana(monkeypatch):
-    monkeypatch.setenv("PASHUGPT_TOKEN", "tok1")
-    monkeypatch.setenv("PASHUGPT_TOKEN_3", "tok3")
-    _patch_raw(monkeypatch, [dict(_MEHSANA_ROW)])
-    _patch_herdman_raw(monkeypatch, [dict(_HERDMAN_ROW)])
-
-    out = asyncio.run(farmer_mod.fetch_farmer_info_raw("9999999999"))
-
-    assert out is not None and len(out) == 2
-    names = {r.farmerName for r in out}
-    assert names == {"Ramesh", "Geeta"}  # both backends merged
-    # herdman row is RAW camelCase too (not lowercased).
-    geeta = next(r for r in out if r.farmerName == "Geeta")
-    assert geeta.model_dump()["unionName"] == "Mehsana"
-
-
-def test_fetch_farmer_info_raw_skips_herdman_for_non_mehsana(monkeypatch):
-    monkeypatch.setenv("PASHUGPT_TOKEN", "tok1")
-    monkeypatch.setenv("PASHUGPT_TOKEN_3", "tok3")
-    _patch_raw(monkeypatch, [dict(_AMUL_ROW)])  # unionName "Kaira"
-
-    async def boom(mobile, token, **kwargs):
-        raise AssertionError("herdman must not be called for non-MEHSANA")
-    monkeypatch.setattr(farmer_mod, "_fetch_farmer_herdman_raw", boom)
-
-    out = asyncio.run(farmer_mod.fetch_farmer_info_raw("9999999999"))
-    assert out is not None and len(out) == 1 and out[0].farmerName == "Ramesh"
-
-
-def test_fetch_farmer_info_raw_dedupes_across_backends(monkeypatch):
-    monkeypatch.setenv("PASHUGPT_TOKEN", "tok1")
-    monkeypatch.setenv("PASHUGPT_TOKEN_3", "tok3")
-    # herdman returns the SAME society+farmerCode as amulpashudhan → one record,
-    # first occurrence (amulpashudhan) wins.
-    dup = {"unionName": "Mehsana", "societyName": "S-M", "farmerName": "Stale",
-           "farmerCode": "F1", "tagNo": "999"}
-    _patch_raw(monkeypatch, [dict(_MEHSANA_ROW)])
-    _patch_herdman_raw(monkeypatch, [dup])
-
-    out = asyncio.run(farmer_mod.fetch_farmer_info_raw("9999999999"))
-    assert out is not None and len(out) == 1
-    assert out[0].farmerName == "Ramesh"  # amulpashudhan kept, herdman dup dropped
-
-
-def test_fetch_farmer_info_raw_herdman_skipped_when_no_token3(monkeypatch):
-    # MEHSANA farmer but PASHUGPT_TOKEN_3 unset → herdman not consulted.
-    monkeypatch.setenv("PASHUGPT_TOKEN", "tok1")
-    monkeypatch.delenv("PASHUGPT_TOKEN_3", raising=False)
-    _patch_raw(monkeypatch, [dict(_MEHSANA_ROW)])
-
-    async def boom(mobile, token, **kwargs):
-        raise AssertionError("herdman must not be called without token3")
-    monkeypatch.setattr(farmer_mod, "_fetch_farmer_herdman_raw", boom)
-
-    out = asyncio.run(farmer_mod.fetch_farmer_info_raw("9999999999"))
-    assert out is not None and len(out) == 1 and out[0].farmerName == "Ramesh"
-
-
-# ── _fetch_farmer_herdman_raw direct (wrapper extraction, cache compatibility) ─
-
-def test_herdman_raw_extracts_farmer_wrapper_from_http(monkeypatch):
-    _patch_cache_miss(monkeypatch)
-    _patch_http(monkeypatch, _FakeResp(json_data={"Farmer": [dict(_AMUL_ROW)]}))
-    out = asyncio.run(backends._fetch_farmer_herdman_raw("9999999999", "tok3"))
-    assert out is not None and len(out) == 1
-    assert out[0]["farmerName"] == "Ramesh"  # RAW dict, not a FarmerModel
-
-
-def test_herdman_raw_cache_hit_dict_extracts_without_http(monkeypatch):
-    _patch_cache_hit(monkeypatch, {"Farmer": [dict(_AMUL_ROW)]})
-    _patch_http(monkeypatch, AssertionError("HTTP must not be called on cache hit"))
-    out = asyncio.run(backends._fetch_farmer_herdman_raw("9999999999", "tok3"))
-    assert out is not None and out[0]["farmerName"] == "Ramesh"
-
-
-def test_herdman_raw_non_dict_response_returns_none(monkeypatch):
-    # A non-dict response is herdman's "no info found" case (raw analogue).
-    _patch_cache_miss(monkeypatch)
-    _patch_http(monkeypatch, _FakeResp(json_data=[dict(_AMUL_ROW)], text='[{}]'))
-    out = asyncio.run(backends._fetch_farmer_herdman_raw("9999999999", "tok3"))
-    assert out is None
-
-
-def test_herdman_raw_empty_text_returns_none(monkeypatch):
-    _patch_cache_miss(monkeypatch)
-    _patch_http(monkeypatch, _FakeResp(status_code=200, text=""))
-    out = asyncio.run(backends._fetch_farmer_herdman_raw("9999999999", "tok3"))
-    assert out is None
-
-
-def test_herdman_raw_no_farmer_key_returns_none(monkeypatch):
-    _patch_cache_miss(monkeypatch)
-    _patch_http(monkeypatch, _FakeResp(json_data={"somethingElse": 1}))
-    out = asyncio.run(backends._fetch_farmer_herdman_raw("9999999999", "tok3"))
-    assert out is None
 
 
 def test_mobile_cache_bypass_skips_amul_farmer_cache_read_and_write(monkeypatch):
@@ -480,23 +352,6 @@ def test_mobile_cache_bypass_skips_amul_farmer_cache_read_and_write(monkeypatch)
 
     out = asyncio.run(backends.fetch_farmer_amulpashudhan("9999999999", "tok"))
     assert out is not None and out[0].farmer_name == "ramesh"
-
-
-def test_mobile_cache_bypass_skips_herdman_farmer_cache_read_and_write(monkeypatch):
-    monkeypatch.setattr(backends.settings, "farmer_layer1_mobile_cache_bypass_enabled", True)
-
-    async def forbidden_get(_key):
-        raise AssertionError("farmer mobile cache read must be bypassed")
-
-    async def forbidden_set(_key, _value):
-        raise AssertionError("farmer mobile cache write must be bypassed")
-
-    monkeypatch.setattr(backends, "get_cached_api_response", forbidden_get)
-    monkeypatch.setattr(backends, "set_cached_api_response", forbidden_set)
-    _patch_http(monkeypatch, _FakeResp(json_data={"Farmer": [dict(_AMUL_ROW)]}))
-
-    out = asyncio.run(backends._fetch_farmer_herdman_raw("9999999999", "tok3"))
-    assert out is not None and out[0]["farmerName"] == "Ramesh"
 
 
 def test_mobile_cache_bypass_does_not_disable_animal_cache(monkeypatch):
