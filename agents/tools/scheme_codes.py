@@ -36,7 +36,7 @@ SCHEME_CODES: tuple[str, ...] = (
 
 # Farmer-facing English names. Used for the "I can't look that up, but I can
 # look up these" message — we name SCHEMES, never internal codes, because
-# `assets/prompts/agrinet_system.md` forbids exposing tool mechanics.
+# `assets/prompts/agrinet_system_translation_pipeline.md` forbids exposing tool mechanics.
 SCHEME_LABELS: dict[str, str] = {
     "kcc": "Kisan Credit Card",
     "pmkisan": "PM-KISAN (Kisan Samman Nidhi)",

@@ -93,22 +93,6 @@ def test_response_max_chars_is_set_only_for_whatsapp_channel():
     assert profile_for(None).response_max_chars is None
 
 
-def test_default_agrinet_prompt_includes_whatsapp_limit_when_provided():
-    prompt = get_prompt(
-        "agrinet_system.md",
-        context={
-            "today_date": "Monday, 04 May 2026",
-            "today_datetime": "Monday, 04 May 2026 12:00 PM IST",
-            "farmer_context": None,
-            "ambiguity_hints": None,
-            "response_max_chars": 1600,
-        },
-    )
-
-    assert "WhatsApp Response Limit" in prompt
-    assert "no more than 1600 characters" in prompt
-
-
 def test_translation_pipeline_prompt_includes_whatsapp_limit_when_provided():
     prompt = get_prompt(
         "agrinet_system_translation_pipeline.md",

@@ -184,7 +184,7 @@ async def fetch_authenticated_farmers(
     session_id: Optional[str] = None,
     tool_call_id: Optional[str] = None,
 ) -> list[FarmerModel]:
-    """Fetch PashuGPT and applicable Herdman accounts via init/on_init."""
+    """Fetch PashuGPT accounts via init/on_init."""
     client = get_beckn_operation_client()
     primary = _completed_payload(
         await client.init_farmer_profile(
@@ -195,24 +195,7 @@ async def fetch_authenticated_farmers(
         ),
         "farmer profile",
     )
-    farmers = _farmer_models_from_payload(primary, authenticated_mobile=mobile)
-    if not any((farmer.union_name or "").casefold() == "mehsana" for farmer in farmers):
-        return farmers
-
-    herdman = _completed_payload(
-        await client.init_farmer_profile(
-            provider_id="herdman",
-            mobile=mobile,
-            session_id=session_id,
-            tool_call_id=tool_call_id,
-        ),
-        "farmer profile",
-    )
-    from agents.tools.farmer_animal_backends import merge_farmer_data
-
-    return merge_farmer_data(
-        farmers + _farmer_models_from_payload(herdman, authenticated_mobile=mobile)
-    )
+    return _farmer_models_from_payload(primary, authenticated_mobile=mobile)
 
 
 def authenticated_accounts(farmers: Iterable[FarmerModel]) -> list[AuthenticatedFarmerAccount]:
@@ -305,22 +288,9 @@ def _animal_model(tags: list[dict[str, Any]]) -> Optional[AnimalModel]:
     return AnimalModel.model_validate(mapped)
 
 
-def _merge_animals(primary: Optional[AnimalModel], fallback: Optional[AnimalModel]) -> Optional[AnimalModel]:
-    if primary is None:
-        return fallback
-    if fallback is None:
-        return primary
-    data = primary.model_dump()
-    for key, value in fallback.model_dump().items():
-        if data.get(key) in (None, "", [], {}):
-            data[key] = value
-    return AnimalModel.model_validate(data)
-
-
 async def fetch_animal_profile(
     tag_id: str,
     *,
-    union_name: Optional[str],
     union_code: Optional[str],
     session_id: Optional[str] = None,
     tool_call_id: Optional[str] = None,
@@ -335,19 +305,7 @@ async def fetch_animal_profile(
         ),
         "animal profile",
     )
-    animal = _animal_model(_animal_groups(primary))
-    if (union_name or "").casefold() != "mehsana":
-        return animal
-    herdman = _completed_payload(
-        await client.init_animal_profile(
-            provider_id="herdman",
-            tag_id=tag_id,
-            session_id=session_id,
-            tool_call_id=tool_call_id,
-        ),
-        "animal profile",
-    )
-    return _merge_animals(animal, _animal_model(_animal_groups(herdman)))
+    return _animal_model(_animal_groups(primary))
 
 
 async def fetch_cvcc_health(

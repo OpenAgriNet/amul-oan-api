@@ -278,11 +278,9 @@ def test_module_healthy_poll_noop_when_poller_disabled(monkeypatch):
     health.reset()
 
 
-def test_endpoint_of_skips_managed_and_none():
+def test_endpoint_of_skips_managed_and_none(materialized_tier):
     assert health._endpoint_of(_managed_tier()) is None    # openai tier -> endpoint None
-    from app.llm_core.factory import MaterializedTier
-    managed_mt = MaterializedTier(kind="managed", handle=object(), model_name="gpt",
-                                  provider="openai", endpoint="managed", timeout=None)
+    managed_mt = materialized_tier("managed", object(), model_name="gpt")
     assert health._endpoint_of(managed_mt) is None         # "managed" sentinel -> not tracked
 
 
@@ -298,25 +296,33 @@ def test_health_url_strips_v1():
 def test_distinct_endpoints_collects_self_hosted_only():
     from app.tasks import health_poller as hp
     from app.llm_core.config_model import (
-        ApiStyle, NamedProfile, PipelineConfig, StepConfig,
+        ConcurrencyGate, NamedProfile, PipelineConfig, StepConfig, Triggers,
     )
 
+    overflow_ep = "http://10.185.25.199:8022/v1"
     oss_steps = {
-        Step.AGENT: StepConfig(tiers=[_oss_tier(AGENT_EP), _managed_tier()]),
+        Step.AGENT: StepConfig(
+            tiers=[_oss_tier(AGENT_EP), _managed_tier()],
+            triggers=Triggers(concurrency_gate=ConcurrencyGate(
+                metrics_url="http://metrics",
+                overflow_tier=_oss_tier(overflow_ep),
+            )),
+        ),
         Step.PRE_TRANSLATION: StepConfig(tiers=[_oss_tier(PRE_EP), _managed_tier()]),
     }
     managed_steps = {Step.AGENT: StepConfig(tiers=[_managed_tier()])}
     tg = Tier(provider=Provider.TRANSLATEGEMMA, model="tg", endpoint=TG_EP,
-              api_style=ApiStyle.TEXT_COMPLETION, timeout_ms=60000)
+              timeout_ms=60000)
     cfg = PipelineConfig(
         profiles=[
             NamedProfile(name="oss", weight=60, steps=oss_steps),
             NamedProfile(name="managed", weight=40, steps=managed_steps),
         ],
         defaults={Step.POST_TRANSLATION: StepConfig(tiers=[tg])},
+        fallback_enabled=True,
     )
     eps = set(hp._distinct_endpoints(cfg))
-    assert eps == {AGENT_EP, PRE_EP, TG_EP}                # 3 independent boxes, no openai
+    assert eps == {AGENT_EP, PRE_EP, TG_EP, overflow_ep}
 
 
 class _FakeResp:
@@ -389,22 +395,24 @@ def _oss_moderation_pipeline():
                api_key_env="OSS_INFERENCE_API_KEY", timeout_ms=5000)
     managed = Tier(provider=Provider.OPENAI, model="gpt-4.1",
                    api_key_env="OPENAI_API_KEY", timeout_ms=20000)
-    return PipelineConfig(profiles=[
-        NamedProfile(name="oss", weight=100,
-                     steps={Step.MODERATION: StepConfig(tiers=[oss, managed])}),
-        NamedProfile(name="managed", weight=0,
-                     steps={Step.MODERATION: StepConfig(tiers=[managed])}),
-    ])
+    return PipelineConfig(
+        profiles=[
+            NamedProfile(name="oss", weight=100,
+                         steps={Step.MODERATION: StepConfig(tiers=[oss, managed])}),
+            NamedProfile(name="managed", weight=0,
+                         steps={Step.MODERATION: StepConfig(tiers=[managed])}),
+        ],
+        fallback_enabled=True,
+    )
 
 
 def test_fallback_resolve_chain_prunes_when_breaker_on(monkeypatch):
     """HEALTH_BREAKER_ENABLED prunes the config-driven chain, so the OSS timeout
     tax is skipped during an outage (the whole win of the pre-flight filter)."""
-    from app.services import fallback as fb
+    from app.llm_core import execution as fb
     from app.llm_core import runtime
 
     monkeypatch.setattr(runtime, "PIPELINE", _oss_moderation_pipeline())
-    monkeypatch.setattr(fb.settings, "fallback_enabled", True)
     monkeypatch.setattr(fb.settings, "health_breaker_enabled", True)
     monkeypatch.setattr(fb.settings, "health_poller_enabled", False)
 
@@ -412,7 +420,10 @@ def test_fallback_resolve_chain_prunes_when_breaker_on(monkeypatch):
     health._registry.record_failure("http://oss:8020/v1")            # OSS endpoint down
 
     # session_id="" -> deterministic profile (no Redis); oss weight 100 -> [oss, managed]
-    chain = asyncio.run(fb._resolve_chain(pipeline="moderation", session_id="", profile_name="oss"))
+    from app.llm_core import split
+    chain = asyncio.run(split.resolve_chain(
+        "", Step.MODERATION, runtime.PIPELINE, profile_name="oss"
+    ))
     assert [a.kind for a in chain] == ["managed"]                    # oss pruned
     health.reset()
 
@@ -420,18 +431,20 @@ def test_fallback_resolve_chain_prunes_when_breaker_on(monkeypatch):
 def test_fallback_resolve_chain_untouched_when_health_off(monkeypatch):
     """Flags off -> the config-driven chain is intact even with a tripped endpoint
     in the registry (the filter is inert)."""
-    from app.services import fallback as fb
+    from app.llm_core import execution as fb
     from app.llm_core import runtime
 
     monkeypatch.setattr(runtime, "PIPELINE", _oss_moderation_pipeline())
-    monkeypatch.setattr(fb.settings, "fallback_enabled", True)
     monkeypatch.setattr(fb.settings, "health_breaker_enabled", False)
     monkeypatch.setattr(fb.settings, "health_poller_enabled", False)
 
     health.reset(_cfg(n=1))
     health._registry.record_failure("http://oss:8020/v1", now=0.0)
 
-    chain = asyncio.run(fb._resolve_chain(pipeline="moderation", session_id="", profile_name="oss"))
+    from app.llm_core import split
+    chain = asyncio.run(split.resolve_chain(
+        "", Step.MODERATION, runtime.PIPELINE, profile_name="oss"
+    ))
     assert [a.kind for a in chain] == ["oss", "managed"]
     health.reset()
 
@@ -456,13 +469,12 @@ def _grant_probe(r, ep=OSS_EP):
 def test_walker_releases_probe_on_non_evidence_failure(monkeypatch, install_chain):
     """OSS probe fails on UNKNOWN (a caller bug / 4xx) -> fallbackable but NOT breaker
     evidence, so record_failure never fires; only the finally can free the probe."""
-    from app.services import fallback as fb
-    monkeypatch.setattr(fb.settings, "fallback_enabled", True)
+    from app.llm_core import execution as fb
     monkeypatch.setattr(fb.settings, "health_breaker_enabled", True)
     monkeypatch.setattr(fb.settings, "health_poller_enabled", False)
     monkeypatch.setattr(fb, "emit", lambda e: None)
     r = health.reset(_cfg(n=1, cooldown=10.0))
-    install_chain()                                        # profile 'oss' -> [oss, managed]
+    chain = install_chain()
     _grant_probe(r)
 
     async def run(attempt):
@@ -471,7 +483,7 @@ def test_walker_releases_probe_on_non_evidence_failure(monkeypatch, install_chai
         return "managed-ok"
 
     result = asyncio.run(fb.execute_with_fallback(
-        pipeline="moderation", session_id="s", profile_name="oss", run=run))
+        step=Step.MODERATION, session_id="s", run=run, chain=chain))
     assert result == "managed-ok"
     assert r.snapshot()[OSS_EP]["probe_in_flight"] is False   # freed by the finally
     assert r.state_of(OSS_EP) is BreakerState.HALF_OPEN       # only the slot freed
@@ -481,13 +493,12 @@ def test_walker_releases_probe_on_non_evidence_failure(monkeypatch, install_chai
 def test_walker_releases_probe_on_bad_output_raise(monkeypatch, install_chain):
     """BAD_OUTPUT is non-fallbackable, so the walker RAISES on the first tier; the
     probe must still be freed on the way out."""
-    from app.services import fallback as fb
-    monkeypatch.setattr(fb.settings, "fallback_enabled", True)
+    from app.llm_core import execution as fb
     monkeypatch.setattr(fb.settings, "health_breaker_enabled", True)
     monkeypatch.setattr(fb.settings, "health_poller_enabled", False)
     monkeypatch.setattr(fb, "emit", lambda e: None)
     r = health.reset(_cfg(n=1, cooldown=10.0))
-    install_chain()
+    chain = install_chain()
     _grant_probe(r)
 
     class UnexpectedModelBehavior(Exception):
@@ -498,7 +509,7 @@ def test_walker_releases_probe_on_bad_output_raise(monkeypatch, install_chain):
 
     with pytest.raises(UnexpectedModelBehavior):
         asyncio.run(fb.execute_with_fallback(
-            pipeline="moderation", session_id="s", profile_name="oss", run=run))
+            step=Step.MODERATION, session_id="s", run=run, chain=chain))
     assert r.snapshot()[OSS_EP]["probe_in_flight"] is False   # freed despite the raise
     health.reset()
 
@@ -507,26 +518,23 @@ def test_walker_releases_probe_on_not_run_reordered_tier(monkeypatch, materializ
     """The crux: a concurrency reorder moved the just-probed OSS tier off index 0,
     so the managed tier returns first and the OSS tier NEVER executes — yet its probe
     must STILL be freed (only the whole-chain finally sweep does this)."""
-    from app.services import fallback as fb
-    monkeypatch.setattr(fb.settings, "fallback_enabled", True)
+    from app.llm_core import execution as fb
     monkeypatch.setattr(fb.settings, "health_breaker_enabled", True)
     monkeypatch.setattr(fb.settings, "health_poller_enabled", False)
     monkeypatch.setattr(fb, "emit", lambda e: None)
     r = health.reset(_cfg(n=1, cooldown=10.0))
 
-    async def _reordered_chain(*, pipeline, session_id, profile_name):
-        return [
-            materialized_tier("managed", None),                       # index 0: runs first
-            materialized_tier("oss", None, endpoint=OSS_EP),          # index 1: never reached
-        ]
-    monkeypatch.setattr(fb, "_resolve_chain", _reordered_chain)
+    chain = [
+        materialized_tier("managed", None),
+        materialized_tier("oss", None, endpoint=OSS_EP),
+    ]
     _grant_probe(r)                                        # OSS probed, then reorder shifted it
 
     async def run(attempt):
         return f"ok-{attempt.kind}"                        # managed (index 0) succeeds
 
     result = asyncio.run(fb.execute_with_fallback(
-        pipeline="chat", session_id="s", profile_name="x", run=run))
+        step=Step.AGENT, session_id="s", run=run, chain=chain))
     assert result == "ok-managed"                          # OSS tier never ran
     assert r.snapshot()[OSS_EP]["probe_in_flight"] is False   # ...yet its probe was freed
     health.reset()

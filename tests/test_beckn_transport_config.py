@@ -33,3 +33,16 @@ def test_enabled_beckn_transport_accepts_complete_private_bridge_config():
 def test_enabled_amul_transactions_require_single_bpp_receiver():
     with pytest.raises(ValidationError, match="BECKN_AMUL_BPP_URI"):
         _enabled_settings(beckn_amul_bpp_uri="")
+
+
+def test_shc_only_accepts_onix_transport_without_private_bridge_tokens():
+    configured = Settings(
+        beckn_callback_transactions_enabled=False,
+        vistaar_shc_enabled=True,
+        beckn_bap_caller_url="http://onix/bap/caller",
+        beckn_bap_uri="https://bap.example/receiver",
+        beckn_transaction_bridge_token=None,
+        beckn_callback_token=None,
+    )
+
+    assert configured.vistaar_shc_enabled is True

@@ -21,6 +21,7 @@ SUPPORTED_SCHEME_UNIONS = {
     UnionName.KUTCH.value,
     UnionName.SUMUL.value,
     UnionName.SURENDRANAGAR.value,
+    UnionName.SABAR.value,
 }
 
 logger = get_logger(__name__)

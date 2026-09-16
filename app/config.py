@@ -1,15 +1,17 @@
+import json
 import os
 import logging
 import math
 from pathlib import Path
-from typing import ClassVar, List, Optional
-from pydantic import Field, ValidationInfo, field_validator, model_validator
-from pydantic_settings import BaseSettings
+from typing import Any, ClassVar, List, Optional
+from pydantic import AliasChoices, Field, ValidationInfo, field_validator, model_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
 from dotenv import load_dotenv
 
 # Load environment variables from .env file
 load_dotenv()
 _config_logger = logging.getLogger(__name__)
+_scheme_ocr_page_batch_size_deprecation_logged = False
 
 
 def _get_bool_env(name: str, default: bool = False) -> bool:
@@ -51,6 +53,89 @@ def _get_float_env(name: str, default: float) -> float:
     except (TypeError, ValueError):
         _config_logger.warning("Invalid float for %s=%r; using default=%s", name, value, default)
         return default
+
+
+def _get_str_env(name: str, default: str | None = None) -> str | None:
+    value = os.getenv(name)
+    return value if value not in (None, "") else default
+
+
+def _load_vault_secrets() -> dict[str, Any]:
+    """Load the app's secret-only Vault document as Settings values."""
+    if not _get_bool_env("HASHICORP_VAULT_ENABLED"):
+        return {}
+
+    address = _get_str_env("VAULT_ADDR", "http://127.0.0.1:8200")
+    mount = _get_str_env("VAULT_MOUNT_POINT", "secret")
+    path = _get_str_env("VAULT_SECRET_PATH", "amul-oan-api")
+    try:
+        import hvac
+
+        client = hvac.Client(
+            url=address,
+            token=_get_str_env("VAULT_TOKEN"),
+            namespace=_get_str_env("VAULT_NAMESPACE"),
+            verify=_get_str_env("VAULT_CACERT") or _get_bool_env("VAULT_TLS_VERIFY", True),
+            timeout=_get_float_env("VAULT_TIMEOUT_SECONDS", 5.0),
+        )
+        auth_method = (_get_str_env("VAULT_AUTH_METHOD", "token") or "token").lower()
+        if auth_method == "kubernetes":
+            role = _get_str_env("VAULT_KUBERNETES_ROLE")
+            if not role:
+                raise ValueError("VAULT_KUBERNETES_ROLE is required")
+            jwt_path = _get_str_env(
+                "VAULT_KUBERNETES_JWT_PATH",
+                "/var/run/secrets/kubernetes.io/serviceaccount/token",
+            )
+            client.auth.kubernetes.login(
+                role=role,
+                jwt=Path(jwt_path).read_text(encoding="utf-8").strip(),
+                mount_point=_get_str_env("VAULT_KUBERNETES_MOUNT_POINT", "kubernetes"),
+            )
+        elif auth_method != "token":
+            raise ValueError("VAULT_AUTH_METHOD must be 'token' or 'kubernetes'")
+        if not client.is_authenticated():
+            raise RuntimeError("Vault authentication failed")
+
+        if _get_int_env("VAULT_KV_VERSION", 2) == 1:
+            data = client.secrets.kv.v1.read_secret(path=path, mount_point=mount).get("data", {})
+        else:
+            response = client.secrets.kv.v2.read_secret_version(path=path, mount_point=mount)
+            data = response.get("data", {}).get("data", {})
+        if not isinstance(data, dict):
+            raise RuntimeError("Vault response did not contain a secret mapping")
+        return {
+            key.lower(): json.dumps(value, separators=(",", ":"))
+            if isinstance(value, (dict, list))
+            else value
+            for key, value in data.items()
+            if value not in (None, "")
+        }
+    except Exception as exc:
+        _config_logger.warning(
+            "Vault load failed for mount=%s path=%s; using environment values: %s",
+            mount,
+            path,
+            exc,
+        )
+        return {}
+
+
+_VAULT_SECRETS = _load_vault_secrets()
+
+
+def get_config_value(env_name: str, default: Any = None) -> Any:
+    """Central compatibility accessor for config that must be read dynamically.
+
+    Most application code should use ``settings``.  The LLM config synthesizer
+    and a few tests intentionally re-read values after process start; routing
+    those reads through this function keeps all environment access in this file.
+    """
+
+    value = _VAULT_SECRETS.get(env_name.lower())
+    if value in (None, ""):
+        value = os.getenv(env_name)
+    return default if value in (None, "") else value
 
 
 def _safe_int_env_value(
@@ -107,6 +192,28 @@ def _safe_float_env_value(
 
 
 class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+    def __init__(self, **values: Any):
+        # Explicit values win, then Vault; missing Vault keys fall back to env/.env.
+        super().__init__(**{**_VAULT_SECRETS, **values})
+
+    # HashiCorp Vault bootstrap/configuration (always environment driven).
+    hashicorp_vault_enabled: bool = False
+    vault_addr: str = "http://127.0.0.1:8200"
+    vault_secret_path: str = "amul-oan-api"
+    vault_mount_point: str = "secret"
+    vault_kv_version: int = 2
+    vault_namespace: Optional[str] = None
+    vault_auth_method: str = "token"
+    vault_token: Optional[str] = Field(default=None, exclude=True)
+    vault_kubernetes_role: Optional[str] = None
+    vault_kubernetes_jwt_path: str = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+    vault_kubernetes_mount_point: str = "kubernetes"
+    vault_cacert: Optional[str] = None
+    vault_tls_verify: bool = True
+    vault_timeout_seconds: float = 5.0
+
     # Core Application Settings
     app_name: str = "Amul AI API"
     environment: str = os.getenv("ENVIRONMENT", "production")
@@ -120,6 +227,9 @@ class Settings(BaseSettings):
     port: int = 8000
     api_prefix: str = "/api"
     rate_limit_requests_per_minute: int = 1000
+    prometheus_multiproc_dir: Optional[str] = None
+    model_boundary_capture_enabled: bool = False
+    model_boundary_capture_dir: str = "/tmp/voice_model_boundary"
 
     # Security Settings
     allowed_origins: List[str] = os.getenv("ALLOWED_ORIGINS", "*").split(",")
@@ -149,7 +259,10 @@ class Settings(BaseSettings):
     firebase_service_account_path_3: Optional[str] = os.getenv("FIREBASE_SERVICE_ACCOUNT_PATH_3")
 
     # Worker Settings
-    uvicorn_workers: int = os.cpu_count() or 1
+    uvicorn_workers: int = Field(
+        default=os.cpu_count() or 1,
+        validation_alias=AliasChoices("AMUL_CHAT_BE_UVICORN_WORKERS", "UVICORN_WORKERS"),
+    )
 
     # Redis Settings (set REDIS_HOST, REDIS_PORT, REDIS_DB, REDIS_PASSWORD, etc. via env)
     redis_host: str = "localhost"
@@ -173,6 +286,11 @@ class Settings(BaseSettings):
     history_cache_ttl_seconds: int = int(os.getenv("HISTORY_CACHE_TTL_SECONDS", str(60 * 60 * 2)))
     suggestions_cache_ttl: int = 60 * 30    # 30 minutes
     farmer_animal_api_cache_ttl: int = 60 * 60 * 24 * 17  # 17 days
+    # AI technician list cache: keyed by (union_code, society_code), not per farmer.
+    # Shared across farmer SWR refresh and prompt context; API called only on miss.
+    ai_technician_cache_ttl_seconds: int = int(
+        os.getenv("AI_TECHNICIAN_CACHE_TTL_SECONDS", str(60 * 60 * 24))
+    )
     # Session-ownership locking (voice call concurrency) — consumed by app/utils.py
     # once the voice surface folds in; inert on the chat path.
     session_owner_ttl_seconds: int = int(os.getenv("SESSION_OWNER_TTL_SECONDS", "120"))
@@ -200,6 +318,22 @@ class Settings(BaseSettings):
     # deep-debug), capped at FARMER_API_TRACE_BODY_CHARS.
     farmer_api_trace_body: bool = _get_bool_env("FARMER_API_TRACE_BODY", default=False)
     farmer_api_trace_body_chars: int = int(os.getenv("FARMER_API_TRACE_BODY_CHARS", "8000"))
+    # Farmer cache consolidation rollout (Layer 2-first for farmer-by-mobile).
+    # Defaults preserve current behavior until later steps wire these flags in:
+    #   chat stays on Layer 1; fallback is armed for Phase A; Layer 1 mobile
+    #   cache remains active until Phase C bypass.
+    farmer_layer2_chat_context_enabled: bool = Field(
+        default=False,
+        validation_alias="FARMER_LAYER2_CHAT_CONTEXT_ENABLED",
+    )
+    farmer_layer2_fallback_to_legacy_enabled: bool = Field(
+        default=True,
+        validation_alias="FARMER_LAYER2_FALLBACK_TO_LEGACY_ENABLED",
+    )
+    farmer_layer1_mobile_cache_bypass_enabled: bool = Field(
+        default=False,
+        validation_alias="FARMER_LAYER1_MOBILE_CACHE_BYPASS_ENABLED",
+    )
 
     # Logging Configuration
     log_level: str = "INFO"
@@ -220,10 +354,13 @@ class Settings(BaseSettings):
 
     # External Service URLs
     telemetry_api_url: str = "https://vistaar.kenpath.ai/observability-service/action/data/v3/telemetry"
-    bhashini_api_url: str = ""
+    bhashini_api_url: str = "https://dhruva-api.bhashini.gov.in/services/inference/pipeline"
     ollama_endpoint_url: Optional[str] = None
     marqo_endpoint_url: Optional[str] = None
     inference_endpoint_url: Optional[str] = None
+    raya_tts_url: Optional[str] = None
+    tts_timeout_seconds: float = 60.0
+    transcribe_timeout_seconds: float = 30.0
 
     # Nudge settings — inert on the chat path; consumed by the voice surface when
     # it folds in (voice is served by voice-oan-api today).
@@ -252,28 +389,67 @@ class Settings(BaseSettings):
     # External Service API Keys
     openai_api_key: Optional[str] = None
     anthropic_api_key: Optional[str] = None
+    google_api_key: Optional[str] = None
+    azure_openai_api_key: Optional[str] = None
     sarvam_api_key: Optional[str] = None
     meity_api_key_value: Optional[str] = None
     langfuse_public_key: Optional[str] = None
     langfuse_secret_key: Optional[str] = None
     langfuse_base_url: Optional[str] = None
+    langfuse_host: Optional[str] = None  # backward-compatible alias used by old deployments
     langfuse_release: Optional[str] = None  # LANGFUSE_RELEASE: app version for metrics (git sha, semver)
     langfuse_tracing_environment: Optional[str] = None  # LANGFUSE_TRACING_ENVIRONMENT: production/staging/development
     bhashini_api_key: str = ""
     inference_api_key: Optional[str] = None
+    oss_inference_api_key: Optional[str] = None
     gemini_api_key: Optional[str] = None
     mapbox_api_token: Optional[str] = None
     banas_mobile_api_key: Optional[str] = os.getenv("BANAS_MOBILE_API_KEY")
+    pashugpt_token: Optional[str] = None
+    pashugpt_token_2: Optional[str] = None
+    raya_tts_api_key: Optional[str] = None
+    demo_ui_api_key: Optional[str] = None
 
     # AWS Configuration
     aws_access_key_id: Optional[str] = None
     aws_secret_access_key: Optional[str] = None
     aws_region: Optional[str] = None
     aws_s3_bucket: Optional[str] = None
+    aws_endpoint_url: Optional[str] = None
 
     # LLM Configuration
     llm_provider: Optional[str] = None
     llm_model_name: Optional[str] = None
+    oss_inference_endpoint_url: Optional[str] = None
+    oss_llm_model_name: str = "gemma-4-31b-it"
+    oss_pretranslation_model: Optional[str] = None
+    pretranslation_provider: Optional[str] = None
+    pretranslation_model: Optional[str] = None
+    anthropic_pretranslation_model: str = "claude-haiku-4-5"
+    openai_pretranslation_model: str = "gpt-4.1-mini"
+    azure_openai_endpoint: Optional[str] = None
+    azure_openai_api_version: Optional[str] = None
+    azure_openai_deployment_name: Optional[str] = None
+    translategemma_27b_base_endpoint: str = "http://localhost:18002/v1"
+    translategemma_27b_base_endpoints: Optional[str] = None  # deprecated; warning compatibility only
+    translategemma_27b_base_model: str = "translategemma-27b-base"
+    pipeline_config_path: Optional[str] = None
+    pipeline_config_redis_enabled: bool = False
+    pipeline_channel: str = "chat"
+    pipeline_config_refresh_s: float = 10.0
+    pipeline_config_redis_timeout_s: float = 0.5
+    require_overflow_armed: bool = False
+    oss_pipeline_pct: int = 0
+    oss_variant_ttl: int = 60 * 60 * 24 * 7
+    fallback_post_translation_tg_ttft_ms: int = 5000
+    fallback_post_translation_llm_timeout_ms: int = 30000
+    managed_max_concurrency: int = 64
+    chat_history_max_tokens: Optional[int] = None
+    chat_history_max_tokens_vllm_gemma: int = 10000
+    agrinet_max_tokens: Optional[int] = None
+    agrinet_max_tokens_vllm_gemma: int = 2048
+    doctor_max_tokens: Optional[int] = None
+    doctor_request_limit: int = 10
     marqo_index_name: Optional[str] = None
     # Tool retrieval config (search_documents): keep env names/defaults unchanged.
     marqo_use_e5_query_prefix: bool = Field(default=True, validation_alias="MARQO_USE_E5_QUERY_PREFIX")
@@ -295,28 +471,12 @@ class Settings(BaseSettings):
     # OSS_LLM_MODEL_NAME) by app/llm_core/legacy_shim.py. The env vars stay; the
     # duplicate settings attributes + the pipeline_router that read them are gone.
 
-    # Standard OSS -> managed overflow/fallback (see docs/oss-fallback-design.md).
-    # ARMS the whole overflow system: the OSS->managed attempt chain AND the health
-    # + concurrency guards (which fire ONLY via the fallback walkers) are inert
-    # while this is off. Post-P4 the unified pipeline is the ONLY path (legacy
-    # deleted), so shipping with overflow off makes no sense — DEFAULTS TRUE. Envs
-    # that deliberately want it off can still set FALLBACK_ENABLED=false.
-    fallback_enabled: bool = os.getenv("FALLBACK_ENABLED", "true").strip().lower() in {
-        "1", "true", "yes", "on"
-    }
-    # Per-pipeline OSS time-to-respond budgets before falling back to managed.
-    fallback_chat_oss_timeout_ms: int = int(os.getenv("FALLBACK_CHAT_OSS_TIMEOUT_MS", "8000"))
-    fallback_moderation_oss_timeout_ms: int = int(os.getenv("FALLBACK_MODERATION_OSS_TIMEOUT_MS", "5000"))
-    fallback_pretranslation_oss_timeout_ms: int = int(os.getenv("FALLBACK_PRETRANSLATION_OSS_TIMEOUT_MS", "10000"))
-    fallback_suggestions_oss_timeout_ms: int = int(os.getenv("FALLBACK_SUGGESTIONS_OSS_TIMEOUT_MS", "6000"))
-    # Deadline for the managed (fallback) tier.
-    fallback_managed_timeout_ms: int = int(os.getenv("FALLBACK_MANAGED_TIMEOUT_MS", "20000"))
-
     # The unified LLM pipeline (app/llm_core) is now the ONLY model-selection path
     # — the LLM_CORE_ENABLED / PROFILES_ENABLED kill-switches (P0/P1 identity gates)
     # were removed at P4. The weighted-profile split + config-driven fallback chain
-    # are always live. Operational trigger flags (HEALTH_* / CONCURRENCY_GAUGE_*)
-    # below remain as real toggles.
+    # are always live. Health keeps explicit operational toggles; execution sees
+    # concurrency only through a configured ConcurrencyGate. The env shim still
+    # honors CONCURRENCY_GAUGE_ENABLED=false by omitting that gate.
     # Health filter — pre-flight chain FILTER (llm_core P2). Two independent
     # kill-switches, both default OFF (zero behaviour change when off):
     #   * HEALTH_BREAKER_ENABLED — the passive circuit-breaker, fed by the
@@ -344,41 +504,56 @@ class Settings(BaseSettings):
     # Hysteresis: consecutive healthy polls required to fail an `open` endpoint
     # back to `closed` (guards against the H200 crash-and-half-boot flap).
     health_poller_healthy_polls: int = int(os.getenv("HEALTH_POLLER_HEALTHY_POLLS", "3"))
-    # Concurrency-gauge trigger — pre-flight REORDER filter (llm_core P3). Default
-    # OFF (zero behaviour change when off). When on, a step carrying an explicit
-    # ConcurrencyGate (metrics_url + max_concurrency) has its vLLM tier
-    # DEPRIORITIZED behind the managed tier while that box's in-flight
+    health_fail_rate_window: int = 20
+    health_fail_rate_threshold: float = 0.5
+    health_probe_max_s: float = 30.0
+    # Concurrency-gauge trigger — pre-flight REORDER filter (llm_core P3). A step
+    # with a vLLM primary and an explicit ConcurrencyGate (metrics_url +
+    # max_concurrency) has that primary DEPRIORITIZED while the box's in-flight
     # (running+waiting) requests are at/above max_concurrency — so managed is tried
     # first under load. Unreadable metrics FAIL OPEN (order unchanged), never a
     # forced flip to managed. Never drops a tier and never empties the chain;
-    # orthogonal to the sticky split and composes AFTER the health prune.
-    concurrency_gauge_enabled: bool = os.getenv("CONCURRENCY_GAUGE_ENABLED", "true").strip().lower() in {
-        "1", "true", "yes", "on"
-    }
-    # Explicit vLLM Prometheus /metrics URL that arms the AGENT-step concurrency
-    # gate (P3). When set, synthesize_from_env() attaches a ConcurrencyGate to the
-    # OSS agent step so the vLLM tier is deprioritized under load. When unset, the
-    # gauge is a harmless no-op even with CONCURRENCY_GAUGE_ENABLED on (no gate =>
-    # nothing to reorder). NOT derived by stripping /v1 off the inference endpoint
-    # (that was bh's fragile derivation); this is given explicitly.
-    agent_concurrency_metrics_url: Optional[str] = os.getenv("AGENT_CONCURRENCY_METRICS_URL")
-    # In-flight (running+waiting) threshold at/above which the gate deprioritizes
-    # the vLLM tier. Shared by the shim when it builds the gate.
-    concurrency_max: int = int(os.getenv("CONCURRENCY_MAX", "10"))
+    # orthogonal to the sticky split and composes BEFORE the health prune.
     # Short TTL (seconds) for the shared Redis cache of a vLLM engine's in-flight
     # count (mirrors bh's ~2s), and the per-probe metrics HTTP timeout.
     concurrency_metrics_cache_ttl_s: int = int(os.getenv("CONCURRENCY_METRICS_CACHE_TTL_S", "2"))
     concurrency_metrics_timeout_ms: int = int(os.getenv("CONCURRENCY_METRICS_TIMEOUT_MS", "2000"))
+    concurrency_shed_start_frac: float = 0.7
+    concurrency_prometheus_url: Optional[str] = None
+    concurrency_prometheus_query: Optional[str] = None
     # Scheme tool union scoping:
     # true  -> require authenticated farmer union to match a supported scheme union
     # false -> testing mode; allow any farmer union and fall back to supported unions
     scheme_require_union_auth: bool = os.getenv("SCHEME_REQUIRE_UNION_AUTH", "true").strip().lower() in {
         "1", "true", "yes", "on"
     }
-    # Banas scheme PDF ingestion via Chandra OCR (see scheme_ingestion.py).
+    # Union scheme ingestion source URLs.
+    banas_scheme_site_origin: str = Field(
+        default="https://www.banasdairy.coop",
+        validation_alias="BANAS_SCHEME_SITE_ORIGIN",
+    )
+    banas_scheme_documents_api_url: str = Field(
+        default="https://www.banasdairy.coop/api/documents",
+        validation_alias="BANAS_SCHEME_DOCUMENTS_API_URL",
+    )
+    sarhad_scheme_source_url: str = Field(
+        default="https://sarhaddairy.coop/for-our-milk-producers/",
+        validation_alias="SARHAD_SCHEME_SOURCE_URL",
+    )
+    sumul_scheme_source_url: str = Field(
+        default="https://www.sumul.com/farmer-section.html",
+        validation_alias="SUMUL_SCHEME_SOURCE_URL",
+    )
+    sursagar_scheme_source_url: str = Field(
+        default="https://sursagardairy.com/Farmer/MilkProducers",
+        validation_alias="SURSAGAR_SCHEME_SOURCE_URL",
+    )
+    # Banas/Sumul/Sursagar/Sabar scheme PDF ingestion via stock Chandra vLLM
+    # (OpenAI-compatible /v1/chat/completions; see scheme_ingestion.py).
+    # Base URL e.g. http://10.185.25.197:8011 (optional trailing /v1 is stripped).
     scheme_ocr_endpoint_url: Optional[str] = os.getenv("SCHEME_OCR_ENDPOINT_URL")
-    # Per-page OCR timeout budget. Each OCR POST is a small page batch (or a
-    # single-page fallback); HTTP timeout is this value times images in that request.
+    # Per-page OCR timeout budget. Each OCR POST is one page via stock Chandra
+    # /v1/chat/completions; HTTP timeout equals this value.
     scheme_ocr_timeout_seconds: float = float(os.getenv("SCHEME_OCR_TIMEOUT_SECONDS", "120"))
     scheme_pdf_render_dpi: int = int(os.getenv("SCHEME_PDF_RENDER_DPI", "200"))
     # Scheme ingestion operational tunables.
@@ -387,8 +562,11 @@ class Settings(BaseSettings):
     scheme_pdf_max_render_pages: int = Field(default=30, validation_alias="SCHEME_PDF_MAX_RENDER_PAGES")
     scheme_ocr_prompt_type: str = os.getenv("SCHEME_OCR_PROMPT_TYPE", "ocr_layout")
     scheme_ocr_max_output_tokens: int = Field(default=12284, validation_alias="SCHEME_OCR_MAX_OUTPUT_TOKENS")
-    # Pages per Chandra /v1/ocr/pages request. Small batches avoid 413/resets on
-    # whole-PDF bodies; failed batches retry one page at a time.
+    # Max in-flight one-page OCR chat-completions requests per PDF (latency knob).
+    # Prefer SCHEME_OCR_CONCURRENCY. When unset, falls back to SCHEME_OCR_PAGE_BATCH_SIZE.
+    scheme_ocr_concurrency: int = Field(default=4, validation_alias="SCHEME_OCR_CONCURRENCY")
+    # Deprecated alias for SCHEME_OCR_CONCURRENCY. No longer means "images per HTTP
+    # request" (stock Chandra is always one image per /v1/chat/completions call).
     scheme_ocr_page_batch_size: int = Field(default=4, validation_alias="SCHEME_OCR_PAGE_BATCH_SIZE")
     scheme_ocr_max_failed_page_ratio: float = Field(default=0.15, validation_alias="SCHEME_OCR_MAX_FAILED_PAGE_RATIO")
     scheme_banas_min_record_coverage_ratio: float = Field(default=0.85, validation_alias="SCHEME_BANAS_MIN_RECORD_COVERAGE_RATIO")
@@ -487,8 +665,8 @@ class Settings(BaseSettings):
     # ONIX BAP caller base, e.g. http://amul-onix:3001/bap/caller. The client
     # appends /confirm/ or /status/.
     beckn_bap_caller_url: str = os.getenv("BECKN_BAP_CALLER_URL", "").rstrip("/")
-    # Bearer credential for the private VM6 transaction bridge. This is
-    # separate from the reverse callback credential and from ONIX signing keys.
+    # Bearer credential for a private transaction bridge. Direct, in-network
+    # ONIX callers (including the dev SHC path) do not require this credential.
     beckn_transaction_bridge_token: Optional[str] = os.getenv("BECKN_TRANSACTION_BRIDGE_TOKEN")
     beckn_bap_id: str = os.getenv("BECKN_BAP_ID", "bap.amul-net.internal")
     # Public ONIX callback receiver base; ONIX validates/signature-routes the
@@ -546,14 +724,12 @@ class Settings(BaseSettings):
     vistaar_bpp_id: str = os.getenv("VISTAAR_BPP_ID", "bpp-network-playground-sandbox-vistaar.da.gov.in")
     vistaar_bpp_uri: str = os.getenv("VISTAAR_BPP_URI", "https://bpp-network-playground-sandbox-vistaar.da.gov.in")
     vistaar_max_items: int = Field(default=20, validation_alias="VISTAAR_MAX_ITEMS")
+    mandi_max_candidates: int = 3
+    mandi_location_ttl_s: int = 3600
     # Farmer/animal tool backend URLs and timeout (non-secret, previously hardcoded).
     amulpashudhan_base_url: str = Field(
         default="https://api.amulpashudhan.com/configman/v1/PashuGPT",
         validation_alias="AMULPASHUDHAN_BASE_URL",
-    )
-    herdman_base_url: str = Field(
-        default="https://herdman.live/apis/api",
-        validation_alias="HERDMAN_BASE_URL",
     )
     banas_mobile_base_url: str = Field(
         default="https://banasmobileapi.amnex.com/api/FarmerVisitAPIKOS",
@@ -568,6 +744,14 @@ class Settings(BaseSettings):
     farmer_refresh_lock_ttl_seconds: int = Field(default=60 * 5, validation_alias="FARMER_REFRESH_LOCK_TTL_SECONDS")
     farmer_cold_fetch_timeout_seconds: float = Field(default=4.0, validation_alias="FARMER_COLD_FETCH_TIMEOUT_SECONDS")
     farmer_refresh_queue_batch_size: int = Field(default=20, validation_alias="FARMER_REFRESH_QUEUE_BATCH_SIZE")
+    farmer_refresh_retry_base_seconds: int = Field(
+        default=60,
+        validation_alias="FARMER_REFRESH_RETRY_BASE_SECONDS",
+    )
+    farmer_refresh_retry_max_seconds: int = Field(
+        default=60 * 60,
+        validation_alias="FARMER_REFRESH_RETRY_MAX_SECONDS",
+    )
 
     # Config hardening policy: malformed numeric env values warn and fall back to
     # defaults; parseable but out-of-range values are clamped to safe bounds.
@@ -581,11 +765,14 @@ class Settings(BaseSettings):
         "scheme_lock_ttl_seconds": ("SCHEME_LOCK_TTL_SECONDS", 60 * 60, 1, None),
         "scheme_pdf_max_render_pages": ("SCHEME_PDF_MAX_RENDER_PAGES", 30, 1, None),
         "scheme_ocr_max_output_tokens": ("SCHEME_OCR_MAX_OUTPUT_TOKENS", 12284, 1, None),
+        "scheme_ocr_concurrency": ("SCHEME_OCR_CONCURRENCY", 4, 1, 8),
         "scheme_ocr_page_batch_size": ("SCHEME_OCR_PAGE_BATCH_SIZE", 4, 1, 8),
         "health_call_cooldown_ttl_seconds": ("HEALTH_CALL_COOLDOWN_TTL_SECONDS", 60 * 30, 1, None),
         "vistaar_max_items": ("VISTAAR_MAX_ITEMS", 20, 1, None),
         "farmer_refresh_lock_ttl_seconds": ("FARMER_REFRESH_LOCK_TTL_SECONDS", 60 * 5, 1, None),
         "farmer_refresh_queue_batch_size": ("FARMER_REFRESH_QUEUE_BATCH_SIZE", 20, 1, None),
+        "farmer_refresh_retry_base_seconds": ("FARMER_REFRESH_RETRY_BASE_SECONDS", 60, 1, None),
+        "farmer_refresh_retry_max_seconds": ("FARMER_REFRESH_RETRY_MAX_SECONDS", 60 * 60, 1, None),
         "beckn_operation_ttl_seconds": ("BECKN_OPERATION_TTL_SECONDS", 60 * 60 * 24, 60, None),
         "beckn_callback_max_body_bytes": ("BECKN_CALLBACK_MAX_BODY_BYTES", 2 * 1024 * 1024, 1024, 5 * 1024 * 1024),
         "shc_html_max_bytes": ("SHC_HTML_MAX_BYTES", 1024 * 1024, 1024, 2 * 1024 * 1024),
@@ -608,11 +795,17 @@ class Settings(BaseSettings):
     _SAFE_BOOL_FIELDS: ClassVar[dict[str, tuple[str, bool]]] = {
         "marqo_use_e5_query_prefix": ("MARQO_USE_E5_QUERY_PREFIX", True),
         "marqo_exclude_reference": ("MARQO_EXCLUDE_REFERENCE", True),
+        "farmer_layer2_chat_context_enabled": ("FARMER_LAYER2_CHAT_CONTEXT_ENABLED", False),
+        "farmer_layer2_fallback_to_legacy_enabled": ("FARMER_LAYER2_FALLBACK_TO_LEGACY_ENABLED", True),
+        "farmer_layer1_mobile_cache_bypass_enabled": ("FARMER_LAYER1_MOBILE_CACHE_BYPASS_ENABLED", False),
     }
 
     @field_validator(
         "marqo_use_e5_query_prefix",
         "marqo_exclude_reference",
+        "farmer_layer2_chat_context_enabled",
+        "farmer_layer2_fallback_to_legacy_enabled",
+        "farmer_layer1_mobile_cache_bypass_enabled",
         mode="before",
     )
     @classmethod
@@ -630,11 +823,14 @@ class Settings(BaseSettings):
         "scheme_lock_ttl_seconds",
         "scheme_pdf_max_render_pages",
         "scheme_ocr_max_output_tokens",
+        "scheme_ocr_concurrency",
         "scheme_ocr_page_batch_size",
         "health_call_cooldown_ttl_seconds",
         "vistaar_max_items",
         "farmer_refresh_lock_ttl_seconds",
         "farmer_refresh_queue_batch_size",
+        "farmer_refresh_retry_base_seconds",
+        "farmer_refresh_retry_max_seconds",
         "beckn_operation_ttl_seconds",
         "beckn_callback_max_body_bytes",
         "shc_html_max_bytes",
@@ -680,9 +876,13 @@ class Settings(BaseSettings):
 
     @field_validator(
         "amulpashudhan_base_url",
-        "herdman_base_url",
         "banas_mobile_base_url",
         "cvcc_base_url",
+        "banas_scheme_site_origin",
+        "banas_scheme_documents_api_url",
+        "sarhad_scheme_source_url",
+        "sumul_scheme_source_url",
+        "sursagar_scheme_source_url",
         mode="before",
     )
     @classmethod
@@ -692,18 +892,40 @@ class Settings(BaseSettings):
         return str(value).rstrip("/")
 
     @model_validator(mode="after")
+    def _resolve_scheme_ocr_concurrency(self):
+        """Prefer SCHEME_OCR_CONCURRENCY; else alias from deprecated PAGE_BATCH_SIZE."""
+        global _scheme_ocr_page_batch_size_deprecation_logged
+        concurrency_raw = os.getenv("SCHEME_OCR_CONCURRENCY")
+        concurrency_explicit = concurrency_raw is not None and str(concurrency_raw).strip() != ""
+        if concurrency_explicit:
+            return self
+
+        # Unset concurrency → use (already clamped) page_batch_size as concurrency.
+        self.scheme_ocr_concurrency = self.scheme_ocr_page_batch_size
+        batch_raw = os.getenv("SCHEME_OCR_PAGE_BATCH_SIZE")
+        batch_explicit = batch_raw is not None and str(batch_raw).strip() != ""
+        if batch_explicit and not _scheme_ocr_page_batch_size_deprecation_logged:
+            _config_logger.warning(
+                "SCHEME_OCR_PAGE_BATCH_SIZE is deprecated for OCR transport batching; "
+                "use SCHEME_OCR_CONCURRENCY=%s instead (aliased for now)",
+                self.scheme_ocr_concurrency,
+            )
+            _scheme_ocr_page_batch_size_deprecation_logged = True
+        return self
+
+    @model_validator(mode="after")
     def _require_beckn_transport_credentials_when_enabled(self):
         if not (self.beckn_callback_transactions_enabled or self.vistaar_shc_enabled):
             return self
         required = {
             "BECKN_BAP_CALLER_URL": self.beckn_bap_caller_url,
             "BECKN_BAP_URI": self.beckn_bap_uri,
-            "BECKN_TRANSACTION_BRIDGE_TOKEN": self.beckn_transaction_bridge_token,
-            "BECKN_CALLBACK_TOKEN": self.beckn_callback_token,
         }
         if self.beckn_callback_transactions_enabled:
             required.update(
                 {
+                    "BECKN_TRANSACTION_BRIDGE_TOKEN": self.beckn_transaction_bridge_token,
+                    "BECKN_CALLBACK_TOKEN": self.beckn_callback_token,
                     "BECKN_AMUL_BPP_ID": self.beckn_amul_bpp_id,
                     "BECKN_AMUL_BPP_URI": self.beckn_amul_bpp_uri,
                 }
@@ -715,9 +937,5 @@ class Settings(BaseSettings):
                 + ", ".join(missing)
             )
         return self
-
-    class Config:
-        env_file = ".env"
-        extra = 'ignore'  # Ignore extra fields from .env
 
 settings = Settings()

@@ -4,15 +4,17 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import json
 import re
+import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from html import unescape
 from html.parser import HTMLParser
 from typing import Any
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlsplit
 
 import httpx
 
@@ -31,6 +33,70 @@ SCHEME_OCR_PROMPT_TYPE = settings.scheme_ocr_prompt_type
 SCHEME_OCR_MAX_OUTPUT_TOKENS = settings.scheme_ocr_max_output_tokens
 SCHEME_OCR_MAX_FAILED_PAGE_RATIO = settings.scheme_ocr_max_failed_page_ratio
 SCHEME_BANAS_MIN_RECORD_COVERAGE_RATIO = settings.scheme_banas_min_record_coverage_ratio
+SCHEME_OCR_CONCURRENCY = settings.scheme_ocr_concurrency
+SCHEME_OCR_MODEL_NAME = "chandra"
+SCHEME_OCR_PAGE_MAX_ATTEMPTS = max(1, int(getattr(settings, "scheme_ocr_page_max_attempts", 3)))
+SCHEME_OCR_RETRY_BASE_DELAY_SECONDS = max(
+    0.0,
+    float(getattr(settings, "scheme_ocr_retry_base_delay_seconds", 0.5)),
+)
+SCHEME_OCR_RETRY_MAX_DELAY_SECONDS = max(
+    SCHEME_OCR_RETRY_BASE_DELAY_SECONDS,
+    float(getattr(settings, "scheme_ocr_retry_max_delay_seconds", 2.0)),
+)
+_RETRYABLE_OCR_STATUS_CODES = {408, 409, 425, 429, 500, 502, 503, 504}
+# Exact text of datalab-to/chandra PROMPT_MAPPING["ocr_layout"] (chandra/prompts.py).
+SCHEME_OCR_LAYOUT_PROMPT = (
+    "OCR this image to HTML, arranged as layout blocks.  Each layout block should be a div "
+    "with the data-bbox attribute representing the bounding box of the block in x0 y0 x1 y1 "
+    "format.  Bboxes are normalized 0-1000. The data-label attribute is the label for the block.\n"
+    "\n"
+    "Use the following labels:\n"
+    "- Caption\n"
+    "- Footnote\n"
+    "- Equation-Block\n"
+    "- List-Group\n"
+    "- Page-Header\n"
+    "- Page-Footer\n"
+    "- Image\n"
+    "- Section-Header\n"
+    "- Table\n"
+    "- Text\n"
+    "- Complex-Block\n"
+    "- Code-Block\n"
+    "- Form\n"
+    "- Table-Of-Contents\n"
+    "- Figure\n"
+    "- Chemical-Block\n"
+    "- Diagram\n"
+    "- Bibliography\n"
+    "- Blank-Page\n"
+    "\n"
+    "Only use these tags ['math', 'br', 'i', 'b', 'u', 'del', 'sup', 'sub', 'table', 'tr', 'td', "
+    "'p', 'th', 'div', 'pre', 'h1', 'h2', 'h3', 'h4', 'h5', 'ul', 'ol', 'li', 'input', 'a', "
+    "'span', 'img', 'hr', 'tbody', 'small', 'caption', 'strong', 'thead', 'big', 'code', 'chem'], "
+    "and these attributes ['class', 'colspan', 'rowspan', 'display', 'checked', 'type', 'border', "
+    "'value', 'style', 'href', 'alt', 'align', 'data-bbox', 'data-label'].\n"
+    "\n"
+    "Guidelines:\n"
+    "* Inline math: Surround math with <math>...</math> tags. Math expressions should be "
+    "rendered in KaTeX-compatible LaTeX. Use display for block math.\n"
+    "* Tables: Use colspan and rowspan attributes to match table structure.\n"
+    "* Formatting: Maintain consistent formatting with the image, including spacing, "
+    "indentation, subscripts/superscripts, and special characters.\n"
+    "* Images: Include a description of any images in the alt attribute of an <img> tag. Do not "
+    "fill out the src property. Describe in detail inside the div tag. Also convert charts to "
+    "high fidelity data, and convert diagrams to mermaid.\n"
+    "* Forms: Mark checkboxes and radio buttons properly.\n"
+    "* Text: join lines together properly into paragraphs using <p>...</p> tags.  Use <br> tags "
+    "for line breaks within paragraphs, but only when absolutely necessary to maintain meaning.\n"
+    "* Chemistry: Use <chem>...</chem> tags for chemical formulas with reactive SMILES.\n"
+    "* Lists: Preserve indents and proper list markers.\n"
+    "* Use the simplest possible HTML structure that accurately represents the content of the "
+    "block.\n"
+    "* Make sure the text is accurate and easy for a human to read and interpret.  Reading "
+    "order should be correct and natural."
+)
 _redis_client = None
 
 
@@ -63,9 +129,25 @@ class SchemeSource:
     content_type: str
 
 
-BANAS_SITE_ORIGIN = "https://www.banasdairy.coop"
-BANAS_DOCUMENTS_API_URL = f"{BANAS_SITE_ORIGIN}/api/documents"
 BANAS_SCHEME_SECTION = "schemes"
+SABAR_SITE_ORIGIN = "https://sabardairy.org"
+
+
+def _url_origin(url: str, fallback: str) -> str:
+    raw_url = str(url or "").strip()
+    parsed = urlsplit(raw_url)
+    if parsed.scheme and parsed.netloc:
+        return f"{parsed.scheme}://{parsed.netloc}".rstrip("/")
+    return fallback.rstrip("/")
+
+
+BANAS_SITE_ORIGIN = str(settings.banas_scheme_site_origin or "").strip().rstrip("/") or "https://www.banasdairy.coop"
+BANAS_DOCUMENTS_API_URL = (
+    str(settings.banas_scheme_documents_api_url or "").strip().rstrip("/")
+    or f"{BANAS_SITE_ORIGIN}/api/documents"
+)
+SUMUL_SITE_ORIGIN = _url_origin(settings.sumul_scheme_source_url, "https://www.sumul.com")
+SURSAGAR_SITE_ORIGIN = _url_origin(settings.sursagar_scheme_source_url, "https://sursagardairy.com")
 
 BANAS_SOURCE = SchemeSource(
     source_name="banas",
@@ -80,7 +162,7 @@ BANAS_SOURCE = SchemeSource(
 SARHAD_SOURCE = SchemeSource(
     source_name="sarhad",
     union_name=UnionName.KUTCH.value,
-    source_url="https://sarhaddairy.coop/for-our-milk-producers/",
+    source_url=str(settings.sarhad_scheme_source_url or "").strip() or "https://sarhaddairy.coop/for-our-milk-producers/",
     cache_key="sarhaddairy.coop/for-our-milk-producers",
     content_type="html",
 )
@@ -88,7 +170,7 @@ SARHAD_SOURCE = SchemeSource(
 SUMUL_SOURCE = SchemeSource(
     source_name="sumul",
     union_name=UnionName.SUMUL.value,
-    source_url="https://www.sumul.com/farmer-section.html",
+    source_url=str(settings.sumul_scheme_source_url or "").strip() or "https://www.sumul.com/farmer-section.html",
     cache_key="sumul.com/farmer-section",
     content_type="pdf",
 )
@@ -96,17 +178,34 @@ SUMUL_SOURCE = SchemeSource(
 SURSAGAR_SOURCE = SchemeSource(
     source_name="sursagar",
     union_name=UnionName.SURENDRANAGAR.value,
-    source_url="https://sursagardairy.com/Farmer/MilkProducers",
+    source_url=str(settings.sursagar_scheme_source_url or "").strip() or "https://sursagardairy.com/Farmer/MilkProducers",
     cache_key="sursagardairy.com/farmer/milkproducers",
     content_type="pdf",
 )
 
-SCHEME_SOURCES: tuple[SchemeSource, ...] = (BANAS_SOURCE, SARHAD_SOURCE, SUMUL_SOURCE, SURSAGAR_SOURCE)
+SABAR_SOURCE = SchemeSource(
+    source_name="sabar",
+    union_name=UnionName.SABAR.value,
+    source_url="https://sabardairy.org/for-our-milk-producers/",
+    cache_key="sabardairy.org/for-our-milk-producers",
+    # Page lists scheme cards with PDF application-form downloads (same pattern as
+    # Sumul/Sursagar).
+    content_type="pdf",
+)
+
+SCHEME_SOURCES: tuple[SchemeSource, ...] = (
+    BANAS_SOURCE,
+    SARHAD_SOURCE,
+    SUMUL_SOURCE,
+    SURSAGAR_SOURCE,
+    SABAR_SOURCE,
+)
 SUPPORTED_UNION_SOURCE_MAP = {
     UnionName.BANAS.value: (BANAS_SOURCE,),
     UnionName.KUTCH.value: (SARHAD_SOURCE,),
     UnionName.SUMUL.value: (SUMUL_SOURCE,),
     UnionName.SURENDRANAGAR.value: (SURSAGAR_SOURCE,),
+    UnionName.SABAR.value: (SABAR_SOURCE,),
 }
 
 _WHITESPACE_RE = re.compile(r"\s+")
@@ -122,8 +221,134 @@ def _normalize_text(value: str) -> str:
     return _WHITESPACE_RE.sub(" ", unescape(value or "")).strip()
 
 
+def _normalize_multiline_text(value: str) -> str:
+    lines = [_normalize_text(line) for line in (value or "").splitlines()]
+    lines = [line for line in lines if line]
+    return "\n".join(lines).strip()
+
+
 def _strip_html(value: str) -> str:
     return _normalize_text(_TAG_RE.sub(" ", value))
+
+
+class _ChandraHtmlToTextParser(HTMLParser):
+    """Convert Chandra OCR HTML into structured plain text with key attributes."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.parts: list[str] = []
+        self._ordered_list_stack: list[int] = []
+        self._unordered_list_depth = 0
+        self._table_stack = 0
+        self._row_cell_count_stack: list[int] = []
+        self._active_links: list[str] = []
+
+    def _append(self, text: str) -> None:
+        if text:
+            self.parts.append(text)
+
+    def _append_inline_separator(self) -> None:
+        if self.parts and not self.parts[-1].endswith((" ", "\n")):
+            self._append(" ")
+
+    def _append_block_break(self) -> None:
+        if self.parts and not self.parts[-1].endswith("\n\n"):
+            self._append("\n\n")
+
+    def _append_line_break(self) -> None:
+        if self.parts and not self.parts[-1].endswith("\n"):
+            self._append("\n")
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        attrs_dict = dict(attrs)
+        if tag in {"h1", "h2", "h3", "h4", "h5", "h6", "p", "div", "section", "article"}:
+            self._append_block_break()
+        elif tag == "br":
+            self._append_line_break()
+        elif tag == "ul":
+            self._unordered_list_depth += 1
+            self._append_line_break()
+        elif tag == "ol":
+            self._ordered_list_stack.append(0)
+            self._append_line_break()
+        elif tag == "li":
+            self._append_line_break()
+            if self._ordered_list_stack:
+                next_index = self._ordered_list_stack[-1] + 1
+                self._ordered_list_stack[-1] = next_index
+                self._append(f"{next_index}. ")
+            else:
+                self._append("- ")
+        elif tag == "table":
+            self._table_stack += 1
+            self._append_block_break()
+        elif tag == "tr":
+            if self._table_stack:
+                self._append_line_break()
+                self._row_cell_count_stack.append(0)
+        elif tag in {"td", "th"}:
+            if self._row_cell_count_stack:
+                cell_count = self._row_cell_count_stack[-1]
+                if cell_count > 0:
+                    self._append(" | ")
+                self._row_cell_count_stack[-1] = cell_count + 1
+        elif tag == "a":
+            self._active_links.append(_normalize_text(attrs_dict.get("href") or ""))
+        elif tag == "img":
+            alt_text = _normalize_text(attrs_dict.get("alt") or "")
+            if alt_text:
+                self._append_inline_separator()
+                self._append(f"[Image: {alt_text}]")
+        elif tag == "input":
+            input_type = _normalize_text(attrs_dict.get("type") or "input").casefold()
+            value = _normalize_text(attrs_dict.get("value") or "")
+            checked = "checked" in attrs_dict
+            marker = f"[{input_type}{' checked' if checked else ''}]"
+            if value:
+                marker = f"{marker} value: {value}"
+            self._append_inline_separator()
+            self._append(marker)
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "a" and self._active_links:
+            href = self._active_links.pop()
+            if href:
+                self._append(f" ({href})")
+        elif tag == "tr" and self._row_cell_count_stack:
+            self._row_cell_count_stack.pop()
+        elif tag == "table":
+            if self._table_stack > 0:
+                self._table_stack -= 1
+            self._append_block_break()
+        elif tag == "ul":
+            self._unordered_list_depth = max(0, self._unordered_list_depth - 1)
+            self._append_line_break()
+        elif tag == "ol":
+            if self._ordered_list_stack:
+                self._ordered_list_stack.pop()
+            self._append_line_break()
+        elif tag in {"h1", "h2", "h3", "h4", "h5", "h6", "p", "div", "section", "article"}:
+            self._append_block_break()
+
+    def handle_data(self, data: str) -> None:
+        normalized = _normalize_text(data)
+        if normalized:
+            if self.parts and not self.parts[-1].endswith((" ", "\n")):
+                self._append(" ")
+            self._append(normalized)
+
+    def get_text(self) -> str:
+        raw = "".join(self.parts)
+        lines = [_WHITESPACE_RE.sub(" ", line).strip() for line in raw.splitlines()]
+        lines = [line for line in lines if line]
+        return "\n".join(lines).strip()
+
+
+def _convert_chandra_html_to_text(value: str) -> str:
+    parser = _ChandraHtmlToTextParser()
+    parser.feed(value or "")
+    parser.close()
+    return parser.get_text()
 
 
 def _normalize_title(value: str) -> str:
@@ -134,6 +359,48 @@ def _slugify_fragment(value: str) -> str:
     normalized = _normalize_title(value).casefold()
     normalized = re.sub(r"[^a-z0-9]+", "-", normalized)
     return normalized.strip("-")
+
+
+def _hash_pdf_bytes(pdf_bytes: bytes) -> str:
+    return hashlib.sha256(pdf_bytes).hexdigest()
+
+
+def _prior_pdf_records_by_url(records: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """Build scheme_url -> prior PDF record map for OCR dedupe lookups."""
+    prior: dict[str, dict[str, Any]] = {}
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        if record.get("content_type") != "pdf":
+            continue
+        scheme_url = record.get("scheme_url")
+        if not isinstance(scheme_url, str) or not scheme_url.strip():
+            continue
+        content = record.get("content")
+        if not isinstance(content, str) or not content:
+            continue
+        prior[scheme_url] = record
+    return prior
+
+
+async def _load_prior_pdf_records_by_url(source_key: str, redis_client=None) -> dict[str, dict[str, Any]]:
+    """Load prior cached PDF records for a source. Cache errors yield an empty map."""
+    try:
+        cached = await get_cached_source_records(source_key, redis_client=redis_client)
+    except SchemeIngestionError as exc:
+        logger.warning(
+            "Unable to load prior scheme cache for OCR dedupe source_key=%s error=%s",
+            source_key,
+            exc,
+        )
+        return {}
+    prior = _prior_pdf_records_by_url(cached)
+    logger.info(
+        "Loaded prior PDF records for OCR dedupe source_key=%s prior_count=%s",
+        source_key,
+        len(prior),
+    )
+    return prior
 
 
 def _build_prefixed_key(namespace: str, key: str) -> str:
@@ -310,10 +577,11 @@ async def release_refresh_lock(source_key: str, lock_token: str, redis_client=No
 async def extend_refresh_lock(source_key: str, lock_token: str, redis_client=None) -> bool:
     """Re-arm the lock TTL if we still own it.
 
-    A full Banas OCR batch (many PDFs, each OCR'd in small page batches that can
-    last SCHEME_OCR_TIMEOUT_SECONDS times pages in that request) can outlast a
-    single fixed TTL. Heartbeating after each PDF keeps the lock alive as long as
-    we are making progress, without inflating the TTL for the common fast case.
+    A full Banas OCR batch (many PDFs, each with up to SCHEME_PDF_MAX_RENDER_PAGES
+    pages OCR'd concurrently up to SCHEME_OCR_CONCURRENCY, each call lasting up to
+    SCHEME_OCR_TIMEOUT_SECONDS) can outlast a single fixed TTL. Heartbeating after
+    each PDF keeps the lock alive as long as we are making progress, without
+    inflating the TTL for the common fast case.
     Returns False if the lock was lost (expired or taken over) so the caller can
     decide whether to keep going.
     """
@@ -581,7 +849,7 @@ def parse_sumul_scheme_links(html: str) -> list[dict[str, str]]:
             flags=re.IGNORECASE,
         )
         for href in pdf_matches:
-            scheme_url = urljoin("https://www.sumul.com/", _normalize_text(href))
+            scheme_url = urljoin(f"{SUMUL_SITE_ORIGIN}/", _normalize_text(href))
             title = scheme_title or scheme_url.rsplit("/", 1)[-1]
             dedupe_key = (scheme_url, title.casefold())
             if dedupe_key in seen:
@@ -623,7 +891,7 @@ def parse_sursagar_scheme_links(html: str) -> list[dict[str, str]]:
             flags=re.IGNORECASE,
         )
         for href in pdf_matches:
-            scheme_url = urljoin("https://sursagardairy.com", href)
+            scheme_url = urljoin(f"{SURSAGAR_SITE_ORIGIN}/", href)
             dedupe_key = (scheme_url, scheme_title.casefold())
             if dedupe_key in seen:
                 continue
@@ -638,7 +906,7 @@ def parse_sursagar_scheme_links(html: str) -> list[dict[str, str]]:
             flags=re.IGNORECASE,
         )
         for href in fallback_matches:
-            scheme_url = urljoin("https://sursagardairy.com", href)
+            scheme_url = urljoin(f"{SURSAGAR_SITE_ORIGIN}/", href)
             dedupe_key = (scheme_url, "")
             if dedupe_key in seen:
                 continue
@@ -646,6 +914,83 @@ def parse_sursagar_scheme_links(html: str) -> list[dict[str, str]]:
             records.append({"scheme_title": scheme_url.rsplit("=", 1)[-1], "scheme_url": scheme_url})
 
     logger.info("Parsed Sursagar scheme links deduplicated_count=%s", len(records))
+    return records
+
+
+def parse_sabar_scheme_links(html: str) -> list[dict[str, str]]:
+    """Extract PDF links and titles from the Sabar milk-producers page.
+
+    Each scheme card starts with ``<h5 class="... sabar-soc-title-1">`` (English
+    title), optionally a ``sabar-soc-title-2`` Gujarati subtitle, then a
+    ``Download Application Form`` anchor to a ``wp-content/uploads/...pdf``.
+    """
+    logger.info("Parsing Sabar scheme links from HTML content_length=%s", len(html))
+
+    card_chunks = re.split(
+        r'(?=<h5[^>]*\bsabar-soc-title-1\b)',
+        html,
+        flags=re.IGNORECASE,
+    )
+
+    seen: set[tuple[str, str]] = set()
+    records: list[dict[str, str]] = []
+
+    for card_html in card_chunks:
+        title_match = re.search(
+            r'<h5[^>]*\bsabar-soc-title-1\b[^>]*>(.*?)</h5>',
+            card_html,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        if not title_match:
+            continue
+        english_title = _normalize_title(_strip_html(title_match.group(1)))
+        if not english_title:
+            continue
+
+        gujarati_match = re.search(
+            r'<p[^>]*\bsabar-soc-title-2\b[^>]*>(.*?)</p>',
+            card_html,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        gujarati_title = _normalize_title(_strip_html(gujarati_match.group(1))) if gujarati_match else ""
+        if not gujarati_title or gujarati_title.casefold() == english_title.casefold():
+            scheme_title = english_title
+        elif english_title in gujarati_title:
+            # Fully Gujarati cards often repeat the heading inside a longer subtitle.
+            scheme_title = gujarati_title
+        else:
+            scheme_title = f"{english_title} — {gujarati_title}"
+
+        pdf_matches = re.findall(
+            r'<a[^>]*href="([^"]+\.pdf[^"]*)"[^>]*>',
+            card_html,
+            flags=re.IGNORECASE,
+        )
+        for href in pdf_matches:
+            scheme_url = urljoin(f"{SABAR_SITE_ORIGIN}/", _normalize_text(href))
+            dedupe_key = (scheme_url, scheme_title.casefold())
+            if dedupe_key in seen:
+                continue
+            seen.add(dedupe_key)
+            records.append({"scheme_title": scheme_title, "scheme_url": scheme_url})
+
+    if not records:
+        logger.warning("No Sabar sabar-soc-title-1 cards found; falling back to PDF anchor scan")
+        fallback_matches = re.findall(
+            r'<a[^>]*href="([^"]+/wp-content/uploads/[^"]+\.pdf[^"]*)"[^>]*>',
+            html,
+            flags=re.IGNORECASE,
+        )
+        for href in fallback_matches:
+            scheme_url = urljoin(f"{SABAR_SITE_ORIGIN}/", _normalize_text(href))
+            filename = scheme_url.rsplit("/", 1)[-1]
+            dedupe_key = (scheme_url, filename.casefold())
+            if dedupe_key in seen:
+                continue
+            seen.add(dedupe_key)
+            records.append({"scheme_title": filename, "scheme_url": scheme_url})
+
+    logger.info("Parsed Sabar scheme links deduplicated_count=%s", len(records))
     return records
 
 
@@ -755,116 +1100,275 @@ def render_pdf_to_base64_images(pdf_bytes: bytes, dpi: int, max_pages: int = SCH
     return rendered_images
 
 
-def _ocr_pages_payload(images: list[str]) -> dict[str, Any]:
+def _scheme_ocr_prompt_text() -> str:
+    """Resolve the Chandra prompt text for the configured prompt type.
+
+    Stock vLLM has no ``prompt_type`` field; we send the upstream prompt body
+    ourselves. ``ocr_layout`` is the supported/default mapping.
+    """
+    prompt_type = (SCHEME_OCR_PROMPT_TYPE or "ocr_layout").strip().casefold()
+    if prompt_type and prompt_type != "ocr_layout":
+        logger.warning(
+            "Unsupported SCHEME_OCR_PROMPT_TYPE=%r; using ocr_layout prompt",
+            SCHEME_OCR_PROMPT_TYPE,
+        )
+    return SCHEME_OCR_LAYOUT_PROMPT
+
+
+def _chandra_chat_completions_payload(image_b64: str) -> dict[str, Any]:
+    """Build a stock OpenAI-compatible chat-completions body for one page image."""
     return {
-        "images": images,
-        "prompt_type": SCHEME_OCR_PROMPT_TYPE,
-        # Chandra HF generate() uses max_new_tokens per sequence; vLLM uses
-        # max_tokens per page. This cap is per page, not for the whole batch.
-        "max_output_tokens": SCHEME_OCR_MAX_OUTPUT_TOKENS,
+        "model": SCHEME_OCR_MODEL_NAME,
+        "temperature": 0,
+        "top_p": 0.1,
+        "max_tokens": SCHEME_OCR_MAX_OUTPUT_TOKENS,
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": _scheme_ocr_prompt_text()},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/png;base64,{image_b64}"},
+                    },
+                ],
+            }
+        ],
     }
 
 
-def _page_results_from_ocr_payload(parsed: Any, expected_count: int) -> list[Any] | None:
+def _looks_like_html(value: str) -> bool:
+    return bool(_TAG_RE.search(value or ""))
+
+
+def _normalize_chandra_page_content(raw_content: str) -> str:
+    """Map Chandra HTML/raw page output into structured plain text for scheme records."""
+    text = raw_content or ""
+    if _looks_like_html(text):
+        return _convert_chandra_html_to_text(text)
+    return _normalize_text(text)
+
+
+def _page_result_from_chat_completion(parsed: Any) -> dict[str, Any] | None:
+    """Map a chat-completions JSON body into the pipeline's ``{markdown, error}`` shape."""
     if not isinstance(parsed, dict):
         return None
-    raw_pages = parsed.get("pages")
-    if not isinstance(raw_pages, list):
+    choices = parsed.get("choices")
+    if not isinstance(choices, list) or not choices:
         return None
-    results: list[Any] = []
-    for index in range(expected_count):
-        page = raw_pages[index] if index < len(raw_pages) else None
-        results.append(page if isinstance(page, dict) else None)
-    if not raw_pages:
-        logger.warning("Scheme OCR response had empty pages list expected_count=%s", expected_count)
-    return results
+    first = choices[0]
+    if not isinstance(first, dict):
+        return None
+    message = first.get("message")
+    if not isinstance(message, dict):
+        return None
+    content = message.get("content")
+    if content is None:
+        return {"markdown": "", "error": True}
+    if not isinstance(content, str):
+        # Some OpenAI-compatible servers return multimodal content lists.
+        if isinstance(content, list):
+            parts: list[str] = []
+            for item in content:
+                if isinstance(item, dict) and item.get("type") == "text":
+                    parts.append(str(item.get("text") or ""))
+                elif isinstance(item, str):
+                    parts.append(item)
+            content = "".join(parts)
+        else:
+            content = str(content)
+    markdown = _normalize_chandra_page_content(content)
+    finish_reason = first.get("finish_reason")
+    if not markdown:
+        return {"markdown": "", "error": True}
+    # Truncated generations are unreliable for scheme parsing; treat as failed.
+    if finish_reason == "length":
+        logger.warning(
+            "Scheme OCR page finished with length truncation; marking failed text_length=%s",
+            len(markdown),
+        )
+        return {"markdown": markdown, "error": True}
+    return {"markdown": markdown, "error": False}
 
 
-async def _post_ocr_images(
+def _normalize_ocr_endpoint(endpoint: str) -> str:
+    """Accept base host or ``.../v1``; always append ``/v1/chat/completions`` ourselves."""
+    base = (endpoint or "").strip().rstrip("/")
+    if base.endswith("/v1"):
+        base = base[:-3].rstrip("/")
+    return base
+
+
+async def _post_ocr_page(
     client: httpx.AsyncClient,
     ocr_endpoint: str,
-    images: list[str],
-) -> list[Any] | None:
-    timeout_seconds = settings.scheme_ocr_timeout_seconds * len(images)
+    image_b64: str,
+    *,
+    page_index: int | None = None,
+) -> dict[str, Any] | None:
+    """OCR one page via stock Chandra ``/v1/chat/completions``."""
+    timeout_seconds = settings.scheme_ocr_timeout_seconds
     logger.info(
-        "Sending scheme OCR request endpoint=%s page_count=%s timeout_seconds=%s",
+        "Sending scheme OCR chat request endpoint=%s page_index=%s timeout_seconds=%s",
         ocr_endpoint,
-        len(images),
+        page_index,
         timeout_seconds,
     )
+    started = time.perf_counter()
     try:
         response = await client.post(
-            f"{ocr_endpoint}/v1/ocr/pages",
-            json=_ocr_pages_payload(images),
+            f"{ocr_endpoint}/v1/chat/completions",
+            json=_chandra_chat_completions_payload(image_b64),
             timeout=timeout_seconds,
         )
         response.raise_for_status()
-        parsed_pages = _page_results_from_ocr_payload(response.json(), len(images))
-        if parsed_pages is None:
+        page_result = _page_result_from_chat_completion(response.json())
+        elapsed_seconds = time.perf_counter() - started
+        if page_result is None:
             logger.warning(
-                "Scheme OCR response missing pages list endpoint=%s page_count=%s",
+                "Scheme OCR chat response missing usable choices endpoint=%s page_index=%s elapsed_seconds=%.2f",
                 ocr_endpoint,
-                len(images),
+                page_index,
+                elapsed_seconds,
             )
-        return parsed_pages
+            return {"markdown": "", "error": True, "retryable": True}
+        else:
+            logger.info(
+                "Scheme OCR chat page completed endpoint=%s page_index=%s elapsed_seconds=%.2f page_error=%s text_length=%s",
+                ocr_endpoint,
+                page_index,
+                elapsed_seconds,
+                bool(page_result.get("error")),
+                len(str(page_result.get("markdown") or "")),
+            )
+        return page_result
     except httpx.HTTPStatusError as exc:
+        status_code = exc.response.status_code
+        retryable = status_code in _RETRYABLE_OCR_STATUS_CODES
         logger.warning(
-            "Scheme OCR request returned non-success status endpoint=%s page_count=%s status_code=%s",
+            "Scheme OCR chat request returned non-success status endpoint=%s page_index=%s status_code=%s retryable=%s elapsed_seconds=%.2f",
             ocr_endpoint,
-            len(images),
-            exc.response.status_code,
+            page_index,
+            status_code,
+            retryable,
+            time.perf_counter() - started,
         )
-        return None
+        return {"markdown": "", "error": True, "retryable": retryable}
     except httpx.RequestError as exc:
         logger.warning(
-            "Scheme OCR request failed endpoint=%s page_count=%s error_type=%s error_repr=%r",
+            "Scheme OCR chat request failed endpoint=%s page_index=%s error_type=%s error_repr=%r elapsed_seconds=%.2f",
             ocr_endpoint,
-            len(images),
+            page_index,
             type(exc).__name__,
             exc,
+            time.perf_counter() - started,
         )
-        return None
+        return {"markdown": "", "error": True, "retryable": True}
     except ValueError as exc:
         logger.warning(
-            "Scheme OCR response was not valid JSON endpoint=%s page_count=%s error_repr=%r",
+            "Scheme OCR chat response was not valid JSON endpoint=%s page_index=%s error_repr=%r elapsed_seconds=%.2f",
             ocr_endpoint,
-            len(images),
+            page_index,
             exc,
+            time.perf_counter() - started,
         )
-        return None
+        return {"markdown": "", "error": True, "retryable": True}
     except Exception:
         logger.exception(
-            "Unexpected error while calling scheme OCR endpoint=%s page_count=%s",
+            "Unexpected error while calling scheme OCR chat endpoint=%s page_index=%s elapsed_seconds=%.2f",
             ocr_endpoint,
-            len(images),
+            page_index,
+            time.perf_counter() - started,
         )
-        return None
+        return {"markdown": "", "error": True, "retryable": False}
 
 
-async def _ocr_image_chunk(
+async def _post_ocr_page_with_retries(
+    client: httpx.AsyncClient,
+    ocr_endpoint: str,
+    image_b64: str,
+    *,
+    page_index: int | None = None,
+) -> dict[str, Any] | None:
+    attempts = SCHEME_OCR_PAGE_MAX_ATTEMPTS
+    last_result: dict[str, Any] | None = None
+    for attempt in range(1, attempts + 1):
+        result = await _post_ocr_page(
+            client=client,
+            ocr_endpoint=ocr_endpoint,
+            image_b64=image_b64,
+            page_index=page_index,
+        )
+        last_result = result
+        if isinstance(result, dict) and not bool(result.get("error")):
+            return result
+        retryable = isinstance(result, dict) and bool(result.get("retryable", True))
+        if not retryable or attempt >= attempts:
+            return result
+        delay_seconds = min(
+            SCHEME_OCR_RETRY_MAX_DELAY_SECONDS,
+            SCHEME_OCR_RETRY_BASE_DELAY_SECONDS * (2 ** (attempt - 1)),
+        )
+        logger.warning(
+            "Retrying OCR page after retryable failure page_index=%s attempt=%s/%s backoff_seconds=%.2f",
+            page_index,
+            attempt + 1,
+            attempts,
+            delay_seconds,
+        )
+        await asyncio.sleep(delay_seconds)
+    return last_result
+
+
+async def _ocr_pages_concurrent(
     client: httpx.AsyncClient,
     ocr_endpoint: str,
     images: list[str],
+    *,
+    concurrency: int,
 ) -> list[Any]:
-    results = await _post_ocr_images(client, ocr_endpoint, images)
-    if results is not None:
-        return results
-    if len(images) == 1:
-        return [None]
-    logger.warning(
-        "Scheme OCR batch failed; retrying pages individually page_count=%s",
+    """OCR each page with at most ``concurrency`` in-flight chat-completions calls.
+
+    Results are returned in the original page order regardless of completion order.
+    """
+    limit = max(1, concurrency)
+    semaphore = asyncio.Semaphore(limit)
+
+    async def _one(index: int, image_b64: str) -> tuple[int, Any]:
+        async with semaphore:
+            result = await _post_ocr_page_with_retries(client, ocr_endpoint, image_b64, page_index=index)
+            return index, result
+
+    logger.info(
+        "Dispatching scheme OCR pages concurrently endpoint=%s page_count=%s concurrency=%s",
+        ocr_endpoint,
         len(images),
+        limit,
     )
-    fallback: list[Any] = []
-    for image in images:
-        single = await _post_ocr_images(client, ocr_endpoint, [image])
-        fallback.append(None if not single else single[0])
-    return fallback
+    gathered = await asyncio.gather(
+        *(_one(index, image_b64) for index, image_b64 in enumerate(images)),
+        return_exceptions=True,
+    )
+    parsed_pages: list[Any] = [None] * len(images)
+    for item in gathered:
+        if isinstance(item, asyncio.CancelledError):
+            raise item
+        if isinstance(item, BaseException):
+            logger.error("Scheme OCR worker failed unexpectedly error=%s", item, exc_info=item)
+            continue
+        index, result = item
+        parsed_pages[index] = result
+    return parsed_pages
 
 
-async def extract_text_from_pdf_bytes(client: httpx.AsyncClient, pdf_bytes: bytes) -> str:
+async def extract_text_from_pdf_bytes(
+    client: httpx.AsyncClient,
+    pdf_bytes: bytes,
+    *,
+    ocr_stats: dict[str, int] | None = None,
+) -> str:
     logger.info("Extracting text from scheme PDF via OCR byte_count=%s", len(pdf_bytes))
-    ocr_endpoint = (settings.scheme_ocr_endpoint_url or "").strip().rstrip("/")
+    ocr_endpoint = _normalize_ocr_endpoint(settings.scheme_ocr_endpoint_url or "")
     if not ocr_endpoint:
         raise SchemeDependencyError("SCHEME_OCR_ENDPOINT_URL is not configured")
 
@@ -877,11 +1381,13 @@ async def extract_text_from_pdf_bytes(client: httpx.AsyncClient, pdf_bytes: byte
         max_pages=SCHEME_PDF_MAX_RENDER_PAGES,
     )
     total_pages = len(images)
-    batch_size = max(1, settings.scheme_ocr_page_batch_size)
-    parsed_pages: list[Any] = []
-    for start in range(0, total_pages, batch_size):
-        chunk = images[start : start + batch_size]
-        parsed_pages.extend(await _ocr_image_chunk(client, ocr_endpoint, chunk))
+    concurrency = max(1, int(settings.scheme_ocr_concurrency))
+    parsed_pages = await _ocr_pages_concurrent(
+        client,
+        ocr_endpoint,
+        images,
+        concurrency=concurrency,
+    )
 
     page_texts: list[str] = []
     failed_pages = 0
@@ -896,7 +1402,7 @@ async def extract_text_from_pdf_bytes(client: httpx.AsyncClient, pdf_bytes: byte
             continue
 
         page_result = parsed_pages[index]
-        page_markdown = _normalize_text(str(page_result.get("markdown") or ""))
+        page_markdown = _normalize_multiline_text(str(page_result.get("markdown") or ""))
         page_error = bool(page_result.get("error"))
         logger.info(
             "Received scheme OCR page result page_index=%s page_error=%s text_length=%s",
@@ -911,6 +1417,8 @@ async def extract_text_from_pdf_bytes(client: httpx.AsyncClient, pdf_bytes: byte
 
     combined_text = "\n\n".join(page_texts)
     failed_ratio = (failed_pages / total_pages) if total_pages else 1.0
+    if ocr_stats is not None:
+        ocr_stats.update(total_pages=total_pages, failed_pages=failed_pages)
     if failed_pages == total_pages:
         raise SchemeParseError("scheme OCR failed for all pages")
     if failed_ratio > SCHEME_OCR_MAX_FAILED_PAGE_RATIO:
@@ -935,12 +1443,71 @@ async def _build_pdf_record(
     scheme_title: str,
     scheme_url: str,
     last_refreshed_at: str,
+    prior_records_by_url: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any] | None:
-    """Download a single PDF, OCR it, and return a scheme record dict (or None on failure)."""
+    """Download a single PDF, OCR it (unless unchanged), and return a scheme record dict."""
     logger.info("Building PDF scheme record source=%s title=%s url=%s", source.source_name, scheme_title, scheme_url)
     try:
         pdf_bytes = await fetch_bytes(client, scheme_url)
-        content = await extract_text_from_pdf_bytes(client, pdf_bytes)
+        content_hash = _hash_pdf_bytes(pdf_bytes)
+        prior = (prior_records_by_url or {}).get(scheme_url)
+        if prior is not None:
+            prior_hash = prior.get("content_hash")
+            prior_content = prior.get("content")
+            prior_ocr_complete = prior.get("ocr_complete") is True
+            if (
+                isinstance(prior_hash, str)
+                and prior_hash
+                and prior_hash == content_hash
+                and isinstance(prior_content, str)
+                and prior_content
+                and prior_ocr_complete
+            ):
+                logger.info(
+                    "Scheme PDF OCR skipped due to matching content hash source=%s title=%s url=%s content_hash=%s",
+                    source.source_name,
+                    scheme_title,
+                    scheme_url,
+                    content_hash,
+                )
+                return {
+                    "union_name": source.union_name,
+                    "source_url": source.source_url,
+                    "scheme_title": scheme_title,
+                    "scheme_url": scheme_url,
+                    "content": prior_content,
+                    "content_type": "pdf",
+                    "content_hash": content_hash,
+                    "ocr_complete": True,
+                    "ocr_total_pages": prior.get("ocr_total_pages"),
+                    "ocr_failed_pages": 0,
+                    "source_name": source.source_name,
+                    "last_refreshed_at": last_refreshed_at,
+                }
+            if not isinstance(prior_hash, str) or not prior_hash:
+                ocr_reason = "missing_prior_hash"
+            elif prior_hash != content_hash:
+                ocr_reason = "content_hash_changed"
+            elif not prior_ocr_complete:
+                ocr_reason = "prior_ocr_incomplete"
+            else:
+                ocr_reason = "missing_prior_content"
+            logger.info(
+                "Scheme PDF OCR required source=%s title=%s url=%s reason=%s",
+                source.source_name,
+                scheme_title,
+                scheme_url,
+                ocr_reason,
+            )
+        else:
+            logger.info(
+                "Scheme PDF OCR required source=%s title=%s url=%s reason=new_scheme_url",
+                source.source_name,
+                scheme_title,
+                scheme_url,
+            )
+        ocr_stats: dict[str, int] = {}
+        content = await extract_text_from_pdf_bytes(client, pdf_bytes, ocr_stats=ocr_stats)
     except SchemeDependencyError:
         raise
     except SchemeFetchError as exc:
@@ -949,14 +1516,24 @@ async def _build_pdf_record(
     except SchemeParseError as exc:
         logger.warning("Skipping scheme PDF due to parse error source=%s title=%s url=%s error=%s", source.source_name, scheme_title, scheme_url, exc)
         return None
-    except Exception as exc:
+    except Exception:
         logger.exception("Unexpected error while building scheme PDF record source=%s title=%s url=%s", source.source_name, scheme_title, scheme_url)
         return None
     if not content:
         logger.warning("Skipping scheme PDF due to empty extracted content source=%s title=%s url=%s", source.source_name, scheme_title, scheme_url)
         return None
 
-    logger.info("Built PDF scheme record source=%s title=%s content_length=%s", source.source_name, scheme_title, len(content))
+    ocr_total_pages = max(0, int(ocr_stats.get("total_pages", 0)))
+    ocr_failed_pages = max(0, int(ocr_stats.get("failed_pages", ocr_total_pages)))
+    ocr_complete = ocr_total_pages > 0 and ocr_failed_pages == 0
+
+    logger.info(
+        "Built PDF scheme record source=%s title=%s content_length=%s content_hash=%s",
+        source.source_name,
+        scheme_title,
+        len(content),
+        content_hash,
+    )
     return {
         "union_name": source.union_name,
         "source_url": source.source_url,
@@ -964,6 +1541,10 @@ async def _build_pdf_record(
         "scheme_url": scheme_url,
         "content": content,
         "content_type": "pdf",
+        "content_hash": content_hash,
+        "ocr_complete": ocr_complete,
+        "ocr_total_pages": ocr_total_pages,
+        "ocr_failed_pages": ocr_failed_pages,
         "source_name": source.source_name,
         "last_refreshed_at": last_refreshed_at,
     }
@@ -986,6 +1567,7 @@ async def _ingest_banas_source(
         logger.warning("No Banas scheme links parsed source=%s", source.cache_key)
         raise SchemeParseError("no Banas scheme links parsed")
     last_refreshed_at = _utcnow_iso()
+    prior_records_by_url = await _load_prior_pdf_records_by_url(source.cache_key, redis_client=redis_client)
     logger.info(
         "Processing Banas PDFs sequentially source=%s record_count=%s",
         source.cache_key,
@@ -999,6 +1581,7 @@ async def _ingest_banas_source(
             scheme_title=record["scheme_title"],
             scheme_url=record["scheme_url"],
             last_refreshed_at=last_refreshed_at,
+            prior_records_by_url=prior_records_by_url,
         )
         if built_record:
             final_records.append(built_record)
@@ -1027,6 +1610,7 @@ async def _ingest_pdf_source(
     if not link_records:
         raise SchemeParseError(f"no {source.source_name} scheme links parsed")
     last_refreshed_at = _utcnow_iso()
+    prior_records_by_url = await _load_prior_pdf_records_by_url(source.cache_key, redis_client=redis_client)
     logger.info(
         "Processing %s PDFs sequentially source=%s record_count=%s",
         source.source_name,
@@ -1041,6 +1625,7 @@ async def _ingest_pdf_source(
             scheme_title=record["scheme_title"],
             scheme_url=record["scheme_url"],
             last_refreshed_at=last_refreshed_at,
+            prior_records_by_url=prior_records_by_url,
         )
         if built_record:
             final_records.append(built_record)
@@ -1077,6 +1662,18 @@ async def _ingest_sursagar_source(
     logger.info("Starting Sursagar scheme ingestion source=%s url=%s", source.cache_key, source.source_url)
     html = await fetch_html(client, source.source_url)
     link_records = parse_sursagar_scheme_links(html)
+    return await _ingest_pdf_source(source, link_records, client, lock_token=lock_token, redis_client=redis_client)
+
+
+async def _ingest_sabar_source(
+    source: SchemeSource,
+    client: httpx.AsyncClient,
+    lock_token: str | None = None,
+    redis_client=None,
+) -> list[dict[str, Any]]:
+    logger.info("Starting Sabar scheme ingestion source=%s url=%s", source.cache_key, source.source_url)
+    html = await fetch_html(client, source.source_url)
+    link_records = parse_sabar_scheme_links(html)
     return await _ingest_pdf_source(source, link_records, client, lock_token=lock_token, redis_client=redis_client)
 
 
@@ -1122,16 +1719,23 @@ async def refresh_scheme_source(source: SchemeSource, redis_client=None, client:
         client = httpx.AsyncClient(timeout=HTTP_TIMEOUT_SECONDS)
 
     try:
+        # PDF sources share the OCR path; Sarhad is HTML-only. Unknown sources
+        # must not fall through to the Sarhad HTML parser.
         _PDF_INGEST_MAP = {
             BANAS_SOURCE.source_name: _ingest_banas_source,
             SUMUL_SOURCE.source_name: _ingest_sumul_source,
             SURSAGAR_SOURCE.source_name: _ingest_sursagar_source,
+            SABAR_SOURCE.source_name: _ingest_sabar_source,
         }
-        ingest_fn = _PDF_INGEST_MAP.get(source.source_name)
-        if ingest_fn is not None:
-            records = await ingest_fn(source, client, lock_token=lock_token, redis_client=redis_client)
-        else:
+        if source.source_name == SARHAD_SOURCE.source_name:
             records = await _ingest_sarhad_source(source, client)
+        else:
+            ingest_fn = _PDF_INGEST_MAP.get(source.source_name)
+            if ingest_fn is None:
+                raise SchemeParseError(
+                    f"no ingest handler registered for source={source.source_name}"
+                )
+            records = await ingest_fn(source, client, lock_token=lock_token, redis_client=redis_client)
 
         if not records:
             logger.warning("Scheme refresh produced no records for source=%s; keeping existing cache", source.cache_key)

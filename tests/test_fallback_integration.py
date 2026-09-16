@@ -35,10 +35,9 @@ def _dead_oss_model():
 
 @pytest.fixture
 def oss_dead(monkeypatch):
-    from app.services import fallback as fb
-    from app.llm_core.factory import MaterializedTier
-
-    monkeypatch.setattr(fb.settings, "fallback_enabled", True)
+    from app.llm_core import execution as fb
+    from app.llm_core.config_model import AdmissionPolicy, Provider, StepClientKind, Tier
+    from app.llm_core.execution import ExecutionTarget
 
     # Config-driven chain: a DEAD OSS vLLM tier (connection refused) first, then
     # the real managed model — the walker must classify the connection failure and
@@ -50,30 +49,31 @@ def oss_dead(monkeypatch):
         from pydantic_ai.providers.openai import OpenAIProvider
         return OpenAIModel("gpt-4.1", provider=OpenAIProvider(api_key=_KEY))
 
-    async def _resolve_chain(*, pipeline, session_id, variant):
-        return [
-            MaterializedTier(kind="oss", handle=dead, model_name="gemma-dead",
-                             provider="vllm", endpoint=DEAD_OSS_URL, timeout=5.0),
-            MaterializedTier(kind="managed", handle=_managed_model(), model_name="gpt-4.1",
-                             provider="openai", endpoint="managed", timeout=20.0),
-        ]
-
-    monkeypatch.setattr(fb, "_resolve_chain", _resolve_chain)
+    chain = [
+        ExecutionTarget(Tier(provider=Provider.VLLM, model="gemma-dead",
+                             endpoint=DEAD_OSS_URL, timeout_ms=5000), StepClientKind.AGENT),
+        ExecutionTarget(Tier(provider=Provider.OPENAI, model="gpt-4.1",
+                             timeout_ms=20000, admission=AdmissionPolicy.MANAGED),
+                        StepClientKind.AGENT),
+    ]
+    object.__setattr__(chain[0], "handle", dead)
+    object.__setattr__(chain[1], "handle", _managed_model())
     events = []
     monkeypatch.setattr(fb, "emit", events.append)
-    return fb, events
+    return fb, events, chain
 
 
 def test_unary_moderation_falls_back_to_managed(oss_dead):
-    fb, events = oss_dead
+    fb, events, chain = oss_dead
+    from app.llm_core import Step
     from agents.moderation import moderation_agent
 
     result = asyncio.run(
         fb.execute_with_fallback(
-            pipeline="moderation",
+            step=Step.MODERATION,
             session_id="it-moderation",
-            variant="oss",
             run=lambda a: moderation_agent.run("My cow has a fever, what should I do?", model=a.model),
+            chain=chain,
         )
     )
     assert result is not None and result.output is not None  # managed produced a verdict
@@ -81,7 +81,8 @@ def test_unary_moderation_falls_back_to_managed(oss_dead):
 
 
 def test_streaming_chat_falls_back_to_managed(oss_dead):
-    fb, events = oss_dead
+    fb, events, chain = oss_dead
+    from app.llm_core import Step
     from agents.agrinet import agrinet_agent
     from agents.deps import FarmerContext
 
@@ -100,7 +101,10 @@ def test_streaming_chat_falls_back_to_managed(oss_dead):
     async def drive():
         chunks = []
         async for c in fb.stream_with_fallback(
-            pipeline="chat", session_id="it-chat", variant="oss", make_stream=make_stream
+            step=Step.AGENT,
+            session_id="it-chat",
+            make_stream=make_stream,
+            chain=chain,
         ):
             chunks.append(c)
         return chunks

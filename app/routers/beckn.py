@@ -62,12 +62,12 @@ async def receive_callback(
         raise HTTPException(status_code=404, detail="Unsupported Beckn callback")
 
     configured_token = settings.beckn_callback_token
-    if not configured_token:
+    if settings.beckn_callback_transactions_enabled and not configured_token:
         return JSONResponse(
             status_code=503,
             content=_nack("CALLBACK_AUTH_NOT_CONFIGURED", "Callback ingress authentication is not configured"),
         )
-    if not hmac.compare_digest(
+    if configured_token and not hmac.compare_digest(
         x_beckn_callback_token or "", configured_token
     ):
         return JSONResponse(

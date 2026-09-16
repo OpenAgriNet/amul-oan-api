@@ -67,7 +67,3 @@ class FarmerModel(BaseModel):
         if pronoun is None:
             return None
         return pronoun.strip().lower()
-
-
-class FarmerHerdmanModel(BaseModel):
-    farmers: list[FarmerModel] | None = Field(None, alias="Farmer")

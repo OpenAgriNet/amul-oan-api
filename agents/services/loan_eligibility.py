@@ -20,7 +20,6 @@ The loan is framed as ALREADY SANCTIONED for eligible members; asking for the lo
 """
 from __future__ import annotations
 
-import os
 import secrets
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -32,7 +31,7 @@ from agents.deps import FarmerAccount
 from agents.tools.farmer import normalize_phone_to_mobile
 from agents.tools.farmer_animal_backends import get_farmer_milk_collection_details_api
 from agents.tools.onex_sms import send_loan_approval_sms
-from app.config import settings
+from app.config import get_config_value, settings
 from app.core.loan_db import get_loan_session, loan_db_configured
 from app.models.loan import LoanCode, LoanEligibilityRow
 from app.models.milk_collection import FarmerMilkCollectionRequestModel
@@ -145,7 +144,7 @@ async def _compute_last_month_milk(accounts: Sequence[FarmerAccount]) -> Optiona
     any account (so the caller can distinguish "genuinely below threshold" from
     "couldn't check"). A reachable-but-empty result totals 0.0.
     """
-    token = os.getenv("PASHUGPT_TOKEN")
+    token = get_config_value("PASHUGPT_TOKEN")
     if not token:
         logger.error("PASHUGPT_TOKEN not set; cannot compute milk total")
         return None

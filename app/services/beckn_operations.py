@@ -458,7 +458,7 @@ class BecknOperationClient:
         tool_call_id: Optional[str],
     ) -> BecknActionResult:
         """Resolve a farmer profile using the authenticated session phone."""
-        if provider_id not in {"amulpashudhan", "herdman"}:
+        if provider_id != "amulpashudhan":
             raise ValueError(f"Unsupported farmer provider: {provider_id}")
         return await self.init_private_data(
             domain=settings.beckn_farmer_domain,
@@ -482,7 +482,6 @@ class BecknOperationClient:
         """Resolve an owned animal record from one Amul provider adapter."""
         item_by_provider = {
             "amulpashudhan": "animal-profile",
-            "herdman": "animal-profile",
             "amuldairy": "animal-health-history",
             "banasmobileapi": "operated-visit-history",
         }
@@ -930,7 +929,8 @@ class BecknOperationClient:
         }
 
     async def _send(self, operation: BecknOperation, payload: Mapping[str, Any]) -> None:
-        if not settings.beckn_transaction_bridge_token:
+        token = settings.beckn_transaction_bridge_token
+        if settings.beckn_callback_transactions_enabled and not token:
             raise RuntimeError("BECKN_TRANSACTION_BRIDGE_TOKEN is required for Beckn transactions")
         await self.store.mark_sent(operation)
         # ONIX derives the action from the final path segment. A trailing slash
@@ -941,13 +941,8 @@ class BecknOperationClient:
         try:
             for attempt in range(1, settings.beckn_forward_connect_attempts + 1):
                 try:
-                    response = await client.post(
-                        url,
-                        json=payload,
-                        headers={
-                            "Authorization": f"Bearer {settings.beckn_transaction_bridge_token}",
-                        },
-                    )
+                    headers = {"Authorization": f"Bearer {token}"} if token else {}
+                    response = await client.post(url, json=payload, headers=headers)
                     response.raise_for_status()
                     body = response.json()
                     break

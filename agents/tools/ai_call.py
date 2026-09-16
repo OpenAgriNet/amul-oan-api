@@ -2,7 +2,6 @@
 Tool for booking an artificial insemination call for a farmer.
 """
 import json
-import os
 import re
 
 import httpx
@@ -10,7 +9,7 @@ from pydantic_ai import RunContext
 
 from agents.deps import FarmerContext
 from agents.tools.farmer_animal_backends import create_ai_call_api
-from app.config import settings
+from app.config import get_config_value, settings
 from app.core.cache import cache, reserve, ReservationOutcome, release_reservation
 from app.models.ai_call import AICallRequestModel, AISpecies
 from app.models.union import any_union_banned_from_ai_calls, union_banned_message
@@ -338,7 +337,7 @@ async def _book_direct(
         input=_ai_tool_input,
         metadata={"tool_name": "create_ai_call"},
     ) as ai_tool_obs:
-        token = os.getenv("PASHUGPT_TOKEN")
+        token = get_config_value("PASHUGPT_TOKEN")
         if not token:
             logger.error("PASHUGPT_TOKEN is not set")
             failure_message = (

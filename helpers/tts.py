@@ -1,18 +1,15 @@
-import os
 import base64
 import httpx
 from typing import Optional
-from dotenv import load_dotenv
+from app.config import settings
 
-load_dotenv()
-
-TTS_BHASHINI_URL = "https://dhruva-api.bhashini.gov.in/services/inference/pipeline"
-TTS_TIMEOUT = 60.0
+TTS_BHASHINI_URL = settings.bhashini_api_url
+TTS_TIMEOUT = settings.tts_timeout_seconds
 
 # Raya configuration is intentionally env-driven so that the actual endpoint
 # and auth scheme can be wired without code changes.
-RAYA_TTS_URL = os.getenv("RAYA_TTS_URL")
-RAYA_TTS_API_KEY = os.getenv("RAYA_TTS_API_KEY")
+RAYA_TTS_URL = settings.raya_tts_url
+RAYA_TTS_API_KEY = settings.raya_tts_api_key
 
 
 def text_to_speech_bhashini(
@@ -27,7 +24,7 @@ def text_to_speech_bhashini(
     url = TTS_BHASHINI_URL
     headers = {
         "Accept": "*/*",
-        "Authorization": os.getenv("MEITY_API_KEY_VALUE"),
+        "Authorization": settings.meity_api_key_value,
         "Content-Type": "application/json",
     }
     data = {
@@ -62,7 +59,7 @@ async def text_to_speech_bhashini_async(
     """
     headers = {
         "Accept": "*/*",
-        "Authorization": os.getenv("MEITY_API_KEY_VALUE"),
+        "Authorization": settings.meity_api_key_value,
         "Content-Type": "application/json",
     }
     data = {

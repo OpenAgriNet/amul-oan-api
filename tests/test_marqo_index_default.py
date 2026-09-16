@@ -3,7 +3,6 @@ import asyncio
 import pytest
 
 from app.config import Settings
-from agents.tools import search
 
 
 @pytest.mark.parametrize(
@@ -76,6 +75,7 @@ def test_settings_clamp_operational_numeric_bounds(monkeypatch):
     monkeypatch.setenv("SCHEME_BANAS_MIN_RECORD_COVERAGE_RATIO", "-0.2")
     monkeypatch.setenv("SCHEME_HTTP_TIMEOUT_SECONDS", "0")
     monkeypatch.setenv("SCHEME_OCR_PAGE_BATCH_SIZE", "99")
+    monkeypatch.setenv("SCHEME_OCR_CONCURRENCY", "99")
 
     cfg = Settings()
     assert cfg.farmer_refresh_queue_batch_size == 1
@@ -83,6 +83,59 @@ def test_settings_clamp_operational_numeric_bounds(monkeypatch):
     assert cfg.scheme_banas_min_record_coverage_ratio == 0.0
     assert cfg.scheme_http_timeout_seconds == 0.001
     assert cfg.scheme_ocr_page_batch_size == 8
+    assert cfg.scheme_ocr_concurrency == 8
+
+
+def test_settings_scheme_ocr_concurrency_defaults_to_four(monkeypatch):
+    monkeypatch.delenv("SCHEME_OCR_CONCURRENCY", raising=False)
+    monkeypatch.delenv("SCHEME_OCR_PAGE_BATCH_SIZE", raising=False)
+
+    cfg = Settings()
+    assert cfg.scheme_ocr_concurrency == 4
+    assert cfg.scheme_ocr_page_batch_size == 4
+
+
+def test_settings_scheme_ocr_concurrency_aliases_from_page_batch_size(monkeypatch):
+    monkeypatch.delenv("SCHEME_OCR_CONCURRENCY", raising=False)
+    monkeypatch.setenv("SCHEME_OCR_PAGE_BATCH_SIZE", "2")
+
+    cfg = Settings()
+    assert cfg.scheme_ocr_page_batch_size == 2
+    assert cfg.scheme_ocr_concurrency == 2
+
+
+def test_settings_scheme_ocr_concurrency_explicit_wins_over_page_batch_size(monkeypatch):
+    monkeypatch.setenv("SCHEME_OCR_CONCURRENCY", "3")
+    monkeypatch.setenv("SCHEME_OCR_PAGE_BATCH_SIZE", "6")
+
+    cfg = Settings()
+    assert cfg.scheme_ocr_concurrency == 3
+    assert cfg.scheme_ocr_page_batch_size == 6
+
+
+def test_settings_scheme_ocr_concurrency_clamps_low(monkeypatch):
+    monkeypatch.setenv("SCHEME_OCR_CONCURRENCY", "0")
+
+    cfg = Settings()
+    assert cfg.scheme_ocr_concurrency == 1
+
+
+def test_settings_scheme_ocr_concurrency_empty_env_aliases_from_page_batch_size(monkeypatch):
+    monkeypatch.setenv("SCHEME_OCR_CONCURRENCY", "")
+    monkeypatch.setenv("SCHEME_OCR_PAGE_BATCH_SIZE", "5")
+
+    cfg = Settings()
+    assert cfg.scheme_ocr_page_batch_size == 5
+    assert cfg.scheme_ocr_concurrency == 5
+
+
+def test_settings_scheme_ocr_concurrency_aliases_clamped_batch_size(monkeypatch):
+    monkeypatch.delenv("SCHEME_OCR_CONCURRENCY", raising=False)
+    monkeypatch.setenv("SCHEME_OCR_PAGE_BATCH_SIZE", "99")
+
+    cfg = Settings()
+    assert cfg.scheme_ocr_page_batch_size == 8
+    assert cfg.scheme_ocr_concurrency == 8
 
 
 def test_settings_vistaar_coords_fallback_on_malformed_values(monkeypatch):
@@ -114,18 +167,43 @@ def test_settings_non_finite_floats_fallback_to_defaults(monkeypatch):
 
 def test_settings_normalize_backend_base_urls(monkeypatch):
     monkeypatch.setenv("AMULPASHUDHAN_BASE_URL", "https://example.test/root/")
-    monkeypatch.setenv("HERDMAN_BASE_URL", "https://herdman.test/api///")
     monkeypatch.setenv("BANAS_MOBILE_BASE_URL", "https://banas.test/visit/")
     monkeypatch.setenv("CVCC_BASE_URL", "https://cvcc.test/path/")
 
     cfg = Settings()
     assert cfg.amulpashudhan_base_url == "https://example.test/root"
-    assert cfg.herdman_base_url == "https://herdman.test/api"
     assert cfg.banas_mobile_base_url == "https://banas.test/visit"
     assert cfg.cvcc_base_url == "https://cvcc.test/path"
 
 
+def test_settings_scheme_source_url_defaults():
+    cfg = Settings()
+    assert cfg.banas_scheme_site_origin == "https://www.banasdairy.coop"
+    assert cfg.banas_scheme_documents_api_url == "https://www.banasdairy.coop/api/documents"
+    assert cfg.sarhad_scheme_source_url == "https://sarhaddairy.coop/for-our-milk-producers"
+    assert cfg.sumul_scheme_source_url == "https://www.sumul.com/farmer-section.html"
+    assert cfg.sursagar_scheme_source_url == "https://sursagardairy.com/Farmer/MilkProducers"
+
+
+def test_settings_normalize_scheme_source_urls(monkeypatch):
+    monkeypatch.setenv("BANAS_SCHEME_SITE_ORIGIN", "https://banas.example.com/")
+    monkeypatch.setenv("BANAS_SCHEME_DOCUMENTS_API_URL", "https://banas.example.com/api/documents/")
+    monkeypatch.setenv("SARHAD_SCHEME_SOURCE_URL", "https://sarhad.example.com/farmers///")
+    monkeypatch.setenv("SUMUL_SCHEME_SOURCE_URL", "https://sumul.example.com/farmer.html/")
+    monkeypatch.setenv("SURSAGAR_SCHEME_SOURCE_URL", "https://sursagar.example.com/milk///")
+
+    cfg = Settings()
+    assert cfg.banas_scheme_site_origin == "https://banas.example.com"
+    assert cfg.banas_scheme_documents_api_url == "https://banas.example.com/api/documents"
+    assert cfg.sarhad_scheme_source_url == "https://sarhad.example.com/farmers"
+    assert cfg.sumul_scheme_source_url == "https://sumul.example.com/farmer.html"
+    assert cfg.sursagar_scheme_source_url == "https://sursagar.example.com/milk"
+
+
 def test_search_documents_consumes_settings_endpoint_and_index(monkeypatch):
+    # Lazy import avoids Langfuse auth_check during Settings-only collection.
+    from agents.tools import search
+
     captured: dict[str, tuple] = {}
 
     monkeypatch.setattr(search.settings, "enable_network", False)

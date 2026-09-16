@@ -21,9 +21,11 @@ GET /api/chat/
 | `source_lang` | string | No | `gu` | Language of the user's query |
 | `target_lang` | string | No | `gu` | Language for the response |
 | `user_id` | string | No | `anonymous` | User identifier |
-| `use_translation_pipeline` | boolean | No | `false` | Enable Gemma pre/post translation |
 
-### When `use_translation_pipeline=true`
+### Pipeline stages
+
+The translation pipeline is the only chat execution path; it runs on every turn
+and cannot be disabled from the request.
 
 1. **Pre-translation**: If `source_lang=gu`, the query is translated to English via Anthropic Haiku.
 2. **Agent**: The agrinet agent processes the query in English and responds in English.
@@ -51,7 +53,7 @@ Indian languages (trigger translation when used as source or target):
 ### Example Request
 
 ```
-GET /api/chat/?query=મારી ગાયને ખાંચ છે&source_lang=gu&target_lang=gu&use_translation_pipeline=true
+GET /api/chat/?query=મારી ગાયને ખાંચ છે&source_lang=gu&target_lang=gu
 Authorization: Bearer <jwt_token>
 ```
 
