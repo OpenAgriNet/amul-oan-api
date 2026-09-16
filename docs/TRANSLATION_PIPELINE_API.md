@@ -25,7 +25,7 @@ GET /api/chat/
 
 ### When `use_translation_pipeline=true`
 
-1. **Pre-translation**: If `source_lang=gu`, the query is translated to English via Anthropic Haiku.
+1. **Pre-translation**: If `source_lang` is `gu`, `hi` or `bn` (Hindi and Bengali each behind `HINDI_CHAT_ENABLED` / `BENGALI_CHAT_ENABLED`), the query is translated to English via Anthropic Haiku.
 2. **Agent**: The agrinet agent processes the query in English and responds in English.
 3. **Post-translation**: If `target_lang` is an Indian language, the agent's response is translated to the target language via TranslateGemma and streamed to the client.
 
@@ -77,7 +77,7 @@ The client receives a stream of plain text. Concatenate chunks in order to build
 
 ## Anthropic Pre-Translation
 
-Gujarati input is pre-translated to English before moderation and before the agrinet agent runs. This keeps the translation-pipeline path as English-in / English-out for the core agent flow.
+Gujarati, Hindi and Bengali input is pre-translated to English before moderation and before the agrinet agent runs. This keeps the translation-pipeline path as English-in / English-out for the core agent flow.
 
 ### Model
 

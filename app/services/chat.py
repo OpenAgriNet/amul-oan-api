@@ -179,6 +179,9 @@ GENERIC_UNAVAILABLE_MESSAGE_EN = (
 GENERIC_UNAVAILABLE_MESSAGE_GU = (
     "હાલમાં હું તમારી વિનંતી પ્રક્રિયા કરી શકતી નથી. કૃપા કરીને થોડા સમય પછી ફરી પ્રયાસ કરો."
 )
+GENERIC_UNAVAILABLE_MESSAGE_BN = (
+    "এই মুহূর্তে আমি আপনার অনুরোধটি প্রক্রিয়া করতে পারছি না। অনুগ্রহ করে কিছুক্ষণ পরে আবার চেষ্টা করুন।"
+)
 
 try:
     from langfuse import propagate_attributes, get_client as get_langfuse_client
@@ -387,6 +390,8 @@ async def stream_chat_messages(
                         )
                         if lang in {"gu", "gujarati"}:
                             return GENERIC_UNAVAILABLE_MESSAGE_GU
+                        if lang in {"bn", "bengali"}:
+                            return GENERIC_UNAVAILABLE_MESSAGE_BN
                 return text_en
 
             request_id = session_id
@@ -440,15 +445,19 @@ async def stream_chat_messages(
                 except Exception as e:
                     logger.warning(f"request_id={request_id} farmer_context_fetch_failed={e}")
 
-            # Hindi kill switch (HINDI_CHAT_ENABLED, default on). When disabled,
-            # hi/hindi drop out of both the pretranslation (src->en) and output
-            # (en->target) gates, so a Hindi request bypasses the pipeline entirely
-            # and is served like an unsupported language. Gujarati is unaffected.
+            # Hindi and Bengali kill switches (HINDI_CHAT_ENABLED /
+            # BENGALI_CHAT_ENABLED, default on). When disabled, that language drops
+            # out of both the pretranslation (src->en) and output (en->target)
+            # gates, so its requests bypass the pipeline entirely and are served
+            # like an unsupported language. Gujarati is unaffected.
             hindi_enabled = getattr(settings, "hindi_chat_enabled", True)
-            output_translation_langs = (
-                INDIAN_LANGUAGES if hindi_enabled
-                else [lang for lang in INDIAN_LANGUAGES if lang not in {"hi", "hindi"}]
-            )
+            bengali_enabled = getattr(settings, "bengali_chat_enabled", True)
+            disabled_langs: set[str] = set()
+            if not hindi_enabled:
+                disabled_langs |= {"hi", "hindi"}
+            if not bengali_enabled:
+                disabled_langs |= {"bn", "bengali"}
+            output_translation_langs = [lang for lang in INDIAN_LANGUAGES if lang not in disabled_langs]
 
             processing_query = query
             processing_lang = target_lang
@@ -457,6 +466,8 @@ async def stream_chat_messages(
             pretranslation_source_langs = {"gu", "gujarati"}
             if hindi_enabled:
                 pretranslation_source_langs |= {"hi", "hindi"}
+            if bengali_enabled:
+                pretranslation_source_langs |= {"bn", "bengali"}
             if use_translation_pipeline and source_lang.lower() in pretranslation_source_langs:
                 pretrans_info = execution.info(_LlmStep.PRE_TRANSLATION)
                 logger.info(

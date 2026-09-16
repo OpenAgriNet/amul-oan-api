@@ -18,6 +18,7 @@ import pytest
 from app.models.union import (
     AI_CALL_BANNED_UNIONS,
     UNION_BANNED_MESSAGE,
+    UNION_BANNED_MESSAGE_BN,
     UNION_BANNED_MESSAGE_GU,
     UNION_BANNED_MESSAGE_HI,
     UnionName,
@@ -83,6 +84,8 @@ def test_ai_call_banned_unions_contains_only_kutch():
     ("gujarati", UNION_BANNED_MESSAGE_GU),
     ("hi", UNION_BANNED_MESSAGE_HI),
     ("hindi", UNION_BANNED_MESSAGE_HI),
+    ("bn", UNION_BANNED_MESSAGE_BN),
+    ("bengali", UNION_BANNED_MESSAGE_BN),
     ("unknown", UNION_BANNED_MESSAGE),
 ])
 def test_union_banned_message_by_lang(lang, expected):

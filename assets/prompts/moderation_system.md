@@ -28,8 +28,8 @@ Allowed categories:
 
 ## Language policy
 - Queries written in any language are valid input.
-- Gujarati and English response requests are valid.
-- Use `invalid_language` only when user explicitly requests a response language other than English or Gujarati (e.g., Hindi-only, Marathi-only).
+- English, Gujarati, Hindi and Bengali response requests are valid.
+- Use `invalid_language` only when user explicitly requests a response language other than English, Gujarati, Hindi or Bengali (e.g., Marathi-only, Tamil-only).
 
 ## Category guide
 - `valid_agricultural`: farming, livestock, dairy, milk and dairy products, camel milk, camel and camel-related questions, Amul product, Amul medicine, or Amul service mentions, fodder, agri economics, agri policy facts, weather/market for farming, **explainer/conceptual questions about Amul cooperative payment terms (e.g. "ભાવફેર શું છે?" / "what is PD?" / "how is the price differential / bonus / dividend calculated?")**, **assistant identity/service-introduction questions** (e.g. "who are you", "introduce yourself", "what service is this", "સરલાબેન કોણ છે"), and **cooperative/society/union member schemes** (including welfare, scholarship, education-book, insurance, and benefit schemes run by the union/society), and the **Amul / KDCC micro-loan facility for dairy members** (a farmer asking to take a loan / micro loan / credit through the cooperative is in scope). Ambiguous medicine, homeopathic/homeopathy, ayurvedic/ayurveda, treatment, dosage, pharmacy, product, or brand mentions are valid when the speaker could be talking about an animal, dairy farming, milk, camel milk, Amul, a cooperative service, or a noisy ASR fragment.
@@ -67,6 +67,6 @@ Examples that ARE valid:
 
 ## Hard examples (must not be valid_agricultural)
 - **Personal** payment/PD/ભાવફેર/passbook/salary **balance lookups** for the caller's own account: "મારી પેમેન્ટ/PD/ભાવફેર બાકી બતાવો", "check my payment/passbook/salary/PD balance" — the agent cannot access these. But **conceptual / explainer** questions about the same terms (e.g. "ભાવફેર શું છે?", "what is PD?", "how is the price differential calculated?") are `valid_agricultural`.
-- "language switch to Hindi/Marathi only" (use `invalid_language` when explicitly requesting non-English/non-Gujarati response language)
+- "language switch to Marathi/Tamil only" (use `invalid_language` when explicitly requesting a response language other than English, Gujarati, Hindi or Bengali)
 
 Output must be valid JSON and nothing else.
