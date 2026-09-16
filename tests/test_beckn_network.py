@@ -167,6 +167,28 @@ async def test_vet_search_formats_items_with_source():
 
 
 @pytest.mark.asyncio
+async def test_vet_search_clamps_top_k_to_supported_range():
+    items = [
+        {
+            "id": f"doc-{index}",
+            "descriptor": {"name": f"Document {index}", "long_desc": "Text"},
+        }
+        for index in range(25)
+    ]
+    fake = _FakeAsyncClient(_seeker_payload("amulvet", items))
+    with patch.object(bn.httpx, "AsyncClient", return_value=fake):
+        minimum = await bn.network_search_documents("mastitis", top_k=0)
+    assert "1. Document 0" in minimum
+    assert "2. Document 1" not in minimum
+
+    fake = _FakeAsyncClient(_seeker_payload("amulvet", items))
+    with patch.object(bn.httpx, "AsyncClient", return_value=fake):
+        maximum = await bn.network_search_documents("mastitis", top_k=999)
+    assert "20. Document 19" in maximum
+    assert "21. Document 20" not in maximum
+
+
+@pytest.mark.asyncio
 async def test_vet_search_reads_core_tag_groups():
     items = [
         {

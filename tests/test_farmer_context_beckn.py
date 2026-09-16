@@ -50,3 +50,19 @@ async def test_chat_context_uses_directed_beckn_farmer_animal_and_banas_callback
         ("animal", "TAG-OWNED", "U-BANAS"),
         ("banas", "TAG-OWNED", "U-BANAS"),
     ]
+
+
+@pytest.mark.asyncio
+async def test_chat_context_reports_explicit_farmer_not_found(monkeypatch):
+    async def farmers(_mobile, **_kwargs):
+        return []
+
+    monkeypatch.setattr(farmer_context, "fetch_authenticated_farmers", farmers)
+
+    markdown, unions, location = (
+        await farmer_context.get_farmer_context_bundle_by_mobile("9000000000")
+    )
+
+    assert "No farmer information found" in markdown
+    assert unions == []
+    assert location == {}

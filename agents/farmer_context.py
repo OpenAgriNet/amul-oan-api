@@ -231,7 +231,7 @@ async def _get_farmer_context_bundle_beckn(
     mobile = normalize_phone_to_mobile(mobile_number) or mobile_number
     farmers = await fetch_authenticated_farmers(mobile)
 
-    if farmers is None:
+    if not farmers:
         return _not_found_context(mobile)
 
     farmer_unions = _collect_farmer_unions(farmers)

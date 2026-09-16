@@ -144,6 +144,7 @@ async def _seeker_search_per_leg(
 async def network_search_documents(query: str, top_k: int = 12) -> str:
     """Vet-KB discovery via the network (advisory:amul-vet). Formats items the
     same way the direct Marqo tool does: numbered snippets with source."""
+    top_k = max(1, min(top_k, 20))
     results, errors = await _seeker_search_per_leg({VET_LEG: query})
     result = results.get(VET_LEG)
     if errors.get(VET_LEG) or not isinstance(result, dict) or result.get("error"):

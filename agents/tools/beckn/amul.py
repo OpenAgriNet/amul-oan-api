@@ -131,6 +131,10 @@ def _farmer_models_from_payload(
     person = _record(customer.get("person"))
     tags = person.get("tags")
     account_groups = _groups(tags, "farmer_accounts")
+    if not account_groups:
+        raise BecknProviderUnavailable(
+            "farmer profile callback did not contain farmer_accounts"
+        )
     global_tags = [
         value
         for group in _groups(tags, "animal_tags")

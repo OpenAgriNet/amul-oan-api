@@ -71,6 +71,26 @@ def test_farmer_mapper_refuses_to_guess_global_tag_ownership_for_multiple_accoun
     assert farmers[1].animal_tags is None
 
 
+def test_farmer_mapper_accepts_only_explicit_not_found_as_empty():
+    payload = {"message": {"order": {"state": "NOT_FOUND"}}}
+
+    assert adapter._farmer_models_from_payload(
+        payload, authenticated_mobile="9000000000"
+    ) == []
+
+
+def test_farmer_mapper_rejects_completed_payload_without_accounts():
+    payload = {"message": {"order": {"state": "COMPLETED", "fulfillments": []}}}
+
+    with pytest.raises(
+        adapter.BecknProviderUnavailable,
+        match="did not contain farmer_accounts",
+    ):
+        adapter._farmer_models_from_payload(
+            payload, authenticated_mobile="9000000000"
+        )
+
+
 @pytest.mark.asyncio
 async def test_ai_technician_catalog_mapper(monkeypatch):
     payload = {

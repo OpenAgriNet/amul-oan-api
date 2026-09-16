@@ -45,10 +45,26 @@ class FarmerRecord(BaseModel):
         if isinstance(obj, dict):
             mapped = dict(obj)
             snake_to_camel = {
+                "sub_district": "subDistrict",
+                "union_name": "unionName",
+                "union_code": "unionCode",
                 "farmer_name": "farmerName",
                 "society_name": "societyName",
+                "society_code": "societyCode",
+                "mobile_number": "mobileNumber",
                 "farmer_code": "farmerCode",
+                "avg_milk_per_day_cow": "avgMilkPerDayCow",
+                "avg_milk_per_day_buffalo": "avgMilkPerDayBuff",
+                "cow_snf": "cowSnf",
+                "cow_fat": "cowFat",
+                "buff_snf": "buffSnf",
+                "buff_fat": "buffFat",
                 "total_animals": "totalAnimals",
+                "total_cow": "cow",
+                "total_buffalo": "buffalo",
+                "total_milking_animals": "totalMilkingAnimals",
+                "non_pregnant_milking_animals": "Non Pregnant Milk",
+                "pregnant_milking_animals": "Pregnant Milk",
             }
             for snake, camel in snake_to_camel.items():
                 if snake in mapped and camel not in mapped:
