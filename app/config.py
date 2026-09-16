@@ -372,6 +372,11 @@ class Settings(BaseSettings):
     # served like an unsupported language — English passthrough) without
     # touching Gujarati.
     hindi_chat_enabled: bool = _get_bool_env("HINDI_CHAT_ENABLED", default=True)
+    # Kill switch for Bengali chat, same semantics as HINDI_CHAT_ENABLED. Default
+    # ON: bn/bengali requests use the src->en->agent->bn translation pipeline.
+    # Set BENGALI_CHAT_ENABLED=false to disable Bengali independently (bn/bengali
+    # then bypass the pipeline) without touching Gujarati or Hindi.
+    bengali_chat_enabled: bool = _get_bool_env("BENGALI_CHAT_ENABLED", default=True)
     # Master kill switch for the doctor persona. When false, every chat request
     # is routed through the farmer persona regardless of JWT claims or request
     # overrides. Keep default-off until the doctor experience is approved for

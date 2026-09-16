@@ -59,11 +59,12 @@ def canonical_union_name(name: str | None) -> str:
 # (e.g. "sarhad" for Kutch) hit the same entry.
 AI_CALL_BANNED_UNIONS: frozenset[str] = frozenset({UnionName.KUTCH.value})
 # Agent-facing English line (farmer context, translation-pipeline prompt, tool
-# on lang_code=en). Gujarati/Hindi are selected by union_banned_message() and
-# by the post-translation short-circuit so TranslateGemma cannot paraphrase.
+# on lang_code=en). Gujarati/Hindi/Bengali are selected by union_banned_message()
+# and by the post-translation short-circuit so TranslateGemma cannot paraphrase.
 UNION_BANNED_MESSAGE = "Kindly contact your Milk Society to book the service."
 UNION_BANNED_MESSAGE_GU = "કૃપા કરીને આપની દૂધ મંડળીનો સંપર્ક કરશો."
 UNION_BANNED_MESSAGE_HI = "कृपया सेवा बुक करने के लिए अपनी दूध मंडली से संपर्क करें।"
+UNION_BANNED_MESSAGE_BN = "পরিষেবা বুক করতে অনুগ্রহ করে আপনার দুধ সমবায় সমিতির সঙ্গে যোগাযোগ করুন।"
 _UNION_BANNED_BY_LANG: dict[str, str] = {
     "en": UNION_BANNED_MESSAGE,
     "english": UNION_BANNED_MESSAGE,
@@ -71,12 +72,14 @@ _UNION_BANNED_BY_LANG: dict[str, str] = {
     "gujarati": UNION_BANNED_MESSAGE_GU,
     "hi": UNION_BANNED_MESSAGE_HI,
     "hindi": UNION_BANNED_MESSAGE_HI,
+    "bn": UNION_BANNED_MESSAGE_BN,
+    "bengali": UNION_BANNED_MESSAGE_BN,
 }
 UNION_BANNED_MESSAGE_VARIANTS: frozenset[str] = frozenset(_UNION_BANNED_BY_LANG.values())
 
 
 def union_banned_message(lang: str | None) -> str:
-    """Canned AI-call ban line for ``lang`` (en/gu/hi). Unknown/missing → English."""
+    """Canned AI-call ban line for ``lang`` (en/gu/hi/bn). Unknown/missing → English."""
     key = (lang or "").strip().lower()
     return _UNION_BANNED_BY_LANG.get(key, UNION_BANNED_MESSAGE)
 

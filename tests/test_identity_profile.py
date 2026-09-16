@@ -33,6 +33,14 @@ os.environ.setdefault("OPENAI_API_KEY", "test-key")
         ("who are you and my cow has fever", False),
         ("tell me who are you and what medicine for mastitis", False),
         ("તમે કોણ છો અને મારી ગાય ને તાવ છે", False),
+        # Bengali.
+        ("আপনি কে?", True),
+        ("তুমি কে", True),
+        ("সরলাবেন কে?", True),
+        ("আপনার পরিচয় দিন", True),
+        # কে starts কেমন ("how") — "how are you" is not an identity query.
+        ("আপনি কেমন আছেন?", False),
+        ("আপনি কে এবং আমার গরুর জ্বর হয়েছে", False),
     ],
 )
 def test_identity_query_detection(query: str, expected: bool):
@@ -55,6 +63,20 @@ def test_identity_table_gujarati_format():
     assert "| ઉપલબ્ધતા | ૨૪x૭ ૦૮૦-૩૫૪૫૩૫૪૫ પર ચેટ, વોઇસ કૉલ અને વોટ્સએપ |" in table
     assert "| મારા મૂલ્યો | ખેડૂત પ્રથમ; વિશ્વસનીય અને ભરોસાપાત્ર માર્ગદર્શન; સહકારી ભાવના; સૌ માટે સુલભતા; સતત શિક્ષણ અને નવીનતા |" in table
     assert "તમારી વિશ્વસનીય ડિજિટલ ડેરી સાથી" in table
+
+
+def test_identity_table_bengali_format():
+    table = build_identity_profile_table("bn", "bn", "আপনি কে?")
+    assert table.startswith("| ক্ষেত্র | বিবরণ |\n|---|---|")
+    assert "| নাম | সরলাবেন |" in table
+    assert "| প্রতিষ্ঠান | আমুল |" in table
+    assert "আপনার বিশ্বস্ত ডিজিটাল" in table
+
+
+def test_identity_table_bengali_selected_from_script():
+    # No explicit language: a Bengali-script query still gets the Bengali table.
+    table = build_identity_profile_table("", "", "আপনি কে?")
+    assert table.startswith("| ক্ষেত্র | বিবরণ |")
 
 
 def test_chat_identity_short_circuit_bypasses_moderation_and_translation(monkeypatch):
