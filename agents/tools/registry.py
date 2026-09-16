@@ -31,7 +31,7 @@ TOOLS = [
     Tool(
         search_documents,
         takes_ctx=False, # No context is needed for this tool
-        docstring_format='auto', 
+        docstring_format='auto',
         require_parameter_descriptions=True,
     ),
 
@@ -48,8 +48,8 @@ TOOLS = [
         docstring_format='auto',
         require_parameter_descriptions=True,
     ),
-    
-    
+
+
     Tool(
         get_farmer_milk_collection_details,
         takes_ctx=True,  # identity and account codes come only from signed-in deps
@@ -99,7 +99,7 @@ TOOLS = [
     # # Mandi Prices
 
     # # Agricultural Services (KVK, CHC, etc.)
-    
+
     # # Geocode
 
     # # Agristack

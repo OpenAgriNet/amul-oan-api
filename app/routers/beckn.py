@@ -45,14 +45,20 @@ async def receive_callback(
         raise HTTPException(status_code=404, detail="Unsupported Beckn callback")
 
     configured_token = settings.beckn_callback_token
-    domain = str((payload.get("context") or {}).get("domain") or "")
-    is_vistaar = domain == "schemes:vistaar"
-    if not is_vistaar and not configured_token:
+    context = payload.get("context") or {}
+    is_tokenless_vistaar_shc = (
+        not configured_token
+        and settings.vistaar_shc_enabled
+        and callback_action == "on_init"
+        and context.get("action") == "on_init"
+        and context.get("domain") == "schemes:vistaar"
+    )
+    if not configured_token and not is_tokenless_vistaar_shc:
         return JSONResponse(
             status_code=503,
             content=_nack("CALLBACK_AUTH_NOT_CONFIGURED", "Callback ingress authentication is not configured"),
         )
-    if not is_vistaar and configured_token and not hmac.compare_digest(
+    if configured_token and not hmac.compare_digest(
         x_beckn_callback_token or "", configured_token
     ):
         return JSONResponse(

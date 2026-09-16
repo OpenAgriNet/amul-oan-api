@@ -541,6 +541,7 @@ async def test_vistaar_callback_does_not_require_private_bridge_token(monkeypatc
             return CallbackRecordResult(True)
 
     monkeypatch.setattr(router_module.settings, "beckn_callback_token", None)
+    monkeypatch.setattr(router_module.settings, "vistaar_shc_enabled", True)
     monkeypatch.setattr(router_module, "get_beckn_operation_store", lambda: Store())
 
     payload = _callback()
@@ -549,6 +550,31 @@ async def test_vistaar_callback_does_not_require_private_bridge_token(monkeypatc
     assert shc_callback.status_code == 200
     assert json.loads(shc_callback.body)["message"]["ack"]["status"] == "ACK"
     assert calls["n"] == 1
+
+
+@pytest.mark.asyncio
+async def test_vistaar_callback_requires_configured_token(monkeypatch):
+    from app.routers import beckn as router_module
+
+    calls = {"n": 0}
+
+    class Store:
+        async def record_callback(self, payload):
+            calls["n"] += 1
+            return CallbackRecordResult(True)
+
+    monkeypatch.setattr(router_module.settings, "beckn_callback_token", "secret")
+    monkeypatch.setattr(router_module.settings, "vistaar_shc_enabled", True)
+    monkeypatch.setattr(router_module, "get_beckn_operation_store", lambda: Store())
+
+    payload = _callback()
+    payload["context"].update({"domain": "schemes:vistaar", "action": "on_init"})
+
+    rejected = await router_module.receive_callback("on_init", payload, None)
+
+    assert rejected.status_code == 401
+    assert json.loads(rejected.body)["error"]["code"] == "UNAUTHORIZED_CALLBACK"
+    assert calls["n"] == 0
 
 
 @pytest.mark.asyncio
