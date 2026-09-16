@@ -575,6 +575,30 @@ class Settings(BaseSettings):
     scheme_ocr_page_batch_size: int = Field(default=4, validation_alias="SCHEME_OCR_PAGE_BATCH_SIZE")
     scheme_ocr_max_failed_page_ratio: float = Field(default=0.15, validation_alias="SCHEME_OCR_MAX_FAILED_PAGE_RATIO")
     scheme_banas_min_record_coverage_ratio: float = Field(default=0.85, validation_alias="SCHEME_BANAS_MIN_RECORD_COVERAGE_RATIO")
+    # Post-OCR relevance filter (Gemma): keep agri/benefits/eligibility text in Redis
+    # content. Default enabled; set SCHEME_CONTENT_FILTER_ENABLED=false to store raw OCR.
+    # When disabled or endpoint unset, raw OCR text is stored unchanged.
+    scheme_content_filter_enabled: bool = Field(default=True, validation_alias="SCHEME_CONTENT_FILTER_ENABLED")
+    scheme_content_filter_endpoint_url: Optional[str] = Field(
+        default=None,
+        validation_alias="SCHEME_CONTENT_FILTER_ENDPOINT_URL",
+    )
+    scheme_content_filter_model: str = Field(
+        default="gemma-4-31b-it",
+        validation_alias="SCHEME_CONTENT_FILTER_MODEL",
+    )
+    scheme_content_filter_timeout_seconds: float = Field(
+        default=60.0,
+        validation_alias="SCHEME_CONTENT_FILTER_TIMEOUT_SECONDS",
+    )
+    scheme_content_filter_max_chunk_chars: int = Field(
+        default=12_000,
+        validation_alias="SCHEME_CONTENT_FILTER_MAX_CHUNK_CHARS",
+    )
+    scheme_content_filter_max_output_tokens: int = Field(
+        default=4096,
+        validation_alias="SCHEME_CONTENT_FILTER_MAX_OUTPUT_TOKENS",
+    )
 
     # Ambiguity-term fuzzy-match cutoff (0-1) for get_ambiguity_hints_for_query.
     # Overridable via env; defaults to 0.80 (prior hard-coded behaviour).
@@ -772,6 +796,8 @@ class Settings(BaseSettings):
         "scheme_ocr_max_output_tokens": ("SCHEME_OCR_MAX_OUTPUT_TOKENS", 12284, 1, None),
         "scheme_ocr_concurrency": ("SCHEME_OCR_CONCURRENCY", 4, 1, 8),
         "scheme_ocr_page_batch_size": ("SCHEME_OCR_PAGE_BATCH_SIZE", 4, 1, 8),
+        "scheme_content_filter_max_chunk_chars": ("SCHEME_CONTENT_FILTER_MAX_CHUNK_CHARS", 12_000, 1, None),
+        "scheme_content_filter_max_output_tokens": ("SCHEME_CONTENT_FILTER_MAX_OUTPUT_TOKENS", 4096, 1, None),
         "health_call_cooldown_ttl_seconds": ("HEALTH_CALL_COOLDOWN_TTL_SECONDS", 60 * 30, 1, None),
         "vistaar_max_items": ("VISTAAR_MAX_ITEMS", 20, 1, None),
         "farmer_refresh_lock_ttl_seconds": ("FARMER_REFRESH_LOCK_TTL_SECONDS", 60 * 5, 1, None),
@@ -789,6 +815,7 @@ class Settings(BaseSettings):
         "scheme_http_timeout_seconds": ("SCHEME_HTTP_TIMEOUT_SECONDS", 30.0, 0.001, None),
         "scheme_ocr_max_failed_page_ratio": ("SCHEME_OCR_MAX_FAILED_PAGE_RATIO", 0.15, 0.0, 1.0),
         "scheme_banas_min_record_coverage_ratio": ("SCHEME_BANAS_MIN_RECORD_COVERAGE_RATIO", 0.85, 0.0, 1.0),
+        "scheme_content_filter_timeout_seconds": ("SCHEME_CONTENT_FILTER_TIMEOUT_SECONDS", 60.0, 0.001, None),
         "vistaar_default_lat": ("VISTAAR_DEFAULT_LAT", 22.55, -90.0, 90.0),
         "vistaar_default_lon": ("VISTAAR_DEFAULT_LON", 72.93, -180.0, 180.0),
         "farmer_backend_http_timeout_seconds": ("FARMER_BACKEND_HTTP_TIMEOUT_SECONDS", 30.0, 0.001, None),
@@ -803,6 +830,7 @@ class Settings(BaseSettings):
         "farmer_layer2_chat_context_enabled": ("FARMER_LAYER2_CHAT_CONTEXT_ENABLED", False),
         "farmer_layer2_fallback_to_legacy_enabled": ("FARMER_LAYER2_FALLBACK_TO_LEGACY_ENABLED", True),
         "farmer_layer1_mobile_cache_bypass_enabled": ("FARMER_LAYER1_MOBILE_CACHE_BYPASS_ENABLED", False),
+        "scheme_content_filter_enabled": ("SCHEME_CONTENT_FILTER_ENABLED", True),
     }
 
     @field_validator(
@@ -811,6 +839,7 @@ class Settings(BaseSettings):
         "farmer_layer2_chat_context_enabled",
         "farmer_layer2_fallback_to_legacy_enabled",
         "farmer_layer1_mobile_cache_bypass_enabled",
+        "scheme_content_filter_enabled",
         mode="before",
     )
     @classmethod
@@ -830,6 +859,8 @@ class Settings(BaseSettings):
         "scheme_ocr_max_output_tokens",
         "scheme_ocr_concurrency",
         "scheme_ocr_page_batch_size",
+        "scheme_content_filter_max_chunk_chars",
+        "scheme_content_filter_max_output_tokens",
         "health_call_cooldown_ttl_seconds",
         "vistaar_max_items",
         "farmer_refresh_lock_ttl_seconds",
@@ -859,6 +890,7 @@ class Settings(BaseSettings):
         "scheme_http_timeout_seconds",
         "scheme_ocr_max_failed_page_ratio",
         "scheme_banas_min_record_coverage_ratio",
+        "scheme_content_filter_timeout_seconds",
         "vistaar_default_lat",
         "vistaar_default_lon",
         "farmer_backend_http_timeout_seconds",
