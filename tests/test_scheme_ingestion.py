@@ -15,6 +15,11 @@ def _stub_empty_prior_pdf_cache(monkeypatch):
     monkeypatch.setattr(si, "_load_prior_pdf_records_by_url", _empty)
 
 
+def _mark_complete_ocr(ocr_stats: dict[str, int] | None, total_pages: int = 1) -> None:
+    if ocr_stats is not None:
+        ocr_stats.update(total_pages=total_pages, failed_pages=0)
+
+
 def test_scheme_sources_read_urls_from_settings():
     assert si.BANAS_SITE_ORIGIN == si.settings.banas_scheme_site_origin
     assert si.BANAS_SOURCE.source_url == si.settings.banas_scheme_documents_api_url
@@ -325,7 +330,8 @@ def test_build_banas_record_returns_expected_schema(monkeypatch):
 
     monkeypatch.setattr(si, "fetch_bytes", fake_fetch_bytes)
 
-    async def fake_extract(_client, _pdf_bytes):
+    async def fake_extract(_client, _pdf_bytes, *, ocr_stats=None):
+        _mark_complete_ocr(ocr_stats)
         return "OCR text"
 
     monkeypatch.setattr(si, "extract_text_from_pdf_bytes", fake_extract)
@@ -349,12 +355,18 @@ def test_build_banas_record_returns_expected_schema(monkeypatch):
         "content",
         "content_type",
         "content_hash",
+        "ocr_complete",
+        "ocr_total_pages",
+        "ocr_failed_pages",
         "source_name",
         "last_refreshed_at",
     }
     assert record["content"] == "OCR text"
     assert record["content_type"] == "pdf"
     assert record["content_hash"] == si._hash_pdf_bytes(b"pdf")
+    assert record["ocr_complete"] is True
+    assert record["ocr_total_pages"] == 1
+    assert record["ocr_failed_pages"] == 0
 
 
 def test_build_pdf_record_skips_ocr_when_url_and_hash_match(monkeypatch):
@@ -367,8 +379,9 @@ def test_build_pdf_record_skips_ocr_when_url_and_hash_match(monkeypatch):
 
     ocr_calls = []
 
-    async def fake_extract(_client, _pdf_bytes):
+    async def fake_extract(_client, _pdf_bytes, *, ocr_stats=None):
         ocr_calls.append(_pdf_bytes)
+        _mark_complete_ocr(ocr_stats)
         return "should-not-be-used"
 
     monkeypatch.setattr(si, "fetch_bytes", fake_fetch_bytes)
@@ -386,6 +399,9 @@ def test_build_pdf_record_skips_ocr_when_url_and_hash_match(monkeypatch):
                     "content": "cached OCR text",
                     "content_hash": content_hash,
                     "content_type": "pdf",
+                    "ocr_complete": True,
+                    "ocr_total_pages": 2,
+                    "ocr_failed_pages": 0,
                 }
             },
         )
@@ -394,7 +410,56 @@ def test_build_pdf_record_skips_ocr_when_url_and_hash_match(monkeypatch):
     assert record is not None
     assert record["content"] == "cached OCR text"
     assert record["content_hash"] == content_hash
+    assert record["ocr_complete"] is True
+    assert record["ocr_total_pages"] == 2
+    assert record["ocr_failed_pages"] == 0
     assert ocr_calls == []
+
+
+def test_build_pdf_record_retries_matching_hash_when_prior_ocr_was_partial(monkeypatch):
+    pdf_bytes = b"unchanged-pdf"
+    content_hash = si._hash_pdf_bytes(pdf_bytes)
+    scheme_url = "https://example.com/scheme.pdf"
+
+    async def fake_fetch_bytes(_client, _url):
+        return pdf_bytes
+
+    ocr_calls = []
+
+    async def fake_extract(_client, _pdf_bytes, *, ocr_stats=None):
+        ocr_calls.append(_pdf_bytes)
+        _mark_complete_ocr(ocr_stats, total_pages=10)
+        return "complete OCR text"
+
+    monkeypatch.setattr(si, "fetch_bytes", fake_fetch_bytes)
+    monkeypatch.setattr(si, "extract_text_from_pdf_bytes", fake_extract)
+
+    record = asyncio.run(
+        si._build_pdf_record(
+            client=SimpleNamespace(),
+            source=si.BANAS_SOURCE,
+            scheme_title="Test Scheme",
+            scheme_url=scheme_url,
+            last_refreshed_at="2026-07-01T00:00:00Z",
+            prior_records_by_url={
+                scheme_url: {
+                    "content": "partial OCR text",
+                    "content_hash": content_hash,
+                    "content_type": "pdf",
+                    "ocr_complete": False,
+                    "ocr_total_pages": 10,
+                    "ocr_failed_pages": 1,
+                }
+            },
+        )
+    )
+
+    assert record is not None
+    assert record["content"] == "complete OCR text"
+    assert record["ocr_complete"] is True
+    assert record["ocr_total_pages"] == 10
+    assert record["ocr_failed_pages"] == 0
+    assert ocr_calls == [pdf_bytes]
 
 
 def test_build_pdf_record_runs_ocr_when_hash_changes(monkeypatch):
@@ -405,8 +470,9 @@ def test_build_pdf_record_runs_ocr_when_hash_changes(monkeypatch):
 
     ocr_calls = []
 
-    async def fake_extract(_client, _pdf_bytes):
+    async def fake_extract(_client, _pdf_bytes, *, ocr_stats=None):
         ocr_calls.append(_pdf_bytes)
+        _mark_complete_ocr(ocr_stats)
         return "fresh OCR text"
 
     monkeypatch.setattr(si, "fetch_bytes", fake_fetch_bytes)
@@ -441,8 +507,9 @@ def test_build_pdf_record_runs_ocr_for_new_url(monkeypatch):
 
     ocr_calls = []
 
-    async def fake_extract(_client, _pdf_bytes):
+    async def fake_extract(_client, _pdf_bytes, *, ocr_stats=None):
         ocr_calls.append(_pdf_bytes)
+        _mark_complete_ocr(ocr_stats)
         return "OCR text"
 
     monkeypatch.setattr(si, "fetch_bytes", fake_fetch_bytes)
@@ -479,8 +546,9 @@ def test_build_pdf_record_runs_ocr_when_prior_hash_missing(monkeypatch):
 
     ocr_calls = []
 
-    async def fake_extract(_client, _pdf_bytes):
+    async def fake_extract(_client, _pdf_bytes, *, ocr_stats=None):
         ocr_calls.append(_pdf_bytes)
+        _mark_complete_ocr(ocr_stats)
         return "OCR after migration"
 
     monkeypatch.setattr(si, "fetch_bytes", fake_fetch_bytes)
@@ -828,8 +896,12 @@ def test_extract_text_from_pdf_bytes_partial_failure_under_concurrency(monkeypat
                 raise httpx.ConnectError("connection refused")
             return _FakeResponse(f"text-{image_b64}")
 
-    combined = asyncio.run(si.extract_text_from_pdf_bytes(_FakeClient(), b"pdf-bytes"))
+    ocr_stats: dict[str, int] = {}
+    combined = asyncio.run(
+        si.extract_text_from_pdf_bytes(_FakeClient(), b"pdf-bytes", ocr_stats=ocr_stats)
+    )
     assert combined == "text-img-a\n\ntext-img-c"
+    assert ocr_stats == {"total_pages": 3, "failed_pages": 1}
 
 
 def test_extract_text_from_pdf_bytes_maps_html_page_content(monkeypatch):
@@ -914,7 +986,7 @@ def test_build_banas_record_returns_none_on_parse_error(monkeypatch):
 
     monkeypatch.setattr(si, "fetch_bytes", fake_fetch_bytes)
 
-    async def fake_extract(_client, _pdf_bytes):
+    async def fake_extract(_client, _pdf_bytes, *, ocr_stats=None):
         raise si.SchemeParseError("ocr failure")
 
     monkeypatch.setattr(si, "extract_text_from_pdf_bytes", fake_extract)
