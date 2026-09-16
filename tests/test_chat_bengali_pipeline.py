@@ -190,7 +190,21 @@ def test_bengali_kill_switch_bypasses_translation_pipeline(monkeypatch):
     assert calls["pretranslation"] == []
     assert calls["translation"] == []
     assert calls["agent"] and calls["agent"][0]["deps"].query == BENGALI_QUERY
+    assert calls["agent"][0]["deps"].lang_code == "en"
     assert result == ENGLISH_ANSWER
+
+
+def test_bengali_kill_switch_bypasses_bengali_identity_short_circuit(monkeypatch):
+    calls = _install_fakes(monkeypatch)
+    monkeypatch.setattr(chat_service.settings, "bengali_chat_enabled", False)
+
+    result = _drive("আপনি কে?", "bn")
+
+    assert result == ENGLISH_ANSWER
+    assert calls["pretranslation"] == []
+    assert calls["translation"] == []
+    assert calls["agent"] and calls["agent"][0]["deps"].query == "আপনি কে?"
+    assert calls["agent"][0]["deps"].lang_code == "en"
 
 
 def test_bengali_kill_switch_keeps_moderation_declines_in_english(monkeypatch):

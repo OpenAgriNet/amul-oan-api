@@ -352,6 +352,17 @@ async def stream_chat_messages(
                 except Exception as e:
                     logger.warning("Langfuse: failed to set trace input: %s", e)
 
+            # Resolve per-language kill switches before any response path. This
+            # keeps deterministic short-circuits and tool language selection in
+            # the same English-passthrough mode as the translation pipeline.
+            hindi_enabled = getattr(settings, "hindi_chat_enabled", True)
+            bengali_enabled = getattr(settings, "bengali_chat_enabled", True)
+            disabled_langs: set[str] = set()
+            if not hindi_enabled:
+                disabled_langs |= {"hi", "hindi"}
+            if not bengali_enabled:
+                disabled_langs |= {"bn", "bengali"}
+
             async def localize_system_text(text_en: str) -> str:
                 """
                 Localize short system-generated outputs to target language when needed.
@@ -366,12 +377,7 @@ async def stream_chat_messages(
                 if lang == "english" or lang == "en":
                     return text_en
 
-                # Keep the per-language kill switches authoritative for every
-                # translation path, including moderation declines and
-                # fail-closed system messages.
-                if lang in {"hi", "hindi"} and not getattr(settings, "hindi_chat_enabled", True):
-                    return text_en
-                if lang in {"bn", "bengali"} and not getattr(settings, "bengali_chat_enabled", True):
+                if lang in disabled_langs:
                     return text_en
 
                 if lang in INDIAN_LANGUAGES:
@@ -401,7 +407,11 @@ async def stream_chat_messages(
             content_id = f"query_{session_id}_{len(history)//2 + 1}"
             logger.info("request_id=%s user_info=%s", request_id, user_info)
 
-            if is_identity_query(query):
+            identity_language_enabled = (
+                source_lang.lower() not in disabled_langs
+                and target_lang.lower() not in disabled_langs
+            )
+            if identity_language_enabled and is_identity_query(query):
                 identity_response = (
                     build_doctor_identity_response(source_lang, target_lang, query)
                     if persona == "doctor"
@@ -452,17 +462,10 @@ async def stream_chat_messages(
             # out of both the pretranslation (src->en) and output (en->target)
             # gates, so its requests bypass the pipeline entirely and are served
             # like an unsupported language. Gujarati is unaffected.
-            hindi_enabled = getattr(settings, "hindi_chat_enabled", True)
-            bengali_enabled = getattr(settings, "bengali_chat_enabled", True)
-            disabled_langs: set[str] = set()
-            if not hindi_enabled:
-                disabled_langs |= {"hi", "hindi"}
-            if not bengali_enabled:
-                disabled_langs |= {"bn", "bengali"}
             output_translation_langs = [lang for lang in INDIAN_LANGUAGES if lang not in disabled_langs]
 
             processing_query = query
-            processing_lang = target_lang
+            processing_lang = "en" if target_lang.lower() in disabled_langs else target_lang
             needs_output_translation = target_lang.lower() in output_translation_langs
 
             pretranslation_source_langs = {"gu", "gujarati"}
