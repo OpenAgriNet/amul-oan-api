@@ -156,3 +156,9 @@ async def test_prepare_matches_supported_union_set():
     sentinel = object()
     assert await schemes.prepare_get_union_scheme_data(_ctx(["banaskantha"]), sentinel) is sentinel
     assert await schemes.prepare_get_union_scheme_data(_ctx(["dudhsagar"]), sentinel) is None
+
+
+def test_ingestion_sources_cover_every_supported_union():
+    from app.services.scheme_ingestion import SUPPORTED_UNION_SOURCE_MAP
+
+    assert schemes.SUPPORTED_SCHEME_UNIONS == set(SUPPORTED_UNION_SOURCE_MAP)
