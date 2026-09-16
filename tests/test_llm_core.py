@@ -402,7 +402,7 @@ def test_omitted_capabilities_preserve_vllm_gemma_behavior():
 
     cfg = runtime.normalize_config(cfg)
     capabilities = ExecutionContext("s", cfg, "old-yaml").capabilities
-    assert capabilities.history_max_tokens == 10_000
+    assert capabilities.history_max_tokens == 64_000
 
 
 def test_config_ingress_applies_plan_wide_history_defaults(monkeypatch):

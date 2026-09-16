@@ -212,7 +212,7 @@ class PipelineConfig(BaseModel):
         profile: NamedProfile,
         *,
         history_default_tokens: int = 80_000,
-        history_vllm_gemma_tokens: int = 10_000,
+        history_vllm_gemma_tokens: int = 64_000,
     ) -> ProfileCapabilities:
         """Resolve application policy once from the active agent plan + overrides."""
         plan = self.step_plan(profile, Step.AGENT)

@@ -450,7 +450,7 @@ class Settings(BaseSettings):
     fallback_post_translation_llm_timeout_ms: int = 30000
     managed_max_concurrency: int = 64
     chat_history_max_tokens: Optional[int] = None
-    chat_history_max_tokens_vllm_gemma: int = 10000
+    chat_history_max_tokens_vllm_gemma: int = 64000
     agrinet_max_tokens: Optional[int] = None
     agrinet_max_tokens_vllm_gemma: int = 2048
     doctor_max_tokens: Optional[int] = None

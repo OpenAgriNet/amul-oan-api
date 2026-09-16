@@ -24,7 +24,7 @@ fallback_enabled: true
 profiles:
   - name: gemma
     weight: 5
-    capabilities: {history_max_tokens: 10000}
+    capabilities: {history_max_tokens: 64000}
     steps:
       agent:
         tiers:
