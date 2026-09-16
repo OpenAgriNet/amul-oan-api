@@ -1,16 +1,12 @@
 import pytest
 
 from agents import farmer_context
-from app.models.animal import AnimalModel
-from app.models.farmer import FarmerModel
+from agents.tools.models.animal import AnimalModel
+from agents.tools.models.farmer import FarmerModel
 
 
 @pytest.mark.asyncio
 async def test_chat_context_uses_directed_beckn_farmer_animal_and_banas_callbacks(monkeypatch):
-    monkeypatch.setattr(farmer_context.settings, "enable_network", True)
-    monkeypatch.setattr(
-        farmer_context.settings, "beckn_callback_transactions_enabled", True
-    )
     calls = []
 
     async def farmers(mobile, **kwargs):
@@ -36,16 +32,10 @@ async def test_chat_context_uses_directed_beckn_farmer_animal_and_banas_callback
         calls.append(("ait", kwargs["union_code"], kwargs["society_code"]))
         return []
 
-    async def direct(*args, **kwargs):
-        raise AssertionError("direct provider client must not run in callback mode")
-
     monkeypatch.setattr(farmer_context, "fetch_authenticated_farmers", farmers)
     monkeypatch.setattr(farmer_context, "fetch_animal_profile", animal)
     monkeypatch.setattr(farmer_context, "fetch_banas_visits", visits)
     monkeypatch.setattr(farmer_context, "search_ai_technicians", technicians)
-    monkeypatch.setattr(farmer_context, "get_farmer_data_by_mobile", direct)
-    monkeypatch.setattr(farmer_context, "get_animal_data_by_tag", direct)
-    monkeypatch.setattr(farmer_context, "fetch_banas_operated_visit", direct)
 
     markdown, unions, _location = (
         await farmer_context.get_farmer_context_bundle_by_mobile("9000000000")

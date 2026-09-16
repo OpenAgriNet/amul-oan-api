@@ -14,7 +14,7 @@ from types import SimpleNamespace
 import pytest
 
 from agents.tools import ai_call as ai_mod
-from app.models.ai_call import AISpecies
+from agents.tools.models.ai_call import AISpecies
 
 VALID_TECH_ID = "YWl0LXRlY2gtMDAwMDAwMQ=="  # 24 base64 chars — the real prod shape
 
@@ -47,7 +47,6 @@ def test_invented_booking_reaches_neither_route(monkeypatch):
         raise AssertionError("an invented booking must not leave the process")
 
     monkeypatch.setattr(ai_mod, "_book_via_network", boom)
-    monkeypatch.setattr(ai_mod, "_book_direct", boom)
 
     async def in_scope():
         return True

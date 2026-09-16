@@ -1,7 +1,7 @@
-"""Transport and cache models for farmer data from PashuGPT APIs.
+"""Transport and cache models for Beckn farmer-profile data.
 
 These camelCase records deliberately remain separate from
-``app.models.farmer.FarmerModel``, the normalized snake_case domain model. They
+``agents.tools.models.farmer.FarmerModel``, the normalized snake_case domain model. They
 live beside that model so the two representations and their conversion boundary
 are explicit instead of being split between ``app.models`` and ``agents.models``.
 """
@@ -12,7 +12,7 @@ from pydantic import BaseModel, ConfigDict
 
 
 class AnimalRecord(BaseModel):
-    """Canonical animal record normalized from the amulpashudhan API."""
+    """Canonical animal record normalized from the Beckn provider payload."""
 
     model_config = ConfigDict(extra="allow")
 

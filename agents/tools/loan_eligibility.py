@@ -28,13 +28,12 @@ from typing import Optional, Sequence
 from sqlalchemy import select
 
 from agents.deps import FarmerAccount
+from agents.tools.beckn.amul import AuthenticatedFarmerAccount, fetch_milk_collection
 from agents.tools.farmer import normalize_phone_to_mobile
-from agents.tools.farmer_animal_backends import get_farmer_milk_collection_details_api
 from agents.tools.onex_sms import send_loan_approval_sms
-from app.config import get_config_value, settings
+from app.config import settings
 from app.core.loan_db import get_loan_session, loan_db_configured
-from app.models.loan import LoanCode, LoanEligibilityRow
-from app.models.milk_collection import FarmerMilkCollectionRequestModel
+from agents.tools.models.loan import LoanCode, LoanEligibilityRow
 from helpers.utils import get_logger
 
 logger = get_logger(__name__)
@@ -144,11 +143,6 @@ async def _compute_last_month_milk(accounts: Sequence[FarmerAccount]) -> Optiona
     any account (so the caller can distinguish "genuinely below threshold" from
     "couldn't check"). A reachable-but-empty result totals 0.0.
     """
-    token = get_config_value("PASHUGPT_TOKEN")
-    if not token:
-        logger.error("PASHUGPT_TOKEN not set; cannot compute milk total")
-        return None
-
     today = datetime.now(timezone.utc).date()
     fromdate = (today - timedelta(days=settings.loan_milk_lookback_days)).strftime(_DATE_FORMAT)
     todate = today.strftime(_DATE_FORMAT)
@@ -158,15 +152,22 @@ async def _compute_last_month_milk(accounts: Sequence[FarmerAccount]) -> Optiona
     for acct in accounts:
         if not (acct.union_code and acct.society_code and acct.farmer_code):
             continue
-        request = FarmerMilkCollectionRequestModel(
-            unionCode=acct.union_code,
-            societyCode=acct.society_code,
-            farmerCode=acct.farmer_code,
-            fromdate=fromdate,
-            todate=todate,
-        )
-        resp = await get_farmer_milk_collection_details_api(request, token)
-        if resp is None:
+        try:
+            resp = await fetch_milk_collection(
+                AuthenticatedFarmerAccount(
+                    union_code=acct.union_code,
+                    society_code=acct.society_code,
+                    farmer_code=acct.farmer_code,
+                    farmer_name=acct.farmer_name,
+                    society_name=acct.society_name,
+                ),
+                fromdate=fromdate,
+                todate=todate,
+                session_id=None,
+                tool_call_id=None,
+            )
+        except Exception as exc:
+            logger.warning("Beckn milk lookup failed during loan eligibility: %s", exc)
             continue
         any_ok = True
         for rec in resp.milk:

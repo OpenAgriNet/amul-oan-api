@@ -109,8 +109,7 @@ rollout restart:
 - `OSS_INFERENCE_ENDPOINT_URL` → `http://<box>:8020/v1`
 - `AGENT_CONCURRENCY_METRICS_URL` → `http://<box>:8020/metrics`
 - `TRANSLATEGEMMA_27B_BASE_ENDPOINT` + `_ENDPOINTS` → `http://<box>:8030/v1`
-- **leave** `MARQO_ENDPOINT_URL` (Marqo is pinned to its own box) and the bypassed
-  `TRANSLATEGEMMA_27B_ENDPOINT` (`:8000`).
+- **leave** the bypassed `TRANSLATEGEMMA_27B_ENDPOINT` (`:8000`).
 
 Verify after: new pods `self-check PASSED`, endpoints show the new box, `overflow=ARMED`,
 0 fallbacks, the new box's `/health` + `/metrics` return 200 (else the poller will prune it).

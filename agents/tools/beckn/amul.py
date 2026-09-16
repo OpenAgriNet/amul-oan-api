@@ -14,12 +14,12 @@ from typing import Any, Iterable, Mapping, Optional
 
 from pydantic import BaseModel, ConfigDict
 
-from app.models.animal import AnimalModel
-from app.models.banas_visit import BanasOperatedVisitModel
-from app.models.cvcc import CvccHealthResponseModel
-from app.models.farmer import FarmerModel
-from app.models.milk_collection import FarmerMilkCollectionResponseModel
-from app.services.beckn_operations import (
+from agents.tools.models.animal import AnimalModel
+from agents.tools.models.banas_visit import BanasOperatedVisitModel
+from agents.tools.models.cvcc import CvccHealthResponseModel
+from agents.tools.models.farmer import FarmerModel
+from agents.tools.models.milk_collection import FarmerMilkCollectionResponseModel
+from agents.tools.beckn.operations import (
     BecknActionResult,
     OperationState,
     get_beckn_operation_client,

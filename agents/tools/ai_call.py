@@ -1,18 +1,16 @@
 """
 Tool for booking an artificial insemination call for a farmer.
 """
-import json
 import re
 
 import httpx
 from pydantic_ai import RunContext
 
 from agents.deps import FarmerContext
-from agents.tools.farmer_animal_backends import create_ai_call_api
-from app.config import get_config_value, settings
+from app.config import settings
 from app.core.cache import cache, reserve, ReservationOutcome, release_reservation
-from app.models.ai_call import AICallRequestModel, AISpecies
-from app.models.union import any_union_banned_from_ai_calls, union_banned_message
+from agents.tools.models.ai_call import AISpecies
+from agents.tools.models.union import any_union_banned_from_ai_calls, union_banned_message
 from app.observability import start_observation
 from helpers.utils import get_logger
 
@@ -203,10 +201,7 @@ async def create_ai_call(
     #
     # See health_call.py, which keeps an unconditional guard for a different contract.
     #
-    # Both protections below are route-independent: settings.enable_network
-    # decides HOW the booking is executed (Beckn network vs direct PashuGPT),
-    # never WHETHER it is protected. The network branch used to return above
-    # this point, silently voiding both.
+    # Both protections below run before the Beckn booking operation.
 
     # A booking is IRREVERSIBLE, so block on the moderation verdict before writing.
     # On the voice path moderation runs concurrently with the agent; this refuses
@@ -229,8 +224,7 @@ async def create_ai_call(
         lang_code = getattr(ctx.deps, "lang_code", None) if ctx and ctx.deps else None
         return union_banned_message(lang_code)
 
-    # Before either route: an invented identifier cannot be resolved or booked,
-    # so refuse here instead of spending signed Beckn reads or a partner call.
+    # An invented identifier cannot be resolved or booked.
     invalid_field = _invalid_booking_identifier(union_code, society_code, farmer_code, user_id)
     if invalid_field is not None:
         logger.warning(
@@ -239,60 +233,50 @@ async def create_ai_call(
         )
         return INVALID_IDENTIFIERS_MESSAGE
 
-    if settings.enable_network and settings.beckn_callback_transactions_enabled:
-        # Re-resolve the account and technician through signed, directed Beckn
-        # reads immediately before the irreversible confirm. Tool arguments only
-        # select among owned records; canonical callback values are forwarded.
-        from agents.services.beckn_amul import (
-            resolve_authenticated_account,
-            search_ai_technicians,
-        )
+    from agents.tools.beckn.amul import resolve_authenticated_account, search_ai_technicians
 
-        mobile = (getattr(ctx.deps, "mobile", None) or "").strip()
-        if not mobile:
+    mobile = (getattr(ctx.deps, "mobile", None) or "").strip()
+    if not mobile:
+        return (
+            "Artificial insemination call booking failed.\n\n"
+            "Your signed-in farmer profile is not available."
+        )
+    try:
+        account = await resolve_authenticated_account(
+            mobile,
+            union_code=union_code,
+            society_code=society_code,
+            farmer_code=farmer_code,
+            session_id=session_id,
+            tool_call_id=tool_call_id,
+        )
+        if account is None:
             return (
                 "Artificial insemination call booking failed.\n\n"
-                "Your signed-in farmer profile is not available."
+                "The selected farmer account does not belong to your signed-in profile."
             )
-        try:
-            account = await resolve_authenticated_account(
-                mobile,
-                union_code=union_code,
-                society_code=society_code,
-                farmer_code=farmer_code,
-                session_id=session_id,
-                tool_call_id=tool_call_id,
-            )
-            if account is None:
-                return (
-                    "Artificial insemination call booking failed.\n\n"
-                    "The selected farmer account does not belong to your signed-in profile."
-                )
-            technicians = await search_ai_technicians(
-                union_code=account.union_code,
-                society_code=account.society_code,
-                session_id=session_id,
-                tool_call_id=tool_call_id,
-            )
-            technician = next(
-                (candidate for candidate in technicians if candidate.userId == user_id),
-                None,
-            )
-            if technician is None or not technician.userId:
-                return (
-                    "Artificial insemination call booking failed.\n\n"
-                    "The selected technician is not available for your society."
-                )
-        except Exception as exc:
-            logger.warning("AI booking identity verification failed: %s", exc)
+        technicians = await search_ai_technicians(
+            union_code=account.union_code,
+            society_code=account.society_code,
+            session_id=session_id,
+            tool_call_id=tool_call_id,
+        )
+        technician = next((candidate for candidate in technicians if candidate.userId == user_id), None)
+        if technician is None or not technician.userId:
             return (
                 "Artificial insemination call booking failed.\n\n"
-                "Unable to verify your farmer and technician details at the moment."
+                "The selected technician is not available for your society."
             )
-        union_code = account.union_code
-        society_code = account.society_code
-        farmer_code = account.farmer_code
-        user_id = technician.userId
+    except Exception as exc:
+        logger.warning("AI booking identity verification failed: %s", exc)
+        return (
+            "Artificial insemination call booking failed.\n\n"
+            "Unable to verify your farmer and technician details at the moment."
+        )
+    union_code = account.union_code
+    society_code = account.society_code
+    farmer_code = account.farmer_code
+    user_id = technician.userId
 
     _ai_tool_input = {
         "union_code": union_code,
@@ -302,111 +286,16 @@ async def create_ai_call(
         "species": species.value,
     }
 
-    # Feature flag: route the booking through the Amul Beckn network
-    # (services:amul-vet-booking) instead of the direct PashuGPT call.
-    if settings.enable_network:
-        return await _book_via_network(
-            union_code,
-            society_code,
-            farmer_code,
-            user_id,
-            species,
-            session_id,
-            _ai_tool_input,
-            tool_call_id=tool_call_id,
-        )
-
-    return await _book_direct(
-        union_code, society_code, farmer_code, user_id, species, session_id, _ai_tool_input
+    return await _book_via_network(
+        union_code,
+        society_code,
+        farmer_code,
+        user_id,
+        species,
+        session_id,
+        _ai_tool_input,
+        tool_call_id=tool_call_id,
     )
-
-
-async def _book_direct(
-    union_code: str,
-    society_code: str,
-    farmer_code: str,
-    user_id: str,
-    species: AISpecies,
-    session_id: str | None,
-    _ai_tool_input: dict,
-) -> str:
-    """Direct PashuGPT CreateAICall booking (settings.enable_network off)."""
-    with start_observation(
-        "ai_call_booking",
-        as_type="generation",
-        input=_ai_tool_input,
-        metadata={"tool_name": "create_ai_call"},
-    ) as ai_tool_obs:
-        token = get_config_value("PASHUGPT_TOKEN")
-        if not token:
-            logger.error("PASHUGPT_TOKEN is not set")
-            failure_message = (
-                "Artificial insemination call booking failed.\n\n"
-                "PASHUGPT_TOKEN is not configured."
-            )
-            if ai_tool_obs is not None:
-                ai_tool_obs.update(output={"success": False, "message": failure_message})
-            return failure_message
-
-        request = AICallRequestModel(
-            unionCode=union_code,
-            societyCode=society_code,
-            farmerCode=farmer_code,
-            userId=user_id,
-            species=species,
-        )
-        # Atomic reservation immediately before the write: first caller wins; a
-        # concurrent submit OR a fallback re-run for the same session short-circuits
-        # instead of double-booking. Released below if the booking API itself
-        # fails AND we actually hold the reservation (see _reserve_booking_slot).
-        # Timeout handling on this path is deliberately untouched: it is live
-        # production behaviour and out of scope for this change.
-        _allowed, _owned = await _reserve_booking_slot(session_id)
-        if not _allowed:
-            return ALREADY_BOOKED_MESSAGE
-
-        response = await create_ai_call_api(request, token)
-        if response is None:
-            if _owned:
-                await release_reservation(session_id, AI_CALL_CACHE_NAMESPACE)
-            logger.info(
-                "Create AI call failed for union=%s society=%s farmer=%s species=%s",
-                union_code,
-                society_code,
-                farmer_code,
-                species.value,
-            )
-            failure_message = (
-                "Artificial insemination call booking failed.\n\n"
-                "Unable to create AI call at the moment."
-            )
-            if ai_tool_obs is not None:
-                ai_tool_obs.update(output={"success": False, "message": failure_message})
-            return failure_message
-
-        # Mark this session as booked so a re-run (or retry) does not double-book.
-        await _mark_session_booked(session_id, response.ticket_number, species.value)
-
-        formatted = json.dumps(response.model_dump(), indent=2, ensure_ascii=False)
-        logger.info(
-            "Create AI call succeeded for union=%s society=%s farmer=%s species=%s ticket=%s",
-            union_code,
-            society_code,
-            farmer_code,
-            species.value,
-            response.ticket_number,
-        )
-        success_message = f"Artificial insemination call booked successfully:\n\n{formatted}"
-        if ai_tool_obs is not None:
-            ai_tool_obs.update(
-                output={
-                    "success": True,
-                    "ticket_number": response.ticket_number,
-                    "ait_name": response.ait_name,
-                    "message": success_message,
-                }
-            )
-        return success_message
 
 
 async def _book_via_network(
@@ -419,17 +308,11 @@ async def _book_via_network(
     _ai_tool_input: dict,
     tool_call_id: str | None = None,
 ) -> str:
-    """Booking via the Amul Beckn network (settings.enable_network on).
-
-    Same protections as the direct path: the caller has already blocked on the
-    moderation verdict, and the per-session reservation below is taken with the
-    same flag, namespace and TTL, so a fallback re-run cannot double-book (and
-    cannot send a duplicate SMS to a real farmer).
-    """
-    from agents.tools.beckn_network import network_create_ai_call_result
+    """Book via the Amul Beckn network with moderation and idempotency guards."""
+    from agents.tools.beckn.network import network_create_ai_call_result
 
     logger.info(
-        "enable_network=on → AI call booking via Beckn network union=%s society=%s",
+        "AI call booking via Beckn network union=%s society=%s",
         union_code,
         society_code,
     )
@@ -440,24 +323,20 @@ async def _book_via_network(
         input=_ai_tool_input,
         metadata={"tool_name": "create_ai_call", "route": "beckn_network"},
     ) as ai_tool_obs:
-        # Atomic reservation immediately before the write — see _book_direct.
+        # Atomic reservation immediately before the irreversible write.
         _allowed, _owned = await _reserve_booking_slot(session_id)
         if not _allowed:
             return ALREADY_BOOKED_MESSAGE
 
         try:
-            callback_kwargs = (
-                {"session_id": session_id, "tool_call_id": tool_call_id}
-                if settings.beckn_callback_transactions_enabled
-                else {}
-            )
             result = await network_create_ai_call_result(
                 union_code,
                 society_code,
                 farmer_code,
                 user_id,
                 species.value,
-                **callback_kwargs,
+                session_id=session_id,
+                tool_call_id=tool_call_id,
             )
         except Exception as e:
             # An earlier version of this comment claimed "a transport failure

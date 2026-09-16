@@ -1,11 +1,10 @@
-import asyncio
 import json
 from typing import Any
 
 import httpx
 import pytest
 
-from app.services.beckn_operations import (
+from agents.tools.beckn.operations import (
     BecknOperationClient,
     BecknOperationStore,
     CallbackRecordResult,
@@ -156,7 +155,7 @@ async def test_callback_correlation_checks_action_domain_and_participants():
 
 @pytest.mark.asyncio
 async def test_unknown_shc_callback_orphan_redacts_private_report(monkeypatch):
-    from app.services import beckn_operations as module
+    from agents.tools.beckn import operations as module
 
     monkeypatch.setattr(module.settings, "shc_artifact_ttl_seconds", 600)
     redis = MemoryRedis()
@@ -272,7 +271,7 @@ def _configure_amul(monkeypatch, module):
 
 @pytest.mark.asyncio
 async def test_confirm_builds_directed_core_order_and_correlates_fast_callback(monkeypatch):
-    from app.services import beckn_operations as module
+    from agents.tools.beckn import operations as module
 
     monkeypatch.setattr(module.settings, "beckn_bap_caller_url", "http://onix/bap/caller")
     monkeypatch.setattr(module.settings, "beckn_transaction_bridge_token", "transaction-secret")
@@ -308,7 +307,7 @@ async def test_confirm_builds_directed_core_order_and_correlates_fast_callback(m
 
 @pytest.mark.asyncio
 async def test_health_confirm_uses_health_provider_and_veterinary_fulfillment(monkeypatch):
-    from app.services import beckn_operations as module
+    from agents.tools.beckn import operations as module
 
     monkeypatch.setattr(module.settings, "beckn_bap_caller_url", "http://onix/bap/caller")
     monkeypatch.setattr(module.settings, "beckn_transaction_bridge_token", "transaction-secret")
@@ -341,11 +340,10 @@ async def test_health_confirm_uses_health_provider_and_veterinary_fulfillment(mo
 
 @pytest.mark.asyncio
 async def test_shc_init_is_directed_and_waits_for_on_init(monkeypatch):
-    from app.services import beckn_operations as module
+    from agents.tools.beckn import operations as module
 
     monkeypatch.setattr(module.settings, "beckn_bap_caller_url", "http://onix/bap/caller")
     monkeypatch.setattr(module.settings, "beckn_transaction_bridge_token", None)
-    monkeypatch.setattr(module.settings, "beckn_callback_transactions_enabled", False)
     monkeypatch.setattr(module.settings, "beckn_bap_uri", "https://bap.example/bap/receiver")
     monkeypatch.setattr(module.settings, "vistaar_bpp_id", "provider-network-vistaar.da.gov.in")
     monkeypatch.setattr(module.settings, "vistaar_bpp_uri", "https://provider-network-vistaar.da.gov.in")
@@ -378,7 +376,7 @@ async def test_shc_init_is_directed_and_waits_for_on_init(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_private_farmer_and_animal_init_match_bpp_contracts(monkeypatch):
-    from app.services import beckn_operations as module
+    from agents.tools.beckn import operations as module
 
     _configure_amul(monkeypatch, module)
     farmer_store = BecknOperationStore(MemoryRedis(), ttl_seconds=3600)
@@ -416,7 +414,7 @@ async def test_private_farmer_and_animal_init_match_bpp_contracts(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_retired_provider_is_rejected_for_farmer_and_animal_init(monkeypatch):
-    from app.services import beckn_operations as module
+    from agents.tools.beckn import operations as module
 
     _configure_amul(monkeypatch, module)
     client = BecknOperationClient(
@@ -441,7 +439,7 @@ async def test_retired_provider_is_rejected_for_farmer_and_animal_init(monkeypat
 
 @pytest.mark.asyncio
 async def test_milk_init_and_directed_ait_search_match_bpp_contracts(monkeypatch):
-    from app.services import beckn_operations as module
+    from agents.tools.beckn import operations as module
 
     _configure_amul(monkeypatch, module)
     milk_store = BecknOperationStore(MemoryRedis(), ttl_seconds=3600)
@@ -481,7 +479,7 @@ async def test_milk_init_and_directed_ait_search_match_bpp_contracts(monkeypatch
 
 @pytest.mark.asyncio
 async def test_milk_idempotency_is_scoped_to_each_farmer_account(monkeypatch):
-    from app.services import beckn_operations as module
+    from agents.tools.beckn import operations as module
 
     _configure_amul(monkeypatch, module)
     store = BecknOperationStore(MemoryRedis(), ttl_seconds=3600)
@@ -512,14 +510,8 @@ async def test_milk_idempotency_is_scoped_to_each_farmer_account(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_callback_router_is_default_off_and_acks_only_after_store(monkeypatch):
+async def test_callback_router_acks_only_after_store(monkeypatch):
     from app.routers import beckn as router_module
-
-    monkeypatch.setattr(router_module.settings, "beckn_callback_transactions_enabled", False)
-    monkeypatch.setattr(router_module.settings, "vistaar_shc_enabled", False)
-    disabled = await router_module.receive_callback("on_confirm", _callback(), None)
-    assert disabled.status_code == 503
-    assert json.loads(disabled.body)["message"]["ack"]["status"] == "NACK"
 
     calls = {"n": 0}
 
@@ -528,7 +520,6 @@ async def test_callback_router_is_default_off_and_acks_only_after_store(monkeypa
             calls["n"] += 1
             return CallbackRecordResult(True)
 
-    monkeypatch.setattr(router_module.settings, "beckn_callback_transactions_enabled", True)
     monkeypatch.setattr(router_module.settings, "beckn_callback_token", "secret")
     monkeypatch.setattr(router_module, "get_beckn_operation_store", lambda: Store())
     accepted = await router_module.receive_callback("on_confirm", _callback(), "secret")
@@ -539,7 +530,7 @@ async def test_callback_router_is_default_off_and_acks_only_after_store(monkeypa
 
 
 @pytest.mark.asyncio
-async def test_shc_callback_gate_does_not_enable_booking_callbacks(monkeypatch):
+async def test_vistaar_callback_does_not_require_private_bridge_token(monkeypatch):
     from app.routers import beckn as router_module
 
     calls = {"n": 0}
@@ -549,13 +540,8 @@ async def test_shc_callback_gate_does_not_enable_booking_callbacks(monkeypatch):
             calls["n"] += 1
             return CallbackRecordResult(True)
 
-    monkeypatch.setattr(router_module.settings, "beckn_callback_transactions_enabled", False)
-    monkeypatch.setattr(router_module.settings, "vistaar_shc_enabled", True)
     monkeypatch.setattr(router_module.settings, "beckn_callback_token", None)
     monkeypatch.setattr(router_module, "get_beckn_operation_store", lambda: Store())
-
-    booking = await router_module.receive_callback("on_confirm", _callback(), None)
-    assert booking.status_code == 503
 
     payload = _callback()
     payload["context"].update({"domain": "schemes:vistaar", "action": "on_init"})
@@ -577,7 +563,6 @@ async def test_callback_router_returns_protocol_nack_without_transport_failure(m
                 message="No matching Beckn operation",
             )
 
-    monkeypatch.setattr(router_module.settings, "beckn_callback_transactions_enabled", True)
     monkeypatch.setattr(router_module.settings, "beckn_callback_token", "secret")
     monkeypatch.setattr(router_module, "get_beckn_operation_store", lambda: Store())
     rejected = await router_module.receive_callback("on_confirm", _callback(), "secret")
@@ -599,7 +584,6 @@ async def test_callback_router_accepts_directed_on_search(monkeypatch):
     payload = _callback()
     payload["context"]["action"] = "on_search"
     payload["message"] = {"catalog": {"providers": []}}
-    monkeypatch.setattr(router_module.settings, "beckn_callback_transactions_enabled", True)
     monkeypatch.setattr(router_module.settings, "beckn_callback_token", "secret")
     monkeypatch.setattr(router_module, "get_beckn_operation_store", lambda: Store())
 
@@ -609,10 +593,9 @@ async def test_callback_router_accepts_directed_on_search(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_enabled_callback_ingress_fails_closed_without_token(monkeypatch):
+async def test_amul_callback_ingress_fails_closed_without_token(monkeypatch):
     from app.routers import beckn as router_module
 
-    monkeypatch.setattr(router_module.settings, "beckn_callback_transactions_enabled", True)
     monkeypatch.setattr(router_module.settings, "beckn_callback_token", None)
     response = await router_module.receive_callback("on_confirm", _callback(), None)
 

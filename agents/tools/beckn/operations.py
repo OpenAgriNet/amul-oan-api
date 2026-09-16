@@ -930,7 +930,7 @@ class BecknOperationClient:
 
     async def _send(self, operation: BecknOperation, payload: Mapping[str, Any]) -> None:
         token = settings.beckn_transaction_bridge_token
-        if settings.beckn_callback_transactions_enabled and not token:
+        if operation.domain != "schemes:vistaar" and not token:
             raise RuntimeError("BECKN_TRANSACTION_BRIDGE_TOKEN is required for Beckn transactions")
         await self.store.mark_sent(operation)
         # ONIX derives the action from the final path segment. A trailing slash

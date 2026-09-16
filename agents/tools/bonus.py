@@ -8,11 +8,11 @@ from pydantic_ai import RunContext
 from pydantic_ai.tools import ToolDefinition
 
 from agents.deps import FarmerContext
-from agents.services.beckn_amul import authenticated_accounts
+from agents.tools.beckn.amul import authenticated_accounts
 from agents.tools.farmer import get_farmer_data_by_mobile
-from agents.tools.farmer_animal_backends import get_farmer_bonus_amount_api
+from agents.tools.bonus_backend import get_farmer_bonus_amount_api
 from app.config import get_config_value
-from app.models.bonus import (
+from agents.tools.models.bonus import (
     FarmerBonusAmountRecordModel,
     FarmerBonusAmountRequestModel,
 )

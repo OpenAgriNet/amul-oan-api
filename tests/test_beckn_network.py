@@ -1,4 +1,4 @@
-"""Tests for the Beckn network client (agents/tools/beckn_network.py).
+"""Tests for the Beckn network client (agents/tools/beckn/network.py).
 
 Mocks the HTTP layer so no live services are needed; asserts the Beckn
 on_search / on_confirm payloads are formatted into the same string contract the
@@ -7,7 +7,6 @@ direct tools return, and that errors (NACK) are surfaced cleanly.
 import importlib.util
 import json
 import sys
-import uuid
 from pathlib import Path
 from unittest.mock import patch
 
@@ -21,7 +20,7 @@ if str(ROOT) not in sys.path:
 # (which imports pydantic_ai + every heavy tool). The module itself only needs
 # httpx, app.config, and helpers.utils.
 _spec = importlib.util.spec_from_file_location(
-    "beckn_network", ROOT / "agents" / "tools" / "beckn_network.py"
+    "beckn_network", ROOT / "agents" / "tools" / "beckn" / "network.py"
 )
 bn = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(bn)
@@ -385,99 +384,11 @@ async def test_single_leg_wrapper_still_scopes_to_one_leg():
     assert bn._items(on_search)[0]["descriptor"]["name"] == "Mastitis care"
 
 
-@pytest.mark.asyncio
-async def test_ai_call_success_returns_ticket():
-    payload = {"message": {"order": {"id": "AICALL-889231", "state": "ACTIVE"}}}
-    fake = _FakeAsyncClient(payload)
-    with patch.object(bn.httpx, "AsyncClient", return_value=fake):
-        out = await bn.network_create_ai_call("12", "S1", "F1", "AIT-1", "cow")
-    assert "AICALL-889231" in out
-    assert "booked successfully" in out
-    # confirm order carried the farmer + technician correctly
-    order = fake.calls[0][1]["message"]["order"]
-    assert order["items"][0]["id"] == "ait:AIT-1"
-    assert {"code": "farmer_id", "value": "F1"} in order["fulfillment"]["customer"]["tags"]
-    # correlation IDs must be unique UUIDs (not society+AIT / static message_id)
-    ctx = fake.calls[0][1]["context"]
-    assert uuid.UUID(ctx["transaction_id"])
-    assert uuid.UUID(ctx["message_id"])
-    assert ctx["transaction_id"] != ctx["message_id"]
-    assert not ctx["transaction_id"].startswith("agent-")
-    assert ctx["message_id"] != "agent-confirm"
-
-
-@pytest.mark.asyncio
-async def test_ai_call_confirm_ids_are_unique_per_attempt():
-    """Same society + AIT must not reuse Beckn correlation IDs across confirms."""
-    payload = {"message": {"order": {"id": "AICALL-1", "state": "ACTIVE"}}}
-    fake = _FakeAsyncClient(payload)
-    with patch.object(bn.httpx, "AsyncClient", return_value=fake):
-        await bn.network_create_ai_call_result("12", "S1", "F1", "AIT-1", "cow")
-        await bn.network_create_ai_call_result("12", "S1", "F1", "AIT-1", "cow")
-    assert len(fake.calls) == 2
-    ctx1 = fake.calls[0][1]["context"]
-    ctx2 = fake.calls[1][1]["context"]
-    assert ctx1["transaction_id"] != ctx2["transaction_id"]
-    assert ctx1["message_id"] != ctx2["message_id"]
-
-
-@pytest.mark.asyncio
-async def test_ai_call_nack_surfaces_error():
-    payload = {"message": {"ack": {"status": "NACK"}}, "error": {"code": "40002", "message": "society not serviced"}}
-    fake = _FakeAsyncClient(payload)
-    with patch.object(bn.httpx, "AsyncClient", return_value=fake):
-        out = await bn.network_create_ai_call("12", "S1", "F1", "AIT-1", "cow")
-    assert "failed" in out.lower()
-    assert "society not serviced" in out
-
-
-@pytest.mark.asyncio
-async def test_ai_call_nack_is_marked_authoritative_no_booking():
-    """A NACK is the BPP saying it did not book — the caller may release its
-    reservation on it, so the flag must be set."""
-    payload = {"message": {"ack": {"status": "NACK"}}, "error": {"code": "40002", "message": "society not serviced"}}
-    fake = _FakeAsyncClient(payload)
-    with patch.object(bn.httpx, "AsyncClient", return_value=fake):
-        res = await bn.network_create_ai_call_result("12", "S1", "F1", "AIT-1", "cow")
-    assert res.ok is False
-    assert res.authoritative_no_booking is True
-
-
-@pytest.mark.asyncio
-async def test_ai_call_200_with_unparseable_body_is_not_success():
-    """`ok` used to default to True, so a 200 with no ack and no order.id told
-    the farmer "booked successfully. Ticket: None" and burned the session's TTL
-    with nothing booked. It is a failure, and the message must neither claim
-    success nor print a None ticket."""
-    fake = _FakeAsyncClient({})
-    with patch.object(bn.httpx, "AsyncClient", return_value=fake):
-        res = await bn.network_create_ai_call_result("12", "S1", "F1", "AIT-1", "cow")
-    assert res.ok is False, "a 200 with no order.id was reported as a successful booking"
-    assert res.ticket is None
-    assert "booked successfully" not in res.message.lower()
-    assert "none" not in res.message.lower(), "the farmer was shown a None ticket"
-    assert "could not be confirmed" in res.message.lower()
-    # NOT authoritative: the BPP answered without refusing, so it may already
-    # have called PashuGPT and sent the SMS. Same class as a read timeout —
-    # the caller must hold the reservation.
-    assert res.authoritative_no_booking is False
-
-
-@pytest.mark.asyncio
-async def test_ai_call_200_with_order_but_no_id_is_not_success():
-    """Same for a partially-filled order envelope."""
-    fake = _FakeAsyncClient({"message": {"order": {"state": "ACTIVE"}}})
-    with patch.object(bn.httpx, "AsyncClient", return_value=fake):
-        res = await bn.network_create_ai_call_result("12", "S1", "F1", "AIT-1", "cow")
-    assert res.ok is False
-    assert res.authoritative_no_booking is False
-
-
 # ── the LLM-visible docstring must match what the tool actually does ─────────
 
 def test_union_scheme_docstring_does_not_contradict_the_merge():
     """`get_union_scheme_data` used to promise "ONLY for dairy-union schemes /
-    Do NOT use this for KCC, PM-KISAN, PMFBY" while, with ENABLE_NETWORK=true,
+    Do NOT use this for KCC, PM-KISAN, PMFBY" while the Beckn implementation
     that same call returns merged central schemes. The docstring is the model's
     contract and has to hold for BOTH flag states."""
     from agents.tools.union_schemes import get_union_scheme_data

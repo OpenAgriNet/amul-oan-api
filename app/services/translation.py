@@ -13,7 +13,7 @@ from contextvars import ContextVar
 from pathlib import Path
 from typing import Literal, Optional
 from helpers.utils import get_logger, normalize_voice_output
-from app.models.union import UNION_BANNED_MESSAGE_VARIANTS, union_banned_message
+from agents.tools.models.union import UNION_BANNED_MESSAGE_VARIANTS, union_banned_message
 from agents.tools.terms import get_mini_glossary_for_text, get_ambiguity_hints_for_query
 
 from app import llm_core

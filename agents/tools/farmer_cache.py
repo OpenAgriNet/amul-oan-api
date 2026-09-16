@@ -1,5 +1,5 @@
 """
-Cache layer for farmer data fetched from PashuGPT APIs (unified chat + voice).
+Cache layer for farmer data fetched through Beckn (unified chat + voice).
 
 Stale-while-revalidate: reads return cached data immediately and mark it stale;
 a background worker refreshes off the request path so slow/unreliable upstream
@@ -25,16 +25,12 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 from app.core.cache import cache, redis_client, build_cache_key
-from app.config import get_config_value, settings
+from app.config import settings
 from app.observability import start_observation
-from app.models.farmer_transport import FarmerDataEnvelope, FarmerRecord
-from app.models.union import is_ai_call_banned_union
-from agents.tools.farmer_animal_backends import (
-    GetAITechniciansBySocietyQueryParams,
-    get_ai_technicians_by_society_cached,
-    fetch_reason,
-    normalize_phone,
-)
+from agents.tools.models.farmer_transport import FarmerDataEnvelope, FarmerRecord
+from agents.tools.models.union import is_ai_call_banned_union
+from agents.tools.beckn.amul import search_ai_technicians
+from agents.tools.farmer import normalize_phone_to_mobile
 from helpers.utils import get_logger
 
 logger = get_logger(__name__)
@@ -62,7 +58,7 @@ def _normalize_cache_phone(phone: str) -> str:
     """Canonical phone for cache keys and queue membership."""
     if not phone:
         return phone
-    normalized = normalize_phone(phone)
+    normalized = normalize_phone_to_mobile(phone)
     return normalized or phone
 
 
@@ -341,7 +337,25 @@ async def refresh_farmer_data(phone: str) -> Optional[FarmerDataEnvelope]:
             await _clear_refresh_attempt_state(phone)
             return envelope
 
-        # ERROR or ambiguous empty while upstream cannot distinguish miss vs failure.
+        if outcome == FarmerFetchOutcome.NOT_FOUND:
+            existing = await get_cached_farmer_data(phone)
+            if existing is not None and existing.lookupStatus == "found":
+                logger.info(
+                    "Keeping cached farmer data after authoritative empty Beckn response "
+                    "(phone hash %s...)",
+                    _cache_key(phone)[:8],
+                )
+                if exceeds_max_serve_stale(existing):
+                    await _restamp_kept_record(phone, existing)
+                return existing
+            envelope = FarmerDataEnvelope.from_records(
+                [], source="beckn", lookup_status="not_found"
+            )
+            await set_cached_farmer_data(phone, envelope)
+            await _clear_refresh_attempt_state(phone)
+            return envelope
+
+        # Provider/transport error: never replace authoritative cached data.
         existing = await get_cached_farmer_data(phone)
         if existing is not None and existing.lookupStatus == "found":
             logger.info(
@@ -507,8 +521,7 @@ async def refresh_farmer_data_bounded(
     the phone is queued, and the caller proceeds with no farmer data this turn.
     """
     try:
-        with fetch_reason("cold_fetch"):
-            return await asyncio.wait_for(refresh_farmer_data(phone), timeout=timeout)
+        return await asyncio.wait_for(refresh_farmer_data(phone), timeout=timeout)
     except asyncio.TimeoutError:
         logger.warning(
             "Cold farmer fetch exceeded %.1fs for phone hash %s...; deferring to worker",
@@ -535,14 +548,13 @@ async def drain_farmer_refresh_queue_once(batch: int = FARMER_REFRESH_QUEUE_BATC
         try:
             # Root span so the nested API-call observations have a parent and
             # are queryable in Langfuse (background refreshes aren't tied to a
-            # voice session); fetch_reason tags them as background_refresh.
+            # voice session).
             with start_observation(
                 "farmer_background_refresh",
                 input={"phone_hash": _cache_key(phone)[:12]},
                 metadata={"reason": "background_refresh"},
             ):
-                with fetch_reason("background_refresh"):
-                    await refresh_farmer_data(phone)
+                await refresh_farmer_data(phone)
             processed += 1
         except Exception:
             logger.exception("Background farmer refresh failed for a queued phone")
@@ -550,8 +562,7 @@ async def drain_farmer_refresh_queue_once(batch: int = FARMER_REFRESH_QUEUE_BATC
 
 
 async def _fetch_ai_technicians(records: list[FarmerRecord]) -> list[dict]:
-    token = get_config_value("PASHUGPT_TOKEN")
-    if not token or not records:
+    if not records:
         return []
 
     # Keep response shape per farmer while deduping upstream lookups by society:
@@ -580,12 +591,9 @@ async def _fetch_ai_technicians(records: list[FarmerRecord]) -> list[dict]:
 
     async def _lookup_pair(union_code: str, society_code: str) -> tuple[tuple[str, str], Optional[list]]:
         try:
-            technicians = await get_ai_technicians_by_society_cached(
-                GetAITechniciansBySocietyQueryParams(
-                    unionCode=union_code,
-                    societyCode=society_code,
-                ),
-                token,
+            technicians = await search_ai_technicians(
+                union_code=union_code,
+                society_code=society_code,
             )
             return (union_code, society_code), technicians
         except Exception as e:

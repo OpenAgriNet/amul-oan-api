@@ -555,20 +555,9 @@ class TestToolRegistration:
 
     def test_the_chat_registry_passes_context_to_both_tools(self):
         # takes_ctx=False here would make every farmer Anand again, silently.
-        import os
-        from unittest.mock import patch as _patch
+        from agents.tools.registry import TOOLS
 
-        from app.config import settings
-
-        with _patch.object(settings, "enable_network", True):
-            import importlib
-
-            import agents.tools as tools_pkg
-            importlib.reload(tools_pkg)
-            by_name = {t.name: t for t in tools_pkg.TOOLS}
-            try:
-                assert by_name["get_vistaar_mandi_prices"].takes_ctx is True
-                assert by_name["get_vistaar_weather"].takes_ctx is True
-                assert by_name["get_vistaar_scheme_info"].takes_ctx is False
-            finally:
-                importlib.reload(tools_pkg)
+        by_name = {tool.name: tool for tool in TOOLS}
+        assert by_name["get_vistaar_mandi_prices"].takes_ctx is True
+        assert by_name["get_vistaar_weather"].takes_ctx is True
+        assert by_name["get_vistaar_scheme_info"].takes_ctx is False

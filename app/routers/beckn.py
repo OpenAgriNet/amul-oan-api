@@ -10,7 +10,7 @@ from fastapi import APIRouter, Header, HTTPException
 from fastapi.responses import JSONResponse
 
 from app.config import settings
-from app.services.beckn_operations import get_beckn_operation_store
+from agents.tools.beckn.operations import get_beckn_operation_store
 
 router = APIRouter(prefix="/beckn", tags=["beckn-internal"])
 
@@ -28,18 +28,6 @@ def _nack(code: str, message: str) -> dict[str, Any]:
     }
 
 
-def _is_enabled_callback(callback_action: str, payload: dict[str, Any]) -> bool:
-    if settings.beckn_callback_transactions_enabled:
-        return True
-    context = payload.get("context") or {}
-    return (
-        settings.vistaar_shc_enabled
-        and callback_action == "on_init"
-        and context.get("action") == "on_init"
-        and context.get("domain") == "schemes:vistaar"
-    )
-
-
 @router.post("/{callback_action}")
 async def receive_callback(
     callback_action: str,
@@ -50,24 +38,21 @@ async def receive_callback(
 
     This route is intended to be the *internal* target of ONIX's BAP receiver;
     ONIX remains responsible for subscriber lookup and signature validation.
-    The default-off feature gate prevents an accidentally exposed application
-    route from becoming an unsigned callback bypass during rollout.
+    Amul-owned callbacks require the private bridge token. ONIX validates the
+    provider signature before forwarding Vistaar callbacks internally.
     """
-    if not _is_enabled_callback(callback_action, payload):
-        return JSONResponse(
-            status_code=503,
-            content=_nack("CALLBACK_INGRESS_DISABLED", "Beckn callback transactions are disabled"),
-        )
     if callback_action not in _SUPPORTED_CALLBACKS:
         raise HTTPException(status_code=404, detail="Unsupported Beckn callback")
 
     configured_token = settings.beckn_callback_token
-    if settings.beckn_callback_transactions_enabled and not configured_token:
+    domain = str((payload.get("context") or {}).get("domain") or "")
+    is_vistaar = domain == "schemes:vistaar"
+    if not is_vistaar and not configured_token:
         return JSONResponse(
             status_code=503,
             content=_nack("CALLBACK_AUTH_NOT_CONFIGURED", "Callback ingress authentication is not configured"),
         )
-    if configured_token and not hmac.compare_digest(
+    if not is_vistaar and configured_token and not hmac.compare_digest(
         x_beckn_callback_token or "", configured_token
     ):
         return JSONResponse(

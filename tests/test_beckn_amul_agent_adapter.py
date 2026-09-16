@@ -2,8 +2,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from agents.services import beckn_amul as adapter
-from app.services.beckn_operations import BecknActionResult, OperationState
+from agents.tools.beckn import amul as adapter
+from agents.tools.beckn.operations import BecknActionResult, OperationState
 
 
 def _result(payload, state=OperationState.SUCCEEDED):

@@ -3,8 +3,8 @@
 Pins the behavior that survived the move out of app/services/voice.py, so the
 remaining extractions from that module have something to move against.
 """
-from app.models.farmer_transport import FarmerDataEnvelope, FarmerRecord
-from agents.services.farmer_envelope import collect_farmer_accounts
+from agents.tools.models.farmer_transport import FarmerDataEnvelope, FarmerRecord
+from agents.tools.farmer_envelope import collect_farmer_accounts
 
 
 def _envelope(*records: dict) -> FarmerDataEnvelope:

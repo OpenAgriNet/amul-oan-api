@@ -21,7 +21,7 @@ if str(ROOT) not in sys.path:
 
 from agents.deps import FarmerContext  # noqa: E402
 from agents.farmer_context import _collect_farmer_location  # noqa: E402
-from app.models.farmer import FarmerModel  # noqa: E402
+from agents.tools.models.farmer import FarmerModel  # noqa: E402
 from helpers.utils import get_prompt  # noqa: E402
 
 
@@ -54,10 +54,10 @@ class TestFarmerLocationCollection:
     async def test_the_bundle_returns_the_location_as_its_third_element(self, monkeypatch):
         import agents.farmer_context as fc
 
-        async def _fake_get(mobile):
+        async def _fake_get(mobile, **kwargs):
             return [FarmerModel(district="Banas Kantha", village="Dama", state="Gujarat")]
 
-        monkeypatch.setattr(fc, "get_farmer_data_by_mobile", _fake_get)
+        monkeypatch.setattr(fc, "fetch_authenticated_farmers", _fake_get)
         _, _, location = await fc.get_farmer_context_bundle_by_mobile("9876543210")
         assert location["district"] == "banas kantha"
 
@@ -67,10 +67,10 @@ class TestFarmerLocationCollection:
         # skipped new fields before.
         import agents.farmer_context as fc
 
-        async def _fake_get(mobile):
+        async def _fake_get(mobile, **kwargs):
             return None
 
-        monkeypatch.setattr(fc, "get_farmer_data_by_mobile", _fake_get)
+        monkeypatch.setattr(fc, "fetch_authenticated_farmers", _fake_get)
         markdown, unions, location = await fc.get_farmer_context_bundle_by_mobile("1")
         assert unions == [] and location == {}
         assert "No farmer information found" in markdown
@@ -129,8 +129,8 @@ class TestPromptGuidance:
         # Without this line the block renders as absent regardless of the flag,
         # and the whole guidance silently does nothing.
         source = (ROOT / "agents" / "agrinet.py").read_text()
-        assert "'network_tools_enabled': settings.enable_network" in source
-        assert "'vistaar_shc_enabled': settings.enable_network and settings.vistaar_shc_enabled" in source
+        assert "'network_tools_enabled': True" in source
+        assert "'vistaar_shc_enabled': settings.vistaar_shc_enabled" in source
 
     @pytest.mark.parametrize("name", PROMPTS)
     def test_shc_guidance_matches_the_narrower_feature_gate(self, name):
