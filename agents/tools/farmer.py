@@ -1,6 +1,6 @@
 """
 Tool for fetching farmer details by mobile number from PashuGPT-style APIs.
-Uses amulpashudhan.com first, then herdman.live if needed (cohesive output, fallback on failure/empty).
+Uses amulpashudhan.com and returns a cohesive, deduplicated set of records.
 """
 import json
 import re
@@ -9,15 +9,12 @@ from enum import Enum
 
 from agents.tools.farmer_animal_backends import (
     fetch_farmer_amulpashudhan,
-    fetch_farmer_herdman,
     _fetch_farmer_amulpashudhan_raw,
-    _fetch_farmer_herdman_raw,
     normalize_phone, merge_farmer_data, merge_farmer_records,
 )
 from app.models.farmer import FarmerModel
 from app.models.farmer_transport import FarmerRecord
-from app.models.union import UnionName
-from helpers.utils import get_logger, is_from_union
+from helpers.utils import get_logger
 from app.config import get_config_value
 
 logger = get_logger(__name__)
@@ -71,30 +68,19 @@ async def get_farmer_data_by_mobile(mobile_number: str) -> list[FarmerModel] | N
         return None
 
     token1 = get_config_value("PASHUGPT_TOKEN")
-    token3 = get_config_value("PASHUGPT_TOKEN_3")
-    if not token1 and not token3:
-        logger.error("Neither PASHUGPT_TOKEN nor PASHUGPT_TOKEN_3 is set")
+    if not token1:
+        logger.error("PASHUGPT_TOKEN is not set")
         return None
 
     records: list[FarmerModel] = []
 
-    if token1:
-        try:
-            data = await fetch_farmer_amulpashudhan(mobile, token1)
-            if data is not None:
-                records.extend(data)
-                logger.info(f"Farmer data for {mobile}: got {len(data)} record(s) from amulpashudhan")
-        except Exception as e:
-            logger.warning(f"amulpashudhan farmer API error for {mobile}: {e}")
-
-    if token3 and is_from_union(records, UnionName.MEHSANA):
-        try:
-            data = await fetch_farmer_herdman(mobile, token3)
-            if data:
-                records.extend(data)
-                logger.info(f"Farmer data for {mobile}: got {len(data)} record(s) from herdman")
-        except Exception as e:
-            logger.warning(f"herdman farmer API error for {mobile}: {e}")
+    try:
+        data = await fetch_farmer_amulpashudhan(mobile, token1)
+        if data is not None:
+            records.extend(data)
+            logger.info(f"Farmer data for {mobile}: got {len(data)} record(s) from amulpashudhan")
+    except Exception as e:
+        logger.warning(f"amulpashudhan farmer API error for {mobile}: {e}")
 
     if len(records) == 0:
         logger.info(f"No farmer data found for mobile {mobile}")
@@ -115,16 +101,6 @@ def _record_has_content(rec: dict) -> bool:
     return bool(rec.get("farmerName") or rec.get("societyName"))
 
 
-def _rows_include_mehsana(rows: list[dict]) -> bool:
-    """Raw-dict analogue of is_from_union(records, MEHSANA): does any amulpashudhan
-    row carry unionName == 'mehsana'? Raw dicts keep original casing, so lowercase
-    before comparing (FarmerModel lowercases via validator)."""
-    return any(
-        str(r.get("unionName") or "").strip().lower() == UnionName.MEHSANA.value
-        for r in rows
-    )
-
-
 async def fetch_farmer_info_with_outcome(
     mobile_number: str,
 ) -> tuple[list[FarmerRecord] | None, FarmerFetchOutcome]:
@@ -139,23 +115,15 @@ async def fetch_farmer_info_with_outcome(
         return None, FarmerFetchOutcome.ERROR
 
     token1 = get_config_value("PASHUGPT_TOKEN")
-    token3 = get_config_value("PASHUGPT_TOKEN_3")
-    if not token1 and not token3:
-        logger.error("Neither PASHUGPT_TOKEN nor PASHUGPT_TOKEN_3 is set")
+    if not token1:
+        logger.error("PASHUGPT_TOKEN is not set")
         return None, FarmerFetchOutcome.ERROR
 
     rows: list[dict] = []
-    if token1:
-        raw = await _fetch_farmer_amulpashudhan_raw(mobile, token1)
-        if raw is not None:
-            if len(raw) > 0:
-                rows.extend(r for r in raw if isinstance(r, dict))
-
-    if token3 and _rows_include_mehsana(rows):
-        raw_h = await _fetch_farmer_herdman_raw(mobile, token3)
-        if raw_h is not None:
-            if len(raw_h) > 0:
-                rows.extend(r for r in raw_h if isinstance(r, dict))
+    raw = await _fetch_farmer_amulpashudhan_raw(mobile, token1)
+    if raw is not None:
+        if len(raw) > 0:
+            rows.extend(r for r in raw if isinstance(r, dict))
 
     if not rows:
         return None, FarmerFetchOutcome.ERROR
@@ -185,7 +153,6 @@ async def get_farmer_by_mobile(mobile_number: str) -> str:
     """
     Fetch farmer information by mobile number. Returns farmer details including
     farmer ID, name, location, society, and associated animal tag numbers.
-    Tries multiple backends and merges results when both return data.
 
     Args:
         mobile_number: The mobile number of the farmer (required). Can include +91 or spaces.

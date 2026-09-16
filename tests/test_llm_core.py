@@ -402,7 +402,6 @@ def test_omitted_capabilities_preserve_vllm_gemma_behavior():
 
     cfg = runtime.normalize_config(cfg)
     capabilities = ExecutionContext("s", cfg, "old-yaml").capabilities
-    assert capabilities.requires_translation is True
     assert capabilities.history_max_tokens == 10_000
 
 
@@ -465,7 +464,6 @@ def test_partial_capabilities_merge_with_reachable_overflow():
     )], fallback_enabled=True)
     cfg = runtime.normalize_config(cfg)
     capabilities = ExecutionContext("s", cfg, "mixed").capabilities
-    assert capabilities.requires_translation is True
     assert capabilities.history_max_tokens == 20_000
     assert cfg.step_plan(cfg.by_name("mixed"), Step.AGENT).concurrency_gate is None
 
@@ -474,14 +472,6 @@ def test_partial_capabilities_merge_with_reachable_overflow():
         "profiles": [cfg.profiles[0].model_copy(update={"capabilities": None})],
     }))
     capabilities = ExecutionContext("s", inactive, "mixed").capabilities
-    assert capabilities.requires_translation is False
-    assert capabilities.history_max_tokens == 80_000
-
-    cfg = runtime.normalize_config(cfg.model_copy(update={"profiles": [cfg.profiles[0].model_copy(update={
-        "capabilities": ProfileCapabilities(requires_translation=False)
-    })]}))
-    capabilities = ExecutionContext("s", cfg, "mixed").capabilities
-    assert capabilities.requires_translation is False
     assert capabilities.history_max_tokens == 80_000
 
 

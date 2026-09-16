@@ -12,7 +12,7 @@ from pydantic import BaseModel, ConfigDict
 
 
 class AnimalRecord(BaseModel):
-    """Canonical animal record normalized from amulpashudhan and herdman APIs."""
+    """Canonical animal record normalized from the amulpashudhan API."""
 
     model_config = ConfigDict(extra="allow")
 
@@ -25,11 +25,6 @@ class AnimalRecord(BaseModel):
     lactationNo: Optional[Union[int, str]] = None
     lastBreedingActivity: Optional[str] = None
     lastHealthActivity: Optional[str] = None
-    lastPD: Optional[str] = None
-    lastCalvingDate: Optional[str] = None
-    farmerComplaint: Optional[str] = None
-    diagnosis: Optional[str] = None
-    medicineGiven: Optional[str] = None
 
 
 class FarmerRecord(BaseModel):

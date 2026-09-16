@@ -873,7 +873,6 @@ async def _get_animal_context_bundle(
         tasks: list[CoroutineType[Any, Any, AnimalModel | list[BanasOperatedVisitModel] | CvccHealthResponseModel | None]] = [
             fetch_animal_profile(
                 tag,
-                union_name=union_name,
                 union_code=union_code,
             )
         ]

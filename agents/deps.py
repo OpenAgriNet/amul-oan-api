@@ -22,9 +22,9 @@ class FarmerContext(BaseModel):
     """Unified context for the agent (chat + voice).
 
     Union of the chat and voice FarmerContext (bucket B/C reconciliation). Chat
-    fields (moderation_str, use_translation_pipeline, response_max_chars) and voice
-    fields (target_lang, provider, process_id, ai_technician_info, signed_in,
-    mobile, the concurrent-moderation task) coexist; each channel sets/reads the
+    fields (moderation_str, response_max_chars) and voice fields (target_lang,
+    provider, process_id, ai_technician_info, signed_in, mobile, the
+    concurrent-moderation task) coexist; each channel sets/reads the
     subset it needs. farmer_info defaults to "" so a caller may omit it.
 
     Args:
@@ -62,7 +62,6 @@ class FarmerContext(BaseModel):
         default_factory=list,
         description="All (union, society, farmer) accounts on the caller's mobile, for multi-account fan-out.",
     )
-    use_translation_pipeline: bool = Field(default=False, description="When True, use English-only prompt; response is translated externally (chat).")
     response_max_chars: Optional[int] = Field(default=None, description="Optional channel-specific final response character guidance (chat).")
     supports_rich_artifacts: bool = Field(default=False, description="Whether this channel can render private rich documents such as SHC HTML.")
     soil_health_card_context: str = Field(default="", description="Bounded agronomic facts from this signed-in session's latest Soil Health Card.")

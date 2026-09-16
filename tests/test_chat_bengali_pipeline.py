@@ -82,7 +82,13 @@ class _FakeAgentRun:
 
 
 def _install_fakes(monkeypatch) -> dict[str, list]:
-    calls: dict[str, list] = {"pretranslation": [], "moderation": [], "agent": [], "translation": []}
+    calls: dict[str, list] = {
+        "pretranslation": [],
+        "moderation": [],
+        "agent": [],
+        "translation": [],
+        "system_translation": [],
+    }
 
     monkeypatch.setattr(chat_service, "propagate_attributes", None)
     monkeypatch.setattr(chat_service, "get_langfuse_client", None)
@@ -116,6 +122,17 @@ def _install_fakes(monkeypatch) -> dict[str, list]:
         )
         yield BENGALI_ANSWER
 
+    async def _fake_translate_text(
+        text: str,
+        source_lang: str,
+        target_lang: str,
+        **_kwargs,
+    ):
+        calls["system_translation"].append(
+            {"text": text, "source_lang": source_lang, "target_lang": target_lang}
+        )
+        return BENGALI_ANSWER
+
     def _fake_iter(**kwargs):
         calls["agent"].append(kwargs)
         return _FakeAgentRun([ENGLISH_ANSWER])
@@ -126,6 +143,7 @@ def _install_fakes(monkeypatch) -> dict[str, list]:
     monkeypatch.setattr(chat_service.moderation_agent, "run", _fake_moderation_run)
     monkeypatch.setattr(chat_service.agrinet_agent, "iter", _fake_iter)
     monkeypatch.setattr(chat_service, "translate_text_stream_fast", _fake_translate_text_stream_fast)
+    monkeypatch.setattr(chat_service, "translate_text", _fake_translate_text)
     return calls
 
 
@@ -142,7 +160,6 @@ def _drive(query: str, lang: str) -> str:
             history=[],
             user_info={},
             background_tasks=BackgroundTasks(),
-            use_translation_pipeline=True,
         ):
             chunks.append(chunk)
         return "".join(chunks)
@@ -174,3 +191,26 @@ def test_bengali_kill_switch_bypasses_translation_pipeline(monkeypatch):
     assert calls["translation"] == []
     assert calls["agent"] and calls["agent"][0]["deps"].query == BENGALI_QUERY
     assert result == ENGLISH_ANSWER
+
+
+def test_bengali_kill_switch_keeps_moderation_declines_in_english(monkeypatch):
+    calls = _install_fakes(monkeypatch)
+    monkeypatch.setattr(chat_service.settings, "bengali_chat_enabled", False)
+
+    decline = "I can only answer agriculture and livestock related questions."
+
+    class _BlockedModerationOutput:
+        category = "invalid_non_agricultural"
+        action = decline
+
+    async def _blocked_moderation_run(_user_message: str, model=None):
+        return SimpleNamespace(output=_BlockedModerationOutput())
+
+    monkeypatch.setattr(chat_service.moderation_agent, "run", _blocked_moderation_run)
+
+    result = _drive("বাংলায় একটি অ-কৃষি প্রশ্ন", "bn")
+
+    assert result == decline
+    assert calls["pretranslation"] == []
+    assert calls["system_translation"] == []
+    assert calls["agent"] == []

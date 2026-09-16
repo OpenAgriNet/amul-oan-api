@@ -412,7 +412,6 @@ class Settings(BaseSettings):
     banas_mobile_api_key: Optional[str] = os.getenv("BANAS_MOBILE_API_KEY")
     pashugpt_token: Optional[str] = None
     pashugpt_token_2: Optional[str] = None
-    pashugpt_token_3: Optional[str] = None
     raya_tts_api_key: Optional[str] = None
     demo_ui_api_key: Optional[str] = None
 
@@ -737,10 +736,6 @@ class Settings(BaseSettings):
         default="https://api.amulpashudhan.com/configman/v1/PashuGPT",
         validation_alias="AMULPASHUDHAN_BASE_URL",
     )
-    herdman_base_url: str = Field(
-        default="https://herdman.live/apis/api",
-        validation_alias="HERDMAN_BASE_URL",
-    )
     banas_mobile_base_url: str = Field(
         default="https://banasmobileapi.amnex.com/api/FarmerVisitAPIKOS",
         validation_alias="BANAS_MOBILE_BASE_URL",
@@ -886,7 +881,6 @@ class Settings(BaseSettings):
 
     @field_validator(
         "amulpashudhan_base_url",
-        "herdman_base_url",
         "banas_mobile_base_url",
         "cvcc_base_url",
         "banas_scheme_site_origin",

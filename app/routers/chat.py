@@ -29,8 +29,7 @@ async def chat_endpoint(
         f"channel: {request.channel}, "
         f"authenticated_user: {user_info}, source_lang: {request.source_lang}, "
         f"target_lang: {request.target_lang}, "
-        f"requested_persona: {request.persona}, "
-        f"use_translation_pipeline: {request.use_translation_pipeline}, query: {request.query}"
+        f"requested_persona: {request.persona}, query: {request.query}"
     )
     
     resolved_persona = resolve_chat_persona(user_info, request.persona)
@@ -49,7 +48,6 @@ async def chat_endpoint(
         history=history,
         user_info=user_info,
         background_tasks=background_tasks,
-        use_translation_pipeline=request.use_translation_pipeline if request.use_translation_pipeline is not None else True,
         persona=resolved_persona,
         history_session_id=history_session_id,
         artifact_sink=artifacts,

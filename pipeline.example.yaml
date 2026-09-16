@@ -24,7 +24,7 @@ fallback_enabled: true
 profiles:
   - name: gemma
     weight: 5
-    capabilities: {requires_translation: true, history_max_tokens: 10000}
+    capabilities: {history_max_tokens: 10000}
     steps:
       agent:
         tiers:
@@ -57,7 +57,7 @@ profiles:
 
   - name: qwen
     weight: 10
-    capabilities: {requires_translation: true, history_max_tokens: 80000}
+    capabilities: {history_max_tokens: 80000}
     steps:
       agent:
         tiers:
@@ -78,7 +78,7 @@ profiles:
 
   - name: gpt
     weight: 85
-    capabilities: {requires_translation: false, history_max_tokens: 80000}
+    capabilities: {history_max_tokens: 80000}
     steps:
       agent:
         tiers:
