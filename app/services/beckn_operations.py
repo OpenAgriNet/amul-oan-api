@@ -458,7 +458,7 @@ class BecknOperationClient:
         tool_call_id: Optional[str],
     ) -> BecknActionResult:
         """Resolve a farmer profile using the authenticated session phone."""
-        if provider_id not in {"amulpashudhan", "herdman"}:
+        if provider_id != "amulpashudhan":
             raise ValueError(f"Unsupported farmer provider: {provider_id}")
         return await self.init_private_data(
             domain=settings.beckn_farmer_domain,
@@ -482,7 +482,6 @@ class BecknOperationClient:
         """Resolve an owned animal record from one Amul provider adapter."""
         item_by_provider = {
             "amulpashudhan": "animal-profile",
-            "herdman": "animal-profile",
             "amuldairy": "animal-health-history",
             "banasmobileapi": "operated-visit-history",
         }

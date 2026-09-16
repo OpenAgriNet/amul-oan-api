@@ -1,20 +1,19 @@
 """
-Internal backends for farmer and animal data from multiple APIs.
+Internal backends for farmer and animal data from the PashuGPT APIs.
 - amulpashudhan.com (PASHUGPT_TOKEN): GetFarmerDetailsByMobile, GetAnimalDetailsByTagNo,
   FarmerMilkCollectionDetails, GetFarmerBonusAmount, CreateAICall, CreateHealthCall
-- herdman.live (PASHUGPT_TOKEN_3): get-amul-farmer, get-amul-animal
 
-Used by farmer.py and animal.py to provide cohesive tools with fallback and merged output.
+Used by farmer.py and animal.py to provide cohesive tools with merged output.
 """
 from contextlib import contextmanager
 from contextvars import ContextVar
 from beartype.typing import TypeVar
 import json
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 
 import httpx
-from pydantic import ValidationError, BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.core.cache import (
     build_api_cache_key,
@@ -36,14 +35,13 @@ from app.config import settings
 from app.models.animal import AnimalModel
 from app.models.banas_visit import BanasOperatedVisitModel
 from app.models.cvcc import CvccHealthResponseModel
-from app.models.farmer import FarmerModel, FarmerHerdmanModel
+from app.models.farmer import FarmerModel
 from helpers.utils import get_logger
 from app.observability import start_observation
 
 logger = get_logger(__name__)
 
 BASE_AMULPASHUDHAN = settings.amulpashudhan_base_url
-BASE_HERDMAN = settings.herdman_base_url
 BASE_BANAS_MOBILE = settings.banas_mobile_base_url
 BASE_CVCC = settings.cvcc_base_url
 FARMER_BACKEND_HTTP_TIMEOUT_SECONDS = settings.farmer_backend_http_timeout_seconds
@@ -179,164 +177,6 @@ async def fetch_farmer_amulpashudhan(
                 str(e2),
             )
             return None
-
-
-async def fetch_farmer_herdman(mobile: str, token: str) -> list[FarmerModel] | None:
-    """Returns list of farmer records or None on error/empty."""
-    cache_key = build_api_cache_key("herdman_farmer", mobile)
-    use_cache = _use_farmer_mobile_api_cache()
-    if use_cache:
-        cache_hit, cached_payload = await get_cached_api_response(cache_key)
-        if cache_hit:
-            if cached_payload is None:
-                return None
-            if not isinstance(cached_payload, dict):
-                logger.warning(
-                    "[Cache(%s)] :: Cached payload is not a valid dict, refetching.",
-                    cache_key,
-                )
-            else:
-                try:
-                    data = FarmerHerdmanModel.model_validate(
-                        cached_payload, extra="ignore", by_alias=True
-                    )
-                    return data.farmers
-                except Exception as e:
-                    logger.warning(
-                        "[Cache(%s)] :: Failed to validate cached herdman payload, refetching. error=%s",
-                        cache_key,
-                        str(e),
-                    )
-
-    url = f"{BASE_HERDMAN}/get-amul-farmer"
-    try:
-        with start_observation(
-            "fetch_farmer_herdman",
-            input={"mobile": mobile},
-            metadata={"provider": "herdman", "url": url},
-        ) as observation:
-            async with httpx.AsyncClient(timeout=FARMER_BACKEND_HTTP_TIMEOUT_SECONDS) as client:
-                response = await client.get(
-                    url,
-                    params={"mobileno": mobile},
-                    headers={"accept": "application/json", "api-token": f"Bearer {token}"},
-                )
-                _record_api_trace(observation, response, provider="herdman", url=url)
-                response.raise_for_status()
-                logger.info(f"[Herdman({mobile})] :: Response successfully recieved")
-                if not (response.text or "").strip():
-                    if use_cache:
-                        await set_cached_api_response(cache_key, None)
-                    return None
-                response_json = response.json()
-                if use_cache:
-                    await set_cached_api_response(cache_key, response_json)
-                data = FarmerHerdmanModel.model_validate(
-                    response_json
-                )
-                return data.farmers
-    except httpx.HTTPStatusError as e:
-        logger.error(
-            f"[Herdman({mobile})] :: Request failed with status code {e.response.status_code}, and message = {e.response.text}",
-            exc_info=True,
-        )
-    except ValidationError as e:
-        for error in e.errors():
-            if error.get("type") == "model_type":
-                logger.info(
-                    f"[Herdman({mobile})] :: No information from herdman found."
-                )
-            else:
-                logger.error(
-                    f"[Herdman({mobile})] :: Failed to validated FarmerHerdmanModel, due to error {e}",
-                    exc_info=True,
-                )
-    except Exception as e:
-        logger.error(
-            f"[Herdman({mobile})] :: Request failed, due to error {str(e)}",
-            exc_info=True,
-        )
-
-
-def _extract_herdman_rows(payload: dict) -> list[dict] | None:
-    """Pull the raw camelCase farmer dicts out of the herdman wrapper
-    ({"Farmer": [...]}). Returns None if the wrapper has no usable list — the raw
-    analogue of FarmerHerdmanModel(...).farmers being None."""
-    rows = payload.get("Farmer")
-    if isinstance(rows, list):
-        rows = [r for r in rows if isinstance(r, dict)]
-        return rows or None
-    return None
-
-
-async def _fetch_farmer_herdman_raw(
-    mobile: str, token: str, *, skip_cache: bool = False
-) -> list[dict] | None:
-    """Raw herdman farmer fetch — returns the inner raw camelCase dicts WITHOUT
-    model validation (Option B, for fetch_farmer_info_raw / the SWR cache).
-
-    Pure addition: fetch_farmer_herdman (the FarmerModel chat path) is left
-    untouched. Both share the SAME cache key and cache the SAME wrapper dict
-    ({"Farmer": [...]}), so a cache entry written by either is readable by the
-    other. Returns None on 204/empty/error or when there is no usable Farmer list
-    (the raw analogue of herdman's ValidationError "no info found" branch)."""
-    cache_key = build_api_cache_key("herdman_farmer", mobile)
-    use_cache = _use_farmer_mobile_api_cache()
-    if use_cache and not skip_cache:
-        cache_hit, cached_payload = await get_cached_api_response(cache_key)
-        if cache_hit:
-            if cached_payload is None:
-                return None
-            if isinstance(cached_payload, dict):
-                return _extract_herdman_rows(cached_payload)
-            logger.warning(
-                "[Cache(%s)] :: Cached herdman payload is not a dict, refetching.",
-                cache_key,
-            )
-
-    url = f"{BASE_HERDMAN}/get-amul-farmer"
-    try:
-        with start_observation(
-            "fetch_farmer_herdman",
-            input={"mobile": mobile},
-            metadata={"provider": "herdman", "url": url},
-        ) as observation:
-            async with httpx.AsyncClient(timeout=FARMER_BACKEND_HTTP_TIMEOUT_SECONDS) as client:
-                response = await client.get(
-                    url,
-                    params={"mobileno": mobile},
-                    headers={"accept": "application/json", "api-token": f"Bearer {token}"},
-                )
-                _record_api_trace(observation, response, provider="herdman", url=url)
-                response.raise_for_status()
-                logger.info(f"[Herdman({mobile})] :: Response successfully recieved")
-                if not (response.text or "").strip():
-                    if use_cache:
-                        await set_cached_api_response(cache_key, None)
-                    return None
-                response_json = response.json()
-                if use_cache:
-                    await set_cached_api_response(cache_key, response_json)
-                if isinstance(response_json, dict):
-                    return _extract_herdman_rows(response_json)
-                logger.info(f"[Herdman({mobile})] :: No information from herdman found.")
-                return None
-    except httpx.HTTPStatusError as e:
-        logger.error(
-            f"[Herdman({mobile})] :: Request failed with status code {e.response.status_code}, and message = {e.response.text}",
-            exc_info=True,
-        )
-    except json.JSONDecodeError as e:
-        logger.error(
-            f"[Herdman({mobile})] :: Response didn't gave a valid json, failed due to decoding error {str(e)}",
-            exc_info=True,
-        )
-    except Exception as e:
-        logger.error(
-            f"[Herdman({mobile})] :: Request failed, due to error {str(e)}",
-            exc_info=True,
-        )
-    return None
 
 
 def _farmer_record_key(rec: dict) -> tuple:
@@ -920,72 +760,6 @@ async def get_farmer_bonus_amount_api(
             str(e),
             exc_info=True,
         )
-
-
-def _normalize_herdman_animal(raw: Dict[str, Any]) -> Dict[str, Any]:
-    """Map herdman Animal item to canonical keys."""
-    # herdman: tagno, Animal Type, Breed, Milking Stage, DOB, Currant Lactation no, Last AI, Last PD, Last Calvingdate, etc.
-    out: Dict[str, Any] = {}
-    out["tagNumber"] = raw.get("tagno") or raw.get("tagNumber") or raw.get("TagID")
-    out["animalType"] = raw.get("Animal Type") or raw.get("animalType")
-    out["breed"] = raw.get("Breed") or raw.get("breed")
-    out["milkingStage"] = raw.get("Milking Stage") or raw.get("milkingStage")
-    out["pregnancyStage"] = raw.get("pregnancyStage")
-    out["dateOfBirth"] = raw.get("DOB") or raw.get("dateOfBirth")
-    out["lactationNo"] = raw.get("Currant Lactation no") if "Currant Lactation no" in raw else raw.get("lactationNo")
-    out["lastBreedingActivity"] = raw.get("Last AI") or raw.get("lastBreedingActivity")
-    out["lastHealthActivity"] = raw.get("lastHealthActivity")
-    out["lastPD"] = raw.get("Last PD")
-    out["lastCalvingDate"] = raw.get("Last Calvingdate")
-    out["farmerComplaint"] = raw.get("Farmer complaint")
-    out["diagnosis"] = raw.get("Diagnosis")
-    out["medicineGiven"] = raw.get("Medicine Given")
-    return {k: v for k, v in out.items() if v is not None}
-
-
-async def fetch_animal_herdman(tag_no: str, token: str) -> Optional[Dict[str, Any]]:
-    """Returns single animal dict (canonical keys) or None on error/empty."""
-    url = f"{BASE_HERDMAN}/get-amul-animal"
-    try:
-        with start_observation(
-            "fetch_animal_herdman",
-            input={"tag_no": tag_no},
-            metadata={"provider": "herdman", "url": url},
-        ) as observation:
-            async with httpx.AsyncClient(timeout=FARMER_BACKEND_HTTP_TIMEOUT_SECONDS) as client:
-                r = await client.get(
-                    url,
-                    params={"TagID": tag_no},
-                    headers={"accept": "application/json", "api-token": f"Bearer {token}"},
-                )
-            _record_api_trace(observation, r, provider="herdman", url=url)
-        if r.status_code != 200 or not (r.text or "").strip():
-            return None
-        data = json.loads(r.text)
-        if isinstance(data, dict) and data.get("Animal") and isinstance(data["Animal"], list) and len(data["Animal"]) > 0:
-            return _normalize_herdman_animal(data["Animal"][0])
-        if isinstance(data, list) and len(data) > 0 and isinstance(data[0], dict):
-            return _normalize_herdman_animal(data[0])
-        if isinstance(data, dict) and (data.get("tagno") or data.get("tagNumber")):
-            return _normalize_herdman_animal(data)
-        return None
-    except (json.JSONDecodeError, httpx.HTTPError, Exception):
-        return None
-
-
-def merge_animal_data(primary: Optional[Dict], fallback: Optional[Dict]) -> Dict[str, Any]:
-    """Merge primary (amulpashudhan) with fallback (herdman). Prefer primary; fill missing from fallback."""
-    if primary and fallback:
-        merged = dict(primary)
-        for k, v in fallback.items():
-            if v is not None and (merged.get(k) is None or merged.get(k) == ""):
-                merged[k] = v
-        return merged
-    if primary:
-        return primary
-    if fallback:
-        return fallback
-    return {}
 
 T = TypeVar("T", bound=FarmerModel)
 
