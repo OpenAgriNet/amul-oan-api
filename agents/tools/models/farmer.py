@@ -42,9 +42,11 @@ class FarmerModel(BaseModel):
     pregnant_milking_animals: int | None = Field(None, alias="Pregnant Milk")
 
     @field_validator("animal_tags", mode="before")
-    def transform_tagno(cls, tag_nos: str | None) -> list[str] | None:
+    def transform_tagno(cls, tag_nos: str | list[str] | None) -> list[str] | None:
         if tag_nos is None:
             return None
+        if isinstance(tag_nos, list):
+            return [tag_no.strip() for tag_no in tag_nos]
         return [tag_no.strip() for tag_no in tag_nos.strip().split(",")]
 
     @field_validator("union_name", mode="before")

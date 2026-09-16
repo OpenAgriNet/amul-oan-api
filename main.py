@@ -2,7 +2,6 @@ from fastapi import FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
 from app.config import settings
 from contextlib import asynccontextmanager
-from app.tasks.scheme_scheduler import start_scheme_scheduler, stop_scheme_scheduler
 from app.tasks.telemetry_queue import start_telemetry_worker, stop_telemetry_worker
 # Imported before the routers so the cold import order matches the cycle-safety
 # regression test (worker module is side-effect-free; see farmer_refresh_worker).
@@ -26,6 +25,11 @@ async def lifespan(app: FastAPI):
     print(f"📍 Environment: {settings.environment}")
     print(f"🔧 Debug mode: {settings.debug}")
     print(f"🌐 CORS origins: {settings.allowed_origins}")
+    # Every supported private-data and booking tool now requires the callback
+    # bridge. Refuse a superficially healthy deployment that cannot complete a
+    # tool transaction.
+    from agents.tools.beckn.operations import validate_beckn_startup_configuration
+    validate_beckn_startup_configuration()
     # Load prompt templates into memory (no disk I/O at request time)
     from helpers.utils import load_prompt_templates
     load_prompt_templates(settings.base_dir / "assets" / "prompts")
@@ -40,14 +44,12 @@ async def lifespan(app: FastAPI):
     except Exception as _llm_exc:  # pragma: no cover - defensive
         print(f"⚠️  llm_core configure skipped: {_llm_exc}")
     await start_telemetry_worker()
-    await start_scheme_scheduler()
     await start_farmer_refresh_worker()
     await start_health_poller()
     yield
     # Shutdown
     await stop_health_poller()
     await stop_farmer_refresh_worker()
-    await stop_scheme_scheduler()
     await stop_telemetry_worker()
     print(f"🛑 {settings.app_name} shutting down...")
 

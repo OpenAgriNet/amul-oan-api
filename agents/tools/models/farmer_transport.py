@@ -1,7 +1,7 @@
-"""Transport and cache models for farmer data from PashuGPT APIs.
+"""Transport and cache models for Beckn farmer-profile data.
 
 These camelCase records deliberately remain separate from
-``app.models.farmer.FarmerModel``, the normalized snake_case domain model. They
+``agents.tools.models.farmer.FarmerModel``, the normalized snake_case domain model. They
 live beside that model so the two representations and their conversion boundary
 are explicit instead of being split between ``app.models`` and ``agents.models``.
 """
@@ -12,7 +12,7 @@ from pydantic import BaseModel, ConfigDict
 
 
 class AnimalRecord(BaseModel):
-    """Canonical animal record normalized from the amulpashudhan API."""
+    """Canonical animal record normalized from the Beckn provider payload."""
 
     model_config = ConfigDict(extra="allow")
 
@@ -45,10 +45,26 @@ class FarmerRecord(BaseModel):
         if isinstance(obj, dict):
             mapped = dict(obj)
             snake_to_camel = {
+                "sub_district": "subDistrict",
+                "union_name": "unionName",
+                "union_code": "unionCode",
                 "farmer_name": "farmerName",
                 "society_name": "societyName",
+                "society_code": "societyCode",
+                "mobile_number": "mobileNumber",
                 "farmer_code": "farmerCode",
+                "avg_milk_per_day_cow": "avgMilkPerDayCow",
+                "avg_milk_per_day_buffalo": "avgMilkPerDayBuff",
+                "cow_snf": "cowSnf",
+                "cow_fat": "cowFat",
+                "buff_snf": "buffSnf",
+                "buff_fat": "buffFat",
                 "total_animals": "totalAnimals",
+                "total_cow": "cow",
+                "total_buffalo": "buffalo",
+                "total_milking_animals": "totalMilkingAnimals",
+                "non_pregnant_milking_animals": "Non Pregnant Milk",
+                "pregnant_milking_animals": "Pregnant Milk",
             }
             for snake, camel in snake_to_camel.items():
                 if snake in mapped and camel not in mapped:

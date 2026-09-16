@@ -15,7 +15,7 @@ import sys
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, patch
 
-import agents.services.farmer_cache as fc
+import agents.tools.farmer_cache as fc
 from agents.tools.farmer import FarmerFetchOutcome
 
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -28,7 +28,7 @@ def test_cold_import_has_no_circular_import():
     a truly fresh interpreter, mirroring the app's startup import order."""
     code = (
         "import app.tasks.farmer_refresh_worker;"
-        "import agents.services.farmer_cache;"
+        "import agents.tools.farmer_cache;"
         "print('OK')"
     )
     result = subprocess.run(

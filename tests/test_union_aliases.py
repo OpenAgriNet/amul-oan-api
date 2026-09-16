@@ -1,26 +1,15 @@
-"""Tests for canonical union-name normalization and its use in the union scheme tool.
-
-A farmer-source API returns a union by its dairy brand or a spelling variant
-(e.g. "sarhad" for Kutch's Sarhad Dairy). The scheme tool must resolve those to
-the canonical union so scheme lookup works. The AI-call ban list is keyed on
-those same canonical names.
-"""
-
-import os
-
-os.environ.setdefault("OPENAI_API_KEY", "test-key")
-
-import asyncio
 from types import SimpleNamespace
 
 import pytest
 
-from app.models.union import (
+from agents.tools import union_schemes as schemes
+from agents.tools.models.union import (
     AI_CALL_BANNED_UNIONS,
     UNION_BANNED_MESSAGE,
     UNION_BANNED_MESSAGE_BN,
     UNION_BANNED_MESSAGE_GU,
     UNION_BANNED_MESSAGE_HI,
+    UNION_NAME_ALIASES,
     UnionName,
     any_union_banned_from_ai_calls,
     canonical_union_name,
@@ -28,49 +17,43 @@ from app.models.union import (
     resolve_supported_unions,
     union_banned_message,
 )
-import agents.tools.union_schemes as us
 
 
-# ── canonical_union_name ──────────────────────────────────────────────────────
-
-@pytest.mark.parametrize("raw,expected", [
-    ("sarhad", "kutch"),
-    ("Sarhad", "kutch"),
-    ("  KACHCHH  ", "kutch"),
-    ("kutchh", "kutch"),
-    ("kutch", "kutch"),
-    ("banaskantha", "banas"),
-    ("banas", "banas"),
-    ("dudhsagar", "mehsana"),
-    ("mehsana", "mehsana"),
-    ("sursagar", "surendranagar"),
-    ("Sursagar", "surendranagar"),
-    ("sumul", "sumul"),
-    ("kaira", "kaira"),   # no alias -> unchanged
-    ("", ""),
-    (None, ""),
-])
-def test_canonical_union_name(raw, expected):
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("sarhad", "kutch"),
+        ("Sarhad", "kutch"),
+        ("  KACHCHH  ", "kutch"),
+        ("kutchh", "kutch"),
+        ("kutch", "kutch"),
+        ("banaskantha", "banas"),
+        ("banas", "banas"),
+        ("dudhsagar", "mehsana"),
+        ("mehsana", "mehsana"),
+        ("sursagar", "surendranagar"),
+        ("Sursagar", "surendranagar"),
+        ("sumul", "sumul"),
+        ("kaira", "kaira"),
+        ("", ""),
+        (None, ""),
+    ],
+)
+def test_union_aliases(raw, expected):
     assert canonical_union_name(raw) == expected
 
 
 def test_alias_targets_are_valid_unions():
-    from app.models.union import UNION_NAME_ALIASES
-    valid = {u.value for u in UnionName}
-    for canonical in UNION_NAME_ALIASES.values():
-        assert canonical in valid
+    valid = {union.value for union in UnionName}
+    assert set(UNION_NAME_ALIASES.values()) <= valid
 
 
-def test_resolve_supported_unions_canonicalizes_and_deduplicates():
-    supported = {UnionName.BANAS.value, UnionName.KUTCH.value}
-    resolved = resolve_supported_unions(
+def test_supported_unions_are_canonicalized_and_deduplicated():
+    assert resolve_supported_unions(
         ["banaskantha", "kutch", "sarhad", "banas", "dudhsagar"],
-        supported,
-    )
-    assert resolved == [UnionName.BANAS.value, UnionName.KUTCH.value]
+        {UnionName.BANAS.value, UnionName.KUTCH.value},
+    ) == [UnionName.BANAS.value, UnionName.KUTCH.value]
 
-
-# ── AI-call union ban list ────────────────────────────────────────────────────
 
 def test_ai_call_banned_unions_contains_only_kutch():
     assert AI_CALL_BANNED_UNIONS == frozenset({UnionName.KUTCH.value})
@@ -135,147 +118,41 @@ def _ctx(unions):
     return SimpleNamespace(deps=SimpleNamespace(farmer_unions=unions))
 
 
-def test_tool_resolves_sarhad_to_kutch(monkeypatch):
-    monkeypatch.setattr(us.settings, "scheme_require_union_auth", True)
-    monkeypatch.setattr(us.settings, "enable_network", False)
+@pytest.mark.asyncio
+async def test_scheme_tool_resolves_alias_and_uses_beckn(monkeypatch):
+    monkeypatch.setattr(schemes.settings, "scheme_require_union_auth", True)
 
-    async def fake_records(union_name):
-        assert union_name == "kutch"  # canonicalized before lookup
-        return [{"scheme_title": "Group Personal Accident Insurance Scheme (GPAIS)"}]
+    async def lookup(scheme_name, union=None):
+        assert scheme_name == "insurance"
+        assert union == UnionName.KUTCH.value
+        return "Kutch Network Scheme"
 
-    monkeypatch.setattr(us, "get_cached_scheme_records_for_union", fake_records)
-
-    out = asyncio.run(us.get_union_scheme_data(_ctx(["sarhad"]), None))
-    assert "GPAIS" in out
-    assert "could not be determined" not in out
-
-
-def test_tool_unsupported_union_still_fails(monkeypatch):
-    monkeypatch.setattr(us.settings, "scheme_require_union_auth", True)
-    out = asyncio.run(us.get_union_scheme_data(_ctx(["dudhsagar"]), None))
-    # dudhsagar canonicalizes to mehsana, which has no scheme source -> unsupported
-    assert "could not be determined" in out
+    monkeypatch.setattr(schemes, "network_union_schemes", lookup)
+    result = await schemes.get_union_scheme_data(_ctx(["sarhad"]), "insurance")
+    assert result == "Kutch Network Scheme"
 
 
-def test_network_failure_degrades_like_the_direct_path(monkeypatch):
-    """A raising seeker must not fail the tool.
+@pytest.mark.asyncio
+async def test_scheme_network_failure_degrades(monkeypatch):
+    monkeypatch.setattr(schemes.settings, "scheme_require_union_auth", True)
 
-    The direct Redis path answers "temporarily unavailable"; before this the
-    `enable_network` branch returned *before* that error handling, so a seeker
-    timeout / HTTP error propagated out of the tool instead.
-    """
-    monkeypatch.setattr(us.settings, "scheme_require_union_auth", True)
-    monkeypatch.setattr(us.settings, "enable_network", True)
+    async def lookup(*args, **kwargs):
+        raise RuntimeError("seeker unavailable")
 
-    import agents.tools.beckn_network as bn
-
-    async def boom(scheme_name, union=None):
-        raise RuntimeError("seeker connection reset")
-
-    monkeypatch.setattr(bn, "network_union_schemes", boom)
-
-    out = asyncio.run(us.get_union_scheme_data(_ctx(["banas"]), None))
-    assert "temporarily unavailable" in out
+    monkeypatch.setattr(schemes, "network_union_schemes", lookup)
+    result = await schemes.get_union_scheme_data(_ctx(["banas"]))
+    assert "temporarily unavailable" in result
 
 
-def test_network_success_is_returned_unchanged(monkeypatch):
-    monkeypatch.setattr(us.settings, "scheme_require_union_auth", True)
-    monkeypatch.setattr(us.settings, "enable_network", True)
-
-    import agents.tools.beckn_network as bn
-
-    async def ok(scheme_name, union=None):
-        assert union == "banas"
-        return "Banas Network Scheme"
-
-    monkeypatch.setattr(bn, "network_union_schemes", ok)
-
-    assert asyncio.run(us.get_union_scheme_data(_ctx(["banas"]), None)) == "Banas Network Scheme"
+@pytest.mark.asyncio
+async def test_scheme_tool_rejects_unsupported_union(monkeypatch):
+    monkeypatch.setattr(schemes.settings, "scheme_require_union_auth", True)
+    result = await schemes.get_union_scheme_data(_ctx(["dudhsagar"]))
+    assert "could not be determined" in result
 
 
-def test_prepare_and_runtime_agree_for_banaskantha(monkeypatch):
-    monkeypatch.setattr(us.settings, "scheme_require_union_auth", True)
-    monkeypatch.setattr(us.settings, "enable_network", False)
+@pytest.mark.asyncio
+async def test_prepare_matches_supported_union_set():
     sentinel = object()
-
-    async def fake_records(union_name):
-        assert union_name == UnionName.BANAS.value
-        return [{"scheme_title": "Banas Test Scheme"}]
-
-    monkeypatch.setattr(us, "get_cached_scheme_records_for_union", fake_records)
-
-    prepared = asyncio.run(us.prepare_get_union_scheme_data(_ctx(["banaskantha"]), sentinel))
-    assert prepared is sentinel
-
-    out = asyncio.run(us.get_union_scheme_data(_ctx(["banaskantha"]), None))
-    assert "Banas Test Scheme" in out
-
-
-def test_prepare_and_runtime_agree_for_sursagar(monkeypatch):
-    monkeypatch.setattr(us.settings, "scheme_require_union_auth", True)
-    monkeypatch.setattr(us.settings, "enable_network", False)
-    sentinel = object()
-
-    async def fake_records(union_name):
-        assert union_name == UnionName.SURENDRANAGAR.value
-        return [{"scheme_title": "Sursagar Test Scheme"}]
-
-    monkeypatch.setattr(us, "get_cached_scheme_records_for_union", fake_records)
-
-    prepared = asyncio.run(us.prepare_get_union_scheme_data(_ctx(["sursagar"]), sentinel))
-    assert prepared is sentinel
-
-    out = asyncio.run(us.get_union_scheme_data(_ctx(["sursagar"]), None))
-    assert "Sursagar Test Scheme" in out
-
-
-def test_prepare_and_runtime_agree_for_sumul(monkeypatch):
-    monkeypatch.setattr(us.settings, "scheme_require_union_auth", True)
-    monkeypatch.setattr(us.settings, "enable_network", False)
-    sentinel = object()
-
-    async def fake_records(union_name):
-        assert union_name == UnionName.SUMUL.value
-        return [{"scheme_title": "Sumul Test Scheme"}]
-
-    monkeypatch.setattr(us, "get_cached_scheme_records_for_union", fake_records)
-
-    prepared = asyncio.run(us.prepare_get_union_scheme_data(_ctx(["sumul"]), sentinel))
-    assert prepared is sentinel
-
-    out = asyncio.run(us.get_union_scheme_data(_ctx(["sumul"]), None))
-    assert "Sumul Test Scheme" in out
-
-
-def test_prepare_and_runtime_agree_for_sabar(monkeypatch):
-    monkeypatch.setattr(us.settings, "scheme_require_union_auth", True)
-    monkeypatch.setattr(us.settings, "enable_network", False)
-    sentinel = object()
-
-    async def fake_records(union_name):
-        assert union_name == UnionName.SABAR.value
-        return [{"scheme_title": "Sabar Test Scheme"}]
-
-    monkeypatch.setattr(us, "get_cached_scheme_records_for_union", fake_records)
-
-    prepared = asyncio.run(us.prepare_get_union_scheme_data(_ctx(["sabar"]), sentinel))
-    assert prepared is sentinel
-
-    out = asyncio.run(us.get_union_scheme_data(_ctx(["sabar"]), None))
-    assert "Sabar Test Scheme" in out
-
-
-def test_prepare_hides_tool_for_unsupported_union():
-    sentinel = object()
-    prepared = asyncio.run(us.prepare_get_union_scheme_data(_ctx(["dudhsagar"]), sentinel))
-    assert prepared is None
-
-
-def test_scheme_support_sets_stay_aligned_with_ingestion_map():
-    """Tool gating, farmer-context index, and ingestion sources must agree."""
-    from agents.farmer_context import SUPPORTED_SCHEME_CONTEXT_UNIONS
-    from app.services.scheme_ingestion import SUPPORTED_UNION_SOURCE_MAP
-
-    assert us.SUPPORTED_SCHEME_UNIONS == SUPPORTED_SCHEME_CONTEXT_UNIONS
-    assert us.SUPPORTED_SCHEME_UNIONS == set(SUPPORTED_UNION_SOURCE_MAP)
-    assert UnionName.SABAR.value in us.SUPPORTED_SCHEME_UNIONS
+    assert await schemes.prepare_get_union_scheme_data(_ctx(["banaskantha"]), sentinel) is sentinel
+    assert await schemes.prepare_get_union_scheme_data(_ctx(["dudhsagar"]), sentinel) is None
