@@ -8,6 +8,12 @@ import httpx
 from pydantic_ai import RunContext
 
 from agents.deps import FarmerContext
+from agents.tools.identity_guard import (
+    CODE_PATTERN,
+    TECHNICIAN_ID_PATTERN,
+    invalid_code_field,
+    invalid_technician_id,
+)
 from agents.tools.farmer_animal_backends import create_ai_call_api
 from app.config import get_config_value, settings
 from app.core.cache import cache, reserve, ReservationOutcome, release_reservation
@@ -40,8 +46,8 @@ OUT_OF_SCOPE_MESSAGE = "This helpline only handles dairy farming and animal husb
 # succeeded. Real codes are NOT always numeric (M001, NA4192 book fine), so the
 # codes stay loose and the technician id — 24 base64 chars ending "==" on every
 # successful booking — is what is checked strictly.
-_CODE_PATTERN = re.compile(r"^[A-Za-z0-9/-]{1,12}$")
-_TECHNICIAN_ID_PATTERN = re.compile(r"^[A-Za-z0-9+/]{22}==$")
+_CODE_PATTERN = CODE_PATTERN              # re-exported: referenced by tests
+_TECHNICIAN_ID_PATTERN = TECHNICIAN_ID_PATTERN
 INVALID_IDENTIFIERS_MESSAGE = (
     "Artificial insemination call booking failed.\n\n"
     "The farmer or technician details are not available."
@@ -55,16 +61,13 @@ def _invalid_booking_identifier(
     user_id: str,
 ) -> str | None:
     """Name of the first identifier that cannot be real, else None."""
-    for field, value in (
-        ("union_code", union_code),
-        ("society_code", society_code),
-        ("farmer_code", farmer_code),
-    ):
-        if not _CODE_PATTERN.match((value or "").strip()):
-            return field
-    if not _TECHNICIAN_ID_PATTERN.match((user_id or "").strip()):
+    bad = invalid_code_field(union_code, society_code, farmer_code)
+    if bad:
+        return bad
+    if invalid_technician_id(user_id):
         return "user_id"
     return None
+
 
 # The network route answered, but neither confirmed nor refused the booking. We
 # cannot prove the SMS did not go out, so the reservation is held for the TTL.

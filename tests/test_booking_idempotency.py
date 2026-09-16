@@ -1,6 +1,10 @@
 """Booking tools must be idempotent per session so an agent re-run (the
 OSS->managed streaming fallback re-executes tool calls) cannot double-book."""
 
+# Codes are real-shaped ("159"/"00731"/"0554") rather than "U"/"S"/"F": the
+# identity guard rejects a code with no digit, since all 28,089 codes on
+# successful prod bookings carry one and invented ones never do.
+# See agents/tools/identity_guard.
 import os
 
 os.environ.setdefault("OPENAI_API_KEY", "test-key")
@@ -74,8 +78,8 @@ def test_ai_call_idempotent_on_rerun(monkeypatch):
     monkeypatch.setattr(ai_mod, "create_ai_call_api", fake_api)
     species = next(iter(AISpecies))
 
-    r1 = asyncio.run(ai_mod.create_ai_call(_ctx("s1"), "U", "S", "F", TECH_ID, species))
-    r2 = asyncio.run(ai_mod.create_ai_call(_ctx("s1"), "U", "S", "F", TECH_ID, species))
+    r1 = asyncio.run(ai_mod.create_ai_call(_ctx("s1"), "159", "00731", "0554", TECH_ID, species))
+    r2 = asyncio.run(ai_mod.create_ai_call(_ctx("s1"), "159", "00731", "0554", TECH_ID, species))
 
     assert calls["n"] == 1                 # booking API hit exactly once across the re-run
     assert "booked successfully" in r1
@@ -94,9 +98,9 @@ def test_health_call_idempotent_on_rerun(monkeypatch):
     species = next(iter(AISpecies))
     case_type = next(iter(HealthCaseType))
 
-    r1 = asyncio.run(hc_mod.create_health_call(_ctx("s1"), "U", "S", "F", species, case_type, "remark v1"))
+    r1 = asyncio.run(hc_mod.create_health_call(_ctx("s1"), "159", "00731", "0554", species, case_type, "remark v1"))
     # re-run: model may even produce a different remark; session key still dedupes
-    r2 = asyncio.run(hc_mod.create_health_call(_ctx("s1"), "U", "S", "F", species, case_type, "remark v2"))
+    r2 = asyncio.run(hc_mod.create_health_call(_ctx("s1"), "159", "00731", "0554", species, case_type, "remark v2"))
 
     assert calls["n"] == 1
     assert "booked successfully" in r1
@@ -121,8 +125,8 @@ def test_ai_call_concurrent_submits_book_once(monkeypatch):
 
     async def go():
         return await asyncio.gather(
-            ai_mod.create_ai_call(_ctx("sX"), "U", "S", "F", TECH_ID, species),
-            ai_mod.create_ai_call(_ctx("sX"), "U", "S", "F", TECH_ID, species),
+            ai_mod.create_ai_call(_ctx("sX"), "159", "00731", "0554", TECH_ID, species),
+            ai_mod.create_ai_call(_ctx("sX"), "159", "00731", "0554", TECH_ID, species),
         )
 
     r1, r2 = asyncio.run(go())
@@ -142,7 +146,7 @@ def test_no_session_id_does_not_crash(monkeypatch):
 
     monkeypatch.setattr(ai_mod, "create_ai_call_api", fake_api)
     species = next(iter(AISpecies))
-    r = asyncio.run(ai_mod.create_ai_call(_ctx(None), "U", "S", "F", TECH_ID, species))
+    r = asyncio.run(ai_mod.create_ai_call(_ctx(None), "159", "00731", "0554", TECH_ID, species))
     assert "booked successfully" in r
 
 
@@ -192,7 +196,7 @@ def test_ai_call_annotates_its_own_span_and_never_the_turn(monkeypatch):
     monkeypatch.setattr(ai_mod, "create_ai_call_api", fake_api)
     species = next(iter(AISpecies))
 
-    r = asyncio.run(ai_mod.create_ai_call(_ctx("obs1"), "U", "S", "F", TECH_ID, species))
+    r = asyncio.run(ai_mod.create_ai_call(_ctx("obs1"), "159", "00731", "0554", TECH_ID, species))
     assert "booked successfully" in r
     assert obs_names == ["ai_call_booking"]   # the booking span was opened
     # #212: the tool must NOT write turn-level IO. Doing so replaced the
@@ -212,7 +216,7 @@ def test_health_call_annotates_its_own_span_and_never_the_turn(monkeypatch):
     species = next(iter(AISpecies))
     case_type = next(iter(HealthCaseType))
 
-    r = asyncio.run(hc_mod.create_health_call(_ctx("obsh1"), "U", "S", "F", species, case_type, "r"))
+    r = asyncio.run(hc_mod.create_health_call(_ctx("obsh1"), "159", "00731", "0554", species, case_type, "r"))
     assert "booked successfully" in r
     assert obs_names == ["health_call_booking"]
     assert trace_io["n"] == 0   # #212 — see the AI-call test above

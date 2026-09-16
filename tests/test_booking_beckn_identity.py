@@ -1,3 +1,11 @@
+# Codes are real-shaped ("159"/"00731"/"0554") rather than "U"/"S"/"F": the
+# identity guard rejects a code with no digit, since all 28,089 codes on
+# successful prod bookings carry one and invented ones never do.
+# See agents/tools/identity_guard.
+# The MODEL-*/CANON-* sentinels carry a trailing digit: the identity guard
+# rejects a code with no digit at all (see agents/tools/identity_guard).
+# The distinction the test asserts — model-supplied vs canonical owned
+# account — is unchanged.
 from types import SimpleNamespace
 
 import pytest
@@ -38,15 +46,15 @@ def _callback_mode(monkeypatch, module):
 async def test_ai_confirm_uses_canonical_owned_account_and_discovered_technician(monkeypatch):
     _callback_mode(monkeypatch, ai_call)
     monkeypatch.setattr(ai_call.settings, "ai_call_booking_guard_enabled", False)
-    account = beckn_amul.AuthenticatedFarmerAccount("CANON-U", "CANON-S", "CANON-F")
+    account = beckn_amul.AuthenticatedFarmerAccount("CANON-U1", "CANON-S1", "CANON-F1")
 
     async def resolve(mobile, **kwargs):
         assert mobile == "9000000000"
-        assert kwargs["union_code"] == "MODEL-U"
+        assert kwargs["union_code"] == "MODEL-U1"
         return account
 
     async def technicians(**kwargs):
-        assert kwargs["union_code"] == "CANON-U"
+        assert kwargs["union_code"] == "CANON-U1"
         return [beckn_amul.AITechnicianRecord(userId=TECH_ID, fullName="Technician")]
 
     captured = {}
@@ -60,11 +68,11 @@ async def test_ai_confirm_uses_canonical_owned_account_and_discovered_technician
     monkeypatch.setattr(beckn_network, "network_create_ai_call_result", confirm)
 
     result = await ai_call.create_ai_call(
-        _ctx(), "MODEL-U", "MODEL-S", "MODEL-F", TECH_ID, AISpecies.COW
+        _ctx(), "MODEL-U1", "MODEL-S1", "MODEL-F1", TECH_ID, AISpecies.COW
     )
 
     assert "booked successfully" in result
-    assert captured["args"][:5] == ("CANON-U", "CANON-S", "CANON-F", TECH_ID, "cow")
+    assert captured["args"][:5] == ("CANON-U1", "CANON-S1", "CANON-F1", TECH_ID, "cow")
 
 
 @pytest.mark.asyncio
@@ -82,7 +90,7 @@ async def test_ai_confirm_is_not_sent_for_unowned_account(monkeypatch):
     monkeypatch.setattr(beckn_network, "network_create_ai_call_result", confirm)
 
     result = await ai_call.create_ai_call(
-        _ctx(), "MODEL-U", "MODEL-S", "MODEL-F", TECH_ID, AISpecies.COW
+        _ctx(), "MODEL-U1", "MODEL-S1", "MODEL-F1", TECH_ID, AISpecies.COW
     )
 
     assert "does not belong" in result
@@ -91,7 +99,7 @@ async def test_ai_confirm_is_not_sent_for_unowned_account(monkeypatch):
 @pytest.mark.asyncio
 async def test_health_confirm_uses_canonical_owned_account(monkeypatch):
     _callback_mode(monkeypatch, health_call)
-    account = beckn_amul.AuthenticatedFarmerAccount("CANON-U", "CANON-S", "CANON-F")
+    account = beckn_amul.AuthenticatedFarmerAccount("CANON-U1", "CANON-S1", "CANON-F1")
 
     async def resolve(*args, **kwargs):
         return account
@@ -106,13 +114,13 @@ async def test_health_confirm_uses_canonical_owned_account(monkeypatch):
 
     result = await health_call.create_health_call(
         _ctx(),
-        "MODEL-U",
-        "MODEL-S",
-        "MODEL-F",
+        "MODEL-U1",
+        "MODEL-S1",
+        "MODEL-F1",
         AISpecies.BUFFALO,
         HealthCaseType.NORMAL,
         "not eating",
     )
 
     assert "booked successfully" in result
-    assert captured["args"][:3] == ("CANON-U", "CANON-S", "CANON-F")
+    assert captured["args"][:3] == ("CANON-U1", "CANON-S1", "CANON-F1")

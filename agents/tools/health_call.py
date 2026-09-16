@@ -5,6 +5,7 @@ import httpx
 from pydantic_ai import RunContext
 
 from agents.deps import FarmerContext
+from agents.tools.identity_guard import invalid_code_field
 from agents.tools.farmer_animal_backends import create_health_call_api
 from app.config import get_config_value, settings
 from app.core.cache import cache, reserve, ReservationOutcome, release_reservation
@@ -14,6 +15,10 @@ from app.observability import start_observation
 from helpers.utils import get_logger
 
 logger = get_logger(__name__)
+
+INVALID_IDENTIFIERS_MESSAGE = (
+    "Health call booking failed.\n\nThe farmer details are not available."
+)
 
 # One booking per session per 30 min. Also makes this tool idempotent against an
 # agent re-run (OSS->managed streaming fallback re-executes tool calls): a second
@@ -91,6 +96,18 @@ async def create_health_call(
         union_code = account.union_code
         society_code = account.society_code
         farmer_code = account.farmer_code
+
+    # Placed after the Beckn branch has replaced these with the authenticated
+    # account's codes, so it screens whichever pair of paths actually supplied
+    # them. create_ai_call has had this since the fabricated-identifier fix;
+    # health call did not, and it is the tool that still leaks (3 of 190 calls
+    # in 2026-09-01..09-14 on chat, 33 of 163 on voice). See voice-oan-api#282.
+    invalid_field = invalid_code_field(union_code, society_code, farmer_code)
+    if invalid_field:
+        logger.warning(
+            "Health call blocked: %s is not a real code; session=%s", invalid_field, session_id,
+        )
+        return INVALID_IDENTIFIERS_MESSAGE
 
     _health_tool_input = {
         "union_code": union_code,
