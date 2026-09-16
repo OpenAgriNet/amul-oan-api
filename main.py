@@ -25,6 +25,11 @@ async def lifespan(app: FastAPI):
     print(f"📍 Environment: {settings.environment}")
     print(f"🔧 Debug mode: {settings.debug}")
     print(f"🌐 CORS origins: {settings.allowed_origins}")
+    # Every supported private-data and booking tool now requires the callback
+    # bridge. Refuse a superficially healthy deployment that cannot complete a
+    # tool transaction.
+    from agents.tools.beckn.operations import validate_beckn_startup_configuration
+    validate_beckn_startup_configuration()
     # Load prompt templates into memory (no disk I/O at request time)
     from helpers.utils import load_prompt_templates
     load_prompt_templates(settings.base_dir / "assets" / "prompts")

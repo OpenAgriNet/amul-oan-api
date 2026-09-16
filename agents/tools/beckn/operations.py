@@ -1000,6 +1000,7 @@ class BecknOperationClient:
     def _validate_amul_configuration() -> None:
         required = {
             "BECKN_BAP_CALLER_URL": settings.beckn_bap_caller_url,
+            "BECKN_TRANSACTION_BRIDGE_TOKEN": settings.beckn_transaction_bridge_token,
             "BECKN_BAP_ID": settings.beckn_bap_id,
             "BECKN_BAP_URI": settings.beckn_bap_uri,
             "BECKN_AMUL_BPP_ID": settings.beckn_amul_bpp_id,
@@ -1021,6 +1022,15 @@ class BecknOperationClient:
         missing = [name for name, value in required.items() if not value]
         if missing:
             raise RuntimeError("Soil Health Card callbacks are missing configuration: " + ", ".join(missing))
+
+
+def validate_beckn_startup_configuration() -> None:
+    """Fail startup when the mandatory Amul Beckn transport is unusable."""
+    BecknOperationClient._validate_configuration()
+    if not settings.beckn_callback_token:
+        raise RuntimeError(
+            "Beckn callback transactions are missing configuration: BECKN_CALLBACK_TOKEN"
+        )
 
 
 _operation_store = BecknOperationStore()

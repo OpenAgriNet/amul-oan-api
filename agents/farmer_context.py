@@ -540,16 +540,30 @@ async def _get_animal_context_bundle(
     tasks: list[CoroutineType[Any, Any, AnimalModel | list[BanasOperatedVisitModel] | CvccHealthResponseModel | None]] = [
         fetch_animal_profile(tag, union_code=union_code)
     ]
+    task_labels = ["animal profile"]
     if include_banas_visit and union_code:
         tasks.append(fetch_banas_visits(tag, union_code=union_code))
+        task_labels.append("Banas operated visits")
     else:
         include_banas_visit = False
     if include_cvcc_health and union_code:
         tasks.append(fetch_cvcc_health(tag, union_code=union_code))
+        task_labels.append("CVCC health history")
     else:
         include_cvcc_health = False
 
-    results = await asyncio.gather(*tasks)
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    for index, result in enumerate(results):
+        if isinstance(result, asyncio.CancelledError):
+            raise result
+        if isinstance(result, Exception):
+            logger.warning(
+                "Beckn %s lookup failed while building farmer context union=%s: %s",
+                task_labels[index],
+                union_name,
+                result,
+            )
+            results[index] = None
     animal = results[0]
     result_index = 1
     banas_visits = None

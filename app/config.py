@@ -583,8 +583,8 @@ class Settings(BaseSettings):
     amul_network_timeout_s: float = float(os.getenv("AMUL_NETWORK_TIMEOUT_S", "35"))
     # SHC retains its own product gate because it exposes a private rich report.
     vistaar_shc_enabled: bool = _get_bool_env("VISTAAR_SHC_ENABLED", default=False)
-    # ONIX BAP caller base, e.g. http://amul-onix:3001/bap/caller. The client
-    # appends /confirm/ or /status/.
+    # Private transaction-bridge base (for example https://bridge/transactions).
+    # The client appends the Beckn action, such as /search, /init, or /confirm.
     beckn_bap_caller_url: str = os.getenv("BECKN_BAP_CALLER_URL", "").rstrip("/")
     # Bearer credential for a private transaction bridge. Direct, in-network
     # ONIX callers (including the dev SHC path) do not require this credential.

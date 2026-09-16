@@ -9,6 +9,7 @@ from agents.tools.beckn.operations import (
     BecknOperationStore,
     CallbackRecordResult,
     OperationState,
+    validate_beckn_startup_configuration,
 )
 
 
@@ -267,6 +268,23 @@ def _configure_amul(monkeypatch, module):
     monkeypatch.setattr(module.settings, "beckn_amul_bpp_id", "bpp.example")
     monkeypatch.setattr(module.settings, "beckn_amul_bpp_uri", "https://bpp.example/bpp/receiver")
     monkeypatch.setattr(module.settings, "beckn_callback_wait_seconds", 0.2)
+
+
+def test_startup_validation_requires_complete_mandatory_beckn_transport(monkeypatch):
+    from agents.tools.beckn import operations as module
+
+    _configure_amul(monkeypatch, module)
+    monkeypatch.setattr(module.settings, "beckn_callback_token", "callback-secret")
+    validate_beckn_startup_configuration()
+
+    monkeypatch.setattr(module.settings, "beckn_callback_token", None)
+    with pytest.raises(RuntimeError, match="BECKN_CALLBACK_TOKEN"):
+        validate_beckn_startup_configuration()
+
+    monkeypatch.setattr(module.settings, "beckn_callback_token", "callback-secret")
+    monkeypatch.setattr(module.settings, "beckn_transaction_bridge_token", None)
+    with pytest.raises(RuntimeError, match="BECKN_TRANSACTION_BRIDGE_TOKEN"):
+        validate_beckn_startup_configuration()
 
 
 @pytest.mark.asyncio

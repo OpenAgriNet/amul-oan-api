@@ -93,6 +93,12 @@ async def search_documents(query: str, top_k: int = 8) -> str:
     Returns:
         Formatted document results from the Beckn provider.
     """
-    normalized = _expand_veterinary_synonyms(_validate_search_query(query))
-    logger.info("Veterinary document search via Beckn query=%s", normalized)
-    return await network_search_documents(normalized, top_k)
+    try:
+        normalized = _expand_veterinary_synonyms(_validate_search_query(query))
+        logger.info("Veterinary document search via Beckn query=%s", normalized)
+        return await network_search_documents(normalized, top_k)
+    except ModelRetry:
+        raise
+    except Exception as exc:
+        logger.error("Veterinary document search failed for query=%s: %s", query, exc)
+        raise ModelRetry("Error searching documents, please try again") from exc
