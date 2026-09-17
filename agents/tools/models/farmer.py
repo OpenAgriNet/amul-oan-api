@@ -1,7 +1,11 @@
-from pydantic import BaseModel, Field, field_validator, AliasChoices
+from pydantic import BaseModel, ConfigDict, Field, field_validator, AliasChoices
+
+from agents.tools.models.local_names import prefer_local_name
 
 
 class FarmerModel(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
     state: str | None = None
     district: str | None = None
     sub_district: str | None = Field(None, alias="subDistrict")
@@ -13,9 +17,26 @@ class FarmerModel(BaseModel):
     society_name: str | None = Field(
         None, validation_alias=AliasChoices("societyName", "Society Name")
     )
+    society_gujarati_name: str | None = Field(
+        None,
+        validation_alias=AliasChoices(
+            "societyGujaratiName",
+            "societyFullNamesGuj",
+            "societyNameLocal",
+        ),
+    )
     society_code: str | None = Field(None, alias="societyCode")
     farmer_name: str | None = Field(
         None, validation_alias=AliasChoices("farmerName", "Farm Name")
+    )
+    farmer_gujarati_name: str | None = Field(
+        None,
+        validation_alias=AliasChoices(
+            "farmerGujaratiName",
+            "farmerFullNamesGuj",
+            "farmerLocalName",
+            "ownerFullNameInLocal",
+        ),
     )
     mobile_number: str | None = Field(
         None, validation_alias=AliasChoices("mobileNumber", "Mobile Number")
@@ -40,6 +61,16 @@ class FarmerModel(BaseModel):
     )
     non_pregnant_milking_animals: int | None = Field(None, alias="Non Pregnant Milk")
     pregnant_milking_animals: int | None = Field(None, alias="Pregnant Milk")
+
+    @property
+    def display_farmer_name(self) -> str | None:
+        """Farmer-facing name: Amul Gujarati when present, else English."""
+        return prefer_local_name(self.farmer_gujarati_name, self.farmer_name)
+
+    @property
+    def display_society_name(self) -> str | None:
+        """Society-facing name: Amul Gujarati when present, else English."""
+        return prefer_local_name(self.society_gujarati_name, self.society_name)
 
     @field_validator("animal_tags", mode="before")
     def transform_tagno(cls, tag_nos: str | list[str] | None) -> list[str] | None:
@@ -69,3 +100,12 @@ class FarmerModel(BaseModel):
         if pronoun is None:
             return None
         return pronoun.strip().lower()
+
+    @field_validator("farmer_gujarati_name", "society_gujarati_name", mode="before")
+    @classmethod
+    def strip_gujarati_names(cls, value: str | None) -> str | None:
+        # Preserve Gujarati script/casing — never lowercase local-script names.
+        if value is None:
+            return None
+        text = str(value).strip()
+        return text or None

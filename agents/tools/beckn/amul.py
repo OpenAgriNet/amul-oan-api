@@ -12,7 +12,7 @@ import json
 from dataclasses import dataclass
 from typing import Any, Iterable, Mapping, Optional
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
 from agents.tools.models.animal import AnimalModel
 from agents.tools.models.banas_visit import BanasOperatedVisitModel
@@ -53,11 +53,25 @@ class AuthenticatedFarmerAccount:
 class AITechnicianRecord(BaseModel):
     """Normalized technician item returned by booking on_search."""
 
-    model_config = ConfigDict(extra="ignore")
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
 
     userId: Optional[str] = None
     fullName: Optional[str] = None
+    gujaratiFullName: Optional[str] = Field(
+        None,
+        validation_alias=AliasChoices(
+            "gujratiFullName",
+            "gujaratiFullName",
+            "aitFullNamesGuj",
+        ),
+    )
     mobileNumber: Optional[str] = None
+
+    @property
+    def display_full_name(self) -> Optional[str]:
+        from agents.tools.models.local_names import prefer_local_name
+
+        return prefer_local_name(self.gujaratiFullName, self.fullName)
 
 
 def _dump_model_list(values: Iterable[BaseModel]) -> list[dict[str, Any]]:
@@ -171,8 +185,15 @@ def _farmer_models_from_payload(
         "union_name": "unionName",
         "union_code": "unionCode",
         "society_name": "societyName",
+        "society_gujarati_name": "societyGujaratiName",
+        "society_full_names_guj": "societyGujaratiName",
+        "society_name_local": "societyGujaratiName",
         "society_code": "societyCode",
         "farmer_name": "farmerName",
+        "farmer_gujarati_name": "farmerGujaratiName",
+        "farmer_full_names_guj": "farmerGujaratiName",
+        "farmer_local_name": "farmerGujaratiName",
+        "owner_full_name_in_local": "farmerGujaratiName",
         "farmer_code": "farmerCode",
         "average_milk_cow": "avgMilkPerDayCow",
         "average_milk_buffalo": "avgMilkPerDayBuff",
@@ -265,8 +286,8 @@ def authenticated_accounts(farmers: Iterable[FarmerModel]) -> list[Authenticated
         accounts.append(
             AuthenticatedFarmerAccount(
                 *key,
-                farmer_name=farmer.farmer_name,
-                society_name=farmer.society_name,
+                farmer_name=farmer.display_farmer_name,
+                society_name=farmer.display_society_name,
             )
         )
     return accounts
@@ -587,10 +608,18 @@ async def _search_ai_technicians_live(
             name = _record(item.get("descriptor")).get("name")
             if isinstance(name, str) and name.endswith(" (AI technician)"):
                 name = name.removesuffix(" (AI technician)")
+            gujarati_name = (
+                values.get("gujrati_full_name")
+                or values.get("gujarati_full_name")
+                or values.get("ait_full_names_guj")
+                or values.get("gujratiFullName")
+                or values.get("gujaratiFullName")
+            )
             if technician_id:
                 technicians.append(AITechnicianRecord(
                     userId=technician_id,
                     fullName=str(name or ""),
+                    gujaratiFullName=gujarati_name,
                     mobileNumber=values.get("mobile"),
                 ))
     return technicians
