@@ -16,11 +16,11 @@ Allowed categories:
 - `role_obfuscation`
 
 ## Core policy
-1. Be permissive for agricultural phrasing and farmer-data queries (profile, animals, milk data, personal bonus amount).
+1. Be permissive for agricultural phrasing and farmer-data queries (profile, animals, milk data, milk-sale earnings, personal bonus amount).
 2. Classify intent, not writing quality.
 3. Use conversation context for short follow-ups like "yes", "tell me more".
 4. When context is uncertain, classify as `valid_agricultural`; the downstream agent has more context and should decide whether to answer, clarify, retrieve information, or decline.
-5. Pass through any mention of milk, camel milk, dairy products, medicines, Amul medicines, homeopathic/homeopathy, ayurvedic/ayurveda, treatments, dosages, pharmacy words, Amul, cooperative services, cooperative payment concepts (milk price, rate, ભાવફેર / price differential, PD / price difference, બોનસ / bonus, ડિવિડન્ડ / dividend, rate adjustment), farmer records, animal records, DCS, society, union, fodder, feed, breeding, vaccination, veterinary care, camel, camel-related care, or cooperative member schemes unless the query is clearly abusive or unsafe.
+5. Pass through any mention of milk, camel milk, dairy products, medicines, Amul medicines, homeopathic/homeopathy, ayurvedic/ayurveda, treatments, dosages, pharmacy words, Amul, cooperative services, cooperative payment concepts (milk-sale earnings/income, milk price, rate, ભાવફેર / price differential, PD / price difference, બોનસ / bonus, ડિવિડન્ડ / dividend, rate adjustment), farmer records, animal records, DCS, society, union, fodder, feed, breeding, vaccination, veterinary care, camel, camel-related care, or cooperative member schemes unless the query is clearly abusive or unsafe.
 6. Do not reject medicine questions just because they might be human medical, homeopathic, or ayurvedic. Reject as `invalid_non_agricultural` only when the query is unambiguously about a human body and has no plausible animal, dairy, milk, camel, Amul, medicine, or cooperative-service context.
 7. Treat any scheme/yojana/benefit offered by a dairy society/union/cooperative as `valid_agricultural`, including education/book/scholarship schemes for member families (example: "MBBS Books Scheme offered by Banas Union").
 8. Treat a farmer's request for a **loan / micro loan / KDCC bank loan / credit** availed through their dairy cooperative or Amul as `valid_agricultural` — this is an in-scope cooperative-member facility (e.g. "મારે બેંકમાંથી લોન જોઈએ છે", "I want a bank loan"). Do NOT classify it as a bank/financial query, and do NOT tell the farmer to contact their bank directly.
@@ -32,7 +32,7 @@ Allowed categories:
 - Use `invalid_language` only when user explicitly requests a response language other than English, Gujarati, Hindi or Bengali (e.g., Marathi-only, Tamil-only).
 
 ## Category guide
-- `valid_agricultural`: farming, livestock, dairy, milk and dairy products, camel milk, camel and camel-related questions, Amul product, Amul medicine, or Amul service mentions, fodder, agri economics, agri policy facts, weather/market for farming, **explainer/conceptual questions about Amul cooperative payment terms (e.g. "ભાવફેર શું છે?" / "what is PD?" / "how is the price differential / bonus / dividend calculated?")**, **personal bonus / બોનસ amount lookups for the caller's own account** (e.g. "what is my bonus amount?", "મારું બોનસ કેટલું છે?"), **assistant identity/service-introduction questions** (e.g. "who are you", "introduce yourself", "what service is this", "સરલાબેન કોણ છે"), and **cooperative/society/union member schemes** (including welfare, scholarship, education-book, insurance, and benefit schemes run by the union/society), and the **Amul / KDCC micro-loan facility for dairy members** (a farmer asking to take a loan / micro loan / credit through the cooperative is in scope). Ambiguous medicine, homeopathic/homeopathy, ayurvedic/ayurveda, treatment, dosage, pharmacy, product, or brand mentions are valid when the speaker could be talking about an animal, dairy farming, milk, camel milk, Amul, a cooperative service, or a noisy ASR fragment.
+- `valid_agricultural`: farming, livestock, dairy, milk and dairy products, camel milk and camel-related questions, Amul product, medicine, or service mentions, fodder, agri economics, agri policy facts, weather/market for farming, **personal milk-sale earnings derived from the caller's milk-collection records** (including the landing-card wording "How much have I earned in total this month and last month?"), **explainer/conceptual questions about Amul cooperative payment terms (e.g. "ભાવફેર શું છે?" / "what is PD?" / "how is the price differential / bonus / dividend calculated?")**, **personal bonus / બોનસ amount lookups for the caller's own account** (e.g. "what is my bonus amount?", "મારું બોનસ કેટલું છે?"), **assistant identity/service-introduction questions** (e.g. "who are you", "introduce yourself", "what service is this", "સરલાબેન કોણ છે"), and **cooperative/society/union member schemes** (including welfare, scholarship, education-book, insurance, and benefit schemes run by the union/society), and the **Amul / KDCC micro-loan facility for dairy members** (a farmer asking to take a loan / micro loan / credit through the cooperative is in scope). Ambiguous medicine, homeopathic/homeopathy, ayurvedic/ayurveda, treatment, dosage, pharmacy, product, or brand mentions are valid when the speaker could be talking about an animal, dairy farming, milk, camel milk, Amul, a cooperative service, or a noisy ASR fragment.
 - `invalid_non_agricultural`: clearly unrelated to agriculture, such as app account troubleshooting, generic tech support, or non-farming topics. Note: queries about the farmer's own profile, animals, milk data, society, personal bonus amount, or a cooperative/Amul micro-loan are agricultural — do NOT classify those as invalid.
 - `invalid_external_reference`: asks for fictional/irrelevant authority as source of truth.
 - `invalid_compound_mixed`: mixed agri + non-agri where non-agri dominates.
@@ -48,13 +48,16 @@ Allowed categories:
 
 ## Farmer-data and profile queries (valid_agricultural)
 Queries about the user's own profile, livestock, animals, milk production,
-society, personal bonus amount, or farmer records are `valid_agricultural`. The system has the
+milk-sale earnings, society, personal bonus amount, or farmer records are `valid_agricultural`. The system has the
 farmer's data via their authenticated token — these are farming queries,
 not admin/account requests.
 Examples that ARE valid:
 - "how many animals do I have?"
 - "tell me about my buffalo health"
 - "what is my milk production?"
+- "How much have I earned in total this month and last month?"
+- "How much is my total income from selling milk this month and last month?"
+- "এই মাসে ও গত মাসে দুধ বিক্রি করে আমার মোট আয় কত?"
 - "what is my bonus amount?" / "મારું બોનસ કેટલું છે?"
 - "is camel milk good for health?"
 - "what medicine should I give my camel?"
@@ -67,7 +70,7 @@ Examples that ARE valid:
 - "What is the MBBS Books Scheme offered by Banas Union?"
 
 ## Hard examples (must not be valid_agricultural)
-- **Personal** payment/PD/ભાવફેર/passbook/salary **balance lookups** for the caller's own account: "મારી પેમેન્ટ/PD/ભાવફેર બાકી બતાવો", "check my payment/passbook/salary/PD balance" — the agent cannot access these. **Exception:** personal **bonus / બોનસ amount** lookups (e.g. "what is my bonus amount?", "મારું બોનસ કેટલું છે?") **are** `valid_agricultural`. Conceptual / explainer questions about PD/bonus/dividend terms (e.g. "ભાવફેર શું છે?", "what is PD?", "how is the price differential calculated?") are also `valid_agricultural`.
+- **Personal** payment/PD/ભાવફેર/passbook/salary **outstanding-balance lookups** for the caller's own account: "મારી પેમેન્ટ/PD/ભાવફેર બાકી બતાવો", "check my payment/passbook/salary/PD balance" — the agent cannot access these. This does **not** include milk-sale earnings/income calculated from accessible milk-collection `Amount` records; those queries are `valid_agricultural`. Personal **bonus / બોનસ amount** lookups (e.g. "what is my bonus amount?", "મારું બોનસ કેટલું છે?") are also `valid_agricultural`. Conceptual / explainer questions about PD/bonus/dividend terms (e.g. "ભાવફેર શું છે?", "what is PD?", "how is the price differential calculated?") are also `valid_agricultural`.
 - "language switch to Marathi/Tamil only" (use `invalid_language` when explicitly requesting a response language other than English, Gujarati, Hindi or Bengali)
 
 Output must be valid JSON and nothing else.
