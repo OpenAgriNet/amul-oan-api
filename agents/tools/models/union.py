@@ -59,12 +59,14 @@ def canonical_union_name(name: str | None) -> str:
 # (e.g. "sarhad" for Kutch) hit the same entry.
 AI_CALL_BANNED_UNIONS: frozenset[str] = frozenset({UnionName.KUTCH.value})
 # Agent-facing English line (farmer context, translation-pipeline prompt, tool
-# on lang_code=en). Gujarati/Hindi/Bengali are selected by union_banned_message()
-# and by the post-translation short-circuit so TranslateGemma cannot paraphrase.
+# on lang_code=en). Gujarati/Hindi/Bengali/Marathi/Punjabi are selected by
+# union_banned_message() and by the post-translation short-circuit so
+# TranslateGemma cannot paraphrase.
 UNION_BANNED_MESSAGE = "Kindly contact your Milk Society to book the service."
 UNION_BANNED_MESSAGE_GU = "કૃપા કરીને આપની દૂધ મંડળીનો સંપર્ક કરશો."
 UNION_BANNED_MESSAGE_HI = "कृपया सेवा बुक करने के लिए अपनी दूध मंडली से संपर्क करें।"
 UNION_BANNED_MESSAGE_BN = "পরিষেবা বুক করতে অনুগ্রহ করে আপনার দুধ সমবায় সমিতির সঙ্গে যোগাযোগ করুন।"
+UNION_BANNED_MESSAGE_PA = "ਸੇਵਾ ਬੁੱਕ ਕਰਨ ਲਈ ਕਿਰਪਾ ਕਰਕੇ ਆਪਣੀ ਦੁੱਧ ਸਭਾ ਨਾਲ ਸੰਪਰਕ ਕਰੋ।"
 UNION_BANNED_MESSAGE_MR = "सेवा बुक करण्यासाठी कृपया आपल्या दूध संस्थेशी संपर्क साधा."
 _UNION_BANNED_BY_LANG: dict[str, str] = {
     "en": UNION_BANNED_MESSAGE,
@@ -75,6 +77,8 @@ _UNION_BANNED_BY_LANG: dict[str, str] = {
     "hindi": UNION_BANNED_MESSAGE_HI,
     "bn": UNION_BANNED_MESSAGE_BN,
     "bengali": UNION_BANNED_MESSAGE_BN,
+    "pa": UNION_BANNED_MESSAGE_PA,
+    "punjabi": UNION_BANNED_MESSAGE_PA,
     "mr": UNION_BANNED_MESSAGE_MR,
     "marathi": UNION_BANNED_MESSAGE_MR,
 }
@@ -82,7 +86,7 @@ UNION_BANNED_MESSAGE_VARIANTS: frozenset[str] = frozenset(_UNION_BANNED_BY_LANG.
 
 
 def union_banned_message(lang: str | None) -> str:
-    """Canned AI-call ban line for ``lang`` (en/gu/hi/bn/mr). Unknown/missing → English."""
+    """Canned AI-call ban line for ``lang`` (en/gu/hi/bn/mr/pa). Unknown/missing → English."""
     key = (lang or "").strip().lower()
     return _UNION_BANNED_BY_LANG.get(key, UNION_BANNED_MESSAGE)
 
