@@ -596,8 +596,8 @@ def _canned_union_ban_translation(text: str, target_lang: str) -> str | None:
 
     The agent (and create_ai_call on lang_code=en) emit the English policy sentence.
     Post-translation must not paraphrase it — Gujarati, Hindi, Bengali and
-    Marathi copy is fixed.
-    Already-localized GU/HI/BN/MR canned lines pass through as the target-lang variant.
+    Marathi and Punjabi copy is fixed.
+    Already-localized GU/HI/BN/MR/PA canned lines pass through as the target-lang variant.
     """
     normalized = text.strip().strip("`\"'")
     if normalized not in UNION_BANNED_MESSAGE_VARIANTS:
@@ -617,9 +617,9 @@ def _canned_union_ban_translation(text: str, target_lang: str) -> str | None:
 def _prepare_translation_inputs(text, source_lang, target_lang, max_output_chars):
     """Mini-glossary fetch + build the translation instruction ONCE (shared by both
     tiers) + the Gemma-wrapped TranslateGemma prompt. Verbatim to the prior inline
-    logic (mini glossary for gu/hi/bn/mr at threshold 0.90 / max 40)."""
+    logic (mini glossary for gu/hi/bn/mr/pa at threshold 0.90 / max 40)."""
     mini_glossary = ""
-    if target_lang.lower() in ("gujarati", "gu", "hindi", "hi", "bengali", "bn", "marathi", "mr"):
+    if target_lang.lower() in ("gujarati", "gu", "hindi", "hi", "bengali", "bn", "marathi", "mr", "punjabi", "pa"):
         mini_glossary = get_mini_glossary_for_text(
             text,
             threshold=0.90,

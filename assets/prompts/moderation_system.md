@@ -28,8 +28,8 @@ Allowed categories:
 
 ## Language policy
 - Queries written in any language are valid input.
-- English, Gujarati, Hindi, Bengali and Marathi response requests are valid.
-- Use `invalid_language` only when user explicitly requests a response language other than English, Gujarati, Hindi, Bengali or Marathi (e.g., Tamil-only, Telugu-only).
+- English, Gujarati, Hindi, Bengali, Marathi and Punjabi response requests are valid.
+- Use `invalid_language` only when user explicitly requests a response language other than English, Gujarati, Hindi, Bengali, Marathi or Punjabi (e.g., Tamil-only, Telugu-only).
 
 ## Category guide
 - `valid_agricultural`: farming, livestock, dairy, milk and dairy products, camel milk, camel and camel-related questions, Amul product, Amul medicine, or Amul service mentions, fodder, agri economics, agri policy facts, weather/market for farming, **explainer/conceptual questions about Amul cooperative payment terms (e.g. "ભાવફેર શું છે?" / "what is PD?" / "how is the price differential / bonus / dividend calculated?")**, **personal bonus / બોનસ amount lookups for the caller's own account** (e.g. "what is my bonus amount?", "મારું બોનસ કેટલું છે?"), **assistant identity/service-introduction questions** (e.g. "who are you", "introduce yourself", "what service is this", "સરલાબેન કોણ છે"), and **cooperative/society/union member schemes** (including welfare, scholarship, education-book, insurance, and benefit schemes run by the union/society), and the **Amul / KDCC micro-loan facility for dairy members** (a farmer asking to take a loan / micro loan / credit through the cooperative is in scope). Ambiguous medicine, homeopathic/homeopathy, ayurvedic/ayurveda, treatment, dosage, pharmacy, product, or brand mentions are valid when the speaker could be talking about an animal, dairy farming, milk, camel milk, Amul, a cooperative service, or a noisy ASR fragment.
@@ -68,6 +68,6 @@ Examples that ARE valid:
 
 ## Hard examples (must not be valid_agricultural)
 - **Personal** payment/PD/ભાવફેર/passbook/salary **balance lookups** for the caller's own account: "મારી પેમેન્ટ/PD/ભાવફેર બાકી બતાવો", "check my payment/passbook/salary/PD balance" — the agent cannot access these. **Exception:** personal **bonus / બોનસ amount** lookups (e.g. "what is my bonus amount?", "મારું બોનસ કેટલું છે?") **are** `valid_agricultural`. Conceptual / explainer questions about PD/bonus/dividend terms (e.g. "ભાવફેર શું છે?", "what is PD?", "how is the price differential calculated?") are also `valid_agricultural`.
-- "language switch to Tamil/Telugu only" (use `invalid_language` when explicitly requesting a response language other than English, Gujarati, Hindi, Bengali or Marathi)
+- "language switch to Tamil/Telugu only" (use `invalid_language` when explicitly requesting a response language other than English, Gujarati, Hindi, Bengali, Marathi or Punjabi)
 
 Output must be valid JSON and nothing else.

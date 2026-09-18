@@ -41,6 +41,12 @@ os.environ.setdefault("OPENAI_API_KEY", "test-key")
         # কে starts কেমন ("how") — "how are you" is not an identity query.
         ("আপনি কেমন আছেন?", False),
         ("আপনি কে এবং আমার গরুর জ্বর হয়েছে", False),
+        # Punjabi (Gurmukhi).
+        ("ਤੁਸੀਂ ਕੌਣ ਹੋ?", True),
+        ("ਤੂੰ ਕੌਣ ਹੈਂ", True),
+        ("ਸਰਲਾਬੇਨ ਕੌਣ ਹੈ?", True),
+        ("ਇਹ ਕਿਹੜੀ ਸੇਵਾ ਹੈ", True),
+        ("ਤੁਸੀਂ ਕੌਣ ਹੋ ਅਤੇ ਮੇਰੀ ਗਾਂ ਨੂੰ ਬੁਖ਼ਾਰ ਹੈ", False),
         # Marathi.
         ("तुम्ही कोण आहात?", True),
         ("तू कोण आहेस", True),
@@ -88,6 +94,25 @@ def test_identity_table_bengali_selected_from_script():
     assert table.startswith("| ক্ষেত্র | বিবরণ |")
 
 
+def test_identity_table_punjabi_format():
+    table = build_identity_profile_table("pa", "pa", "ਤੁਸੀਂ ਕੌਣ ਹੋ?")
+    assert table.startswith("| ਖੇਤਰ | ਵੇਰਵਾ |\n|---|---|")
+    assert "| ਨਾਮ | ਸਰਲਾਬੇਨ |" in table
+    assert "| ਸੰਸਥਾ | ਅਮੂਲ |" in table
+    assert "ਤੁਹਾਡੀ ਭਰੋਸੇਯੋਗ ਡਿਜੀਟਲ" in table
+
+
+def test_identity_table_punjabi_selected_from_script():
+    # No explicit language: a Gurmukhi query still gets the Punjabi table.
+    table = build_identity_profile_table("", "", "ਤੁਸੀਂ ਕੌਣ ਹੋ?")
+    assert table.startswith("| ਖੇਤਰ | ਵੇਰਵਾ |")
+
+
+def test_identity_table_gujarati_not_stolen_by_adjacent_gurmukhi_range():
+    # Gurmukhi (U+0A00-U+0A7F) and Gujarati (U+0A80-U+0AFF) are adjacent blocks;
+    # a Gujarati query must still get the Gujarati table.
+    table = build_identity_profile_table("", "", "તમે કોણ છો")
+    assert table.startswith("| ક્ષેત્ર | વિગતો |")
 def test_identity_table_marathi_format():
     table = build_identity_profile_table("mr", "mr", "तुम्ही कोण आहात?")
     assert table.startswith("| क्षेत्र | तपशील |\n|---|---|")
@@ -105,8 +130,12 @@ def test_identity_table_marathi_selected_from_wording_not_script():
 
 def test_identity_table_hindi_devanagari_still_falls_back_to_english():
     # Regression: adding Marathi must not hijack Hindi, which has no table.
-    table = build_identity_profile_table("hi", "hi", "who are you")
+    # The query must be Devanagari — an English one returns on an earlier branch
+    # and never exercises the script/wording check this is meant to pin.
+    table = build_identity_profile_table("hi", "hi", "आप कौन हैं?")
     assert table.startswith("| Field | Details |")
+    # Undeclared language, Hindi wording: still English, not the Marathi table.
+    assert build_identity_profile_table("", "", "आप कौन हैं?").startswith("| Field | Details |")
 
 
 def test_chat_identity_short_circuit_bypasses_moderation_and_translation(monkeypatch):
