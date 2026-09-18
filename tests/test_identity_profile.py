@@ -47,6 +47,15 @@ os.environ.setdefault("OPENAI_API_KEY", "test-key")
         ("ਸਰਲਾਬੇਨ ਕੌਣ ਹੈ?", True),
         ("ਇਹ ਕਿਹੜੀ ਸੇਵਾ ਹੈ", True),
         ("ਤੁਸੀਂ ਕੌਣ ਹੋ ਅਤੇ ਮੇਰੀ ਗਾਂ ਨੂੰ ਬੁਖ਼ਾਰ ਹੈ", False),
+        # Marathi.
+        ("तुम्ही कोण आहात?", True),
+        ("तू कोण आहेस", True),
+        ("सरलाबेन कोण आहे?", True),
+        ("तुमची ओळख सांगा", True),
+        ("ही कोणती सेवा आहे", True),
+        # Hindi uses कौन, not Marathi's कोण — it must not match.
+        ("आप कौन हैं", False),
+        ("तुम्ही कोण आहात आणि माझ्या गाईला ताप आहे", False),
     ],
 )
 def test_identity_query_detection(query: str, expected: bool):
@@ -104,6 +113,29 @@ def test_identity_table_gujarati_not_stolen_by_adjacent_gurmukhi_range():
     # a Gujarati query must still get the Gujarati table.
     table = build_identity_profile_table("", "", "તમે કોણ છો")
     assert table.startswith("| ક્ષેત્ર | વિગતો |")
+def test_identity_table_marathi_format():
+    table = build_identity_profile_table("mr", "mr", "तुम्ही कोण आहात?")
+    assert table.startswith("| क्षेत्र | तपशील |\n|---|---|")
+    assert "| नाव | सरलाबेन |" in table
+    assert "| संस्था | अमूल |" in table
+    assert "तुमची विश्वासार्ह डिजिटल" in table
+
+
+def test_identity_table_marathi_selected_from_wording_not_script():
+    # Devanagari is shared with Hindi, so the Marathi table is reached by
+    # Marathi-specific wording, not by the script alone.
+    table = build_identity_profile_table("", "", "तुम्ही कोण आहात?")
+    assert table.startswith("| क्षेत्र | तपशील |")
+
+
+def test_identity_table_hindi_devanagari_still_falls_back_to_english():
+    # Regression: adding Marathi must not hijack Hindi, which has no table.
+    # The query must be Devanagari — an English one returns on an earlier branch
+    # and never exercises the script/wording check this is meant to pin.
+    table = build_identity_profile_table("hi", "hi", "आप कौन हैं?")
+    assert table.startswith("| Field | Details |")
+    # Undeclared language, Hindi wording: still English, not the Marathi table.
+    assert build_identity_profile_table("", "", "आप कौन हैं?").startswith("| Field | Details |")
 
 
 def test_chat_identity_short_circuit_bypasses_moderation_and_translation(monkeypatch):
