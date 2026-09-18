@@ -41,6 +41,15 @@ os.environ.setdefault("OPENAI_API_KEY", "test-key")
         # কে starts কেমন ("how") — "how are you" is not an identity query.
         ("আপনি কেমন আছেন?", False),
         ("আপনি কে এবং আমার গরুর জ্বর হয়েছে", False),
+        # Marathi.
+        ("तुम्ही कोण आहात?", True),
+        ("तू कोण आहेस", True),
+        ("सरलाबेन कोण आहे?", True),
+        ("तुमची ओळख सांगा", True),
+        ("ही कोणती सेवा आहे", True),
+        # Hindi uses कौन, not Marathi's कोण — it must not match.
+        ("आप कौन हैं", False),
+        ("तुम्ही कोण आहात आणि माझ्या गाईला ताप आहे", False),
     ],
 )
 def test_identity_query_detection(query: str, expected: bool):
@@ -77,6 +86,27 @@ def test_identity_table_bengali_selected_from_script():
     # No explicit language: a Bengali-script query still gets the Bengali table.
     table = build_identity_profile_table("", "", "আপনি কে?")
     assert table.startswith("| ক্ষেত্র | বিবরণ |")
+
+
+def test_identity_table_marathi_format():
+    table = build_identity_profile_table("mr", "mr", "तुम्ही कोण आहात?")
+    assert table.startswith("| क्षेत्र | तपशील |\n|---|---|")
+    assert "| नाव | सरलाबेन |" in table
+    assert "| संस्था | अमूल |" in table
+    assert "तुमची विश्वासार्ह डिजिटल" in table
+
+
+def test_identity_table_marathi_selected_from_wording_not_script():
+    # Devanagari is shared with Hindi, so the Marathi table is reached by
+    # Marathi-specific wording, not by the script alone.
+    table = build_identity_profile_table("", "", "तुम्ही कोण आहात?")
+    assert table.startswith("| क्षेत्र | तपशील |")
+
+
+def test_identity_table_hindi_devanagari_still_falls_back_to_english():
+    # Regression: adding Marathi must not hijack Hindi, which has no table.
+    table = build_identity_profile_table("hi", "hi", "who are you")
+    assert table.startswith("| Field | Details |")
 
 
 def test_chat_identity_short_circuit_bypasses_moderation_and_translation(monkeypatch):
