@@ -41,6 +41,12 @@ os.environ.setdefault("OPENAI_API_KEY", "test-key")
         # কে starts কেমন ("how") — "how are you" is not an identity query.
         ("আপনি কেমন আছেন?", False),
         ("আপনি কে এবং আমার গরুর জ্বর হয়েছে", False),
+        # Punjabi (Gurmukhi).
+        ("ਤੁਸੀਂ ਕੌਣ ਹੋ?", True),
+        ("ਤੂੰ ਕੌਣ ਹੈਂ", True),
+        ("ਸਰਲਾਬੇਨ ਕੌਣ ਹੈ?", True),
+        ("ਇਹ ਕਿਹੜੀ ਸੇਵਾ ਹੈ", True),
+        ("ਤੁਸੀਂ ਕੌਣ ਹੋ ਅਤੇ ਮੇਰੀ ਗਾਂ ਨੂੰ ਬੁਖ਼ਾਰ ਹੈ", False),
     ],
 )
 def test_identity_query_detection(query: str, expected: bool):
@@ -77,6 +83,27 @@ def test_identity_table_bengali_selected_from_script():
     # No explicit language: a Bengali-script query still gets the Bengali table.
     table = build_identity_profile_table("", "", "আপনি কে?")
     assert table.startswith("| ক্ষেত্র | বিবরণ |")
+
+
+def test_identity_table_punjabi_format():
+    table = build_identity_profile_table("pa", "pa", "ਤੁਸੀਂ ਕੌਣ ਹੋ?")
+    assert table.startswith("| ਖੇਤਰ | ਵੇਰਵਾ |\n|---|---|")
+    assert "| ਨਾਮ | ਸਰਲਾਬੇਨ |" in table
+    assert "| ਸੰਸਥਾ | ਅਮੂਲ |" in table
+    assert "ਤੁਹਾਡੀ ਭਰੋਸੇਯੋਗ ਡਿਜੀਟਲ" in table
+
+
+def test_identity_table_punjabi_selected_from_script():
+    # No explicit language: a Gurmukhi query still gets the Punjabi table.
+    table = build_identity_profile_table("", "", "ਤੁਸੀਂ ਕੌਣ ਹੋ?")
+    assert table.startswith("| ਖੇਤਰ | ਵੇਰਵਾ |")
+
+
+def test_identity_table_gujarati_not_stolen_by_adjacent_gurmukhi_range():
+    # Gurmukhi (U+0A00-U+0A7F) and Gujarati (U+0A80-U+0AFF) are adjacent blocks;
+    # a Gujarati query must still get the Gujarati table.
+    table = build_identity_profile_table("", "", "તમે કોણ છો")
+    assert table.startswith("| ક્ષેત્ર | વિગતો |")
 
 
 def test_chat_identity_short_circuit_bypasses_moderation_and_translation(monkeypatch):

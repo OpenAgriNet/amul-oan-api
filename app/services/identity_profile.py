@@ -21,6 +21,14 @@ IDENTITY_QUERY_PATTERNS: Final[tuple[str, ...]] = (
     r"সরলাবেন\s+কে(?![\u0980-\u09FF])",
     r"আপনার\s+পরিচ\S*\s+দিন",
     r"তোমার\s+পরিচ\S*\s+দাও",
+    # Punjabi (Gurmukhi). ਕੌਣ ("who") is a distinct word, so no run-on guard is
+    # needed the way ``কে`` needs one in Bengali.
+    r"ਤੁਸੀਂ\s+ਕੌਣ\s+ਹੋ",
+    r"ਤੂੰ\s+ਕੌਣ\s+ਹੈਂ",
+    r"ਸਰਲਾਬੇਨ\s+ਕੌਣ\s+ਹੈ",
+    r"ਆਪਣੀ\s+ਜਾਣ\S*\s+ਦਿਓ",
+    r"ਤੁਹਾਡੀ\s+ਜਾਣ\S*\s+ਦੱਸੋ",
+    r"ਇਹ\s+ਕਿਹੜੀ\s+ਸੇਵਾ\s+ਹੈ",
 )
 
 _IDENTITY_QUERY_REGEX: Final[re.Pattern[str]] = re.compile(
@@ -115,6 +123,35 @@ _BENGALI_ROWS: Final[tuple[tuple[str, str], ...]] = (
     ("আমার প্রতিশ্রুতি", "আমি ডেয়ারি কৃষকদের তথ্য ও পরামর্শ দিতে 24x7 উপলব্ধ।"),
 )
 
+_PUNJABI_ROWS: Final[tuple[tuple[str, str], ...]] = (
+    ("ਨਾਮ", "ਸਰਲਾਬੇਨ"),
+    ("ਭੂਮਿਕਾ", "ਦੁੱਧ ਉਤਪਾਦਕਾਂ ਲਈ ਅਮੂਲ ਦੀ AI ਡਿਜੀਟਲ ਸਹਾਇਕ"),
+    ("ਜਨਮ ਤਾਰੀਖ", "11 ਫਰਵਰੀ 2026"),
+    ("ਸੰਸਥਾ", "ਅਮੂਲ"),
+    ("ਉਪਲਬਧਤਾ", "080-35453545 ਉੱਤੇ ਚੈਟ, ਵੌਇਸ ਕਾਲ ਅਤੇ ਵਟਸਐਪ ਰਾਹੀਂ 24x7"),
+    (
+        "ਮੇਰੇ ਬਾਰੇ",
+        "ਸਤਿ ਸ੍ਰੀ ਅਕਾਲ! ਮੈਂ ਸਰਲਾਬੇਨ ਹਾਂ — ਦੁੱਧ ਉਤਪਾਦਕਾਂ, ਡੇਅਰੀ ਕਿਸਾਨਾਂ ਅਤੇ ਸਹਿਕਾਰੀ ਸਭਾ ਦੇ ਮੈਂਬਰਾਂ ਦੀ ਮਦਦ ਲਈ ਬਣਾਈ ਗਈ ਅਮੂਲ ਦੀ AI-ਸੰਚਾਲਿਤ ਡਿਜੀਟਲ ਸਾਥੀ।",
+    ),
+    (
+        "ਮਕਸਦ",
+        "ਮੇਰਾ ਮਕਸਦ ਡੇਅਰੀ ਕਿਸਾਨਾਂ ਨੂੰ ਸਮੇਂ ਸਿਰ ਜਾਣਕਾਰੀ, ਅਮਲੀ ਸਲਾਹ ਅਤੇ ਡਿਜੀਟਲ ਮਦਦ ਦੇ ਕੇ ਮਜ਼ਬੂਤ ਕਰਨਾ ਹੈ — ਜਿਸ ਨਾਲ ਪਸ਼ੂਆਂ ਦੀ ਸਿਹਤ, ਦੁੱਧ ਦੀ ਪੈਦਾਵਾਰ ਅਤੇ ਮੁਨਾਫ਼ਾ ਵਧਦਾ ਹੈ।",
+    ),
+    (
+        "ਮੁਹਾਰਤ ਦੇ ਖੇਤਰ",
+        "ਪਸ਼ੂਧਨ ਪ੍ਰਬੰਧਨ; ਦੁੱਧ ਉਤਪਾਦਨ ਅਤੇ ਗੁਣਵੱਤਾ ਸੁਧਾਰ; ਪਸ਼ੂਆਂ ਦੀ ਖੁਰਾਕ ਅਤੇ ਆਹਾਰ ਪ੍ਰਬੰਧਨ; ਟੀਕਾਕਰਨ ਅਤੇ ਰੋਗ ਰੋਕਥਾਮ; ਮੁੱਢਲੀ ਪਸ਼ੂ ਚਿਕਿਤਸਾ ਸਲਾਹ ਅਤੇ ਰੋਗ ਜਾਗਰੂਕਤਾ; ਪ੍ਰਜਨਨ ਅਤੇ ਗਰਭ ਪ੍ਰਬੰਧਨ; ਡੇਅਰੀ ਸਹਿਕਾਰੀ ਸੇਵਾਵਾਂ ਅਤੇ ਮੈਂਬਰ ਸਹਾਇਤਾ; ਡੇਅਰੀ ਸਲਾਹ ਅਤੇ ਵਧੀਆ ਖੇਤੀ ਢੰਗ",
+    ),
+    (
+        "ਮੈਂ ਕਿਸ ਦੀ ਸੇਵਾ ਕਰਦੀ ਹਾਂ",
+        "ਦੁੱਧ ਉਤਪਾਦਕ; ਡੇਅਰੀ ਕਿਸਾਨ; ਸਹਿਕਾਰੀ ਸਭਾ ਦੇ ਮੈਂਬਰ; ਪਸ਼ੂ ਪਾਲਕ; ਪੇਂਡੂ ਡੇਅਰੀ ਉੱਦਮੀ",
+    ),
+    (
+        "ਮੇਰੀਆਂ ਕਦਰਾਂ-ਕੀਮਤਾਂ",
+        "ਕਿਸਾਨ ਪਹਿਲਾਂ; ਭਰੋਸੇਯੋਗ ਅਤੇ ਪੱਕੀ ਸਲਾਹ; ਸਹਿਕਾਰ ਦੀ ਭਾਵਨਾ; ਸਭ ਲਈ ਸੁਖਾਲੀ ਪਹੁੰਚ; ਲਗਾਤਾਰ ਸਿੱਖਣਾ ਅਤੇ ਨਵੀਨਤਾ",
+    ),
+    ("ਮੇਰਾ ਵਾਅਦਾ", "ਮੈਂ ਡੇਅਰੀ ਕਿਸਾਨਾਂ ਨੂੰ ਜਾਣਕਾਰੀ ਅਤੇ ਸਲਾਹ ਦੇਣ ਲਈ 24x7 ਹਾਜ਼ਰ ਹਾਂ।"),
+)
+
 _ENGLISH_QUOTE: Final[str] = (
     "\"Your trusted digital dairy companion, inspired by Amul's cooperative values and dedicated to supporting every milk producer.\""
 )
@@ -125,20 +162,27 @@ _BENGALI_QUOTE: Final[str] = (
     "\"আপনার বিশ্বস্ত ডিজিটাল ডেয়ারি সঙ্গী — আমুলের সমবায় মূল্যবোধে অনুপ্রাণিত এবং প্রত্যেক দুধ উৎপাদকের পাশে থাকতে নিবেদিত।\""
 )
 
+_PUNJABI_QUOTE: Final[str] = (
+    "\"ਤੁਹਾਡੀ ਭਰੋਸੇਯੋਗ ਡਿਜੀਟਲ ਡੇਅਰੀ ਸਾਥੀ — ਅਮੂਲ ਦੀਆਂ ਸਹਿਕਾਰੀ ਕਦਰਾਂ-ਕੀਮਤਾਂ ਤੋਂ ਪ੍ਰੇਰਿਤ ਅਤੇ ਹਰ ਦੁੱਧ ਉਤਪਾਦਕ ਦੀ ਮਦਦ ਲਈ ਸਮਰਪਿਤ।\""
+)
+
 _ROWS_BY_LANGUAGE: Final[dict[str, tuple[tuple[str, str], ...]]] = {
     "en": _ENGLISH_ROWS,
     "gu": _GUJARATI_ROWS,
     "bn": _BENGALI_ROWS,
+    "pa": _PUNJABI_ROWS,
 }
 _QUOTE_BY_LANGUAGE: Final[dict[str, str]] = {
     "en": _ENGLISH_QUOTE,
     "gu": _GUJARATI_QUOTE,
     "bn": _BENGALI_QUOTE,
+    "pa": _PUNJABI_QUOTE,
 }
 _TABLE_HEADER_BY_LANGUAGE: Final[dict[str, str]] = {
     "en": "| Field | Details |",
     "gu": "| ક્ષેત્ર | વિગતો |",
     "bn": "| ক্ষেত্র | বিবরণ |",
+    "pa": "| ਖੇਤਰ | ਵੇਰਵਾ |",
 }
 _DOCTOR_IDENTITY_BY_LANGUAGE: Final[dict[str, str]] = {
     "en": (
@@ -153,6 +197,10 @@ _DOCTOR_IDENTITY_BY_LANGUAGE: Final[dict[str, str]] = {
         "আমি আমুল ভেটেরিনারি অ্যাসিস্ট্যান্ট—গরু, মহিষ ও বাছুরের চিকিৎসায় "
         "পশুচিকিৎসকদের নথি-ভিত্তিক ক্লিনিক্যাল সিদ্ধান্তে সাহায্যকারী একটি AI সহায়ক।"
     ),
+    "pa": (
+        "ਮੈਂ ਅਮੂਲ ਵੈਟਰਨਰੀ ਅਸਿਸਟੈਂਟ ਹਾਂ—ਗਾਂ, ਮੱਝ ਅਤੇ ਵੱਛਿਆਂ ਦੇ ਇਲਾਜ ਵਿੱਚ "
+        "ਪਸ਼ੂ ਡਾਕਟਰਾਂ ਨੂੰ ਦਸਤਾਵੇਜ਼-ਅਧਾਰਿਤ ਕਲੀਨਿਕਲ ਫ਼ੈਸਲੇ ਵਿੱਚ ਮਦਦ ਕਰਨ ਵਾਲਾ AI ਸਹਾਇਕ।"
+    ),
 }
 
 
@@ -166,6 +214,7 @@ _IDENTITY_FILLER_WORDS: Final[frozenset[str]] = frozenset(
         "tell", "me", "can", "you", "could", "would", "will", "the", "a", "an",
         "અને", "કૃપા", "કરીને", "મને", "કહો", "જરા", "તો",
         "এবং", "আর", "অনুগ্রহ", "করে", "আমাকে", "বলুন", "বলো", "একটু", "তো", "নমস্কার",
+        "ਅਤੇ", "ਕਿਰਪਾ", "ਕਰਕੇ", "ਮੈਨੂੰ", "ਦੱਸੋ", "ਜ਼ਰਾ", "ਤਾਂ", "ਸਤਿ", "ਸ੍ਰੀ", "ਅਕਾਲ",
     }
 )
 
@@ -200,16 +249,25 @@ def is_identity_query(query: str) -> bool:
 def _select_identity_language(source_lang: str, target_lang: str, query: str) -> str:
     src = (source_lang or "").strip().lower()
     tgt = (target_lang or "").strip().lower()
+    if tgt in {"pa", "punjabi"}:
+        return "pa"
     if tgt in {"bn", "bengali"}:
         return "bn"
     if src in {"gu", "gujarati"} or tgt in {"gu", "gujarati"}:
         return "gu"
     if src in {"bn", "bengali"}:
         return "bn"
+    if src in {"pa", "punjabi"}:
+        return "pa"
     if re.search(r"[\u0A80-\u0AFF]", query or ""):
         return "gu"
     if re.search(r"[\u0980-\u09FF]", query or ""):
         return "bn"
+    # Gurmukhi (U+0A00-U+0A7F) sits directly below the Gujarati block
+    # (U+0A80-U+0AFF); the Gujarati check above must run first so neither range
+    # swallows the other.
+    if re.search(r"[\u0A00-\u0A7F]", query or ""):
+        return "pa"
     return "en"
 
 

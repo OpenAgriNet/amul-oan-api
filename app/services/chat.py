@@ -186,6 +186,9 @@ GENERIC_UNAVAILABLE_MESSAGE_GU = (
 GENERIC_UNAVAILABLE_MESSAGE_BN = (
     "এই মুহূর্তে আমি আপনার অনুরোধটি প্রক্রিয়া করতে পারছি না। অনুগ্রহ করে কিছুক্ষণ পরে আবার চেষ্টা করুন।"
 )
+GENERIC_UNAVAILABLE_MESSAGE_PA = (
+    "ਇਸ ਸਮੇਂ ਮੈਂ ਤੁਹਾਡੀ ਬੇਨਤੀ ਤੇ ਕਾਰਵਾਈ ਨਹੀਂ ਕਰ ਸਕਦੀ। ਕਿਰਪਾ ਕਰਕੇ ਥੋੜ੍ਹੇ ਸਮੇਂ ਬਾਅਦ ਦੁਬਾਰਾ ਕੋਸ਼ਿਸ਼ ਕਰੋ।"
+)
 
 try:
     from langfuse import propagate_attributes, get_client as get_langfuse_client
@@ -357,11 +360,14 @@ async def stream_chat_messages(
             # the same English-passthrough mode as the translation pipeline.
             hindi_enabled = getattr(settings, "hindi_chat_enabled", True)
             bengali_enabled = getattr(settings, "bengali_chat_enabled", True)
+            punjabi_enabled = getattr(settings, "punjabi_chat_enabled", True)
             disabled_langs: set[str] = set()
             if not hindi_enabled:
                 disabled_langs |= {"hi", "hindi"}
             if not bengali_enabled:
                 disabled_langs |= {"bn", "bengali"}
+            if not punjabi_enabled:
+                disabled_langs |= {"pa", "punjabi"}
 
             async def localize_system_text(text_en: str) -> str:
                 """
@@ -400,6 +406,8 @@ async def stream_chat_messages(
                             return GENERIC_UNAVAILABLE_MESSAGE_GU
                         if lang in {"bn", "bengali"}:
                             return GENERIC_UNAVAILABLE_MESSAGE_BN
+                        if lang in {"pa", "punjabi"}:
+                            return GENERIC_UNAVAILABLE_MESSAGE_PA
                 return text_en
 
             request_id = session_id
@@ -473,6 +481,8 @@ async def stream_chat_messages(
                 pretranslation_source_langs |= {"hi", "hindi"}
             if bengali_enabled:
                 pretranslation_source_langs |= {"bn", "bengali"}
+            if punjabi_enabled:
+                pretranslation_source_langs |= {"pa", "punjabi"}
             if source_lang.lower() in pretranslation_source_langs:
                 pretrans_info = execution.info(_LlmStep.PRE_TRANSLATION)
                 logger.info(

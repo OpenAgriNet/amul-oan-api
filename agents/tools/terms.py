@@ -36,6 +36,7 @@ def _load_glossary_file(filename: str, *, warn_on_fail: bool = False) -> list[di
 term_pairs = _load_glossary_file("glossary_terms.json")
 hindi_term_pairs = _load_glossary_file("glossary_terms_hindi_openrouter.json", warn_on_fail=True)
 bengali_term_pairs = _load_glossary_file("glossary_terms_bengali.json", warn_on_fail=True)
+punjabi_term_pairs = _load_glossary_file("glossary_terms_punjabi.json", warn_on_fail=True)
 
 
 def _load_gu_term_policy() -> dict:
@@ -81,6 +82,7 @@ class TermPair(BaseModel):
     gu: str = Field(description="Gujarati term")
     hi: str = Field(default="", description="Hindi term")
     bn: str = Field(default="", description="Bengali term")
+    pa: str = Field(default="", description="Punjabi term")
     transliteration: str = Field(description="Transliteration of Gujarati term to English")
     mr: str = Field(default="", description="Marathi term (for backward compatibility)")
 
@@ -124,6 +126,20 @@ for pair in bengali_term_pairs:
         )
         if parsed.en.strip() and parsed.bn.strip():
             BN_TERM_PAIRS.append(parsed)
+    except Exception:
+        continue
+
+PA_TERM_PAIRS = []
+for pair in punjabi_term_pairs:
+    try:
+        parsed = TermPair(
+            en=str(pair.get("en", "")),
+            gu="",
+            pa=str(pair.get("pa", "")),
+            transliteration=str(pair.get("transliteration", "")),
+        )
+        if parsed.en.strip() and parsed.pa.strip():
+            PA_TERM_PAIRS.append(parsed)
     except Exception:
         continue
 
@@ -197,6 +213,8 @@ HI_EN_INDEX = {tp.en.lower(): tp for tp in HI_TERM_PAIRS}
 HI_EN_TERMS = list(HI_EN_INDEX.keys())
 BN_EN_INDEX = {tp.en.lower(): tp for tp in BN_TERM_PAIRS}
 BN_EN_TERMS = list(BN_EN_INDEX.keys())
+PA_EN_INDEX = {tp.en.lower(): tp for tp in PA_TERM_PAIRS}
+PA_EN_TERMS = list(PA_EN_INDEX.keys())
 
 
 def _normalize_lookup_key(text: str) -> str:
@@ -269,6 +287,8 @@ def _normalize_target_lang(target_lang: str) -> str:
         return "hi"
     if normalized in {"bn", "bengali"}:
         return "bn"
+    if normalized in {"pa", "punjabi"}:
+        return "pa"
     return "gu"
 
 def build_glossary_pattern(terms):
@@ -338,7 +358,8 @@ def get_mini_glossary_for_text(
         text: The sentence or batch to be translated (English).
         threshold: Minimum similarity 0–1 (default 0.95). Converted to 0–100 for rapidfuzz.
         max_terms: Maximum number of (en -> target) pairs to include (default 25).
-        target_lang: Target language for glossary values ("gu"/"gujarati", "hi"/"hindi" or "bn"/"bengali").
+        target_lang: Target language for glossary values ("gu"/"gujarati", "hi"/"hindi",
+            "bn"/"bengali" or "pa"/"punjabi").
 
     Returns:
         Formatted string like "Mastitis -> <target term>\\nMilk Production -> ..."
@@ -355,6 +376,10 @@ def get_mini_glossary_for_text(
         target_en_index = BN_EN_INDEX
         target_en_terms = BN_EN_TERMS
         target_value_field = "bn"
+    elif normalized_target == "pa":
+        target_en_index = PA_EN_INDEX
+        target_en_terms = PA_EN_TERMS
+        target_value_field = "pa"
     else:
         target_en_index = EN_INDEX
         target_en_terms = EN_TERMS
