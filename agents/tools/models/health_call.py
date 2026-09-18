@@ -2,7 +2,7 @@ from enum import Enum
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.models.ai_call import AISpecies
+from agents.tools.models.ai_call import AISpecies
 
 
 class HealthCaseType(str, Enum):

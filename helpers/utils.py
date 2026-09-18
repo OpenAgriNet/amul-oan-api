@@ -13,8 +13,8 @@ import simplejson as json
 from jinja2 import Environment, FileSystemLoader, Template
 import pytz
 from helpers.gujarati_numbers import normalize_numbers_for_tts
-from app.models.farmer import FarmerModel
-from app.models.union import UnionName
+from agents.tools.models.farmer import FarmerModel
+from agents.tools.models.union import UnionName
 from app.config import settings
 
 # In-memory prompt template cache (populated at app startup; no disk I/O at request time)

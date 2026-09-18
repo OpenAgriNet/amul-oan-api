@@ -2,10 +2,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from agents.services import beckn_amul
-from agents.tools import ai_call, beckn_network, health_call
-from app.models.ai_call import AISpecies
-from app.models.health_call import HealthCaseType
+from agents.tools.beckn import amul as beckn_amul
+from agents.tools import ai_call, health_call
+from agents.tools.beckn import network as beckn_network
+from agents.tools.models.ai_call import AISpecies
+from agents.tools.models.health_call import HealthCaseType
 
 # create_ai_call rejects identifiers that cannot be real; every real prod
 # technician id is 24 base64 chars ending "==".
@@ -30,8 +31,7 @@ def _ctx():
 
 
 def _callback_mode(monkeypatch, module):
-    monkeypatch.setattr(module.settings, "enable_network", True)
-    monkeypatch.setattr(module.settings, "beckn_callback_transactions_enabled", True)
+    _ = monkeypatch, module
 
 
 @pytest.mark.asyncio
@@ -47,6 +47,7 @@ async def test_ai_confirm_uses_canonical_owned_account_and_discovered_technician
 
     async def technicians(**kwargs):
         assert kwargs["union_code"] == "CANON-U"
+        assert kwargs["force_refresh"] is True
         return [beckn_amul.AITechnicianRecord(userId=TECH_ID, fullName="Technician")]
 
     captured = {}

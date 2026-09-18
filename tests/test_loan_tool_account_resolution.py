@@ -8,7 +8,7 @@ os.environ.setdefault("OPENAI_API_KEY", "test-key")
 
 from agents.deps import FarmerAccount, FarmerContext
 from agents.tools import loan as loan_tool
-from app.models.farmer_transport import FarmerDataEnvelope, FarmerRecord
+from agents.tools.models.farmer_transport import FarmerDataEnvelope, FarmerRecord
 
 
 def _ctx(
@@ -76,7 +76,7 @@ def test_resolve_accounts_fetches_from_layer2_when_needed(monkeypatch):
     monkeypatch.setattr(loan_tool.settings, "loan_check_milk_enabled", True)
     fetch = AsyncMock(return_value=_envelope())
     monkeypatch.setattr(
-        "agents.services.farmer_cache.get_or_fetch_farmer_data",
+        "agents.tools.farmer_cache.get_or_fetch_farmer_data",
         fetch,
     )
     out = asyncio.run(loan_tool._resolve_accounts(_ctx()))
@@ -93,6 +93,6 @@ def test_resolve_accounts_returns_empty_on_layer2_exception(monkeypatch):
     async def boom(_mobile):
         raise RuntimeError("cache read failed")
 
-    monkeypatch.setattr("agents.services.farmer_cache.get_or_fetch_farmer_data", boom)
+    monkeypatch.setattr("agents.tools.farmer_cache.get_or_fetch_farmer_data", boom)
     out = asyncio.run(loan_tool._resolve_accounts(_ctx()))
     assert out == []

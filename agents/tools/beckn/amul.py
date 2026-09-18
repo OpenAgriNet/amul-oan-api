@@ -12,14 +12,21 @@ import json
 from dataclasses import dataclass
 from typing import Any, Iterable, Mapping, Optional
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
-from app.models.animal import AnimalModel
-from app.models.banas_visit import BanasOperatedVisitModel
-from app.models.cvcc import CvccHealthResponseModel
-from app.models.farmer import FarmerModel
-from app.models.milk_collection import FarmerMilkCollectionResponseModel
-from app.services.beckn_operations import (
+from agents.tools.models.animal import AnimalModel
+from agents.tools.models.banas_visit import BanasOperatedVisitModel
+from agents.tools.models.cvcc import CvccHealthResponseModel
+from agents.tools.models.farmer import FarmerModel
+from agents.tools.models.milk_collection import FarmerMilkCollectionResponseModel
+from agents.tools.response_cache import (
+    AI_TECHNICIAN_CACHE_POLICY,
+    ANIMAL_CACHE_POLICY,
+    CVCC_CACHE_POLICY,
+    FARMER_CACHE_POLICY,
+    get_or_load,
+)
+from agents.tools.beckn.operations import (
     BecknActionResult,
     OperationState,
     get_beckn_operation_client,
@@ -46,11 +53,43 @@ class AuthenticatedFarmerAccount:
 class AITechnicianRecord(BaseModel):
     """Normalized technician item returned by booking on_search."""
 
-    model_config = ConfigDict(extra="ignore")
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
 
     userId: Optional[str] = None
     fullName: Optional[str] = None
+    gujaratiFullName: Optional[str] = Field(
+        None,
+        validation_alias=AliasChoices(
+            "gujratiFullName",
+            "gujaratiFullName",
+            "aitFullNamesGuj",
+        ),
+    )
     mobileNumber: Optional[str] = None
+
+    @property
+    def display_full_name(self) -> Optional[str]:
+        from agents.tools.models.local_names import prefer_local_name
+
+        return prefer_local_name(self.gujaratiFullName, self.fullName)
+
+
+def _dump_model_list(values: Iterable[BaseModel]) -> list[dict[str, Any]]:
+    return [value.model_dump(mode="json") for value in values]
+
+
+def _load_model_list(value: Any, model: type[BaseModel]) -> list[Any]:
+    if not isinstance(value, list):
+        raise ValueError("cached model collection must be a list")
+    return [model.model_validate(item, by_name=True) for item in value]
+
+
+def _dump_optional_model(value: Optional[BaseModel]) -> Optional[dict[str, Any]]:
+    return value.model_dump(mode="json") if value is not None else None
+
+
+def _load_optional_model(value: Any, model: type[BaseModel]) -> Any:
+    return None if value is None else model.model_validate(value, by_name=True)
 
 
 def _record(value: Any) -> dict[str, Any]:
@@ -131,6 +170,10 @@ def _farmer_models_from_payload(
     person = _record(customer.get("person"))
     tags = person.get("tags")
     account_groups = _groups(tags, "farmer_accounts")
+    if not account_groups:
+        raise BecknProviderUnavailable(
+            "farmer profile callback did not contain farmer_accounts"
+        )
     global_tags = [
         value
         for group in _groups(tags, "animal_tags")
@@ -142,8 +185,15 @@ def _farmer_models_from_payload(
         "union_name": "unionName",
         "union_code": "unionCode",
         "society_name": "societyName",
+        "society_gujarati_name": "societyGujaratiName",
+        "society_full_names_guj": "societyGujaratiName",
+        "society_name_local": "societyGujaratiName",
         "society_code": "societyCode",
         "farmer_name": "farmerName",
+        "farmer_gujarati_name": "farmerGujaratiName",
+        "farmer_full_names_guj": "farmerGujaratiName",
+        "farmer_local_name": "farmerGujaratiName",
+        "owner_full_name_in_local": "farmerGujaratiName",
         "farmer_code": "farmerCode",
         "average_milk_cow": "avgMilkPerDayCow",
         "average_milk_buffalo": "avgMilkPerDayBuff",
@@ -178,7 +228,7 @@ def _farmer_models_from_payload(
     return models
 
 
-async def fetch_authenticated_farmers(
+async def _fetch_authenticated_farmers_live(
     mobile: str,
     *,
     session_id: Optional[str] = None,
@@ -198,6 +248,29 @@ async def fetch_authenticated_farmers(
     return _farmer_models_from_payload(primary, authenticated_mobile=mobile)
 
 
+async def fetch_authenticated_farmers(
+    mobile: str,
+    *,
+    session_id: Optional[str] = None,
+    tool_call_id: Optional[str] = None,
+    force_refresh: bool = False,
+) -> list[FarmerModel]:
+    """Fetch PashuGPT accounts, reusing a recent successful Beckn response."""
+    return await get_or_load(
+        policy=FARMER_CACHE_POLICY,
+        identity={"mobile": mobile},
+        loader=lambda: _fetch_authenticated_farmers_live(
+            mobile,
+            session_id=session_id,
+            tool_call_id=tool_call_id,
+        ),
+        encode=_dump_model_list,
+        decode=lambda value: _load_model_list(value, FarmerModel),
+        is_negative=lambda value: not value,
+        force_refresh=force_refresh,
+    )
+
+
 def authenticated_accounts(farmers: Iterable[FarmerModel]) -> list[AuthenticatedFarmerAccount]:
     seen: set[tuple[str, str, str]] = set()
     accounts: list[AuthenticatedFarmerAccount] = []
@@ -213,8 +286,8 @@ def authenticated_accounts(farmers: Iterable[FarmerModel]) -> list[Authenticated
         accounts.append(
             AuthenticatedFarmerAccount(
                 *key,
-                farmer_name=farmer.farmer_name,
-                society_name=farmer.society_name,
+                farmer_name=farmer.display_farmer_name,
+                society_name=farmer.display_society_name,
             )
         )
     return accounts
@@ -241,6 +314,7 @@ async def resolve_authenticated_account(
         mobile,
         session_id=session_id,
         tool_call_id=tool_call_id,
+        force_refresh=True,
     )
     for account in authenticated_accounts(farmers):
         if (account.union_code, account.society_code, account.farmer_code) == requested:
@@ -288,7 +362,7 @@ def _animal_model(tags: list[dict[str, Any]]) -> Optional[AnimalModel]:
     return AnimalModel.model_validate(mapped)
 
 
-async def fetch_animal_profile(
+async def _fetch_animal_profile_live(
     tag_id: str,
     *,
     union_code: Optional[str],
@@ -308,7 +382,32 @@ async def fetch_animal_profile(
     return _animal_model(_animal_groups(primary))
 
 
-async def fetch_cvcc_health(
+async def fetch_animal_profile(
+    tag_id: str,
+    *,
+    union_code: Optional[str],
+    session_id: Optional[str] = None,
+    tool_call_id: Optional[str] = None,
+    force_refresh: bool = False,
+) -> Optional[AnimalModel]:
+    """Fetch an animal profile, reusing a recent successful Beckn response."""
+    return await get_or_load(
+        policy=ANIMAL_CACHE_POLICY,
+        identity={"tag_id": tag_id, "union_code": union_code},
+        loader=lambda: _fetch_animal_profile_live(
+            tag_id,
+            union_code=union_code,
+            session_id=session_id,
+            tool_call_id=tool_call_id,
+        ),
+        encode=_dump_optional_model,
+        decode=lambda value: _load_optional_model(value, AnimalModel),
+        is_negative=lambda value: value is None,
+        force_refresh=force_refresh,
+    )
+
+
+async def _fetch_cvcc_health_live(
     tag_id: str,
     *,
     union_code: str,
@@ -391,6 +490,31 @@ async def fetch_cvcc_health(
     })
 
 
+async def fetch_cvcc_health(
+    tag_id: str,
+    *,
+    union_code: str,
+    session_id: Optional[str] = None,
+    tool_call_id: Optional[str] = None,
+    force_refresh: bool = False,
+) -> Optional[CvccHealthResponseModel]:
+    """Fetch CVCC history, reusing a short-lived successful response."""
+    return await get_or_load(
+        policy=CVCC_CACHE_POLICY,
+        identity={"tag_id": tag_id, "union_code": union_code},
+        loader=lambda: _fetch_cvcc_health_live(
+            tag_id,
+            union_code=union_code,
+            session_id=session_id,
+            tool_call_id=tool_call_id,
+        ),
+        encode=_dump_optional_model,
+        decode=lambda value: _load_optional_model(value, CvccHealthResponseModel),
+        is_negative=lambda value: value is None,
+        force_refresh=force_refresh,
+    )
+
+
 async def fetch_banas_visits(
     tag_id: str,
     *,
@@ -453,7 +577,7 @@ async def fetch_banas_visits(
     return visits
 
 
-async def search_ai_technicians(
+async def _search_ai_technicians_live(
     *,
     union_code: str,
     society_code: str,
@@ -484,13 +608,46 @@ async def search_ai_technicians(
             name = _record(item.get("descriptor")).get("name")
             if isinstance(name, str) and name.endswith(" (AI technician)"):
                 name = name.removesuffix(" (AI technician)")
+            gujarati_name = (
+                values.get("gujrati_full_name")
+                or values.get("gujarati_full_name")
+                or values.get("ait_full_names_guj")
+                or values.get("gujratiFullName")
+                or values.get("gujaratiFullName")
+            )
             if technician_id:
                 technicians.append(AITechnicianRecord(
                     userId=technician_id,
                     fullName=str(name or ""),
+                    gujaratiFullName=gujarati_name,
                     mobileNumber=values.get("mobile"),
                 ))
     return technicians
+
+
+async def search_ai_technicians(
+    *,
+    union_code: str,
+    society_code: str,
+    session_id: Optional[str] = None,
+    tool_call_id: Optional[str] = None,
+    force_refresh: bool = False,
+) -> list[AITechnicianRecord]:
+    """Discover AI technicians, reusing a recent successful Beckn response."""
+    return await get_or_load(
+        policy=AI_TECHNICIAN_CACHE_POLICY,
+        identity={"union_code": union_code, "society_code": society_code},
+        loader=lambda: _search_ai_technicians_live(
+            union_code=union_code,
+            society_code=society_code,
+            session_id=session_id,
+            tool_call_id=tool_call_id,
+        ),
+        encode=_dump_model_list,
+        decode=lambda value: _load_model_list(value, AITechnicianRecord),
+        is_negative=lambda value: not value,
+        force_refresh=force_refresh,
+    )
 
 
 async def fetch_milk_collection(

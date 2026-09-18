@@ -8,14 +8,15 @@ from pydantic_ai import RunContext
 from pydantic_ai.tools import ToolDefinition
 
 from agents.deps import FarmerContext
-from agents.services.beckn_amul import authenticated_accounts
+from agents.tools.beckn.amul import authenticated_accounts
 from agents.tools.farmer import get_farmer_data_by_mobile
-from agents.tools.farmer_animal_backends import get_farmer_bonus_amount_api
+from agents.tools.bonus_backend import get_farmer_bonus_amount_api
 from app.config import get_config_value
-from app.models.bonus import (
+from agents.tools.models.bonus import (
     FarmerBonusAmountRecordModel,
     FarmerBonusAmountRequestModel,
 )
+from agents.tools.models.local_names import prefer_local_name
 from helpers.utils import get_logger
 
 logger = get_logger(__name__)
@@ -95,8 +96,10 @@ def _format_bonus_markdown(records: list[FarmerBonusAmountRecordModel]) -> str:
     rows = [
         [
             f"{_format_period_date(record.from_date)} - {_format_period_date(record.to_date)}",
-            record.society_name or record.society_code,
-            record.farmer_name or record.farmer_code,
+            prefer_local_name(record.society_name_local, record.society_name)
+            or record.society_code,
+            prefer_local_name(record.farmer_local_name, record.farmer_name)
+            or record.farmer_code,
             _format_number(record.bonus_amount, 2),
         ]
         for record in records

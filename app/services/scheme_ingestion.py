@@ -19,7 +19,7 @@ from urllib.parse import urljoin, urlsplit
 import httpx
 
 from app.config import settings
-from app.models.union import UnionName
+from agents.tools.models.union import UnionName
 from helpers.utils import get_logger
 
 logger = get_logger(__name__)
