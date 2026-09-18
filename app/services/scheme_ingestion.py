@@ -45,6 +45,50 @@ SCHEME_OCR_RETRY_MAX_DELAY_SECONDS = max(
     float(getattr(settings, "scheme_ocr_retry_max_delay_seconds", 2.0)),
 )
 _RETRYABLE_OCR_STATUS_CODES = {408, 409, 425, 429, 500, 502, 503, 504}
+CONTENT_FILTER_STATUS_FILTERED = "filtered"
+CONTENT_FILTER_STATUS_RAW_FALLBACK = "raw_fallback"
+CONTENT_FILTER_STATUS_SKIPPED_DISABLED = "skipped_disabled"
+CONTENT_FILTER_STATUS_SKIPPED_NO_ENDPOINT = "skipped_no_endpoint"
+CONTENT_FILTER_STATUS_SKIPPED_EMPTY = "skipped_empty"
+CONTENT_FILTER_STATUS_UNKNOWN = "unknown"
+SCHEME_CONTENT_FILTER_PROMPT = (
+    "You filter OCR text from dairy/agriculture union scheme documents for farmer assistants.\n"
+    "Keep farmer-usable facts. Prefer keeping important detail unsummarized; cut only noise.\n"
+    "\n"
+    "MUST RETAIN (copy wording/numbers faithfully; do not invent):\n"
+    "- Benefits, subsidies/incentives, fees, prices, prize/award amounts, and rate tables\n"
+    "- Eligibility rules, including conditions, exceptions, and who is excluded\n"
+    "- Conditional / consequence rules (what happens if a norm is missed, violated, or "
+    "falsely applied; recoveries; penalties; disqualifications)\n"
+    "- Payment and fulfillment mechanics (who buys/supplies, farmer share, milk-bill or "
+    "other deductions, reimbursement vs upfront purchase)\n"
+    "- Deadlines, validity windows, and effective dates — keep each date tied to the "
+    "rule it belongs to; do not merge dates across schemes\n"
+    "- Application steps, required documents (keep per-scheme lists separate), contacts, "
+    "and other actionable terms\n"
+    "- Alternate process paths/variants when the source distinguishes them (e.g., different "
+    "ordering or fulfillment channels for specific sub-programs/centres)\n"
+    "- Technical requirements that affect eligibility or subsidy (sizes, limits, caps)\n"
+    "\n"
+    "MUST DROP:\n"
+    "- Decorative headers/footers, page numbers, logos, inaugurations, letterheads, CC lists\n"
+    "- Repeated boilerplate, empty/noisy OCR artifacts, and form UI chrome without rules\n"
+    "\n"
+    "RULES:\n"
+    "- Prefer the original language of the source text\n"
+    "- Do not broaden, invert, or rephrase deadlines/conditions\n"
+    "- Keep numeric/date tokens exact; do not alter amounts/percentages/dates\n"
+    "- Do not merge separate schemes or programmes into one\n"
+    "- If unsure whether a line is useful, keep it\n"
+    "- Return plain text only (no markdown fences, no commentary)\n"
+    "- If nothing useful remains, return an empty string\n"
+    "\n"
+    "Scheme title: {scheme_title}\n"
+    "Source: {source_name}\n"
+    "\n"
+    "OCR text:\n"
+    "{ocr_text}"
+)
 # Exact text of datalab-to/chandra PROMPT_MAPPING["ocr_layout"] (chandra/prompts.py).
 SCHEME_OCR_LAYOUT_PROMPT = (
     "OCR this image to HTML, arranged as layout blocks.  Each layout block should be a div "
@@ -211,6 +255,7 @@ SUPPORTED_UNION_SOURCE_MAP = {
 _WHITESPACE_RE = re.compile(r"\s+")
 _TAG_RE = re.compile(r"<[^>]+>")
 _SCHEME_NO_PREFIX_RE = re.compile(r"^\s*Scheme\s*No\.?\s*\d+\s*:\s*", flags=re.IGNORECASE)
+_NUMERIC_DATE_TOKEN_RE = re.compile(r"\d[\d,./:%-]*")
 
 
 def _utcnow_iso() -> str:
@@ -225,6 +270,28 @@ def _normalize_multiline_text(value: str) -> str:
     lines = [_normalize_text(line) for line in (value or "").splitlines()]
     lines = [line for line in lines if line]
     return "\n".join(lines).strip()
+
+
+def _normalize_filtered_scheme_text(value: str) -> str:
+    """Normalize filtered scheme text while preserving paragraph separators.
+
+    Unlike ``_normalize_multiline_text``, blank lines are kept (collapsed to a
+    single separator) so chunk/page structure survives Redis storage and later
+    re-chunking.
+    """
+    cleaned_lines: list[str] = []
+    blank_pending = False
+    for raw_line in (value or "").splitlines():
+        line = _normalize_text(raw_line)
+        if not line:
+            if cleaned_lines:
+                blank_pending = True
+            continue
+        if blank_pending and cleaned_lines:
+            cleaned_lines.append("")
+            blank_pending = False
+        cleaned_lines.append(line)
+    return "\n".join(cleaned_lines).strip()
 
 
 def _strip_html(value: str) -> str:
@@ -1437,6 +1504,456 @@ async def extract_text_from_pdf_bytes(
     return combined_text
 
 
+def _scheme_content_filter_endpoint() -> str:
+    """Prefer dedicated filter endpoint; else reuse OSS Gemma inference base URL."""
+    configured = (
+        getattr(settings, "scheme_content_filter_endpoint_url", None)
+        or settings.oss_inference_endpoint_url
+        or ""
+    )
+    return _normalize_ocr_endpoint(str(configured))
+
+
+def _scheme_content_filter_enabled() -> bool:
+    return bool(getattr(settings, "scheme_content_filter_enabled", True))
+
+
+def _log_scheme_content_filter_posture(source_name: str) -> None:
+    """Emit a one-line rollout posture summary at the start of a PDF ingest batch."""
+    enabled = _scheme_content_filter_enabled()
+    endpoint = _scheme_content_filter_endpoint() if enabled else ""
+    if enabled and not endpoint:
+        logger.warning(
+            "Scheme content filter posture source=%s enabled=true endpoint=(none); "
+            "will keep raw OCR until SCHEME_CONTENT_FILTER_ENDPOINT_URL or "
+            "OSS_INFERENCE_ENDPOINT_URL is set",
+            source_name,
+        )
+        return
+    logger.info(
+        "Scheme content filter posture source=%s enabled=%s endpoint=%s",
+        source_name,
+        enabled,
+        endpoint or "(n/a)",
+    )
+
+
+def _split_ocr_paragraphs(text: str) -> list[str]:
+    paragraphs = [part.strip() for part in re.split(r"\n\s*\n+", text or "") if part and part.strip()]
+    if paragraphs:
+        return paragraphs
+    stripped = (text or "").strip()
+    return [stripped] if stripped else []
+
+
+def _split_oversized_text(text: str, *, max_chars: int) -> list[str]:
+    """Split oversized text on line boundaries; hard-slice only when a single line is too long."""
+    limit = max(1, int(max_chars))
+    if not text:
+        return []
+    if len(text) <= limit:
+        return [text]
+
+    lines = text.splitlines()
+    if not lines:
+        return [text[start : start + limit] for start in range(0, len(text), limit)]
+
+    pieces: list[str] = []
+    current: list[str] = []
+    current_len = 0
+
+    def _flush() -> None:
+        nonlocal current, current_len
+        if current:
+            pieces.append("\n".join(current))
+            current = []
+            current_len = 0
+
+    for line in lines:
+        if len(line) > limit:
+            _flush()
+            for start in range(0, len(line), limit):
+                pieces.append(line[start : start + limit])
+            continue
+        separator = 1 if current else 0
+        if current and current_len + separator + len(line) > limit:
+            _flush()
+            current = [line]
+            current_len = len(line)
+            continue
+        current.append(line)
+        current_len += separator + len(line)
+    _flush()
+    return pieces
+
+
+def _chunk_ocr_paragraphs(paragraphs: list[str], *, max_chars: int) -> list[str]:
+    """Pack paragraphs into chunks under ``max_chars`` (paragraph-aware, not token-exact)."""
+    limit = max(1, int(max_chars))
+    chunks: list[str] = []
+    current: list[str] = []
+    current_len = 0
+    for paragraph in paragraphs:
+        if len(paragraph) > limit:
+            if current:
+                chunks.append("\n\n".join(current))
+                current = []
+                current_len = 0
+            chunks.extend(_split_oversized_text(paragraph, max_chars=limit))
+            continue
+        separator = 2 if current else 0
+        if current and current_len + separator + len(paragraph) > limit:
+            chunks.append("\n\n".join(current))
+            current = [paragraph]
+            current_len = len(paragraph)
+            continue
+        current.append(paragraph)
+        current_len += separator + len(paragraph)
+    if current:
+        chunks.append("\n\n".join(current))
+    return chunks
+
+
+def _scheme_content_filter_payload(
+    *,
+    scheme_title: str,
+    source_name: str,
+    ocr_text: str,
+) -> dict[str, Any]:
+    prompt = SCHEME_CONTENT_FILTER_PROMPT.format(
+        scheme_title=scheme_title or "(untitled)",
+        source_name=source_name or "(unknown)",
+        ocr_text=ocr_text,
+    )
+    model_name = (
+        getattr(settings, "scheme_content_filter_model", None)
+        or settings.oss_llm_model_name
+        or "gemma-4-31b-it"
+    )
+    max_tokens = max(1, int(getattr(settings, "scheme_content_filter_max_output_tokens", 4096)))
+    return {
+        "model": model_name,
+        "temperature": 0,
+        "top_p": 0.1,
+        "max_tokens": max_tokens,
+        "messages": [{"role": "user", "content": prompt}],
+    }
+
+
+def _message_text_from_chat_completion(payload: dict[str, Any]) -> str | None:
+    choices = payload.get("choices")
+    if not isinstance(choices, list) or not choices:
+        return None
+    message = choices[0].get("message") if isinstance(choices[0], dict) else None
+    if not isinstance(message, dict):
+        return None
+    content = message.get("content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if isinstance(item, dict) and item.get("type") == "text" and isinstance(item.get("text"), str):
+                parts.append(item["text"])
+            elif isinstance(item, str):
+                parts.append(item)
+        return "".join(parts) if parts else None
+    return None
+
+
+def _ungrounded_numeric_or_date_tokens(source_text: str, filtered_text: str) -> list[str]:
+    """Return numeric/date-like tokens present in filtered text but absent in source."""
+
+    def _tokens(value: str) -> set[str]:
+        raw_tokens = _NUMERIC_DATE_TOKEN_RE.findall(value or "")
+        cleaned: set[str] = set()
+        for token in raw_tokens:
+            normalized = token.strip(".,;:()[]{}<>\"'`-")
+            if normalized and any(ch.isdigit() for ch in normalized):
+                cleaned.add(normalized)
+        return cleaned
+
+    source_tokens = _tokens(source_text)
+    filtered_tokens = _tokens(filtered_text)
+    return sorted(filtered_tokens - source_tokens)
+
+
+async def _post_scheme_content_filter_chunk_once(
+    client: httpx.AsyncClient,
+    endpoint: str,
+    *,
+    scheme_title: str,
+    source_name: str,
+    ocr_text: str,
+    chunk_index: int,
+) -> dict[str, Any]:
+    """Single filter attempt. Returns ``{text, error, retryable}`` like OCR page posts."""
+    timeout_seconds = float(getattr(settings, "scheme_content_filter_timeout_seconds", 60.0))
+    headers: dict[str, str] = {}
+    api_key = settings.oss_inference_api_key
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    started = time.perf_counter()
+    try:
+        response = await client.post(
+            f"{endpoint}/v1/chat/completions",
+            json=_scheme_content_filter_payload(
+                scheme_title=scheme_title,
+                source_name=source_name,
+                ocr_text=ocr_text,
+            ),
+            headers=headers or None,
+            timeout=timeout_seconds,
+        )
+        response.raise_for_status()
+        parsed = response.json()
+        text = _message_text_from_chat_completion(parsed)
+        finish_reason = None
+        choices = parsed.get("choices") if isinstance(parsed, dict) else None
+        if isinstance(choices, list) and choices and isinstance(choices[0], dict):
+            finish_reason = choices[0].get("finish_reason")
+        logger.info(
+            "Scheme content filter chunk completed source=%s title=%s chunk_index=%s "
+            "elapsed_seconds=%.2f output_length=%s finish_reason=%s",
+            source_name,
+            scheme_title,
+            chunk_index,
+            time.perf_counter() - started,
+            len(text or ""),
+            finish_reason,
+        )
+        if text is None:
+            return {"text": None, "error": True, "retryable": True}
+        if finish_reason == "length":
+            logger.warning(
+                "Scheme content filter chunk finished with length truncation source=%s title=%s "
+                "chunk_index=%s output_length=%s; falling back to raw OCR",
+                source_name,
+                scheme_title,
+                chunk_index,
+                len(text),
+            )
+            # Truncation is deterministic for this chunk/budget; retrying will not help.
+            return {"text": None, "error": True, "retryable": False}
+        return {"text": _normalize_filtered_scheme_text(text), "error": False, "retryable": False}
+    except httpx.HTTPStatusError as exc:
+        status_code = exc.response.status_code
+        retryable = status_code in _RETRYABLE_OCR_STATUS_CODES
+        logger.warning(
+            "Scheme content filter chunk returned non-success status source=%s title=%s "
+            "chunk_index=%s status_code=%s retryable=%s elapsed_seconds=%.2f",
+            source_name,
+            scheme_title,
+            chunk_index,
+            status_code,
+            retryable,
+            time.perf_counter() - started,
+        )
+        return {"text": None, "error": True, "retryable": retryable}
+    except httpx.RequestError as exc:
+        logger.warning(
+            "Scheme content filter chunk request failed source=%s title=%s chunk_index=%s "
+            "error_type=%s error_repr=%r elapsed_seconds=%.2f",
+            source_name,
+            scheme_title,
+            chunk_index,
+            type(exc).__name__,
+            exc,
+            time.perf_counter() - started,
+        )
+        return {"text": None, "error": True, "retryable": True}
+    except Exception as exc:
+        logger.warning(
+            "Scheme content filter chunk failed source=%s title=%s chunk_index=%s "
+            "error_type=%s error_repr=%r elapsed_seconds=%.2f",
+            source_name,
+            scheme_title,
+            chunk_index,
+            type(exc).__name__,
+            exc,
+            time.perf_counter() - started,
+        )
+        return {"text": None, "error": True, "retryable": False}
+
+
+async def _post_scheme_content_filter_chunk(
+    client: httpx.AsyncClient,
+    endpoint: str,
+    *,
+    scheme_title: str,
+    source_name: str,
+    ocr_text: str,
+    chunk_index: int,
+) -> str | None:
+    """Filter one OCR chunk with OCR-style retries for transient failures."""
+    attempts = SCHEME_OCR_PAGE_MAX_ATTEMPTS
+    last_result: dict[str, Any] | None = None
+    for attempt in range(1, attempts + 1):
+        result = await _post_scheme_content_filter_chunk_once(
+            client,
+            endpoint,
+            scheme_title=scheme_title,
+            source_name=source_name,
+            ocr_text=ocr_text,
+            chunk_index=chunk_index,
+        )
+        last_result = result
+        if isinstance(result, dict) and not bool(result.get("error")):
+            text = result.get("text")
+            return text if isinstance(text, str) else None
+        retryable = isinstance(result, dict) and bool(result.get("retryable", True))
+        if not retryable or attempt >= attempts:
+            break
+        delay_seconds = min(
+            SCHEME_OCR_RETRY_MAX_DELAY_SECONDS,
+            SCHEME_OCR_RETRY_BASE_DELAY_SECONDS * (2 ** (attempt - 1)),
+        )
+        logger.warning(
+            "Retrying scheme content filter chunk after retryable failure source=%s title=%s "
+            "chunk_index=%s attempt=%s/%s backoff_seconds=%.2f",
+            source_name,
+            scheme_title,
+            chunk_index,
+            attempt + 1,
+            attempts,
+            delay_seconds,
+        )
+        await asyncio.sleep(delay_seconds)
+    return None
+
+
+async def filter_scheme_ocr_content(
+    client: httpx.AsyncClient,
+    raw_ocr_text: str,
+    *,
+    scheme_title: str,
+    source_name: str,
+) -> dict[str, Any]:
+    """Select agri-relevant scheme details from OCR text via Gemma.
+
+    Returns a dict with ``content``, ``content_filter_status``, and optional
+    ``content_filter_reason``. On disable, missing endpoint, request failure, or
+    empty/invalid model output, ``content`` is the raw OCR so Redis never loses
+    scheme text.
+    """
+    raw = (raw_ocr_text or "").strip()
+    if not raw:
+        return {
+            "content": raw_ocr_text or "",
+            "content_filter_status": CONTENT_FILTER_STATUS_SKIPPED_EMPTY,
+            "content_filter_reason": None,
+        }
+
+    enabled = _scheme_content_filter_enabled()
+    if not enabled:
+        logger.debug(
+            "Scheme content filter skipped (disabled) source=%s title=%s content_length=%s",
+            source_name,
+            scheme_title,
+            len(raw),
+        )
+        return {
+            "content": raw_ocr_text,
+            "content_filter_status": CONTENT_FILTER_STATUS_SKIPPED_DISABLED,
+            "content_filter_reason": "disabled",
+        }
+
+    endpoint = _scheme_content_filter_endpoint()
+    if not endpoint:
+        logger.info(
+            "Scheme content filter skipped (no endpoint) source=%s title=%s; keeping raw OCR",
+            source_name,
+            scheme_title,
+        )
+        return {
+            "content": raw_ocr_text,
+            "content_filter_status": CONTENT_FILTER_STATUS_SKIPPED_NO_ENDPOINT,
+            "content_filter_reason": "missing_endpoint",
+        }
+
+    max_chunk_chars = max(1, int(getattr(settings, "scheme_content_filter_max_chunk_chars", 12_000)))
+    paragraphs = _split_ocr_paragraphs(raw)
+    chunks = _chunk_ocr_paragraphs(paragraphs, max_chars=max_chunk_chars)
+    logger.info(
+        "Scheme content filter starting source=%s title=%s paragraph_count=%s "
+        "chunk_count=%s content_length=%s endpoint=%s",
+        source_name,
+        scheme_title,
+        len(paragraphs),
+        len(chunks),
+        len(raw),
+        endpoint,
+    )
+
+    filtered_parts: list[str] = []
+    for index, chunk in enumerate(chunks):
+        filtered = await _post_scheme_content_filter_chunk(
+            client,
+            endpoint,
+            scheme_title=scheme_title,
+            source_name=source_name,
+            ocr_text=chunk,
+            chunk_index=index,
+        )
+        if filtered is None:
+            logger.warning(
+                "Scheme content filter falling back to raw OCR source=%s title=%s reason=chunk_failure chunk_index=%s",
+                source_name,
+                scheme_title,
+                index,
+            )
+            return {
+                "content": raw_ocr_text,
+                "content_filter_status": CONTENT_FILTER_STATUS_RAW_FALLBACK,
+                "content_filter_reason": "chunk_failure",
+            }
+        if filtered:
+            ungrounded_tokens = _ungrounded_numeric_or_date_tokens(chunk, filtered)
+            if ungrounded_tokens:
+                logger.warning(
+                    "Scheme content filter falling back to raw OCR source=%s title=%s "
+                    "reason=chunk_numeric_token_mismatch chunk_index=%s missing_token_count=%s "
+                    "missing_tokens=%s",
+                    source_name,
+                    scheme_title,
+                    index,
+                    len(ungrounded_tokens),
+                    ",".join(ungrounded_tokens[:5]),
+                )
+                return {
+                    "content": raw_ocr_text,
+                    "content_filter_status": CONTENT_FILTER_STATUS_RAW_FALLBACK,
+                    "content_filter_reason": "chunk_numeric_token_mismatch",
+                }
+            filtered_parts.append(filtered)
+
+    filtered_text = _normalize_filtered_scheme_text("\n\n".join(filtered_parts))
+    if not filtered_text:
+        logger.warning(
+            "Scheme content filter falling back to raw OCR source=%s title=%s reason=empty_output",
+            source_name,
+            scheme_title,
+        )
+        return {
+            "content": raw_ocr_text,
+            "content_filter_status": CONTENT_FILTER_STATUS_RAW_FALLBACK,
+            "content_filter_reason": "empty_output",
+        }
+
+    logger.info(
+        "Scheme content filter completed source=%s title=%s raw_length=%s filtered_length=%s",
+        source_name,
+        scheme_title,
+        len(raw),
+        len(filtered_text),
+    )
+    return {
+        "content": filtered_text,
+        "content_filter_status": CONTENT_FILTER_STATUS_FILTERED,
+        "content_filter_reason": None,
+    }
+
+
 async def _build_pdf_record(
     client: httpx.AsyncClient,
     source: SchemeSource,
@@ -1481,6 +1998,17 @@ async def _build_pdf_record(
                     "ocr_complete": True,
                     "ocr_total_pages": prior.get("ocr_total_pages"),
                     "ocr_failed_pages": 0,
+                    "content_filter_status": (
+                        prior.get("content_filter_status")
+                        if isinstance(prior.get("content_filter_status"), str)
+                        and prior.get("content_filter_status")
+                        else CONTENT_FILTER_STATUS_UNKNOWN
+                    ),
+                    "content_filter_reason": (
+                        prior.get("content_filter_reason")
+                        if isinstance(prior.get("content_filter_reason"), str)
+                        else None
+                    ),
                     "source_name": source.source_name,
                     "last_refreshed_at": last_refreshed_at,
                 }
@@ -1508,6 +2036,74 @@ async def _build_pdf_record(
             )
         ocr_stats: dict[str, int] = {}
         content = await extract_text_from_pdf_bytes(client, pdf_bytes, ocr_stats=ocr_stats)
+        if not content:
+            logger.warning(
+                "Skipping scheme PDF due to empty extracted content source=%s title=%s url=%s",
+                source.source_name,
+                scheme_title,
+                scheme_url,
+            )
+            return None
+
+        # Post-OCR relevance selection: Gemma keeps agri-useful text; on failure, raw OCR.
+        # Kept inside this guard so a filter exception skips only this PDF, not the whole source.
+        filter_result = await filter_scheme_ocr_content(
+            client,
+            content,
+            scheme_title=scheme_title,
+            source_name=source.source_name,
+        )
+        content = str(filter_result.get("content") or "")
+        content_filter_status = (
+            filter_result.get("content_filter_status")
+            if isinstance(filter_result.get("content_filter_status"), str)
+            and filter_result.get("content_filter_status")
+            else CONTENT_FILTER_STATUS_UNKNOWN
+        )
+        content_filter_reason = (
+            filter_result.get("content_filter_reason")
+            if isinstance(filter_result.get("content_filter_reason"), str)
+            else None
+        )
+        if not content:
+            logger.warning(
+                "Skipping scheme PDF due to empty content after filter source=%s title=%s url=%s",
+                source.source_name,
+                scheme_title,
+                scheme_url,
+            )
+            return None
+
+        ocr_total_pages = max(0, int(ocr_stats.get("total_pages", 0)))
+        ocr_failed_pages = max(0, int(ocr_stats.get("failed_pages", ocr_total_pages)))
+        ocr_complete = ocr_total_pages > 0 and ocr_failed_pages == 0
+
+        logger.info(
+            "Built PDF scheme record source=%s title=%s content_length=%s content_hash=%s "
+            "content_filter_status=%s content_filter_reason=%s",
+            source.source_name,
+            scheme_title,
+            len(content),
+            content_hash,
+            content_filter_status,
+            content_filter_reason,
+        )
+        return {
+            "union_name": source.union_name,
+            "source_url": source.source_url,
+            "scheme_title": scheme_title,
+            "scheme_url": scheme_url,
+            "content": content,
+            "content_type": "pdf",
+            "content_hash": content_hash,
+            "ocr_complete": ocr_complete,
+            "ocr_total_pages": ocr_total_pages,
+            "ocr_failed_pages": ocr_failed_pages,
+            "content_filter_status": content_filter_status,
+            "content_filter_reason": content_filter_reason,
+            "source_name": source.source_name,
+            "last_refreshed_at": last_refreshed_at,
+        }
     except SchemeDependencyError:
         raise
     except SchemeFetchError as exc:
@@ -1519,35 +2115,6 @@ async def _build_pdf_record(
     except Exception:
         logger.exception("Unexpected error while building scheme PDF record source=%s title=%s url=%s", source.source_name, scheme_title, scheme_url)
         return None
-    if not content:
-        logger.warning("Skipping scheme PDF due to empty extracted content source=%s title=%s url=%s", source.source_name, scheme_title, scheme_url)
-        return None
-
-    ocr_total_pages = max(0, int(ocr_stats.get("total_pages", 0)))
-    ocr_failed_pages = max(0, int(ocr_stats.get("failed_pages", ocr_total_pages)))
-    ocr_complete = ocr_total_pages > 0 and ocr_failed_pages == 0
-
-    logger.info(
-        "Built PDF scheme record source=%s title=%s content_length=%s content_hash=%s",
-        source.source_name,
-        scheme_title,
-        len(content),
-        content_hash,
-    )
-    return {
-        "union_name": source.union_name,
-        "source_url": source.source_url,
-        "scheme_title": scheme_title,
-        "scheme_url": scheme_url,
-        "content": content,
-        "content_type": "pdf",
-        "content_hash": content_hash,
-        "ocr_complete": ocr_complete,
-        "ocr_total_pages": ocr_total_pages,
-        "ocr_failed_pages": ocr_failed_pages,
-        "source_name": source.source_name,
-        "last_refreshed_at": last_refreshed_at,
-    }
 
 
 # Keep backward-compatible alias used by tests.
@@ -1561,6 +2128,7 @@ async def _ingest_banas_source(
     redis_client=None,
 ) -> list[dict[str, Any]]:
     logger.info("Starting Banas scheme ingestion source=%s url=%s", source.cache_key, source.source_url)
+    _log_scheme_content_filter_posture(source.source_name)
     documents = await fetch_json(client, source.source_url)
     link_records = parse_banas_scheme_links(documents)
     if not link_records:
@@ -1607,6 +2175,7 @@ async def _ingest_pdf_source(
     redis_client=None,
 ) -> list[dict[str, Any]]:
     """Generic PDF-based ingestion shared by Sumul, Sursagar, and any future PDF source."""
+    _log_scheme_content_filter_posture(source.source_name)
     if not link_records:
         raise SchemeParseError(f"no {source.source_name} scheme links parsed")
     last_refreshed_at = _utcnow_iso()

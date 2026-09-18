@@ -685,7 +685,7 @@ async def stream_chat_messages(
             # Strip prior-turn tool calls + their search_documents results from the
             # replayed history. The agent re-searches fresh every turn, so the only
             # effect of keeping them was dragging old RAG chunks forward and bloating
-            # prefill (the gemma 10k history budget was mostly stale doc text). The
+            # prefill (the gemma history budget was mostly stale doc text). The
             # current turn's search is unaffected — it runs live inside the agent
             # loop, not via message_history. Suggestions already runs this way.
             trimmed_history = trim_history(

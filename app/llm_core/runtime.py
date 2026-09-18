@@ -129,7 +129,7 @@ def normalize_config(pipeline: PipelineConfig) -> PipelineConfig:
     history_override = _positive_int_env("CHAT_HISTORY_MAX_TOKENS", 0)
     history_default = history_override or 80_000
     gemma_default = history_override or _positive_int_env(
-        "CHAT_HISTORY_MAX_TOKENS_VLLM_GEMMA", 10_000
+        "CHAT_HISTORY_MAX_TOKENS_VLLM_GEMMA", 64_000
     )
     profiles = [
         profile
