@@ -8,6 +8,7 @@ from agents.tools.models.union import (
     UNION_BANNED_MESSAGE,
     UNION_BANNED_MESSAGE_BN,
     UNION_BANNED_MESSAGE_GU,
+    UNION_BANNED_MESSAGE_MR,
     UNION_BANNED_MESSAGE_HI,
     UNION_NAME_ALIASES,
     UnionName,
@@ -69,6 +70,8 @@ def test_ai_call_banned_unions_contains_only_kutch():
     ("hindi", UNION_BANNED_MESSAGE_HI),
     ("bn", UNION_BANNED_MESSAGE_BN),
     ("bengali", UNION_BANNED_MESSAGE_BN),
+    ("mr", UNION_BANNED_MESSAGE_MR),
+    ("marathi", UNION_BANNED_MESSAGE_MR),
     ("unknown", UNION_BANNED_MESSAGE),
 ])
 def test_union_banned_message_by_lang(lang, expected):
