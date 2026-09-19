@@ -31,7 +31,6 @@ GET /api/chat/
 | `source_lang` | string | No | `gu` | Language of the user's query |
 | `target_lang` | string | No | `gu` | Language for the AI response |
 | `user_id` | string | No | `anonymous` | User identifier |
-| `use_translation_pipeline` | boolean | No | `false` | Use Gemma-based translation pipeline |
 
 ### Supported Language Codes
 
@@ -53,53 +52,21 @@ GET /api/chat/
 
 ---
 
-## Choosing the Pipeline
+## The Translation Pipeline
 
-### Default Pipeline (`use_translation_pipeline=false`)
+Every chat turn runs the Gemma translation pipeline. There is no second
+execution path and nothing for the frontend to select:
 
-- **Behavior**: The LLM responds directly in the target language.
-- **Supported target languages**: **English and Gujarati only**.
-- **Dependencies**: No extra services; uses the main LLM.
-- **Use when**:
-  - `target_lang` is `en` or `gu`
-  - You want minimal latency and no extra translation step
-  - TranslateGemma is not deployed
-
-### Translation Pipeline (`use_translation_pipeline=true`)
-
-- **Behavior**: Query → English (TranslateGemma) → Agent (English) → Target language (TranslateGemma).
-- **Supported target languages**: All Indian languages (Gujarati, Marathi, Hindi, Tamil, Kannada, Odia, Telugu, Punjabi, Malayalam, Bengali, Urdu, Assamese).
+- **Behavior**: Query → English (TranslateGemma) → Agent (English) → `target_lang` (TranslateGemma).
+- **Supported target languages**: every code in the table above.
 - **Dependencies**: TranslateGemma vLLM endpoints must be configured.
-- **Use when**:
-  - `target_lang` is any Indian language other than Gujarati
-  - You need Marathi, Hindi, Tamil, etc.
-  - You want consistent quality via dedicated translation models
 
-### Decision Matrix
+When `target_lang` is `en`, the agent output is streamed straight through and no
+output translation step runs.
 
-| `target_lang` | `use_translation_pipeline` | Result |
-|---------------|----------------------------|--------|
-| `gu` (Gujarati) | `false` | LLM responds in Gujarati directly |
-| `en` (English) | `false` | LLM responds in English directly |
-| `gu` | `true` | Query→EN→Agent→Gujarati (TranslateGemma) |
-| `mr` (Marathi) | `true` | Query→EN→Agent→Marathi (TranslateGemma) |
-| `hi` (Hindi) | `true` | Query→EN→Agent→Hindi (TranslateGemma) |
-| `mr`, `hi`, etc. | `false` | Not recommended – default pipeline supports only `en` and `gu` |
-
-### Recommended Frontend Logic
-
-```javascript
-// Choose pipeline based on target language
-function shouldUseTranslationPipeline(targetLang) {
-  const indianLanguagesExceptGu = ['mr', 'hi', 'ta', 'kn', 'or', 'te', 'pa', 'ml', 'bn', 'ur', 'as'];
-  return indianLanguagesExceptGu.includes(targetLang.toLowerCase());
-}
-
-// Or: use translation pipeline for all non-English targets if TranslateGemma is available
-function shouldUseTranslationPipeline(targetLang) {
-  return targetLang.toLowerCase() !== 'en';
-}
-```
+> **Removed**: `use_translation_pipeline` was a query parameter on this endpoint.
+> It is gone. Sending it is harmless — unknown query parameters are ignored —
+> but it has no effect, so drop it from client code.
 
 ---
 
@@ -115,13 +82,12 @@ function shouldUseTranslationPipeline(targetLang) {
 
 ```javascript
 async function streamChat(params) {
-  const { query, sessionId, sourceLang, targetLang, useTranslationPipeline } = params;
+  const { query, sessionId, sourceLang, targetLang } = params;
   
   const searchParams = new URLSearchParams({
     query,
     source_lang: sourceLang,
     target_lang: targetLang,
-    use_translation_pipeline: useTranslationPipeline ? 'true' : 'false',
   });
   
   if (sessionId) searchParams.set('session_id', sessionId);
@@ -161,13 +127,12 @@ async function streamChat(params) {
 
 ```javascript
 function streamChatWithEventSource(params) {
-  const { query, sessionId, sourceLang, targetLang, useTranslationPipeline } = params;
+  const { query, sessionId, sourceLang, targetLang } = params;
   
   const url = new URL('/api/chat/', window.location.origin);
   url.searchParams.set('query', query);
   url.searchParams.set('source_lang', sourceLang);
   url.searchParams.set('target_lang', targetLang);
-  url.searchParams.set('use_translation_pipeline', useTranslationPipeline ? 'true' : 'false');
   if (sessionId) url.searchParams.set('session_id', sessionId);
 
   // EventSource does not support custom headers; use query param or cookie for JWT
@@ -196,7 +161,6 @@ function useChatStream() {
     sessionId,
     sourceLang = 'gu',
     targetLang = 'gu',
-    useTranslationPipeline = false,
   }) => {
     setContent('');
     setIsStreaming(true);
@@ -206,7 +170,6 @@ function useChatStream() {
       query,
       source_lang: sourceLang,
       target_lang: targetLang,
-      use_translation_pipeline: useTranslationPipeline ? 'true' : 'false',
     });
     if (sessionId) params.set('session_id', sessionId);
 
@@ -254,7 +217,6 @@ await streamChat({
   query: text,
   sourceLang: lang_code,  // from transcribe response
   targetLang: userSelectedLang,
-  useTranslationPipeline: shouldUseTranslationPipeline(userSelectedLang),
 });
 ```
 

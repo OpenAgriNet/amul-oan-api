@@ -4,7 +4,7 @@ ONE place that knows the 15 codes the Bharat Vistaar BPP answers to, and how a
 farmer's actual words map onto them. Both consumers import from here:
 
   - `agents/tools/vistaar.py`   — the direct `get_vistaar_scheme_info` tool
-  - `agents/tools/beckn_network.py` — the merged union+central scheme discovery
+  - `agents/tools/beckn/network.py` — the merged union+central scheme discovery
 
 Why an alias map at all: the BV BPP matches `item.descriptor.name` against the
 scheme CODE and nothing else. It answers "kcc" and returns an empty catalogue
@@ -36,7 +36,7 @@ SCHEME_CODES: tuple[str, ...] = (
 
 # Farmer-facing English names. Used for the "I can't look that up, but I can
 # look up these" message — we name SCHEMES, never internal codes, because
-# `assets/prompts/agrinet_system.md` forbids exposing tool mechanics.
+# `assets/prompts/agrinet_system_translation_pipeline.md` forbids exposing tool mechanics.
 SCHEME_LABELS: dict[str, str] = {
     "kcc": "Kisan Credit Card",
     "pmkisan": "PM-KISAN (Kisan Samman Nidhi)",

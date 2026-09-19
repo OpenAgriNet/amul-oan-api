@@ -146,7 +146,7 @@ def test_doctor_identity_short_circuit_bypasses_both_moderation_and_rag(monkeypa
     monkeypatch.setattr(chat, "update_message_history", update_history)
     monkeypatch.setattr(chat.moderation_agent, "run", unexpected)
     monkeypatch.setattr(chat.doctor_moderation_agent, "run", unexpected)
-    monkeypatch.setattr(chat, "translate_to_english_pretranslation", unexpected)
+    monkeypatch.setattr(chat, "pretranslate_with_tier", unexpected)
     monkeypatch.setattr(chat.doctor_agent, "iter", unexpected)
 
     async def collect():
@@ -163,7 +163,7 @@ def test_doctor_identity_short_circuit_bypasses_both_moderation_and_rag(monkeypa
                     history=[],
                     user_info={"user_type": "farmer"},
                     background_tasks=fastapi.BackgroundTasks(),
-                    requested_persona="doctor",
+                    persona="doctor",
                     history_session_id="doctor-identity:persona:doctor",
                 )
             ]

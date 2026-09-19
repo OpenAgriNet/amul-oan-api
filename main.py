@@ -1,4 +1,3 @@
-from dotenv import load_dotenv
 from fastapi import FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
 from app.config import settings
@@ -11,8 +10,6 @@ from app.tasks.farmer_refresh_worker import start_farmer_refresh_worker, stop_fa
 # P2 health poller: active LB /health probe feeding the per-endpoint breaker.
 # start_/stop_ are no-ops unless HEALTH_POLLER_ENABLED (flag-off boot is untouched).
 from app.tasks.health_poller import start_health_poller, stop_health_poller
-
-load_dotenv()
 
 # Configure observability (Langfuse + pydantic-ai instrumentation) before router
 # imports that pull in agents, tools, and voice/chat pipelines.
@@ -29,13 +26,17 @@ async def lifespan(app: FastAPI):
     print(f"📍 Environment: {settings.environment}")
     print(f"🔧 Debug mode: {settings.debug}")
     print(f"🌐 CORS origins: {settings.allowed_origins}")
+    # Every supported private-data and booking tool now requires the callback
+    # bridge. Refuse a superficially healthy deployment that cannot complete a
+    # tool transaction.
+    from agents.tools.beckn.operations import validate_beckn_startup_configuration
+    validate_beckn_startup_configuration()
     # Load prompt templates into memory (no disk I/O at request time)
     from helpers.utils import load_prompt_templates
     load_prompt_templates(settings.base_dir / "assets" / "prompts")
     # Unified LLM pipeline (the only model-selection path): synthesize/validate the
-    # config and run the resolvability self-check (logs the resolved per-step
-    # provider/model/endpoint; non-fatal). Best-effort — a configure/self-check
-    # edge case must never block startup.
+    # config, structurally validate its active execution plans, and publish it.
+    # Invalid configuration raises BootRefused and blocks startup.
     from app.llm_core import runtime as _llm_runtime
     try:
         _llm_runtime.configure()

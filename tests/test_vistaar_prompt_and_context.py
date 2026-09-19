@@ -21,7 +21,7 @@ if str(ROOT) not in sys.path:
 
 from agents.deps import FarmerContext  # noqa: E402
 from agents.farmer_context import _collect_farmer_location  # noqa: E402
-from app.models.farmer import FarmerModel  # noqa: E402
+from agents.tools.models.farmer import FarmerModel  # noqa: E402
 from helpers.utils import get_prompt  # noqa: E402
 
 
@@ -54,10 +54,10 @@ class TestFarmerLocationCollection:
     async def test_the_bundle_returns_the_location_as_its_third_element(self, monkeypatch):
         import agents.farmer_context as fc
 
-        async def _fake_get(mobile):
+        async def _fake_get(mobile, **kwargs):
             return [FarmerModel(district="Banas Kantha", village="Dama", state="Gujarat")]
 
-        monkeypatch.setattr(fc, "get_farmer_data_by_mobile", _fake_get)
+        monkeypatch.setattr(fc, "fetch_authenticated_farmers", _fake_get)
         _, _, location = await fc.get_farmer_context_bundle_by_mobile("9876543210")
         assert location["district"] == "banas kantha"
 
@@ -67,22 +67,23 @@ class TestFarmerLocationCollection:
         # skipped new fields before.
         import agents.farmer_context as fc
 
-        async def _fake_get(mobile):
+        async def _fake_get(mobile, **kwargs):
             return None
 
-        monkeypatch.setattr(fc, "get_farmer_data_by_mobile", _fake_get)
+        monkeypatch.setattr(fc, "fetch_authenticated_farmers", _fake_get)
         markdown, unions, location = await fc.get_farmer_context_bundle_by_mobile("1")
         assert unions == [] and location == {}
         assert "No farmer information found" in markdown
 
 
 class TestPromptGuidance:
-    PROMPTS = ("agrinet_system.md", "agrinet_system_translation_pipeline.md")
+    # The translation pipeline is the only chat path, so there is a single farmer prompt.
+    PROMPTS = ("agrinet_system_translation_pipeline.md",)
 
     @staticmethod
     def _render(name, network, shc=False):
         return get_prompt(name, context={
-            "today_date": "13-08-2026", "today_datetime": "13-08-2026 10:00",
+            "today_date": "13-08-2026",
             "farmer_context": None, "ambiguity_hints": None,
             "response_max_chars": None, "loan_max_amount": "5,000",
             "loan_interest_rate_pct": "7", "network_tools_enabled": network,
@@ -103,9 +104,8 @@ class TestPromptGuidance:
 
     @pytest.mark.parametrize("name", PROMPTS)
     def test_price_and_weather_are_steered_away_from_document_search(self, name):
-        # agrinet_system.md rule 3 and the pipeline prompt's routing rule 3 both
-        # sent `market` / `weather` to search_documents first, which describes a
-        # mandi question exactly.
+        # The pipeline prompt's routing rule 3 sent `market` / `weather` to
+        # search_documents first, which describes a mandi question exactly.
         rendered = self._render(name, True)
         assert "do not search first" in rendered
         assert "live data" in rendered
@@ -129,8 +129,8 @@ class TestPromptGuidance:
         # Without this line the block renders as absent regardless of the flag,
         # and the whole guidance silently does nothing.
         source = (ROOT / "agents" / "agrinet.py").read_text()
-        assert "'network_tools_enabled': settings.enable_network" in source
-        assert "'vistaar_shc_enabled': settings.enable_network and settings.vistaar_shc_enabled" in source
+        assert "'network_tools_enabled': True" in source
+        assert "'vistaar_shc_enabled': settings.vistaar_shc_enabled" in source
 
     @pytest.mark.parametrize("name", PROMPTS)
     def test_shc_guidance_matches_the_narrower_feature_gate(self, name):

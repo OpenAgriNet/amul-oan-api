@@ -1,10 +1,6 @@
-import os
 from pydantic_ai import Agent
 from typing import List
 from helpers.utils import get_prompt
-from dotenv import load_dotenv
-load_dotenv()
-
 # Suggestions are follow-up questions derived purely from the conversation — no
 # retrieval needed. The agent previously carried the search_documents tool (with a
 # prompt saying "do not call tools"); gpt-5.1 honoured that, but gemma ignores it

@@ -1,17 +1,14 @@
 """
 Tool for booking a health call for a farmer.
 """
-import os
-
 import httpx
 from pydantic_ai import RunContext
 
 from agents.deps import FarmerContext
-from agents.tools.farmer_animal_backends import create_health_call_api
 from app.config import settings
 from app.core.cache import cache, reserve, ReservationOutcome, release_reservation
-from app.models.ai_call import AISpecies
-from app.models.health_call import HealthCallRequestModel, HealthCaseType
+from agents.tools.models.ai_call import AISpecies
+from agents.tools.models.health_call import HealthCaseType
 from app.observability import start_observation
 from helpers.utils import get_logger
 
@@ -67,32 +64,31 @@ async def create_health_call(
         logger.info("Health call blocked: query failed moderation; session=%s", session_id)
         return "This helpline only handles dairy farming and animal husbandry questions."
 
-    if settings.enable_network and settings.beckn_callback_transactions_enabled:
-        from agents.services.beckn_amul import resolve_authenticated_account
+    from agents.tools.beckn.amul import resolve_authenticated_account
 
-        mobile = (getattr(ctx.deps, "mobile", None) or "").strip()
-        if not mobile:
-            return "Health call booking failed. Your signed-in farmer profile is not available."
-        try:
-            account = await resolve_authenticated_account(
-                mobile,
-                union_code=union_code,
-                society_code=society_code,
-                farmer_code=farmer_code,
-                session_id=session_id,
-                tool_call_id=tool_call_id,
-            )
-        except Exception as exc:
-            logger.warning("Health booking identity verification failed: %s", exc)
-            return "Health call booking failed. Unable to verify your farmer details at the moment."
-        if account is None:
-            return (
-                "Health call booking failed. The selected farmer account does not "
-                "belong to your signed-in profile."
-            )
-        union_code = account.union_code
-        society_code = account.society_code
-        farmer_code = account.farmer_code
+    mobile = (getattr(ctx.deps, "mobile", None) or "").strip()
+    if not mobile:
+        return "Health call booking failed. Your signed-in farmer profile is not available."
+    try:
+        account = await resolve_authenticated_account(
+            mobile,
+            union_code=union_code,
+            society_code=society_code,
+            farmer_code=farmer_code,
+            session_id=session_id,
+            tool_call_id=tool_call_id,
+        )
+    except Exception as exc:
+        logger.warning("Health booking identity verification failed: %s", exc)
+        return "Health call booking failed. Unable to verify your farmer details at the moment."
+    if account is None:
+        return (
+            "Health call booking failed. The selected farmer account does not "
+            "belong to your signed-in profile."
+        )
+    union_code = account.union_code
+    society_code = account.society_code
+    farmer_code = account.farmer_code
 
     _health_tool_input = {
         "union_code": union_code,
@@ -103,109 +99,17 @@ async def create_health_call(
         "remark": remark,
     }
 
-    if settings.enable_network and settings.beckn_callback_transactions_enabled:
-        return await _book_health_via_network(
-            union_code=union_code,
-            society_code=society_code,
-            farmer_code=farmer_code,
-            species=species,
-            case_type=case_type,
-            remark=remark,
-            session_id=session_id,
-            tool_call_id=tool_call_id,
-            tool_input=_health_tool_input,
-        )
-
-    with start_observation(
-        "health_call_booking",
-        as_type="generation",
-        input=_health_tool_input,
-        metadata={"tool_name": "create_health_call"},
-    ) as health_tool_obs:
-        token = os.getenv("PASHUGPT_TOKEN")
-        if not token:
-            logger.error("PASHUGPT_TOKEN is not set")
-            failure_message = "Health call booking failed.\n\nPASHUGPT_TOKEN is not configured."
-            if health_tool_obs is not None:
-                health_tool_obs.update(output={"agent_response": failure_message})
-            return failure_message
-
-        request = HealthCallRequestModel(
-            unionCode=union_code,
-            societyCode=society_code,
-            farmerCode=farmer_code,
-            species=species,
-            caseType=case_type,
-            remark=remark,
-        )
-
-        # Atomic reservation immediately before the write: first caller wins; a
-        # concurrent/duplicate submit OR a fallback re-run for the same session
-        # short-circuits instead of double-booking (Redis SET NX, shared across
-        # containers). Released below if the booking API itself fails.
-        _reserved = False
-        if session_id:
-            reservation = await reserve(
-                session_id, HEALTH_CALL_CACHE_NAMESPACE, HEALTH_CALL_COOLDOWN_TTL
-            )
-            if reservation is ReservationOutcome.TAKEN:
-                logger.info("Health call already booked/in-flight for session %s, skipping", session_id)
-                return (
-                    "This session already has an active health call booking. "
-                    "Please try again later or contact your society for assistance."
-                )
-            # A fail-open reservation is not ours to release later.
-            _reserved = reservation is ReservationOutcome.ACQUIRED
-
-        response = await create_health_call_api(request, token)
-        if response is None:
-            if _reserved:
-                await release_reservation(session_id, HEALTH_CALL_CACHE_NAMESPACE)
-            logger.info(
-                "Create health call failed for union=%s society=%s farmer=%s species=%s case_type=%s",
-                union_code,
-                society_code,
-                farmer_code,
-                species.value,
-                case_type.value,
-            )
-            failure_message = "Health call booking failed.\n\nUnable to create health call at the moment."
-            if health_tool_obs is not None:
-                health_tool_obs.update(output={"agent_response": failure_message})
-            return failure_message
-
-        # Mark this session as booked so a re-run (or retry) does not double-book.
-        if session_id:
-            try:
-                await cache.set(
-                    session_id,
-                    {"ticket": response.ticket_number, "species": species.value},
-                    ttl=HEALTH_CALL_COOLDOWN_TTL,
-                    namespace=HEALTH_CALL_CACHE_NAMESPACE,
-                )
-            except Exception as e:
-                logger.warning("Failed to set health call cooldown: %s", e)
-
-        ticket_number = response.ticket_number
-        logger.info(
-            "Create health call succeeded for union=%s society=%s farmer=%s species=%s case_type=%s ticket=%s",
-            union_code,
-            society_code,
-            farmer_code,
-            species.value,
-            case_type.value,
-            ticket_number,
-        )
-
-        if ticket_number:
-            success_message = f"Health call booked successfully. Ticket number: {ticket_number}"
-            if health_tool_obs is not None:
-                health_tool_obs.update(output={"agent_response": success_message})
-            return success_message
-        success_message = "Health call booked successfully, but ticket number was not returned."
-        if health_tool_obs is not None:
-            health_tool_obs.update(output={"agent_response": success_message})
-        return success_message
+    return await _book_health_via_network(
+        union_code=union_code,
+        society_code=society_code,
+        farmer_code=farmer_code,
+        species=species,
+        case_type=case_type,
+        remark=remark,
+        session_id=session_id,
+        tool_call_id=tool_call_id,
+        tool_input=_health_tool_input,
+    )
 
 
 def _is_provably_pre_send(exc: BaseException) -> bool:
@@ -232,13 +136,8 @@ async def _book_health_via_network(
     tool_call_id: str | None,
     tool_input: dict,
 ) -> str:
-    """Book a health visit through directed confirm/on_confirm.
-
-    The feature is default-off until ONIX and the provider BPP routes exist.
-    Ambiguous timeouts retain the reservation because a late callback may still
-    prove that the upstream created a real visit.
-    """
-    from agents.tools.beckn_network import network_create_health_call_result
+    """Book a health visit through Beckn confirm/on_confirm."""
+    from agents.tools.beckn.network import network_create_health_call_result
 
     with start_observation(
         "health_call_booking",

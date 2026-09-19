@@ -21,11 +21,13 @@ GET /api/chat/
 | `source_lang` | string | No | `gu` | Language of the user's query |
 | `target_lang` | string | No | `gu` | Language for the response |
 | `user_id` | string | No | `anonymous` | User identifier |
-| `use_translation_pipeline` | boolean | No | `false` | Enable Gemma pre/post translation |
 
-### When `use_translation_pipeline=true`
+### Pipeline stages
 
-1. **Pre-translation**: If `source_lang=gu`, the query is translated to English via Anthropic Haiku.
+The translation pipeline is the only chat execution path; it runs on every turn
+and cannot be disabled from the request.
+
+1. **Pre-translation**: If `source_lang` is `gu`, `hi`, `bn`, `mr` or `pa` (Hindi, Bengali, Marathi and Punjabi each behind `HINDI_CHAT_ENABLED` / `BENGALI_CHAT_ENABLED` / `MARATHI_CHAT_ENABLED` / `PUNJABI_CHAT_ENABLED`), the query is translated to English via Anthropic Haiku.
 2. **Agent**: The agrinet agent processes the query in English and responds in English.
 3. **Post-translation**: If `target_lang` is an Indian language, the agent's response is translated to the target language via TranslateGemma and streamed to the client.
 
@@ -51,7 +53,7 @@ Indian languages (trigger translation when used as source or target):
 ### Example Request
 
 ```
-GET /api/chat/?query=મારી ગાયને ખાંચ છે&source_lang=gu&target_lang=gu&use_translation_pipeline=true
+GET /api/chat/?query=મારી ગાયને ખાંચ છે&source_lang=gu&target_lang=gu
 Authorization: Bearer <jwt_token>
 ```
 
@@ -77,7 +79,7 @@ The client receives a stream of plain text. Concatenate chunks in order to build
 
 ## Anthropic Pre-Translation
 
-Gujarati input is pre-translated to English before moderation and before the agrinet agent runs. This keeps the translation-pipeline path as English-in / English-out for the core agent flow.
+Gujarati, Hindi, Bengali, Marathi and Punjabi input is pre-translated to English before moderation and before the agrinet agent runs. This keeps the translation-pipeline path as English-in / English-out for the core agent flow.
 
 ### Model
 

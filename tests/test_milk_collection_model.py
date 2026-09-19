@@ -6,7 +6,7 @@ from pydantic import ValidationError
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from app.models.milk_collection import (
+from agents.tools.models.milk_collection import (
     DeductionRecordModel,
     FarmerMilkCollectionRequestModel,
     FarmerMilkCollectionResponseModel,

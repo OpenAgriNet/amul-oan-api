@@ -24,7 +24,7 @@ import asyncio
 from typing import Optional
 
 from app.config import settings
-from app.llm_core.config_model import Provider
+from app.llm_core.config_model import Provider, Step
 from helpers.utils import get_logger
 
 logger = get_logger(__name__)
@@ -44,23 +44,21 @@ def _health_url(endpoint: str) -> str:
 
 
 def _distinct_endpoints(pipeline) -> list[str]:
-    """Distinct self-hosted endpoint URLs across every profile/default step tier.
+    """Distinct self-hosted endpoints across every active step plan.
 
     These are the independent boxes the breaker keys on (agent/OSS,
     pre-translation, post-translation TranslateGemma). OpenAI/anthropic/azure
     tiers carry no self-hosted endpoint and are skipped (we don't poll them)."""
     seen: dict[str, None] = {}
 
-    def _collect(step_cfg) -> None:
-        for tier in step_cfg.tiers:
-            if tier.provider in _POLLABLE_PROVIDERS and tier.endpoint:
-                seen.setdefault(tier.endpoint, None)
-
     for profile in pipeline.profiles:
-        for step_cfg in profile.steps.values():
-            _collect(step_cfg)
-    for step_cfg in pipeline.defaults.values():
-        _collect(step_cfg)
+        for step in Step:
+            plan = pipeline.step_plan(profile, step)
+            if plan is None:
+                continue
+            for tier in plan.candidates:
+                if tier.provider in _POLLABLE_PROVIDERS and tier.endpoint:
+                    seen.setdefault(tier.endpoint, None)
     return list(seen.keys())
 
 
@@ -94,20 +92,13 @@ async def _run_loop() -> None:
     interval = settings.health_poller_interval_ms / 1000.0
     timeout_s = settings.health_poller_timeout_ms / 1000.0
 
-    try:
-        endpoints = _distinct_endpoints(runtime.get_pipeline())
-    except Exception:
-        logger.exception("health poller: could not resolve endpoints; not polling")
-        return
-
-    if not endpoints:
-        logger.info("health poller: no self-hosted endpoints in config; not polling")
-        return
-
-    logger.info("Health poller started (interval=%ss, endpoints=%s)", interval, endpoints)
+    logger.info("Health poller started (interval=%ss)", interval)
     async with httpx.AsyncClient() as client:
         while True:
             try:
+                # Refresh every sweep so live Redis config changes update the
+                # monitored inventory within the normal config refresh window.
+                endpoints = _distinct_endpoints(runtime.get_pipeline())
                 await _poll_once(client, endpoints, timeout_s)
             except asyncio.CancelledError:
                 raise

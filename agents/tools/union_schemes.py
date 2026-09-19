@@ -1,19 +1,12 @@
-"""Tool for reading cached union scheme data from Redis."""
-
-import json
-from typing import Any
+"""Beckn-backed dairy-union scheme tool."""
 
 from pydantic_ai import RunContext
 from pydantic_ai.tools import ToolDefinition
 
 from agents.deps import FarmerContext
+from agents.tools.beckn.network import network_union_schemes
 from app.config import settings
-from app.models.union import UnionName, resolve_supported_unions
-from app.services.scheme_ingestion import (
-    SchemeCacheError,
-    SchemeDependencyError,
-    get_cached_scheme_records_for_union,
-)
+from agents.tools.models.union import UnionName, resolve_supported_unions
 from helpers.utils import get_logger
 
 SUPPORTED_SCHEME_UNIONS = {
@@ -48,19 +41,6 @@ async def prepare_get_union_scheme_data(
     return None
 
 
-def _filter_scheme_records(records: list[dict[str, Any]], scheme_name: str) -> list[dict[str, Any]]:
-    normalized_filter = scheme_name.strip().casefold()
-    if not normalized_filter:
-        return records
-
-    filtered_records = []
-    for record in records:
-        title = str(record.get("scheme_title") or "")
-        if normalized_filter in title.casefold():
-            filtered_records.append(record)
-    return filtered_records
-
-
 async def get_union_scheme_data(ctx: RunContext[FarmerContext], scheme_name: str | None = None) -> str:
     """
     Get scheme information for the farmer, starting from their Amul MILK-UNION /
@@ -84,15 +64,6 @@ async def get_union_scheme_data(ctx: RunContext[FarmerContext], scheme_name: str
     Returns:
         A JSON-formatted string of scheme records, or a clear no-data message.
     """
-    # ⚠️ The docstring above is the LLM-visible contract and must stay true for
-    # BOTH states of settings.enable_network, because the flag changes what this
-    # function returns:
-    #   flag OFF → union schemes only, read from the Redis cache below.
-    #   flag ON  → union schemes from the Beckn network, MERGED with Bharat
-    #              Vistaar central schemes when `scheme_name` resolves to a
-    #              central scheme code.
-    # It previously said "ONLY for these dairy-union schemes / Do NOT use this
-    # for KCC, PM-KISAN, PMFBY" while, with the flag on, doing exactly that.
     farmer_unions = [union_name for union_name in (ctx.deps.farmer_unions or []) if union_name]
     supported_farmer_unions = resolve_supported_unions(farmer_unions, SUPPORTED_SCHEME_UNIONS)
     normalized_union_name = supported_farmer_unions[0] if supported_farmer_unions else None
@@ -125,73 +96,18 @@ async def get_union_scheme_data(ctx: RunContext[FarmerContext], scheme_name: str
                 target_unions,
             )
 
-    # Feature flag: route through the Amul Beckn network (schemes:amul-union)
-    # instead of the direct Redis cache when enabled. `settings` is imported at
-    # module level — do NOT re-import it inside the function, or it becomes a
-    # function-local name and earlier settings.* uses raise UnboundLocalError.
-    if settings.enable_network:
-        from agents.tools.beckn_network import network_union_schemes
-        primary_union = target_unions[0] if len(target_unions) == 1 else None
-        logger.info(
-            "enable_network=on → union schemes via Beckn network union=%s scheme=%s",
+    primary_union = target_unions[0] if len(target_unions) == 1 else None
+    logger.info(
+        "Union schemes via Beckn union=%s scheme=%s",
+        primary_union,
+        normalized_scheme_name,
+    )
+    try:
+        return await network_union_schemes(normalized_scheme_name or "", union=primary_union)
+    except Exception:
+        logger.exception(
+            "Union scheme tool failed via Beckn union=%s scheme_name=%s",
             primary_union,
             normalized_scheme_name,
         )
-        # The network call must degrade exactly like the direct Redis path
-        # below: a seeker timeout / HTTP error / malformed on_search is an
-        # infrastructure failure, not a tool failure. Without this the early
-        # return skips the try/except that follows and the exception escapes
-        # the tool entirely.
-        try:
-            return await network_union_schemes(normalized_scheme_name or "", union=primary_union)
-        except Exception:
-            logger.exception(
-                "Union scheme tool failed via Beckn network union=%s scheme_name=%s",
-                primary_union,
-                normalized_scheme_name,
-            )
-            return "Scheme data is temporarily unavailable due to an unexpected error."
-
-    records: list[dict[str, Any]] = []
-    for union_name in target_unions:
-        try:
-            UnionName(union_name)
-        except ValueError:
-            logger.warning("Union scheme tool failed enum validation union_name=%s", union_name)
-            continue
-
-        try:
-            union_records = await get_cached_scheme_records_for_union(union_name)
-        except SchemeDependencyError:
-            logger.exception("Union scheme tool failed because Redis dependency is unavailable")
-            return "Scheme data is temporarily unavailable because the cache dependency is not installed."
-        except SchemeCacheError:
-            logger.exception("Union scheme tool failed because scheme cache access failed")
-            return "Scheme data is temporarily unavailable because the cache could not be read."
-        except Exception:
-            logger.exception("Union scheme tool failed due to unexpected error for union=%s", union_name)
-            return "Scheme data is temporarily unavailable due to an unexpected error."
-
-        records.extend(union_records)
-
-    if normalized_scheme_name:
-        records = _filter_scheme_records(records, normalized_scheme_name)
-        logger.info(
-            "Union scheme tool applied scheme_name filter union=%s scheme_name=%s record_count=%s",
-            normalized_union_name,
-            normalized_scheme_name,
-            len(records),
-        )
-
-    if not records:
-        logger.info(
-            "Union scheme tool found no cached data for unions=%s scheme_name=%s",
-            target_unions,
-            normalized_scheme_name,
-        )
-        if normalized_scheme_name:
-            return f"Scheme data for '{normalized_scheme_name}' is not available yet for supported unions."
-        return "Scheme data is not available yet for supported unions."
-
-    logger.info("Union scheme tool returning cached data for unions=%s record_count=%s", target_unions, len(records))
-    return json.dumps(records, indent=2, ensure_ascii=False)
+        return "Scheme data is temporarily unavailable due to an unexpected error."

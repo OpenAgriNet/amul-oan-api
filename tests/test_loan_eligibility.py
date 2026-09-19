@@ -15,7 +15,7 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from agents.deps import FarmerAccount
-from agents.services import loan_eligibility as le
+from agents.tools import loan_eligibility as le
 from agents.tools import loan as loan_tool
 from agents.tools.onex_sms import build_loan_sms_body, _to_msisdn, _format_amount
 
