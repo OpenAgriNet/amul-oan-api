@@ -541,6 +541,10 @@ class Settings(BaseSettings):
         default="https://sursagardairy.com/Farmer/MilkProducers",
         validation_alias="SURSAGAR_SCHEME_SOURCE_URL",
     )
+    sabar_scheme_source_url: str = Field(
+        default="https://sabardairy.org/for-our-milk-producers/",
+        validation_alias="SABAR_SCHEME_SOURCE_URL",
+    )
     # PDF pages are rendered locally and sent one page per request to a stock
     # Chandra OpenAI-compatible endpoint.
     scheme_ocr_endpoint_url: Optional[str] = os.getenv("SCHEME_OCR_ENDPOINT_URL")
@@ -817,6 +821,7 @@ class Settings(BaseSettings):
         "sarhad_scheme_source_url",
         "sumul_scheme_source_url",
         "sursagar_scheme_source_url",
+        "sabar_scheme_source_url",
         mode="before",
     )
     @classmethod
