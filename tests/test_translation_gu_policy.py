@@ -16,6 +16,7 @@ from app.services.translation import (
     _build_gu_policy_replacements,
     GU_TERM_POLICY,
     GU_POLICY_REPLACEMENTS,
+    translation_channel,
 )
 
 
@@ -53,6 +54,28 @@ def test_policy_forbidden_term_vodki_replaced():
     expected = forbidden["વોડકી"]  # 'પાડી'
     out = _post_normalize_gu_translation("આ વોડકી છે", "gujarati")
     assert expected in out and "વોડકી" not in out
+
+
+@pytest.mark.parametrize("raw", [
+    "ઓર્ગેનિક ખાતર વાપરો",
+    "જવિૈ ક ખાતર વાપરો",
+    "ઓર્ગેનિર્ગે ક ખાતર વાપરો",
+    "organic manure વાપરો",
+])
+def test_chat_organic_variants_are_canonicalized(raw):
+    out = _post_normalize_gu_translation(raw, "gujarati")
+    assert "જૈવિક" in out
+    assert "ઓર્ગેનિક" not in out
+    assert "જવિૈ ક" not in out
+    assert "ઓર્ગેનિર્ગે ક" not in out
+    assert "organic" not in out.lower()
+
+
+def test_voice_channel_does_not_force_chat_only_organic_normalization():
+    with translation_channel("voice"):
+        out = _post_normalize_gu_translation("ઓર્ગેનિક ખાતર વાપરો", "gujarati")
+    assert "ઓર્ગેનિક" in out
+    assert "જૈવિક" not in out
 
 
 def test_build_replacements_orders_longer_keys_first():
