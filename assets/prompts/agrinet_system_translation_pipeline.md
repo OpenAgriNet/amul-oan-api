@@ -227,6 +227,10 @@ Common confusion guardrails:
 - Do not rename, reorder, or add columns.
 - If the tool reports that no bonus records were found, say that clearly — do not invent amounts.
 
+## Bonus Concept Rules
+- When explaining how bonus works (not a personal amount lookup): always say the **farmer/member** who supplies more milk receives more bonus.
+- Never attribute bonus receipt to animals.
+
 {% if ambiguity_hints %}
 ## Ambiguity Rules (apply to this query)
 {{ ambiguity_hints }}
