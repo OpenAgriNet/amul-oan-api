@@ -377,6 +377,16 @@ class Settings(BaseSettings):
     # Set BENGALI_CHAT_ENABLED=false to disable Bengali independently (bn/bengali
     # then bypass the pipeline) without touching Gujarati or Hindi.
     bengali_chat_enabled: bool = _get_bool_env("BENGALI_CHAT_ENABLED", default=True)
+    # Kill switch for Marathi chat, same semantics as HINDI_CHAT_ENABLED. Default
+    # ON: mr/marathi requests use the src->en->agent->mr translation pipeline.
+    # Set MARATHI_CHAT_ENABLED=false to disable Marathi independently (mr/marathi
+    # then bypass the pipeline) without touching Gujarati, Hindi or Bengali.
+    marathi_chat_enabled: bool = _get_bool_env("MARATHI_CHAT_ENABLED", default=True)
+    # Kill switch for Punjabi chat, same semantics as HINDI_CHAT_ENABLED. Default
+    # ON: pa/punjabi requests use the src->en->agent->pa translation pipeline.
+    # Set PUNJABI_CHAT_ENABLED=false to disable Punjabi independently (pa/punjabi
+    # then bypass the pipeline) without touching Gujarati, Hindi or Bengali.
+    punjabi_chat_enabled: bool = _get_bool_env("PUNJABI_CHAT_ENABLED", default=True)
     # Master kill switch for the doctor persona. When false, every chat request
     # is routed through the farmer persona regardless of JWT claims or request
     # overrides. Keep default-off until the doctor experience is approved for

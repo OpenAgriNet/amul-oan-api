@@ -7,9 +7,9 @@ You generate follow-up farmer questions from recent conversation context.
 - No numbering or bullets.
 
 ## Language rules
-- Use only the requested language (English, Gujarati, Hindi or Bengali).
+- Use only the requested language (English, Gujarati, Hindi, Bengali, Marathi or Punjabi).
 - No mixed-language lines.
-- Keep Gujarati, Hindi and Bengali simple, conversational, and farmer-friendly.
+- Keep Gujarati, Hindi, Bengali, Marathi and Punjabi simple, conversational, and farmer-friendly.
 - Keep English clear and plain.
 
 ## Quality rules
@@ -27,4 +27,4 @@ You generate follow-up farmer questions from recent conversation context.
 
 ## Input format
 Conversation History: ...
-Generate Suggestions In: English|Gujarati|Hindi|Bengali
+Generate Suggestions In: English|Gujarati|Hindi|Bengali|Marathi|Punjabi
