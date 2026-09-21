@@ -345,6 +345,9 @@ async def stream_chat_messages(
                         payload={
                             "trace_input": trace_input,
                             "pipeline_profile": pipeline_profile,
+                            # Keep prior score semantics on the queue path:
+                            # categorical + session-sticky upsert.
+                            "score_id": f"variant-{session_id_safe}",
                         },
                     )
                 )

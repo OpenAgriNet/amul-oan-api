@@ -93,11 +93,20 @@ def map_canonical_event_to_langfuse(canonical: CanonicalTelemetryEvent) -> dict[
         pipeline_profile = payload.get("pipeline_profile")
         if pipeline_profile is not None:
             mapped["metadata"]["pipeline_profile"] = pipeline_profile
+            # Preserve prior chat-path score semantics: categorical + session-sticky
+            # upsert via deterministic score_id (variant-{session_id}).
+            session_id_safe = (canonical.session_id or "")[:200]
+            score_id = payload.get("score_id") or (
+                f"variant-{session_id_safe}" if session_id_safe else None
+            )
             mapped["score"] = {
                 "name": "pipeline_profile",
                 "value": pipeline_profile,
+                "data_type": "CATEGORICAL",
                 "comment": "Sticky pipeline variant for this session",
             }
+            if score_id:
+                mapped["score"]["score_id"] = score_id
         return mapped
 
     # anonymous_token_issued

@@ -86,21 +86,25 @@ async def write_canonical_event_to_langfuse(
                 if mapped.get("output") is not None:
                     langfuse.set_current_trace_io(output=mapped["output"])
 
-                # Best-effort score capture for feedback events.
+                # Best-effort score capture (feedback + chat_trace_bootstrap).
+                # Forward optional metadata (data_type, score_id) so categorical /
+                # session-sticky scores keep prior semantics on the queue path.
                 score = mapped.get("score")
                 if score and score.get("value") is not None:
+                    score_kwargs = {
+                        "name": score["name"],
+                        "value": score["value"],
+                        "comment": score.get("comment"),
+                    }
+                    if score.get("data_type") is not None:
+                        score_kwargs["data_type"] = score["data_type"]
+                    if score.get("score_id") is not None:
+                        score_kwargs["score_id"] = score["score_id"]
+
                     if hasattr(observation, "score"):
-                        observation.score(
-                            name=score["name"],
-                            value=score["value"],
-                            comment=score.get("comment"),
-                        )
+                        observation.score(**score_kwargs)
                     elif hasattr(langfuse, "score_current_trace"):
-                        langfuse.score_current_trace(
-                            name=score["name"],
-                            value=score["value"],
-                            comment=score.get("comment"),
-                        )
+                        langfuse.score_current_trace(**score_kwargs)
 
         # Langfuse export is async/OTEL-backed; enqueue success does not guarantee remote ingest.
         # Try best-effort flush to surface immediate transport errors when supported.
