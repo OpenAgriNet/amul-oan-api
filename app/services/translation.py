@@ -169,6 +169,10 @@ CHAT_ONLY_GU_POST_REPLACEMENTS = [
     (r"જવિૈ\s*ક", "જૈવિક"),
     (r"ઓર્ગેનિર્ગે\s*ક", "જૈવિક"),
 ]
+_GU_POLICY_STREAM_HOLDBACK = max(
+    (len(str(k)) for k in GU_TERM_POLICY.get("forbidden", {}).keys()),
+    default=0,
+) + 8
 
 
 # ── Protected proper nouns: pin a fixed Gujarati rendering ──────────────────────
@@ -284,6 +288,36 @@ async def _buffered_protected_stream(stream, triggers):
             yield buf[:-_PROTECTED_STREAM_HOLDBACK]
             buf = buf[-_PROTECTED_STREAM_HOLDBACK:]
     buf = _apply_protected_output(buf, triggers)
+    if buf:
+        yield buf
+
+
+async def _buffered_gu_post_normalize_stream(stream, target_lang: str):
+    """Boundary-safe Gujarati post-normalization over a streamed chunk sequence.
+
+    Phrase-level forbidden replacements must be able to match across chunk splits
+    (e.g. "દૂધના " + "સંગ્રહ..."). We keep a short lookback tail, normalize the
+    running buffer, emit only the safe prefix, and flush at the end.
+    """
+    # Non-Gujarati behavior stays unchanged: normalize chunk-by-chunk.
+    if (target_lang or "").strip().lower() not in ("gu", "gujarati"):
+        async for chunk in stream:
+            out = _fix_dandas(chunk, target_lang)
+            out = _post_normalize_gu_translation(out, target_lang, strip_outer=False)
+            if out:
+                yield out
+        return
+
+    holdback = _GU_POLICY_STREAM_HOLDBACK
+    buf = ""
+    async for chunk in stream:
+        buf += _fix_dandas(chunk, target_lang)
+        buf = _post_normalize_gu_translation(buf, target_lang, strip_outer=False)
+        if len(buf) > holdback:
+            yield buf[:-holdback]
+            buf = buf[-holdback:]
+
+    buf = _post_normalize_gu_translation(buf, target_lang, strip_outer=False)
     if buf:
         yield buf
 
@@ -1208,7 +1242,8 @@ async def translate_text_stream_fast(
             _Step.POST_TRANSLATION,
             _make_stream,
         )
-        stream = _buffered_protected_stream(base_stream, _prot) if _prot else base_stream
+        normalized_stream = _buffered_gu_post_normalize_stream(base_stream, target_lang)
+        stream = _buffered_protected_stream(normalized_stream, _prot) if _prot else normalized_stream
         async for chunk in stream:
             yield chunk
     except Exception as e:
