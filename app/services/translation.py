@@ -173,6 +173,10 @@ _GU_POLICY_STREAM_HOLDBACK = max(
     (len(str(k)) for k in GU_TERM_POLICY.get("forbidden", {}).keys()),
     default=0,
 ) + 8
+_GU_CENTER_PENDING_SENTINEL = "__GU_CENTER_PENDING__"
+_GU_CENTER_AMBIGUOUS_TAIL_RE = re.compile(
+    r"(દૂધના સંગ્રહ|દૂધનો સંગ્રહ|દૂધ સંગ્રહ)(\s*)$"
+)
 
 
 # ── Protected proper nouns: pin a fixed Gujarati rendering ──────────────────────
@@ -312,11 +316,22 @@ async def _buffered_gu_post_normalize_stream(stream, target_lang: str):
     buf = ""
     async for chunk in stream:
         buf += _fix_dandas(chunk, target_lang)
-        buf = _post_normalize_gu_translation(buf, target_lang, strip_outer=False)
+        # Delay short સંગ્રહ -> સંપાદન rewrites on an ambiguous trailing fragment
+        # so a following streamed "કેન્દ્ર" can still form the longer center phrase.
+        tail_match = _GU_CENTER_AMBIGUOUS_TAIL_RE.search(buf)
+        if tail_match:
+            buffered = buf[:tail_match.start()] + _GU_CENTER_PENDING_SENTINEL
+            normalized = _post_normalize_gu_translation(
+                buffered, target_lang, strip_outer=False
+            )
+            buf = normalized.replace(_GU_CENTER_PENDING_SENTINEL, tail_match.group(0))
+        else:
+            buf = _post_normalize_gu_translation(buf, target_lang, strip_outer=False)
         if len(buf) > holdback:
             yield buf[:-holdback]
             buf = buf[-holdback:]
 
+    # Final flush: no future chunk can complete a center phrase, so normalize fully.
     buf = _post_normalize_gu_translation(buf, target_lang, strip_outer=False)
     if buf:
         yield buf

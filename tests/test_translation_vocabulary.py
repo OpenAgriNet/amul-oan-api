@@ -15,6 +15,7 @@ Categories:
 import pytest
 import sys
 import os
+import asyncio
 import re
 import json
 from pathlib import Path
@@ -22,6 +23,7 @@ from pathlib import Path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from app.services.translation import (
+    _buffered_gu_post_normalize_stream,
     _post_normalize_gu_translation,
     VOICE_GU_PREFERRED_TRANSLATION_RULES,
     GU_TERM_POLICY,
@@ -583,3 +585,31 @@ class TestMissingQuantityRepair:
         result = normalize_gu("લીલો ચારો તરીકે બરબા આપો.")
         assert "બરસીમ" in result
         assert "બરબા" not in result
+
+
+class TestStreamingMilkCollectionCenterRegression:
+    @staticmethod
+    def _stream_normalize(chunks):
+        async def gen():
+            for chunk in chunks:
+                yield chunk
+
+        async def collect():
+            return "".join(
+                [c async for c in _buffered_gu_post_normalize_stream(gen(), "gu")]
+            )
+
+        return asyncio.run(collect())
+
+    @pytest.mark.parametrize(
+        "chunks",
+        [
+            ["દૂધના સંગ્રહ ", "કેન્દ્ર"],
+            ["દૂધ સંગ્રહ ", "કેન્દ્ર"],
+            ["દૂધનો સંગ્રહ ", "કેન્દ્ર"],
+        ],
+    )
+    def test_center_phrase_survives_split_boundary(self, chunks):
+        out = self._stream_normalize(chunks)
+        assert "દૂધ એકત્રીકરણ કેન્દ્ર" in out
+        assert "દુધ સંપાદન કેન્દ્ર" not in out
