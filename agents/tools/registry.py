@@ -12,6 +12,7 @@ from agents.tools.bonus import (
     prepare_get_farmer_bonus_amount,
 )
 from agents.tools.search import search_documents
+from agents.tools.vet_offices import find_nearby_vet_offices
 from agents.tools.union_schemes import get_union_scheme_data, prepare_get_union_scheme_data
 from agents.tools.loan import check_loan_eligibility, prepare_check_loan_eligibility
 from agents.tools.vistaar import (
@@ -31,6 +32,15 @@ TOOLS = [
     Tool(
         search_documents,
         takes_ctx=False, # No context is needed for this tool
+        docstring_format='auto',
+        require_parameter_descriptions=True,
+    ),
+
+    # Available to anonymous callers too: a profile location helps, but the tool
+    # can ask for a taluka or village when no unambiguous profile is available.
+    Tool(
+        find_nearby_vet_offices,
+        takes_ctx=True,
         docstring_format='auto',
         require_parameter_descriptions=True,
     ),

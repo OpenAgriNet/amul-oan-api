@@ -36,14 +36,18 @@ class TestFarmerLocationCollection:
         assert _collect_farmer_location([FarmerModel()]) == {}
         assert _collect_farmer_location([]) == {}
 
-    def test_village_and_state_come_from_the_same_record_as_the_district(self):
+    def test_ambiguous_village_is_withheld_while_same_record_state_survives(self):
         # Mixing a district from one account with a village from another would
-        # invent a place. A mobile with several accounts is normal.
+        # invent a place. A mobile with several accounts is normal, so retain the
+        # unambiguous district/state and ask for the village when it matters.
         farmers = [
             FarmerModel(village="Orphan Village"),
             FarmerModel(district="Kutch", village="Bhirandiyara", state="Gujarat"),
         ]
-        assert _collect_farmer_location(farmers)["village"] == "bhirandiyara"
+        assert _collect_farmer_location(farmers) == {
+            "district": "kutch",
+            "state": "gujarat",
+        }
 
     def test_farmer_context_exposes_the_district_to_tools(self):
         assert FarmerContext(query="q", farmer_district=" Junagadh ").get_farmer_district() == "Junagadh"
