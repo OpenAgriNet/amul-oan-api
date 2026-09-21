@@ -17,7 +17,9 @@ class BaseChatRequest(BaseModel):
 
 
 class ChatRequest(BaseChatRequest):
-    channel: Literal['web', 'whatsapp'] = Field('web', description="Calling channel")
+    # Accept any channel string. Known channels can have explicit profiles while
+    # unknown values fall back to web behaviour.
+    channel: str = Field('web', description="Calling channel")
     stream: Optional[bool] = Field(True, description="When True (default), return SSE stream. When False, return a single JSON response.")
     persona: Optional[ChatPersona] = Field(
         None,
