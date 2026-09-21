@@ -98,6 +98,7 @@ class CanonicalTelemetryEvent(BaseModel):
         "error",
         "feedback",
         "anonymous_token_issued",
+        "chat_trace_bootstrap",
     ]
     schema_version: str = "v1"
     session_id: str | None = None

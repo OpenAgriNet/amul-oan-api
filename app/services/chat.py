@@ -1,6 +1,7 @@
 from contextlib import nullcontext
 from typing import Any, AsyncGenerator
 from functools import lru_cache
+import time
 import regex
 import re
 from fastapi import BackgroundTasks
@@ -17,8 +18,10 @@ from app.utils import (
     set_cache,
 )
 from app.tasks.suggestions import create_suggestions
+from app.tasks.telemetry_queue import enqueue_canonical_telemetry_event
 from app.config import settings
 from app.core.cache import cache
+from app.models.telemetry import CanonicalTelemetryEvent
 from agents.deps import FarmerContext
 from agents.farmer_context import get_farmer_context_bundle_by_mobile
 from agents.tools.farmer import normalize_phone_to_mobile
@@ -326,37 +329,32 @@ async def stream_chat_messages(
         _turn_outcome = "error"
         try:
             if get_langfuse_client:
-                try:
-                    langfuse = get_langfuse_client()
-                    langfuse.set_current_trace_io(
-                        input={
-                            "query": query,
-                            "channel": channel,
-                            "source_lang": source_lang,
-                            "target_lang": target_lang,
-                            "persona": persona,
-                        }
+                trace_input = {
+                    "query": query,
+                    "channel": channel,
+                    "source_lang": source_lang,
+                    "target_lang": target_lang,
+                    "persona": persona,
+                }
+                enqueue_status, enqueue_reason = enqueue_canonical_telemetry_event(
+                    CanonicalTelemetryEvent(
+                        event_name="chat_trace_bootstrap",
+                        session_id=session_id_safe or None,
+                        user_id=effective_user_id or None,
+                        ts=int(time.time() * 1000),
+                        payload={
+                            "trace_input": trace_input,
+                            "pipeline_profile": pipeline_profile,
+                        },
                     )
-                    #this is the same as the update_current_trace method,
-                    #but it is more explicit about the type of the output
-                    # and is supported by the latest version of the langfuse SDK.
-                    # Emit a categorical pipeline_profile score attached to the
-                    # *current trace*. Langfuse rolls this up to the session view,
-                    # so a Sessions filter "pipeline_profile = oss" works directly.
-                    # `score_id` is deterministic per session so subsequent traces
-                    # in the same session upsert the same score (no duplicates).
-                    try:
-                        langfuse.score_current_trace(
-                            name="pipeline_profile",
-                            value=pipeline_profile,
-                            data_type="CATEGORICAL",
-                            score_id=f"variant-{session_id_safe}",
-                            comment="Sticky pipeline variant for this session",
-                        )
-                    except Exception as e:
-                        logger.warning("Langfuse: pipeline_profile score failed: %s", e)
-                except Exception as e:
-                    logger.warning("Langfuse: failed to set trace input: %s", e)
+                )
+                if enqueue_status != "enqueued":
+                    logger.debug(
+                        "Langfuse trace bootstrap not enqueued sid=%s status=%s reason=%s",
+                        session_id_safe,
+                        enqueue_status,
+                        enqueue_reason,
+                    )
 
             # Resolve per-language kill switches before any response path. This
             # keeps deterministic short-circuits and tool language selection in

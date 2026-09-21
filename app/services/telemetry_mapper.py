@@ -82,6 +82,24 @@ def map_canonical_event_to_langfuse(canonical: CanonicalTelemetryEvent) -> dict[
         }
         return mapped
 
+    if canonical.event_name == "chat_trace_bootstrap":
+        mapped["observation_name"] = "backend.chat.trace_bootstrap"
+        mapped["tags"].append("backend-event:chat_trace_bootstrap")
+        trace_input = payload.get("trace_input")
+        if isinstance(trace_input, dict):
+            mapped["input"] = trace_input
+        else:
+            mapped["input"] = {}
+        pipeline_profile = payload.get("pipeline_profile")
+        if pipeline_profile is not None:
+            mapped["metadata"]["pipeline_profile"] = pipeline_profile
+            mapped["score"] = {
+                "name": "pipeline_profile",
+                "value": pipeline_profile,
+                "comment": "Sticky pipeline variant for this session",
+            }
+        return mapped
+
     # anonymous_token_issued
     mapped["input"] = {
         "sid": payload.get("sid"),
