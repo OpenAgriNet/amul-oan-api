@@ -5,6 +5,41 @@ from app.models.animal import AnimalModel
 from app.models.farmer import FarmerModel
 
 
+def _farmer(**values) -> FarmerModel:
+    return FarmerModel.model_validate(values)
+
+
+def test_structured_location_uses_one_complete_record():
+    assert farmer_context._collect_farmer_location([
+        _farmer(village="Bagodara", district="Ahmedabad", state="Gujarat")
+    ]) == {
+        "village": "bagodara",
+        "district": "ahmedabad",
+        "state": "gujarat",
+    }
+
+
+def test_structured_location_is_withheld_when_districts_disagree():
+    assert farmer_context._collect_farmer_location([
+        _farmer(village="Bagodara", district="Ahmedabad"),
+        _farmer(village="Vijapur", district="Mehsana"),
+    ]) == {}
+
+
+def test_structured_location_keeps_district_but_withholds_ambiguous_village():
+    assert farmer_context._collect_farmer_location([
+        _farmer(village="Bagodara", district="Ahmedabad"),
+        _farmer(village="Kerala", district="Ahmedabad"),
+    ]) == {"district": "ahmedabad"}
+
+
+def test_structured_location_never_combines_separate_partial_records():
+    assert farmer_context._collect_farmer_location([
+        _farmer(village="Bagodara"),
+        _farmer(district="Mehsana"),
+    ]) == {"district": "mehsana"}
+
+
 @pytest.mark.asyncio
 async def test_chat_context_uses_directed_beckn_farmer_animal_and_banas_callbacks(monkeypatch):
     monkeypatch.setattr(farmer_context.settings, "enable_network", True)

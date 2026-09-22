@@ -104,27 +104,74 @@ def _collect_farmer_unions(farmers: list[FarmerModel]) -> list[str]:
 
 
 def _collect_farmer_location(farmers: list[FarmerModel]) -> dict[str, str]:
-    """Pick the structured location to expose to tools: {district, village, state}.
+    """Return only profile location fields that are unambiguous across accounts.
 
-    First record that carries a district wins, and village/state are taken from
-    that SAME record — mixing a district from one account with a village from
-    another would invent a place. A mobile with several accounts (a cow account
-    and a buffalo account, say) is normal and they share a location in practice.
+    A mobile can represent household members in different villages. District is
+    still useful when every populated record agrees, but village is withheld when
+    the records disagree. A village is paired with a district only when at least
+    one source record carries that pair; fields from separate records are never
+    combined into an invented location.
 
     These fields are already rendered into the prompt markdown; this lifts them
     into structured deps so the mandi/weather tools can key off them instead of
     hardcoding Anand.
     """
-    for farmer in farmers:
-        district = (farmer.district or "").strip()
-        if not district:
-            continue
-        return {
-            "district": district,
-            "village": (farmer.village or "").strip(),
+    locations = [
+        {
+            "district": (farmer.district or "").strip(),
+            "village": (farmer.village or farmer.society_name or "").strip(),
             "state": (farmer.state or "").strip(),
         }
-    return {}
+        for farmer in farmers
+    ]
+    locations = [location for location in locations if any(location.values())]
+    if not locations:
+        return {}
+
+    districts = {
+        location["district"].casefold(): location["district"]
+        for location in locations
+        if location["district"]
+    }
+    if len(districts) > 1:
+        return {}
+
+    result: dict[str, str] = {}
+    district_key = next(iter(districts), "")
+    if district_key:
+        result["district"] = districts[district_key]
+
+    villages = {
+        location["village"].casefold(): location["village"]
+        for location in locations
+        if location["village"]
+    }
+    if len(villages) == 1:
+        village_key = next(iter(villages))
+        # With a known district, require one record to substantiate the complete
+        # pair. Without a district, a unanimous village is still useful by itself.
+        if not district_key or any(
+            location["district"].casefold() == district_key
+            and location["village"].casefold() == village_key
+            for location in locations
+        ):
+            result["village"] = villages[village_key]
+
+    states = {
+        location["state"].casefold(): location["state"]
+        for location in locations
+        if location["state"]
+    }
+    if len(states) == 1:
+        state_key = next(iter(states))
+        if not district_key or any(
+            location["district"].casefold() == district_key
+            and location["state"].casefold() == state_key
+            for location in locations
+        ):
+            result["state"] = states[state_key]
+
+    return result
 
 
 async def _append_union_scheme_summary_markdown(lines: list[str], farmer_unions: list[str]) -> None:
