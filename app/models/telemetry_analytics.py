@@ -17,7 +17,7 @@ class CanonicalChatTurn(BaseModel):
     absence, a recorded value, or a value derived from a historical alias.
     """
 
-    schema_version: Literal["chat-turn.v1"] = "chat-turn.v1"
+    schema_version: Literal["chat.turn.v1"] = "chat.turn.v1"
     source_era: str
     source_schema_version: str
     source_era_extensions: list[str] = Field(default_factory=list)

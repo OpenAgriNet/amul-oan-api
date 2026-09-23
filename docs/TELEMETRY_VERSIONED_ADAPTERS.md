@@ -38,9 +38,12 @@ ownership is agreed.
 
 | Era | Root shape | Status | Important behavior |
 | --- | --- | --- | --- |
-| `chat.c2` / `c2b` / `c2c` | `chat.default` / `chat.translation` | supported with limits | Requires an `Amul AI Agent run` observation; answer is derived from `stream_translation` or the agent result. Separate pretranslation traces are not joined, so original question remains unavailable. |
+| `chat.c0` | unnamed pydantic-ai span | unsupported | No proven chat-turn reconstruction contract. |
+| `chat.c1` | unnamed pydantic-ai span | unsupported | Filterable metadata exists, but no proven chat-turn reconstruction contract. |
+| `chat.c2` / `c2b` / `c2c` | `chat.default` / `chat.translation` | supported with limits | Requires an `Amul AI Agent run` observation; answer is derived from `stream_translation` or the agent result. A caller may supply a same-session `query_pretranslation` trace to enrich the original question. |
 | `chat.c3` | `Amul AI Agent` | supported | Root input is an internal agent action, not the farmer question. |
 | `chat.c3b` | c3 with `metadata.variant` | supported extension | `variant` is normalized to canonical `pipeline_profile` and marked derived. |
+| `chat.c3c` | `frontend.telemetry` | excluded | A structurally distinct frontend event stream, not a canonical chat turn. |
 | `chat.c4` | c3-shaped `Amul AI Agent` | supported | `TOOL` observations are normalized into canonical tool calls. |
 | `chat.c5` | c3-shaped `Amul AI Agent` | supported | Uses recorded `metadata.pipeline_profile`. |
 | `chat.c6` / `c6b` / `c6c` / `c7` | `chat.default` / `chat.translation` | supported | One root adapter normalizes optional outcome, served-tier, and persona additions; their era labels are added only when the registry date and observed signal both match. |
@@ -48,8 +51,9 @@ ownership is agreed.
 
 ## Deliberately unsupported until evidence is available
 
-- c2 `query_pretranslation` traces remain separate and are not joined to a turn
-  unless a future caller provides a verified association rule.
+- c2 `query_pretranslation` traces can be associated only through an explicit,
+  same-session bundle supplied by the caller. It is a partial enrichment, not a
+  completeness guarantee: many c2 turns have no recorded pretranslation trace.
 - Other eras remain explicit gaps rather than falling back to a guessed adapter.
 
 ## Adding an era

@@ -101,7 +101,7 @@ def test_chat_c3_adapter_normalizes_variant_without_inventing_missing_fields():
         scores=[],
     )
 
-    assert turn.schema_version == "chat-turn.v1"
+    assert turn.schema_version == "chat.turn.v1"
     assert turn.source_era == "chat.c3"
     assert turn.source_schema_version == "chat.c3.v1"
     assert turn.source_era_extensions == ["chat.c3b"]
@@ -169,6 +169,41 @@ def test_resolver_rejects_c2_name_reuse_without_agent_observation(era_registry):
             {"name": "chat.translation", "timestamp": "2026-05-12T23:56:49Z"},
             era_registry=era_registry,
         )
+
+
+def test_c2_enriches_original_question_only_from_explicit_same_session_pretranslation(era_registry):
+    turn = adapt_chat_trace(
+        {
+            "name": "chat.translation",
+            "timestamp": "2026-05-12T23:56:49Z",
+            "sessionId": "matching-session",
+            "metadata": {"pipeline": "translation"},
+        },
+        observations=[
+            {
+                "name": "Amul AI Agent run (redacted)",
+                "metadata": {"attributes": {"final_result": "<redacted answer>"}},
+            }
+        ],
+        related_traces=[
+            {
+                "name": "chat.translation",
+                "sessionId": "unrelated-session",
+                "input": {"text": "<must not be used>"},
+                "metadata": {"pipeline_stage": "query_pretranslation"},
+            },
+            {
+                "name": "chat.translation",
+                "sessionId": "matching-session",
+                "input": {"text": "<redacted original question>"},
+                "metadata": {"pipeline_stage": "query_pretranslation"},
+            },
+        ],
+        era_registry=era_registry,
+    )
+
+    assert turn.original_question == "<redacted original question>"
+    assert turn.field_availability["original_question"] == "recorded"
 
 
 def test_resolver_adapts_c4_tool_observations(era_registry):
