@@ -44,6 +44,7 @@ class ChatC2Adapter:
         scores: Sequence[LangfuseScoreSchema] = (),
         source_era_extensions: list[str] | None = None,
         user_id_semantics: str = "query_param_then_anonymous",
+        original_question: str | None = None,
     ) -> CanonicalChatTurn:
         agent_observation = _find_agent_observation(observations)
         if agent_observation is None:
@@ -66,7 +67,7 @@ class ChatC2Adapter:
             pipeline=trace.metadata.pipeline,
             source_lang=trace.metadata.source_lang,
             target_lang=trace.metadata.target_lang,
-            original_question=None,
+            original_question=original_question,
             answer=answer,
             root_input=trace.input,
             root_output=trace.output,
@@ -80,7 +81,7 @@ class ChatC2Adapter:
                 "pipeline_profile": "unavailable",
                 "source_lang": _availability(trace.metadata.source_lang),
                 "target_lang": _availability(trace.metadata.target_lang),
-                "original_question": "unavailable",
+                "original_question": _availability(original_question),
                 "answer": _availability(answer),
                 "root_input": _availability(trace.input),
                 "root_output": _availability(trace.output),
@@ -368,6 +369,7 @@ def adapt_chat_trace(
     *,
     observations: Sequence[Mapping[str, Any]] = (),
     scores: Sequence[Mapping[str, Any]] = (),
+    related_traces: Sequence[Mapping[str, Any]] = (),
     era_registry: TelemetryEraRegistry | None = None,
 ) -> CanonicalChatTurn:
     """Resolve and adapt a supported chat trace using name *and* timestamp."""
@@ -406,6 +408,7 @@ def adapt_chat_trace(
                 if timestamp >= c2b.valid_from
                 else "query_param_then_anonymous"
             ),
+            original_question=_c2_original_question(raw, related_traces),
         )
     if name == ChatC3Adapter._trace_name and c3.valid_from <= timestamp < c4.valid_from:
         raw = dict(trace)
@@ -529,6 +532,50 @@ def _attributes(item: Mapping[str, Any]) -> Mapping[str, Any]:
     metadata = item.get("metadata")
     nested = metadata.get("attributes") if isinstance(metadata, Mapping) else None
     return nested if isinstance(nested, Mapping) else {}
+
+
+def _c2_original_question(
+    trace: Mapping[str, Any], related_traces: Sequence[Mapping[str, Any]]
+) -> str | None:
+    """Return a question only from an explicitly supplied, same-session pretranslation trace.
+
+    The adapter never performs a global time-based join. Callers that have
+    already fetched related records may provide them as a bundle; a missing
+    pretranslation trace remains an honest historical absence.
+    """
+
+    session_id = _session_id(trace)
+    if session_id is None:
+        return None
+    for related in related_traces:
+        if _session_id(related) != session_id or not _is_query_pretranslation(related):
+            continue
+        raw_input = related.get("input")
+        if isinstance(raw_input, Mapping):
+            question = _string_or_none(raw_input.get("text"))
+            if question is not None:
+                return question
+    return None
+
+
+def _session_id(trace: Mapping[str, Any]) -> str | None:
+    for key in ("sessionId", "session_id"):
+        session_id = _identifier_or_none(trace.get(key))
+        if session_id is not None:
+            return session_id
+    metadata = trace.get("metadata")
+    if not isinstance(metadata, Mapping):
+        return None
+    session_id = _identifier_or_none(metadata.get("session_id"))
+    if session_id is not None:
+        return session_id
+    attributes = metadata.get("attributes")
+    return _identifier_or_none(attributes.get("session.id")) if isinstance(attributes, Mapping) else None
+
+
+def _is_query_pretranslation(trace: Mapping[str, Any]) -> bool:
+    metadata = trace.get("metadata")
+    return isinstance(metadata, Mapping) and metadata.get("pipeline_stage") == "query_pretranslation"
 
 
 def _c6_extensions(
