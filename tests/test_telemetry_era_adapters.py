@@ -24,10 +24,26 @@ def _era_registry(tmp_path, *, c8_confidence):
     registry_path.write_text(
         """
 chat_eras:
+  - era_id: chat.c2
+    valid_from: 2026-03-10
+    valid_to: 2026-05-13
+    root_trace_names: [chat.default, chat.translation]
+  - era_id: chat.c2b
+    valid_from: 2026-03-25
+    valid_to: null
+    root_trace_names: []
+  - era_id: chat.c2c
+    valid_from: 2026-04-24
+    valid_to: null
+    root_trace_names: []
   - era_id: chat.c3
     valid_from: 2026-05-13
     valid_to: 2026-08-05
     root_trace_names: [Amul AI Agent]
+  - era_id: chat.c4
+    valid_from: 2026-07-22
+    valid_to: null
+    root_trace_names: []
   - era_id: chat.c5
     valid_from: 2026-07-24
     valid_to: null
@@ -36,6 +52,18 @@ chat_eras:
     valid_from: 2026-08-05T06:30:00Z
     valid_to: null
     root_trace_names: [chat.default, chat.translation]
+  - era_id: chat.c6b
+    valid_from: 2026-08-03
+    valid_to: null
+    root_trace_names: []
+  - era_id: chat.c6c
+    valid_from: 2026-08-02
+    valid_to: null
+    root_trace_names: []
+  - era_id: chat.c7
+    valid_from: 2026-08-18
+    valid_to: null
+    root_trace_names: []
   - era_id: chat.c8
     valid_from: 2026-09-16
     valid_to: null
@@ -87,6 +115,109 @@ def test_chat_c3_adapter_normalizes_variant_without_inventing_missing_fields():
     assert turn.field_availability["original_question"] == "unavailable"
     assert turn.field_availability["turn_outcome"] == "unavailable"
     assert turn.field_availability["tool_calls"] == "unavailable"
+
+
+def test_resolver_adapts_c2_agent_observation_without_guessing_pretranslation_link(era_registry):
+    turn = adapt_chat_trace(
+        {
+            "id": "redacted-c2-trace",
+            "name": "chat.translation",
+            "timestamp": "2026-05-12T23:56:49Z",
+            "sessionId": "redacted-session",
+            "metadata": {
+                "pipeline": "translation",
+                "channel": "web",
+                "source_lang": "gu",
+                "target_lang": "gu",
+                "user_id": 1234567890,
+            },
+        },
+        observations=[
+            {
+                "type": "SPAN",
+                "name": "Amul AI Agent run (redacted)",
+                "metadata": {
+                    "attributes": {
+                        "agent_name": "Amul AI Agent",
+                        "final_result": "<redacted English agent answer>",
+                    }
+                },
+            },
+            {
+                "type": "GENERATION",
+                "name": "stream_translation (redacted)",
+                "output": "<redacted target-language answer>",
+                "metadata": {"pipeline_stage": "stream_translation"},
+            },
+        ],
+        era_registry=era_registry,
+    )
+
+    assert turn.source_era == "chat.c2"
+    assert turn.source_era_extensions == ["chat.c2b", "chat.c2c"]
+    assert turn.user_id_semantics == "jwt_phone_then_query_param_then_anonymous"
+    assert turn.user_id == "1234567890"
+    assert turn.answer == "<redacted target-language answer>"
+    assert turn.original_question is None
+    assert turn.field_availability["answer"] == "recorded"
+    assert turn.field_availability["original_question"] == "unavailable"
+
+
+def test_resolver_rejects_c2_name_reuse_without_agent_observation(era_registry):
+    with pytest.raises(UnsupportedTelemetryEra, match="requires an 'Amul AI Agent run' observation"):
+        adapt_chat_trace(
+            {"name": "chat.translation", "timestamp": "2026-05-12T23:56:49Z"},
+            era_registry=era_registry,
+        )
+
+
+def test_resolver_adapts_c4_tool_observations(era_registry):
+    turn = adapt_chat_trace(
+        {
+            "id": "redacted-c4-trace",
+            "name": "Amul AI Agent",
+            "timestamp": "2026-07-23T23:56:41Z",
+            "sessionId": "redacted-session",
+            "input": {"action": "<redacted action>", "model_name": "<redacted model>"},
+            "output": "<redacted answer>",
+            "metadata": {
+                "pipeline": "translation",
+                "variant": "oss",
+                "pipeline_profile": "oss",
+                "channel": "web",
+            },
+        },
+        observations=[
+            {
+                "id": "redacted-tool-observation",
+                "type": "TOOL",
+                "name": "get_farmer_milk_collection_details (redacted)",
+                "input": {"farmer_code": "redacted"},
+                "output": "<redacted tool response>",
+                "metadata": {
+                    "attributes": {
+                        "gen_ai.tool.name": "get_farmer_milk_collection_details",
+                        "gen_ai.tool.call.id": "redacted-call-id",
+                    }
+                },
+            }
+        ],
+        era_registry=era_registry,
+    )
+
+    assert turn.source_era == "chat.c4"
+    assert turn.pipeline_profile == "oss"
+    assert turn.field_availability["pipeline_profile"] == "recorded"
+    assert turn.field_availability["tool_calls"] == "derived"
+    assert turn.tool_calls == [
+        {
+            "observation_id": "redacted-tool-observation",
+            "name": "get_farmer_milk_collection_details",
+            "call_id": "redacted-call-id",
+            "input": {"farmer_code": "redacted"},
+            "output": "<redacted tool response>",
+        }
+    ]
 
 
 def test_resolver_rejects_an_amul_agent_trace_outside_registered_c3_c5_dates(era_registry):
@@ -148,7 +279,7 @@ def test_resolver_adapts_c6_root_input_and_categorical_scores(era_registry):
 
     assert turn.source_era == "chat.c6"
     assert turn.source_schema_version == "chat.c6.v1"
-    assert turn.source_era_extensions == []
+    assert turn.source_era_extensions == ["chat.c6b", "chat.c6c", "chat.c7"]
     assert turn.original_question == "<redacted query>"
     assert turn.answer == "<redacted answer>"
     assert turn.pipeline_profile == "oss"

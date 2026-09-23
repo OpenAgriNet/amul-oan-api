@@ -5,7 +5,9 @@ from typing import Any, Mapping, Sequence
 
 from app.models.telemetry_analytics import (
     CanonicalChatTurn,
+    ChatC2TraceSchema,
     ChatC3TraceSchema,
+    ChatC4TraceSchema,
     ChatC5TraceSchema,
     ChatC6TraceSchema,
     ChatC8TraceSchema,
@@ -19,6 +21,77 @@ from app.services.telemetry_era_registry import (
 
 class UnsupportedTelemetryEra(ValueError):
     """Raised when a raw trace does not belong to an adapter's documented era."""
+
+
+class ChatC2Adapter:
+    """Adapt c2 turns when the bundle contains its agent observation.
+
+    c2 root payloads do not contain the final answer. The target-language answer
+    is reconstructed from ``stream_translation`` when present, otherwise from
+    the agent observation's recorded final result. A separate pretranslation
+    trace cannot be joined safely from name or time alone, so the original
+    question remains unavailable here.
+    """
+
+    era_id = "chat.c2"
+
+    @classmethod
+    def adapt(
+        cls,
+        trace: ChatC2TraceSchema,
+        *,
+        observations: Sequence[Mapping[str, Any]] = (),
+        scores: Sequence[LangfuseScoreSchema] = (),
+        source_era_extensions: list[str] | None = None,
+        user_id_semantics: str = "query_param_then_anonymous",
+    ) -> CanonicalChatTurn:
+        agent_observation = _find_agent_observation(observations)
+        if agent_observation is None:
+            raise UnsupportedTelemetryEra(
+                "chat.c2 requires an 'Amul AI Agent run' observation to distinguish an agent turn from c2 noise"
+            )
+        answer = _c2_answer(observations, agent_observation)
+
+        return CanonicalChatTurn(
+            source_era=cls.era_id,
+            source_schema_version="chat.c2.v1",
+            source_era_extensions=source_era_extensions or [],
+            source_trace_id=trace.id,
+            source_trace_name=trace.name,
+            timestamp=trace.timestamp,
+            session_id=trace.session_id,
+            user_id=_identifier_or_none(trace.metadata.user_id),
+            user_id_semantics=user_id_semantics,
+            channel=trace.metadata.channel,
+            pipeline=trace.metadata.pipeline,
+            source_lang=trace.metadata.source_lang,
+            target_lang=trace.metadata.target_lang,
+            original_question=None,
+            answer=answer,
+            root_input=trace.input,
+            root_output=trace.output,
+            observation_names=_names(observations),
+            score_names=[score.name for score in scores],
+            field_availability={
+                "session_id": _availability(trace.session_id),
+                "user_id": _availability(trace.metadata.user_id),
+                "channel": _availability(trace.metadata.channel),
+                "pipeline": _availability(trace.metadata.pipeline),
+                "pipeline_profile": "unavailable",
+                "source_lang": _availability(trace.metadata.source_lang),
+                "target_lang": _availability(trace.metadata.target_lang),
+                "original_question": "unavailable",
+                "answer": _availability(answer),
+                "root_input": _availability(trace.input),
+                "root_output": _availability(trace.output),
+                "persona": "unavailable",
+                "turn_outcome": "unavailable",
+                "served_tier": "unavailable",
+                "full_turn_latency_ms": "unavailable",
+                "tool_calls": "unavailable",
+                "scores": "unavailable",
+            },
+        )
 
 
 class ChatC3Adapter:
@@ -51,7 +124,7 @@ class ChatC3Adapter:
             source_trace_name=trace.name,
             timestamp=trace.timestamp,
             session_id=trace.session_id,
-            user_id=trace.metadata.user_id,
+            user_id=_identifier_or_none(trace.metadata.user_id),
             user_id_semantics="jwt_phone_then_query_param_then_anonymous",
             channel=trace.metadata.channel,
             pipeline=trace.metadata.pipeline,
@@ -106,7 +179,7 @@ class ChatC5Adapter:
             source_trace_name=trace.name,
             timestamp=trace.timestamp,
             session_id=trace.session_id,
-            user_id=trace.metadata.user_id,
+            user_id=_identifier_or_none(trace.metadata.user_id),
             user_id_semantics="jwt_phone_then_query_param_then_anonymous",
             channel=trace.metadata.channel,
             pipeline=trace.metadata.pipeline,
@@ -141,8 +214,72 @@ class ChatC5Adapter:
         )
 
 
+class ChatC4Adapter:
+    """Adapt c4 roots and derive tool-call history from TOOL observations."""
+
+    era_id = "chat.c4"
+
+    @classmethod
+    def adapt(
+        cls,
+        trace: ChatC4TraceSchema,
+        *,
+        observations: Sequence[Mapping[str, Any]] = (),
+        scores: Sequence[LangfuseScoreSchema] = (),
+    ) -> CanonicalChatTurn:
+        tool_calls = _tool_calls(observations)
+        pipeline_profile = trace.metadata.pipeline_profile or trace.metadata.variant
+        profile_availability = (
+            "recorded"
+            if trace.metadata.pipeline_profile is not None
+            else "derived" if trace.metadata.variant is not None else "unavailable"
+        )
+        return CanonicalChatTurn(
+            source_era=cls.era_id,
+            source_schema_version="chat.c4.v1",
+            source_era_extensions=["chat.c3b"] if trace.metadata.variant is not None else [],
+            source_trace_id=trace.id,
+            source_trace_name=trace.name,
+            timestamp=trace.timestamp,
+            session_id=trace.session_id,
+            user_id=_identifier_or_none(trace.metadata.user_id),
+            user_id_semantics="jwt_phone_then_query_param_then_anonymous",
+            channel=trace.metadata.channel,
+            pipeline=trace.metadata.pipeline,
+            pipeline_profile=pipeline_profile,
+            source_lang=trace.metadata.source_lang,
+            target_lang=trace.metadata.target_lang,
+            original_question=None,
+            answer=trace.output,
+            tool_calls=tool_calls,
+            root_input=trace.input,
+            root_output=trace.output,
+            observation_names=_names(observations),
+            score_names=[score.name for score in scores],
+            field_availability={
+                "session_id": _availability(trace.session_id),
+                "user_id": _availability(trace.metadata.user_id),
+                "channel": _availability(trace.metadata.channel),
+                "pipeline": _availability(trace.metadata.pipeline),
+                "pipeline_profile": profile_availability,
+                "source_lang": _availability(trace.metadata.source_lang),
+                "target_lang": _availability(trace.metadata.target_lang),
+                "original_question": "unavailable",
+                "answer": _availability(trace.output),
+                "root_input": _availability(trace.input),
+                "root_output": _availability(trace.output),
+                "persona": "unavailable",
+                "turn_outcome": "unavailable",
+                "served_tier": "unavailable",
+                "full_turn_latency_ms": "unavailable",
+                "tool_calls": "derived" if tool_calls else "unavailable",
+                "scores": "unavailable",
+            },
+        )
+
+
 class ChatC6Adapter:
-    """Adapt c6+ root spans, including c8's translation-only continuation."""
+    """Adapt c6 root spans."""
 
     era_id = "chat.c6"
     @classmethod
@@ -152,6 +289,7 @@ class ChatC6Adapter:
         *,
         observations: Sequence[Mapping[str, Any]] = (),
         scores: Sequence[LangfuseScoreSchema] = (),
+        source_era_extensions: list[str] | None = None,
     ) -> CanonicalChatTurn:
         score_values = {score.name: _string_or_none(score.value) for score in scores}
         root_input = trace.input
@@ -159,14 +297,12 @@ class ChatC6Adapter:
         return CanonicalChatTurn(
             source_era=cls.era_id,
             source_schema_version="chat.c6.v1",
-            # c8's deployment boundary is documented as unverified; do not
-            # assign it from the merge date alone.
-            source_era_extensions=[],
+            source_era_extensions=source_era_extensions or [],
             source_trace_id=trace.id,
             source_trace_name=trace.name,
             timestamp=trace.timestamp,
             session_id=trace.session_id,
-            user_id=trace.metadata.user_id,
+            user_id=_identifier_or_none(trace.metadata.user_id),
             user_id_semantics="jwt_phone_then_query_param_then_anonymous",
             channel=_string_or_none((root_input or {}).get("channel")) or trace.metadata.channel,
             pipeline=trace.metadata.pipeline,
@@ -240,16 +376,48 @@ def adapt_chat_trace(
     name = trace.get("name")
     parsed_scores = [LangfuseScoreSchema.model_validate(score) for score in scores]
     registry = era_registry or TelemetryEraRegistry.from_yaml(default_era_registry_path())
+    c2 = registry.require("chat.c2")
+    c2b = registry.require("chat.c2b")
+    c2c = registry.require("chat.c2c")
     c3 = registry.require("chat.c3")
+    c4 = registry.require("chat.c4")
     c5 = registry.require("chat.c5")
     c6 = registry.require("chat.c6")
+    c6b = registry.require("chat.c6b")
+    c6c = registry.require("chat.c6c")
+    c7 = registry.require("chat.c7")
     c8 = registry.require("chat.c8")
 
-    if name == ChatC3Adapter._trace_name and c3.valid_from <= timestamp < c5.valid_from:
+    if name in c2.root_trace_names and c2.valid_from <= timestamp < c3.valid_from:
+        raw = dict(trace)
+        raw["timestamp"] = timestamp
+        extensions = []
+        if timestamp >= c2b.valid_from:
+            extensions.append("chat.c2b")
+        if timestamp >= c2c.valid_from:
+            extensions.append("chat.c2c")
+        return ChatC2Adapter.adapt(
+            ChatC2TraceSchema.model_validate(raw),
+            observations=observations,
+            scores=parsed_scores,
+            source_era_extensions=extensions,
+            user_id_semantics=(
+                "jwt_phone_then_query_param_then_anonymous"
+                if timestamp >= c2b.valid_from
+                else "query_param_then_anonymous"
+            ),
+        )
+    if name == ChatC3Adapter._trace_name and c3.valid_from <= timestamp < c4.valid_from:
         raw = dict(trace)
         raw["timestamp"] = timestamp
         return ChatC3Adapter.adapt(
             ChatC3TraceSchema.model_validate(raw), observations=observations, scores=parsed_scores
+        )
+    if name == ChatC3Adapter._trace_name and c4.valid_from <= timestamp < c5.valid_from:
+        raw = dict(trace)
+        raw["timestamp"] = timestamp
+        return ChatC4Adapter.adapt(
+            ChatC4TraceSchema.model_validate(raw), observations=observations, scores=parsed_scores
         )
     if name == ChatC3Adapter._trace_name and c5.valid_from <= timestamp < (c3.valid_to or c6.valid_from):
         raw = dict(trace)
@@ -260,8 +428,12 @@ def adapt_chat_trace(
     if name in c6.root_trace_names and c6.valid_from <= timestamp < c8.valid_from:
         raw = dict(trace)
         raw["timestamp"] = timestamp
+        extensions = _c6_extensions(timestamp, raw, parsed_scores, c6b=c6b, c6c=c6c, c7=c7)
         return ChatC6Adapter.adapt(
-            ChatC6TraceSchema.model_validate(raw), observations=observations, scores=parsed_scores
+            ChatC6TraceSchema.model_validate(raw),
+            observations=observations,
+            scores=parsed_scores,
+            source_era_extensions=extensions,
         )
     if name in c8.root_trace_names and timestamp >= c8.valid_from:
         if c8.valid_from_confidence != "high":
@@ -292,9 +464,94 @@ def _string_or_none(value: Any) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
+def _identifier_or_none(value: Any) -> str | None:
+    if isinstance(value, (str, int)):
+        return str(value) or None
+    return None
+
+
 def _availability(value: Any) -> str:
     return "recorded" if value is not None else "unavailable"
 
 
 def _names(items: Sequence[Mapping[str, Any]]) -> list[str]:
     return [name for item in items if isinstance((name := item.get("name")), str)]
+
+
+def _find_agent_observation(items: Sequence[Mapping[str, Any]]) -> Mapping[str, Any] | None:
+    for item in items:
+        name = item.get("name")
+        attributes = _attributes(item)
+        if (
+            isinstance(name, str)
+            and name.startswith("Amul AI Agent run")
+            or attributes.get("agent_name") == "Amul AI Agent"
+            or attributes.get("logfire.msg") == "Amul AI Agent run"
+        ):
+            return item
+    return None
+
+
+def _c2_answer(
+    observations: Sequence[Mapping[str, Any]], agent_observation: Mapping[str, Any]
+) -> Any | None:
+    for observation in observations:
+        metadata = observation.get("metadata")
+        stage = metadata.get("pipeline_stage") if isinstance(metadata, Mapping) else None
+        if stage == "stream_translation" and observation.get("output") is not None:
+            return observation["output"]
+    attributes = _attributes(agent_observation)
+    return attributes.get("final_result") or agent_observation.get("output")
+
+
+def _tool_calls(items: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    calls = []
+    for item in items:
+        if item.get("type") != "TOOL":
+            continue
+        attributes = _attributes(item)
+        calls.append(
+            {
+                "observation_id": item.get("id"),
+                "name": attributes.get("gen_ai.tool.name") or item.get("name"),
+                "call_id": attributes.get("gen_ai.tool.call.id"),
+                "input": item.get("input"),
+                "output": item.get("output"),
+            }
+        )
+    return calls
+
+
+def _attributes(item: Mapping[str, Any]) -> Mapping[str, Any]:
+    direct = item.get("attributes")
+    if isinstance(direct, Mapping):
+        return direct
+    metadata = item.get("metadata")
+    nested = metadata.get("attributes") if isinstance(metadata, Mapping) else None
+    return nested if isinstance(nested, Mapping) else {}
+
+
+def _c6_extensions(
+    timestamp: datetime,
+    trace: Mapping[str, Any],
+    scores: Sequence[LangfuseScoreSchema],
+    *,
+    c6b: Any,
+    c6c: Any,
+    c7: Any,
+) -> list[str]:
+    """Label overlapping c6 additions only when their data is actually present."""
+
+    score_names = {score.name for score in scores}
+    metadata = trace.get("metadata")
+    metadata = metadata if isinstance(metadata, Mapping) else {}
+    root_input = trace.get("input")
+    root_input = root_input if isinstance(root_input, Mapping) else {}
+    extensions = []
+    if timestamp >= c6b.valid_from and "turn_outcome" in score_names:
+        extensions.append("chat.c6b")
+    if timestamp >= c6c.valid_from and "served_tier" in score_names:
+        extensions.append("chat.c6c")
+    if timestamp >= c7.valid_from and (root_input.get("persona") is not None or metadata.get("persona") is not None):
+        extensions.append("chat.c7")
+    return extensions
