@@ -20,6 +20,19 @@ def _mark_complete_ocr(ocr_stats: dict[str, int] | None, total_pages: int = 1) -
         ocr_stats.update(total_pages=total_pages, failed_pages=0)
 
 
+def _passthrough_content_filter(monkeypatch):
+    """Keep build-record tests focused on OCR/dedupe; filter is tested separately."""
+
+    async def _identity(_client, raw_ocr_text, *, scheme_title, source_name):
+        return {
+            "content": raw_ocr_text,
+            "content_filter_status": si.CONTENT_FILTER_STATUS_FILTERED,
+            "content_filter_reason": None,
+        }
+
+    monkeypatch.setattr(si, "filter_scheme_ocr_content", _identity)
+
+
 def test_scheme_sources_read_urls_from_settings():
     assert si.BANAS_SITE_ORIGIN == si.settings.banas_scheme_site_origin
     assert si.BANAS_SOURCE.source_url == si.settings.banas_scheme_documents_api_url
@@ -336,6 +349,7 @@ def test_build_banas_record_returns_expected_schema(monkeypatch):
         return b"pdf"
 
     monkeypatch.setattr(si, "fetch_bytes", fake_fetch_bytes)
+    _passthrough_content_filter(monkeypatch)
 
     async def fake_extract(_client, _pdf_bytes, *, ocr_stats=None):
         _mark_complete_ocr(ocr_stats)
@@ -365,6 +379,8 @@ def test_build_banas_record_returns_expected_schema(monkeypatch):
         "ocr_complete",
         "ocr_total_pages",
         "ocr_failed_pages",
+        "content_filter_status",
+        "content_filter_reason",
         "source_name",
         "last_refreshed_at",
     }
@@ -374,6 +390,473 @@ def test_build_banas_record_returns_expected_schema(monkeypatch):
     assert record["ocr_complete"] is True
     assert record["ocr_total_pages"] == 1
     assert record["ocr_failed_pages"] == 0
+    assert record["content_filter_status"] == si.CONTENT_FILTER_STATUS_FILTERED
+    assert record["content_filter_reason"] is None
+
+
+def test_chunk_ocr_paragraphs_keeps_paragraph_boundaries():
+    paragraphs = ["alpha", "beta", "gamma that is longer than limit and must split alone"]
+    chunks = si._chunk_ocr_paragraphs(paragraphs, max_chars=20)
+    assert chunks[0] == "alpha\n\nbeta"
+    assert chunks[1].startswith("gamma that is longer")
+    assert all(isinstance(chunk, str) and chunk for chunk in chunks)
+
+
+def test_chunk_ocr_paragraphs_splits_oversized_paragraph_on_line_boundaries():
+    paragraph = (
+        "Eligibility: registered milk producers only.\n"
+        "Benefit amount: 50% subsidy up to 10000.\n"
+        "Deadline: 31/12/2027 for applications.\n"
+        "Contact society office for documents."
+    )
+    chunks = si._chunk_ocr_paragraphs([paragraph], max_chars=80)
+    assert len(chunks) >= 2
+    assert all(len(chunk) <= 80 for chunk in chunks)
+    # Prefer line boundaries: first overflow starts at the next full line, not mid-number.
+    assert chunks[0] == "Eligibility: registered milk producers only."
+    assert chunks[1].startswith("Benefit amount:")
+    assert "50%" in "\n".join(chunks)
+    assert "31/12/2027" in "\n".join(chunks)
+    assert "10000" in "\n".join(chunks)
+
+
+def test_chunk_ocr_paragraphs_hard_slices_single_overlong_line():
+    paragraph = "BenefitAmount:50000|Deadline:31/12/2027|Eligibility:registeredproducersonly"
+    chunks = si._chunk_ocr_paragraphs([paragraph], max_chars=20)
+    assert len(chunks) >= 2
+    assert all(len(chunk) <= 20 for chunk in chunks)
+    assert "".join(chunks) == paragraph
+
+
+def test_scheme_content_filter_prompt_keeps_generic_retention_rules():
+    prompt = si.SCHEME_CONTENT_FILTER_PROMPT
+    for required in (
+        "Conditional / consequence rules",
+        "Payment and fulfillment mechanics",
+        "effective dates",
+        "Alternate process paths/variants",
+        "Keep numeric/date tokens exact",
+        "Do not merge separate schemes",
+        "{scheme_title}",
+        "{source_name}",
+        "{ocr_text}",
+    ):
+        assert required in prompt
+    # No scheme-specific hardcoding from audit examples.
+    for banned in (
+        "Pakki",
+        "PAKI",
+        "Iron stall",
+        "ANIMAL COOLING",
+        "30,000",
+        "75,000",
+        "31/05/2023",
+        "banasdairy",
+        "sursagar",
+    ):
+        assert banned not in prompt
+
+
+def test_filter_scheme_ocr_content_returns_raw_when_disabled(monkeypatch):
+    monkeypatch.setattr(si.settings, "scheme_content_filter_enabled", False)
+    monkeypatch.setattr(si.settings, "scheme_content_filter_endpoint_url", "http://gemma-host:8020")
+    raw = "Eligibility: farmer members only\n\nFooter noise"
+
+    class _BoomClient:
+        async def post(self, *args, **kwargs):
+            raise AssertionError("Gemma must not be called when filter is disabled")
+
+    result = asyncio.run(
+        si.filter_scheme_ocr_content(
+            _BoomClient(),
+            raw,
+            scheme_title="Cooling Scheme",
+            source_name="banas",
+        )
+    )
+    assert result["content"] == raw
+    assert result["content_filter_status"] == si.CONTENT_FILTER_STATUS_SKIPPED_DISABLED
+    assert result["content_filter_reason"] == "disabled"
+
+
+def test_build_pdf_record_respects_content_filter_feature_flag(monkeypatch):
+    """When SCHEME_CONTENT_FILTER_ENABLED is false, store raw OCR and never call Gemma."""
+    monkeypatch.setattr(si.settings, "scheme_content_filter_enabled", False)
+    monkeypatch.setattr(si.settings, "scheme_content_filter_endpoint_url", "http://gemma-host:8020")
+
+    async def fake_fetch_bytes(_client, _url):
+        return b"pdf"
+
+    async def fake_extract(_client, _pdf_bytes, *, ocr_stats=None):
+        _mark_complete_ocr(ocr_stats)
+        return "raw OCR with letterhead noise"
+
+    post_calls = []
+
+    class _Client:
+        async def post(self, *args, **kwargs):
+            post_calls.append((args, kwargs))
+            raise AssertionError("filter HTTP must not run when flag is off")
+
+    monkeypatch.setattr(si, "fetch_bytes", fake_fetch_bytes)
+    monkeypatch.setattr(si, "extract_text_from_pdf_bytes", fake_extract)
+
+    record = asyncio.run(
+        si._build_pdf_record(
+            client=_Client(),
+            source=si.BANAS_SOURCE,
+            scheme_title="Animal Cooling",
+            scheme_url="https://example.com/scheme.pdf",
+            last_refreshed_at="2026-07-01T00:00:00Z",
+        )
+    )
+
+    assert record is not None
+    assert record["content"] == "raw OCR with letterhead noise"
+    assert record["content_filter_status"] == si.CONTENT_FILTER_STATUS_SKIPPED_DISABLED
+    assert record["content_filter_reason"] == "disabled"
+    assert post_calls == []
+
+
+def test_scheme_content_filter_posture_logs_enabled_state(monkeypatch, caplog):
+    import logging
+
+    monkeypatch.setattr(si.settings, "scheme_content_filter_enabled", True)
+    monkeypatch.setattr(si.settings, "scheme_content_filter_endpoint_url", "http://gemma:8020")
+    monkeypatch.setattr(si.settings, "oss_inference_endpoint_url", None)
+
+    with caplog.at_level(logging.INFO, logger=si.logger.name):
+        si._log_scheme_content_filter_posture("banas")
+
+    assert any(
+        "Scheme content filter posture" in rec.message
+        and "enabled=True" in rec.message
+        and "http://gemma:8020" in rec.message
+        for rec in caplog.records
+    )
+
+
+def test_filter_scheme_ocr_content_falls_back_on_request_failure(monkeypatch):
+    monkeypatch.setattr(si.settings, "scheme_content_filter_enabled", True)
+    monkeypatch.setattr(si.settings, "scheme_content_filter_endpoint_url", "http://gemma-host:8020")
+    monkeypatch.setattr(si.settings, "scheme_content_filter_timeout_seconds", 5.0)
+    monkeypatch.setattr(si.settings, "scheme_content_filter_max_chunk_chars", 1000)
+    monkeypatch.setattr(si.settings, "oss_inference_api_key", None)
+    monkeypatch.setattr(si, "SCHEME_OCR_PAGE_MAX_ATTEMPTS", 3)
+    monkeypatch.setattr(si, "SCHEME_OCR_RETRY_BASE_DELAY_SECONDS", 0.0)
+    monkeypatch.setattr(si, "SCHEME_OCR_RETRY_MAX_DELAY_SECONDS", 0.0)
+
+    call_count = 0
+
+    class _FailClient:
+        async def post(self, *args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            raise httpx.ConnectError("connection refused")
+
+    raw = "Benefit: 50% subsidy on cooler.\n\nPage footer"
+
+    result = asyncio.run(
+        si.filter_scheme_ocr_content(
+            _FailClient(),
+            raw,
+            scheme_title="Cooling Scheme",
+            source_name="banas",
+        )
+    )
+    assert result["content"] == raw
+    assert result["content_filter_status"] == si.CONTENT_FILTER_STATUS_RAW_FALLBACK
+    assert result["content_filter_reason"] == "chunk_failure"
+    assert call_count == 3
+
+
+def test_filter_scheme_ocr_content_keeps_model_output(monkeypatch):
+    monkeypatch.setattr(si.settings, "scheme_content_filter_enabled", True)
+    monkeypatch.setattr(si.settings, "scheme_content_filter_endpoint_url", "http://gemma-host:8020")
+    monkeypatch.setattr(si.settings, "scheme_content_filter_model", "gemma-4-31b-it")
+    monkeypatch.setattr(si.settings, "scheme_content_filter_timeout_seconds", 5.0)
+    monkeypatch.setattr(si.settings, "scheme_content_filter_max_chunk_chars", 5000)
+    monkeypatch.setattr(si.settings, "scheme_content_filter_max_output_tokens", 256)
+    monkeypatch.setattr(si.settings, "oss_inference_api_key", "secret-key")
+
+    captured = {}
+
+    class _FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": "Eligibility: registered milk producers.\nBenefit: 50% subsidy."
+                        }
+                    }
+                ]
+            }
+
+    class _FakeClient:
+        async def post(self, url, json, timeout, headers=None):
+            captured["url"] = url
+            captured["json"] = json
+            captured["timeout"] = timeout
+            captured["headers"] = headers
+            return _FakeResponse()
+
+    raw = "Letterhead\n\nEligibility: registered milk producers.\nBenefit: 50% subsidy.\n\nPage 1"
+    result = asyncio.run(
+        si.filter_scheme_ocr_content(
+            _FakeClient(),
+            raw,
+            scheme_title="Cooling Scheme",
+            source_name="banas",
+        )
+    )
+
+    assert result["content"] == "Eligibility: registered milk producers.\nBenefit: 50% subsidy."
+    assert result["content_filter_status"] == si.CONTENT_FILTER_STATUS_FILTERED
+    assert result["content_filter_reason"] is None
+    assert captured["url"] == "http://gemma-host:8020/v1/chat/completions"
+    assert captured["headers"] == {"Authorization": "Bearer secret-key"}
+    assert captured["json"]["model"] == "gemma-4-31b-it"
+    assert "Cooling Scheme" in captured["json"]["messages"][0]["content"]
+    assert "Eligibility: registered milk producers" in captured["json"]["messages"][0]["content"]
+
+
+def test_filter_scheme_ocr_content_falls_back_on_length_truncation(monkeypatch):
+    monkeypatch.setattr(si.settings, "scheme_content_filter_enabled", True)
+    monkeypatch.setattr(si.settings, "scheme_content_filter_endpoint_url", "http://gemma-host:8020")
+    monkeypatch.setattr(si.settings, "scheme_content_filter_timeout_seconds", 5.0)
+    monkeypatch.setattr(si.settings, "scheme_content_filter_max_chunk_chars", 5000)
+    monkeypatch.setattr(si.settings, "oss_inference_api_key", None)
+
+    class _FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "choices": [
+                    {
+                        "finish_reason": "length",
+                        "message": {"content": "Partial filtered content"},
+                    }
+                ]
+            }
+
+    class _FakeClient:
+        async def post(self, *args, **kwargs):
+            return _FakeResponse()
+
+    raw = "Original OCR content should be retained on truncation."
+    result = asyncio.run(
+        si.filter_scheme_ocr_content(
+            _FakeClient(),
+            raw,
+            scheme_title="Cooling Scheme",
+            source_name="banas",
+        )
+    )
+    assert result["content"] == raw
+    assert result["content_filter_status"] == si.CONTENT_FILTER_STATUS_RAW_FALLBACK
+    assert result["content_filter_reason"] == "chunk_failure"
+
+
+def test_filter_scheme_ocr_content_falls_back_on_ungrounded_numeric_tokens(monkeypatch):
+    monkeypatch.setattr(si.settings, "scheme_content_filter_enabled", True)
+    monkeypatch.setattr(si.settings, "scheme_content_filter_endpoint_url", "http://gemma-host:8020")
+    monkeypatch.setattr(si.settings, "scheme_content_filter_timeout_seconds", 5.0)
+    monkeypatch.setattr(si.settings, "scheme_content_filter_max_chunk_chars", 5000)
+    monkeypatch.setattr(si.settings, "oss_inference_api_key", None)
+
+    class _FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "choices": [
+                    {
+                        "finish_reason": "stop",
+                        "message": {"content": "Benefit: 70% subsidy until 01/01/2030."},
+                    }
+                ]
+            }
+
+    class _FakeClient:
+        async def post(self, *args, **kwargs):
+            return _FakeResponse()
+
+    raw = "Benefit: 50% subsidy until 31/12/2027."
+    result = asyncio.run(
+        si.filter_scheme_ocr_content(
+            _FakeClient(),
+            raw,
+            scheme_title="Cooling Scheme",
+            source_name="banas",
+        )
+    )
+    assert result["content"] == raw
+    assert result["content_filter_status"] == si.CONTENT_FILTER_STATUS_RAW_FALLBACK
+    assert result["content_filter_reason"] == "chunk_numeric_token_mismatch"
+
+
+def test_filter_scheme_ocr_content_accepts_grounded_numeric_tokens(monkeypatch):
+    monkeypatch.setattr(si.settings, "scheme_content_filter_enabled", True)
+    monkeypatch.setattr(si.settings, "scheme_content_filter_endpoint_url", "http://gemma-host:8020")
+    monkeypatch.setattr(si.settings, "scheme_content_filter_timeout_seconds", 5.0)
+    monkeypatch.setattr(si.settings, "scheme_content_filter_max_chunk_chars", 5000)
+    monkeypatch.setattr(si.settings, "oss_inference_api_key", None)
+
+    class _FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "choices": [
+                    {
+                        "finish_reason": "stop",
+                        "message": {"content": "Benefit: 50% subsidy until 31/12/2027."},
+                    }
+                ]
+            }
+
+    class _FakeClient:
+        async def post(self, *args, **kwargs):
+            return _FakeResponse()
+
+    raw = "Header\nBenefit: 50% subsidy until 31/12/2027.\nFooter"
+    result = asyncio.run(
+        si.filter_scheme_ocr_content(
+            _FakeClient(),
+            raw,
+            scheme_title="Cooling Scheme",
+            source_name="banas",
+        )
+    )
+    assert result["content"] == "Benefit: 50% subsidy until 31/12/2027."
+    assert result["content_filter_status"] == si.CONTENT_FILTER_STATUS_FILTERED
+    assert result["content_filter_reason"] is None
+
+
+def test_build_pdf_record_applies_content_filter_after_ocr(monkeypatch):
+    async def fake_fetch_bytes(_client, _url):
+        return b"pdf"
+
+    async def fake_extract(_client, _pdf_bytes, *, ocr_stats=None):
+        _mark_complete_ocr(ocr_stats)
+        return "raw OCR dump with noise"
+
+    filter_calls = []
+
+    async def fake_filter(_client, raw_ocr_text, *, scheme_title, source_name):
+        filter_calls.append(
+            {
+                "raw": raw_ocr_text,
+                "scheme_title": scheme_title,
+                "source_name": source_name,
+            }
+        )
+        return {
+            "content": "filtered scheme details",
+            "content_filter_status": si.CONTENT_FILTER_STATUS_FILTERED,
+            "content_filter_reason": None,
+        }
+
+    monkeypatch.setattr(si, "fetch_bytes", fake_fetch_bytes)
+    monkeypatch.setattr(si, "extract_text_from_pdf_bytes", fake_extract)
+    monkeypatch.setattr(si, "filter_scheme_ocr_content", fake_filter)
+
+    record = asyncio.run(
+        si._build_pdf_record(
+            client=SimpleNamespace(),
+            source=si.BANAS_SOURCE,
+            scheme_title="Animal Cooling",
+            scheme_url="https://example.com/scheme.pdf",
+            last_refreshed_at="2026-07-01T00:00:00Z",
+        )
+    )
+
+    assert record is not None
+    assert record["content"] == "filtered scheme details"
+    assert record["content_filter_status"] == si.CONTENT_FILTER_STATUS_FILTERED
+    assert record["content_filter_reason"] is None
+    assert filter_calls == [
+        {
+            "raw": "raw OCR dump with noise",
+            "scheme_title": "Animal Cooling",
+            "source_name": "banas",
+        }
+    ]
+
+
+def test_build_pdf_record_skips_pdf_when_filter_raises(monkeypatch):
+    async def fake_fetch_bytes(_client, _url):
+        return b"pdf"
+
+    async def fake_extract(_client, _pdf_bytes, *, ocr_stats=None):
+        _mark_complete_ocr(ocr_stats)
+        return "raw OCR dump with noise"
+
+    async def boom_filter(*_args, **_kwargs):
+        raise RuntimeError("unexpected filter blowup")
+
+    monkeypatch.setattr(si, "fetch_bytes", fake_fetch_bytes)
+    monkeypatch.setattr(si, "extract_text_from_pdf_bytes", fake_extract)
+    monkeypatch.setattr(si, "filter_scheme_ocr_content", boom_filter)
+
+    record = asyncio.run(
+        si._build_pdf_record(
+            client=SimpleNamespace(),
+            source=si.BANAS_SOURCE,
+            scheme_title="Animal Cooling",
+            scheme_url="https://example.com/scheme.pdf",
+            last_refreshed_at="2026-07-01T00:00:00Z",
+        )
+    )
+    assert record is None
+
+
+def test_ingest_banas_source_continues_when_one_pdf_filter_raises(monkeypatch):
+    links = [
+        {"scheme_title": "Scheme A", "scheme_url": "https://example.com/a.pdf"},
+        {"scheme_title": "Scheme B", "scheme_url": "https://example.com/b.pdf"},
+    ]
+
+    async def fake_fetch_json(_client, _url):
+        return []
+
+    async def fake_fetch_bytes(_client, url):
+        return b"pdf-a" if url.endswith("a.pdf") else b"pdf-b"
+
+    async def fake_extract(_client, pdf_bytes, *, ocr_stats=None):
+        _mark_complete_ocr(ocr_stats)
+        return f"ocr-{pdf_bytes.decode()}"
+
+    async def selective_filter(_client, raw_ocr_text, *, scheme_title, source_name):
+        if scheme_title == "Scheme A":
+            raise RuntimeError("filter boom for scheme A")
+        return {
+            "content": f"filtered-{raw_ocr_text}",
+            "content_filter_status": si.CONTENT_FILTER_STATUS_FILTERED,
+            "content_filter_reason": None,
+        }
+
+    _stub_empty_prior_pdf_cache(monkeypatch)
+    monkeypatch.setattr(si, "fetch_json", fake_fetch_json)
+    monkeypatch.setattr(si, "parse_banas_scheme_links", lambda _payload: links)
+    monkeypatch.setattr(si, "fetch_bytes", fake_fetch_bytes)
+    monkeypatch.setattr(si, "extract_text_from_pdf_bytes", fake_extract)
+    monkeypatch.setattr(si, "filter_scheme_ocr_content", selective_filter)
+    monkeypatch.setattr(si, "SCHEME_BANAS_MIN_RECORD_COVERAGE_RATIO", 0.4)
+
+    records = asyncio.run(si._ingest_banas_source(si.BANAS_SOURCE, SimpleNamespace()))
+    assert len(records) == 1
+    assert records[0]["scheme_title"] == "Scheme B"
+    assert records[0]["content"] == "filtered-ocr-pdf-b"
+    assert records[0]["content_filter_status"] == si.CONTENT_FILTER_STATUS_FILTERED
 
 
 def test_build_pdf_record_skips_ocr_when_url_and_hash_match(monkeypatch):
@@ -409,6 +892,8 @@ def test_build_pdf_record_skips_ocr_when_url_and_hash_match(monkeypatch):
                     "ocr_complete": True,
                     "ocr_total_pages": 2,
                     "ocr_failed_pages": 0,
+                    "content_filter_status": si.CONTENT_FILTER_STATUS_RAW_FALLBACK,
+                    "content_filter_reason": "chunk_failure",
                 }
             },
         )
@@ -420,7 +905,49 @@ def test_build_pdf_record_skips_ocr_when_url_and_hash_match(monkeypatch):
     assert record["ocr_complete"] is True
     assert record["ocr_total_pages"] == 2
     assert record["ocr_failed_pages"] == 0
+    assert record["content_filter_status"] == si.CONTENT_FILTER_STATUS_RAW_FALLBACK
+    assert record["content_filter_reason"] == "chunk_failure"
     assert ocr_calls == []
+
+
+def test_build_pdf_record_marks_legacy_hash_skip_filter_status_unknown(monkeypatch):
+    pdf_bytes = b"unchanged-pdf"
+    content_hash = si._hash_pdf_bytes(pdf_bytes)
+    scheme_url = "https://example.com/scheme.pdf"
+
+    async def fake_fetch_bytes(_client, _url):
+        return pdf_bytes
+
+    async def boom_extract(*_args, **_kwargs):
+        raise AssertionError("OCR must not run")
+
+    monkeypatch.setattr(si, "fetch_bytes", fake_fetch_bytes)
+    monkeypatch.setattr(si, "extract_text_from_pdf_bytes", boom_extract)
+
+    record = asyncio.run(
+        si._build_pdf_record(
+            client=SimpleNamespace(),
+            source=si.BANAS_SOURCE,
+            scheme_title="Legacy Scheme",
+            scheme_url=scheme_url,
+            last_refreshed_at="2026-07-01T00:00:00Z",
+            prior_records_by_url={
+                scheme_url: {
+                    "content": "legacy cached text",
+                    "content_hash": content_hash,
+                    "content_type": "pdf",
+                    "ocr_complete": True,
+                    "ocr_total_pages": 1,
+                    "ocr_failed_pages": 0,
+                }
+            },
+        )
+    )
+
+    assert record is not None
+    assert record["content"] == "legacy cached text"
+    assert record["content_filter_status"] == si.CONTENT_FILTER_STATUS_UNKNOWN
+    assert record["content_filter_reason"] is None
 
 
 def test_build_pdf_record_retries_matching_hash_when_prior_ocr_was_partial(monkeypatch):
@@ -440,6 +967,7 @@ def test_build_pdf_record_retries_matching_hash_when_prior_ocr_was_partial(monke
 
     monkeypatch.setattr(si, "fetch_bytes", fake_fetch_bytes)
     monkeypatch.setattr(si, "extract_text_from_pdf_bytes", fake_extract)
+    _passthrough_content_filter(monkeypatch)
 
     record = asyncio.run(
         si._build_pdf_record(
@@ -484,6 +1012,7 @@ def test_build_pdf_record_runs_ocr_when_hash_changes(monkeypatch):
 
     monkeypatch.setattr(si, "fetch_bytes", fake_fetch_bytes)
     monkeypatch.setattr(si, "extract_text_from_pdf_bytes", fake_extract)
+    _passthrough_content_filter(monkeypatch)
 
     record = asyncio.run(
         si._build_pdf_record(
@@ -521,6 +1050,7 @@ def test_build_pdf_record_runs_ocr_for_new_url(monkeypatch):
 
     monkeypatch.setattr(si, "fetch_bytes", fake_fetch_bytes)
     monkeypatch.setattr(si, "extract_text_from_pdf_bytes", fake_extract)
+    _passthrough_content_filter(monkeypatch)
 
     record = asyncio.run(
         si._build_pdf_record(
@@ -560,6 +1090,7 @@ def test_build_pdf_record_runs_ocr_when_prior_hash_missing(monkeypatch):
 
     monkeypatch.setattr(si, "fetch_bytes", fake_fetch_bytes)
     monkeypatch.setattr(si, "extract_text_from_pdf_bytes", fake_extract)
+    _passthrough_content_filter(monkeypatch)
 
     record = asyncio.run(
         si._build_pdf_record(
