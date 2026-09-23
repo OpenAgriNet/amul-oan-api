@@ -1,6 +1,6 @@
 """Adapters from historical Langfuse telemetry eras to canonical chat turns."""
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping, Sequence
 
 from app.models.telemetry_analytics import (
@@ -21,6 +21,12 @@ from app.services.telemetry_era_registry import (
 
 class UnsupportedTelemetryEra(ValueError):
     """Raised when a raw trace does not belong to an adapter's documented era."""
+
+
+# A pretranslation trace is emitted immediately around the c2 agent turn. This
+# prevents an old trace from the same long-lived session being reused as a
+# question for a later turn.
+_C2_PRETRANSLATION_MATCH_WINDOW = timedelta(minutes=2)
 
 
 class ChatC2Adapter:
@@ -81,7 +87,7 @@ class ChatC2Adapter:
                 "pipeline_profile": "unavailable",
                 "source_lang": _availability(trace.metadata.source_lang),
                 "target_lang": _availability(trace.metadata.target_lang),
-                "original_question": _availability(original_question),
+                "original_question": "derived" if original_question is not None else "unavailable",
                 "answer": _availability(answer),
                 "root_input": _availability(trace.input),
                 "root_output": _availability(trace.output),
@@ -547,15 +553,31 @@ def _c2_original_question(
     session_id = _session_id(trace)
     if session_id is None:
         return None
+    turn_timestamp = _parse_timestamp(trace.get("timestamp") or trace.get("startTime"))
+    candidates: list[tuple[timedelta, str]] = []
     for related in related_traces:
         if _session_id(related) != session_id or not _is_query_pretranslation(related):
             continue
         raw_input = related.get("input")
         if isinstance(raw_input, Mapping):
             question = _string_or_none(raw_input.get("text"))
-            if question is not None:
-                return question
-    return None
+            if question is None:
+                continue
+            try:
+                related_timestamp = _parse_timestamp(
+                    related.get("timestamp") or related.get("startTime")
+                )
+            except UnsupportedTelemetryEra:
+                continue
+            delta = abs(turn_timestamp - related_timestamp)
+            if delta <= _C2_PRETRANSLATION_MATCH_WINDOW:
+                candidates.append((delta, question))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda candidate: candidate[0])
+    if len(candidates) > 1 and candidates[0][0] == candidates[1][0]:
+        return None
+    return candidates[0][1]
 
 
 def _session_id(trace: Mapping[str, Any]) -> str | None:

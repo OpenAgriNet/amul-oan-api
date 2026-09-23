@@ -189,12 +189,14 @@ def test_c2_enriches_original_question_only_from_explicit_same_session_pretransl
             {
                 "name": "chat.translation",
                 "sessionId": "unrelated-session",
+                "timestamp": "2026-05-12T23:56:48Z",
                 "input": {"text": "<must not be used>"},
                 "metadata": {"pipeline_stage": "query_pretranslation"},
             },
             {
                 "name": "chat.translation",
                 "sessionId": "matching-session",
+                "timestamp": "2026-05-12T23:56:48Z",
                 "input": {"text": "<redacted original question>"},
                 "metadata": {"pipeline_stage": "query_pretranslation"},
             },
@@ -203,7 +205,88 @@ def test_c2_enriches_original_question_only_from_explicit_same_session_pretransl
     )
 
     assert turn.original_question == "<redacted original question>"
-    assert turn.field_availability["original_question"] == "recorded"
+    assert turn.field_availability["original_question"] == "derived"
+
+
+def test_c2_matches_each_turn_to_its_uniquely_nearest_pretranslation(era_registry):
+    observations = [
+        {
+            "name": "Amul AI Agent run (redacted)",
+            "metadata": {"attributes": {"final_result": "<redacted answer>"}},
+        }
+    ]
+    related_traces = [
+        {
+            "name": "chat.translation",
+            "sessionId": "shared-session",
+            "timestamp": "2026-05-12T10:00:01Z",
+            "input": {"text": "<redacted first question>"},
+            "metadata": {"pipeline_stage": "query_pretranslation"},
+        },
+        {
+            "name": "chat.translation",
+            "sessionId": "shared-session",
+            "timestamp": "2026-05-12T10:03:01Z",
+            "input": {"text": "<redacted second question>"},
+            "metadata": {"pipeline_stage": "query_pretranslation"},
+        },
+    ]
+
+    first_turn = adapt_chat_trace(
+        {"name": "chat.translation", "timestamp": "2026-05-12T10:00:03Z", "sessionId": "shared-session"},
+        observations=observations,
+        related_traces=related_traces,
+        era_registry=era_registry,
+    )
+    second_turn = adapt_chat_trace(
+        {"name": "chat.translation", "timestamp": "2026-05-12T10:03:03Z", "sessionId": "shared-session"},
+        observations=observations,
+        related_traces=list(reversed(related_traces)),
+        era_registry=era_registry,
+    )
+
+    assert first_turn.original_question == "<redacted first question>"
+    assert second_turn.original_question == "<redacted second question>"
+
+
+def test_c2_returns_no_question_for_ambiguous_or_stale_pretranslation(era_registry):
+    observations = [
+        {
+            "name": "Amul AI Agent run (redacted)",
+            "metadata": {"attributes": {"final_result": "<redacted answer>"}},
+        }
+    ]
+    turn = adapt_chat_trace(
+        {"name": "chat.translation", "timestamp": "2026-05-12T10:00:10Z", "sessionId": "shared-session"},
+        observations=observations,
+        related_traces=[
+            {
+                "name": "chat.translation",
+                "sessionId": "shared-session",
+                "timestamp": "2026-05-12T10:00:05Z",
+                "input": {"text": "<redacted first question>"},
+                "metadata": {"pipeline_stage": "query_pretranslation"},
+            },
+            {
+                "name": "chat.translation",
+                "sessionId": "shared-session",
+                "timestamp": "2026-05-12T10:00:15Z",
+                "input": {"text": "<redacted second question>"},
+                "metadata": {"pipeline_stage": "query_pretranslation"},
+            },
+            {
+                "name": "chat.translation",
+                "sessionId": "shared-session",
+                "timestamp": "2026-05-12T09:00:10Z",
+                "input": {"text": "<stale question>"},
+                "metadata": {"pipeline_stage": "query_pretranslation"},
+            },
+        ],
+        era_registry=era_registry,
+    )
+
+    assert turn.original_question is None
+    assert turn.field_availability["original_question"] == "unavailable"
 
 
 def test_resolver_adapts_c4_tool_observations(era_registry):
