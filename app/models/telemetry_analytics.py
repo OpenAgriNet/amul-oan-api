@@ -25,7 +25,7 @@ class CanonicalChatTurn(BaseModel):
     source_trace_name: str
     timestamp: datetime
     session_id: str | None = None
-    user_id: str | None = None
+    user_id: str | int | None = None
     user_id_semantics: str | None = None
     channel: str | None = None
     pipeline: str | None = None
@@ -64,8 +64,34 @@ class ChatC3MetadataSchema(BaseModel):
     channel: str | None = None
     source_lang: str | None = None
     target_lang: str | None = None
-    user_id: str | None = None
+    user_id: str | int | None = None
     variant: str | None = None
+
+
+class ChatC2MetadataSchema(BaseModel):
+    """Fields observed on c2 roots and their overlapping c2b/c2c extensions."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    pipeline: str | None = None
+    channel: str | None = None
+    source_lang: str | None = None
+    target_lang: str | None = None
+    user_id: str | int | None = None
+
+
+class ChatC2TraceSchema(BaseModel):
+    """c2 root contract; final answer remains in its observations."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    id: str | None = None
+    name: Literal["chat.default", "chat.translation"]
+    timestamp: datetime
+    session_id: str | None = Field(default=None, validation_alias="sessionId")
+    input: dict[str, Any] | None = None
+    output: Any | None = None
+    metadata: ChatC2MetadataSchema = Field(default_factory=ChatC2MetadataSchema)
 
 
 class ChatC3TraceSchema(BaseModel):
@@ -91,7 +117,7 @@ class ChatC5MetadataSchema(BaseModel):
     channel: str | None = None
     source_lang: str | None = None
     target_lang: str | None = None
-    user_id: str | None = None
+    user_id: str | int | None = None
     pipeline_profile: str | None = None
 
 
@@ -107,6 +133,34 @@ class ChatC5TraceSchema(BaseModel):
     input: dict[str, Any] | None = None
     output: Any | None = None
     metadata: ChatC5MetadataSchema = Field(default_factory=ChatC5MetadataSchema)
+
+
+class ChatC4MetadataSchema(BaseModel):
+    """c4 overlaps the c3b-to-c5 profile-key transition."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    pipeline: str | None = None
+    channel: str | None = None
+    source_lang: str | None = None
+    target_lang: str | None = None
+    user_id: str | None = None
+    variant: str | None = None
+    pipeline_profile: str | None = None
+
+
+class ChatC4TraceSchema(BaseModel):
+    """c4 root contract; tool calls are carried by child observations."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    id: str | None = None
+    name: Literal["Amul AI Agent"]
+    timestamp: datetime
+    session_id: str | None = Field(default=None, validation_alias="sessionId")
+    input: dict[str, Any] | None = None
+    output: Any | None = None
+    metadata: ChatC4MetadataSchema = Field(default_factory=ChatC4MetadataSchema)
 
 
 class ChatC6MetadataSchema(BaseModel):
