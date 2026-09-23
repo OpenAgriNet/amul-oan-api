@@ -135,3 +135,9 @@ class ChatC6TraceSchema(BaseModel):
     input: dict[str, Any] | None = None
     output: Any | None = None
     metadata: ChatC6MetadataSchema = Field(default_factory=ChatC6MetadataSchema)
+
+
+class ChatC8TraceSchema(ChatC6TraceSchema):
+    """Translation-only continuation of the c6 root-turn contract."""
+
+    name: Literal["chat.translation"]

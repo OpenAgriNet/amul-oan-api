@@ -37,6 +37,7 @@ from app.services.identity_profile import (
 )
 from app.personas import ChatPersona
 from app.chat_artifacts import encode_chat_artifacts
+from app.services.telemetry_stamps import forward_chat_telemetry_metadata
 
 
 class SentenceSegmenter:
@@ -272,6 +273,7 @@ async def stream_chat_messages(
     ) or user_id or "anonymous"
     effective_user_id = effective_user_id[:200]
     langfuse_metadata = {
+        **forward_chat_telemetry_metadata(settings.langfuse_release),
         "pipeline": _PIPELINE_NAME,
         "channel": (channel or "web")[:200],
         "source_lang": (source_lang or "unknown").lower()[:200],

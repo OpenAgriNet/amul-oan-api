@@ -8,7 +8,12 @@ from app.models.telemetry_analytics import (
     ChatC3TraceSchema,
     ChatC5TraceSchema,
     ChatC6TraceSchema,
+    ChatC8TraceSchema,
     LangfuseScoreSchema,
+)
+from app.services.telemetry_era_registry import (
+    TelemetryEraRegistry,
+    default_era_registry_path,
 )
 
 
@@ -26,8 +31,6 @@ class ChatC3Adapter:
     """
 
     era_id = "chat.c3"
-    _valid_from = datetime(2026, 5, 13, tzinfo=timezone.utc)
-    _valid_to = datetime(2026, 7, 24, tzinfo=timezone.utc)
     _trace_name = "Amul AI Agent"
 
     @classmethod
@@ -38,11 +41,6 @@ class ChatC3Adapter:
         observations: Sequence[Mapping[str, Any]] = (),
         scores: Sequence[LangfuseScoreSchema] = (),
     ) -> CanonicalChatTurn:
-        if not cls._valid_from <= trace.timestamp < cls._valid_to:
-            raise UnsupportedTelemetryEra(
-                "ChatC3Adapter requires an 'Amul AI Agent' trace from "
-                "2026-05-13 through 2026-07-23 UTC"
-            )
         variant = trace.metadata.variant
 
         return CanonicalChatTurn(
@@ -93,9 +91,6 @@ class ChatC5Adapter:
     """Adapt c5's c3-shaped root trace after the profile-key rename."""
 
     era_id = "chat.c5"
-    _valid_from = datetime(2026, 7, 24, tzinfo=timezone.utc)
-    _valid_to = datetime(2026, 8, 5, tzinfo=timezone.utc)
-
     @classmethod
     def adapt(
         cls,
@@ -104,12 +99,6 @@ class ChatC5Adapter:
         observations: Sequence[Mapping[str, Any]] = (),
         scores: Sequence[LangfuseScoreSchema] = (),
     ) -> CanonicalChatTurn:
-        if not cls._valid_from <= trace.timestamp < cls._valid_to:
-            raise UnsupportedTelemetryEra(
-                "ChatC5Adapter requires an 'Amul AI Agent' trace from "
-                "2026-07-24 through 2026-08-04 UTC"
-            )
-
         return CanonicalChatTurn(
             source_era=cls.era_id,
             source_schema_version="chat.c5.v1",
@@ -156,8 +145,6 @@ class ChatC6Adapter:
     """Adapt c6+ root spans, including c8's translation-only continuation."""
 
     era_id = "chat.c6"
-    _valid_from = datetime(2026, 8, 5, tzinfo=timezone.utc)
-
     @classmethod
     def adapt(
         cls,
@@ -166,10 +153,6 @@ class ChatC6Adapter:
         observations: Sequence[Mapping[str, Any]] = (),
         scores: Sequence[LangfuseScoreSchema] = (),
     ) -> CanonicalChatTurn:
-        if trace.timestamp < cls._valid_from:
-            raise UnsupportedTelemetryEra(
-                "ChatC6Adapter requires a chat.default or chat.translation trace from 2026-08-05 UTC"
-            )
         score_values = {score.name: _string_or_none(score.value) for score in scores}
         root_input = trace.input
 
@@ -220,34 +203,75 @@ class ChatC6Adapter:
         )
 
 
+class ChatC8Adapter:
+    """Adapt the verified translation-only continuation of the c6 root shape."""
+
+    era_id = "chat.c8"
+
+    @classmethod
+    def adapt(
+        cls,
+        trace: ChatC8TraceSchema,
+        *,
+        observations: Sequence[Mapping[str, Any]] = (),
+        scores: Sequence[LangfuseScoreSchema] = (),
+    ) -> CanonicalChatTurn:
+        # c8 preserves c6's root I/O contract while restricting the root name.
+        c6_turn = ChatC6Adapter.adapt(trace, observations=observations, scores=scores)
+        return c6_turn.model_copy(
+            update={
+                "source_era": cls.era_id,
+                "source_schema_version": "chat.c8.v1",
+                "source_era_extensions": [],
+            }
+        )
+
+
 def adapt_chat_trace(
     trace: Mapping[str, Any],
     *,
     observations: Sequence[Mapping[str, Any]] = (),
     scores: Sequence[Mapping[str, Any]] = (),
+    era_registry: TelemetryEraRegistry | None = None,
 ) -> CanonicalChatTurn:
     """Resolve and adapt a supported chat trace using name *and* timestamp."""
 
     timestamp = _parse_timestamp(trace.get("timestamp") or trace.get("startTime"))
     name = trace.get("name")
     parsed_scores = [LangfuseScoreSchema.model_validate(score) for score in scores]
-    if name == ChatC3Adapter._trace_name and ChatC3Adapter._valid_from <= timestamp < ChatC3Adapter._valid_to:
+    registry = era_registry or TelemetryEraRegistry.from_yaml(default_era_registry_path())
+    c3 = registry.require("chat.c3")
+    c5 = registry.require("chat.c5")
+    c6 = registry.require("chat.c6")
+    c8 = registry.require("chat.c8")
+
+    if name == ChatC3Adapter._trace_name and c3.valid_from <= timestamp < c5.valid_from:
         raw = dict(trace)
         raw["timestamp"] = timestamp
         return ChatC3Adapter.adapt(
             ChatC3TraceSchema.model_validate(raw), observations=observations, scores=parsed_scores
         )
-    if name == ChatC3Adapter._trace_name and ChatC5Adapter._valid_from <= timestamp < ChatC5Adapter._valid_to:
+    if name == ChatC3Adapter._trace_name and c5.valid_from <= timestamp < (c3.valid_to or c6.valid_from):
         raw = dict(trace)
         raw["timestamp"] = timestamp
         return ChatC5Adapter.adapt(
             ChatC5TraceSchema.model_validate(raw), observations=observations, scores=parsed_scores
         )
-    if name in {"chat.default", "chat.translation"} and timestamp >= ChatC6Adapter._valid_from:
+    if name in c6.root_trace_names and c6.valid_from <= timestamp < c8.valid_from:
         raw = dict(trace)
         raw["timestamp"] = timestamp
         return ChatC6Adapter.adapt(
             ChatC6TraceSchema.model_validate(raw), observations=observations, scores=parsed_scores
+        )
+    if name in c8.root_trace_names and timestamp >= c8.valid_from:
+        if c8.valid_from_confidence != "high":
+            raise UnsupportedTelemetryEra(
+                "chat.c8 has a low-confidence production boundary and needs validation before dispatch"
+            )
+        raw = dict(trace)
+        raw["timestamp"] = timestamp
+        return ChatC8Adapter.adapt(
+            ChatC8TraceSchema.model_validate(raw), observations=observations, scores=parsed_scores
         )
     raise UnsupportedTelemetryEra(f"No adapter registered for trace name={name!r} timestamp={timestamp.isoformat()}")
 
