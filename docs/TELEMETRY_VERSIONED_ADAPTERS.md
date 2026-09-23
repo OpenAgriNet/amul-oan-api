@@ -52,8 +52,11 @@ ownership is agreed.
 ## Deliberately unsupported until evidence is available
 
 - c2 `query_pretranslation` traces can be associated only through an explicit,
-  same-session bundle supplied by the caller. It is a partial enrichment, not a
-  completeness guarantee: many c2 turns have no recorded pretranslation trace.
+  same-session bundle supplied by the caller. The adapter uses an unambiguous
+  nearest timestamp within two minutes; ties and stale candidates stay
+  unavailable. It is a partial enrichment, not a completeness guarantee: many
+  c2 turns have no recorded pretranslation trace. A question joined this way is
+  marked `derived`, because it was recorded on a different trace.
 - Other eras remain explicit gaps rather than falling back to a guessed adapter.
 
 ## Adding an era
