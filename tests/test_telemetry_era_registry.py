@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
 
 import pytest
+import yaml
 
 from app.services.telemetry_era_registry import TelemetryEraRegistry, TelemetryEraRegistryError
 
@@ -59,3 +60,22 @@ def test_from_yaml_still_defaults_to_chat_eras(registry_path):
 def test_from_yaml_names_the_missing_section(registry_path):
     with pytest.raises(TelemetryEraRegistryError, match="no missing_eras list"):
         TelemetryEraRegistry.from_yaml(registry_path, section="missing_eras")
+
+
+def test_registry_file_is_parsed_once_until_it_changes(registry_path, monkeypatch):
+    parses = []
+    real_safe_load = yaml.safe_load
+    monkeypatch.setattr(yaml, "safe_load", lambda stream: parses.append(1) or real_safe_load(stream))
+
+    TelemetryEraRegistry.from_yaml(registry_path)
+    TelemetryEraRegistry.from_yaml(registry_path, section="voice_eras")
+    assert len(parses) == 1
+
+    registry_path.write_text(registry_path.read_text(encoding="utf-8") + "\n# edited\n", encoding="utf-8")
+    TelemetryEraRegistry.from_yaml(registry_path)
+    assert len(parses) == 2
+
+
+def test_missing_registry_file_points_at_the_registry_pr(tmp_path):
+    with pytest.raises(TelemetryEraRegistryError, match="#297"):
+        TelemetryEraRegistry.from_yaml(tmp_path / "eras.yaml")

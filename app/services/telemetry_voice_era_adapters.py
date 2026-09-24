@@ -23,11 +23,16 @@ from app.services.telemetry_era_registry import (
     TelemetryEraRegistry,
     TelemetryEraRegistryError,
     default_era_registry_path,
+    load_registry_file,
 )
 
 
 # Raw caller id on every voice trace since 8d82835, documented as the farmer's phone.
 _USER_ID_SEMANTICS = "request_user_id_expected_phone_then_anonymous"
+
+# A recorded outcome missing from voice_outcome_vocabulary. Kept visible so a new
+# outcome shows up in counts instead of quietly falling out of every bucket.
+UNCLASSIFIED_OUTCOME = "unclassified"
 
 # Spans added by deeea7a, the voice.v2 commit.
 _V2_EXTERNAL_API_OBSERVATIONS = frozenset(
@@ -51,17 +56,7 @@ class VoiceOutcomeVocabulary:
 
     @classmethod
     def from_yaml(cls, path: Path) -> "VoiceOutcomeVocabulary":
-        try:
-            import yaml
-        except ImportError as exc:  # pragma: no cover - project already uses PyYAML
-            raise TelemetryEraRegistryError("PyYAML is required to read telemetry/eras.yaml") from exc
-        try:
-            with path.open(encoding="utf-8") as registry_file:
-                payload = yaml.safe_load(registry_file)
-        except FileNotFoundError as exc:
-            raise TelemetryEraRegistryError(
-                f"Telemetry era registry not found at {path}. This adapter depends on PR #297."
-            ) from exc
+        payload = load_registry_file(path)
         raw = payload.get("voice_outcome_vocabulary") if isinstance(payload, Mapping) else None
         if not isinstance(raw, Mapping):
             raise TelemetryEraRegistryError("telemetry/eras.yaml has no voice_outcome_vocabulary")
@@ -77,6 +72,8 @@ class VoiceOutcomeVocabulary:
             for outcome in outcomes:
                 if not isinstance(outcome, str):
                     continue
+                if bucket == UNCLASSIFIED_OUTCOME:
+                    raise TelemetryEraRegistryError(f"{UNCLASSIFIED_OUTCOME!r} is reserved for unknown outcomes")
                 if outcome in bucket_by_outcome and bucket_by_outcome[outcome] != bucket:
                     raise TelemetryEraRegistryError(
                         f"voice outcome {outcome!r} is listed under both "
@@ -86,7 +83,9 @@ class VoiceOutcomeVocabulary:
         return cls(bucket_by_outcome)
 
     def classify(self, outcome: str | None) -> str | None:
-        return self._bucket_by_outcome.get(outcome) if outcome else None
+        if not outcome:
+            return None
+        return self._bucket_by_outcome.get(outcome, UNCLASSIFIED_OUTCOME)
 
 
 class VoiceV0Adapter:

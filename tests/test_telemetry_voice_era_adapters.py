@@ -299,16 +299,22 @@ def test_every_vocabulary_outcome_lands_in_its_bucket(adapt, outcome, bucket):
     assert turn.outcome_class == bucket
 
 
-def test_unknown_or_missing_outcome_keeps_the_turn_without_a_class(adapt):
+def test_unknown_outcome_is_counted_as_unclassified(adapt):
     unknown = adapt(_voice_turn_trace("agent_journey", "2026-08-10T10:00:00Z", outcome="stt_signal_auto_hangup"))
-    missing = adapt(_voice_turn_trace("agent_journey", "2026-08-10T10:00:00Z", outcome=""))
 
     assert unknown.outcome == "stt_signal_auto_hangup"
-    assert unknown.outcome_class is None
+    assert unknown.outcome_class == "unclassified"
     assert unknown.field_availability["outcome"] == "recorded"
-    assert unknown.field_availability["outcome_class"] == "unavailable"
+    assert unknown.field_availability["outcome_class"] == "derived"
+
+
+def test_missing_outcome_has_no_class(adapt):
+    missing = adapt(_voice_turn_trace("agent_journey", "2026-08-10T10:00:00Z", outcome=""))
+
     assert missing.outcome is None
+    assert missing.outcome_class is None
     assert missing.field_availability["outcome"] == "unavailable"
+    assert missing.field_availability["outcome_class"] == "unavailable"
 
 
 @pytest.mark.parametrize("name", ["voice_agent_run", "Voice Service Agent run", "chat.translation"])
@@ -360,6 +366,11 @@ def test_resolver_requires_a_timestamp(adapt):
 def test_vocabulary_refuses_an_outcome_listed_in_two_buckets():
     with pytest.raises(TelemetryEraRegistryError, match="both"):
         VoiceOutcomeVocabulary.from_mapping({"delivered": ["success"], "failed": ["success"]})
+
+
+def test_vocabulary_refuses_a_bucket_named_unclassified():
+    with pytest.raises(TelemetryEraRegistryError, match="reserved"):
+        VoiceOutcomeVocabulary.from_mapping({"unclassified": ["stt_signal"]})
 
 
 def test_vocabulary_ignores_scalar_notes():
