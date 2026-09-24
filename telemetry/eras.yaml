@@ -308,8 +308,8 @@ chat_eras:
     tags: ["persona:<x>"]
 
   - era_id: chat.c8
-    valid_from: 2026-09-16            # ⚠️ merge to amul-prod; DEPLOY DATE UNVERIFIED
-    valid_from_confidence: low
+    valid_from: 2026-09-16            # [data] field transition observed in chat-production
+    valid_from_confidence: high
     valid_to: null
     root_trace_names: [chat.translation]        # chat.default can no longer be emitted
     merge_date: 2026-09-16
@@ -328,9 +328,10 @@ chat_eras:
       and the root is f"chat.{_PIPELINE_NAME}", so chat.default is unreachable.
       [data] corroborated 2026-09-20 against prod ClickHouse: September is
       chat.translation only, zero "Amul AI Agent" (August was mixed: 57,598
-      "Amul AI Agent" + 311,537 chat.translation). ⚠️ valid_from is the branch
-      merge, not an observed deploy — confirm against a per-day name census and
-      tighten valid_from_confidence when someone does.
+      "Amul AI Agent" + 311,537 chat.translation). [data] chat-production root
+      input contains use_translation_pipeline at 2026-09-15 23:59:08 and omits it
+      at 2026-09-16 11:52:36 (Langfuse display time). The date boundary is
+      confirmed; the exact intra-day cutover remains unbounded.
 
 # ---------------------------------------------------------------------------
 # VOICE — repo voice-oan-api, Langfuse environment voice-production
