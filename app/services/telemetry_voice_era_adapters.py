@@ -2,6 +2,7 @@
 
 Only the two root renames (v3, v4) pick an adapter. Later eras just add keys and
 become extensions when both the date and the key match. v1 has nothing to match.
+A trace stamped with ``amul.schema_version`` is routed by the stamp, not the date.
 """
 
 import json
@@ -33,6 +34,13 @@ _USER_ID_SEMANTICS = "request_user_id_expected_phone_then_anonymous"
 # A recorded outcome missing from voice_outcome_vocabulary. Kept visible so a new
 # outcome shows up in counts instead of quietly falling out of every bucket.
 UNCLASSIFIED_OUTCOME = "unclassified"
+
+SCHEMA_VERSION_KEY = "amul.schema_version"
+
+# Stamps written by voice-oan-api, with the root and source schema each one is emitted on.
+_STAMPED_VOICE_CONTRACTS: dict[str, tuple[str, type[VoiceV3TraceSchema]]] = {
+    "voice.turn.v1": ("agent_journey", VoiceV4TraceSchema),
+}
 
 # Spans added by deeea7a, the voice.v2 commit.
 _V2_EXTERNAL_API_OBSERVATIONS = frozenset(
@@ -226,13 +234,29 @@ def adapt_voice_trace(
     era_registry: TelemetryEraRegistry | None = None,
     outcome_vocabulary: VoiceOutcomeVocabulary | None = None,
 ) -> CanonicalVoiceTurn:
-    """Resolve and adapt a supported voice trace using name *and* timestamp."""
+    """Resolve and adapt a voice trace by its stamp, or by name *and* timestamp when unstamped."""
 
     timestamp = _parse_timestamp(trace.get("timestamp") or trace.get("startTime"))
     name = trace.get("name")
     parsed_scores = [LangfuseScoreSchema.model_validate(score) for score in scores]
     registry = era_registry or TelemetryEraRegistry.from_yaml(default_era_registry_path(), section="voice_eras")
     vocabulary = outcome_vocabulary or VoiceOutcomeVocabulary.from_yaml(default_era_registry_path())
+
+    raw = dict(trace)
+    raw["timestamp"] = timestamp
+    metadata = _mapping_or_none(trace.get("metadata")) or {}
+    raw["metadata"] = metadata
+
+    if SCHEMA_VERSION_KEY in metadata:
+        return _adapt_stamped_voice_trace(
+            raw,
+            metadata[SCHEMA_VERSION_KEY],
+            registry=registry,
+            outcome_vocabulary=vocabulary,
+            observations=observations,
+            scores=parsed_scores,
+        )
+
     v0 = registry.require("voice.v0")
     v2 = registry.require("voice.v2")
     v3 = registry.require("voice.v3")
@@ -240,11 +264,6 @@ def adapt_voice_trace(
     v4 = registry.require("voice.v4")
     v5 = registry.require("voice.v5")
     v5b = registry.require("voice.v5b")
-
-    raw = dict(trace)
-    raw["timestamp"] = timestamp
-    metadata = _mapping_or_none(trace.get("metadata")) or {}
-    raw["metadata"] = metadata
 
     if name in v0.root_trace_names and v0.valid_from <= timestamp < (v0.valid_to or v3.valid_from):
         _require_high_confidence(v3)
@@ -267,7 +286,9 @@ def adapt_voice_trace(
             scores=parsed_scores,
             source_era_extensions=_voice_turn_extensions(timestamp, metadata, v3b=v3b),
         )
-    if name in v4.root_trace_names and timestamp >= v4.valid_from:
+    # Open-ended until eras.yaml gives v4 a valid_to, e.g. once every trace is stamped.
+    v4_open = v4.valid_to is None or timestamp < v4.valid_to
+    if name in v4.root_trace_names and v4.valid_from <= timestamp and v4_open:
         _require_high_confidence(v4)
         return VoiceV4Adapter.adapt(
             VoiceV4TraceSchema.model_validate(raw),
@@ -278,6 +299,36 @@ def adapt_voice_trace(
         )
     raise UnsupportedTelemetryEra(
         f"No voice adapter registered for trace name={name!r} timestamp={timestamp.isoformat()}"
+    )
+
+
+def _adapt_stamped_voice_trace(
+    raw: Mapping[str, Any],
+    stamp: Any,
+    *,
+    registry: TelemetryEraRegistry,
+    outcome_vocabulary: VoiceOutcomeVocabulary,
+    observations: Sequence[Mapping[str, Any]],
+    scores: Sequence[LangfuseScoreSchema],
+) -> CanonicalVoiceTurn:
+    contract = _STAMPED_VOICE_CONTRACTS.get(stamp) if isinstance(stamp, str) else None
+    if contract is None:
+        raise UnsupportedTelemetryEra(f"Unknown voice schema version {stamp!r}")
+    root_name, source_schema = contract
+    if raw.get("name") != root_name:
+        raise UnsupportedTelemetryEra(f"{stamp} is emitted on {root_name!r} roots, not {raw.get('name')!r}")
+    era = registry.for_schema_version(stamp)
+    if era is None:
+        raise UnsupportedTelemetryEra(f"No voice era in telemetry/eras.yaml declares schema_version {stamp}")
+    # The stamp names the whole contract, so there are no dated extensions to guess.
+    return _adapt_voice_turn(
+        source_schema.model_validate(raw),
+        era_id=era.era_id,
+        source_schema_version=stamp,
+        outcome_vocabulary=outcome_vocabulary,
+        observations=observations,
+        scores=scores,
+        source_era_extensions=[],
     )
 
 

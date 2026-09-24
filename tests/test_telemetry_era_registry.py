@@ -26,6 +26,12 @@ voice_eras:
     valid_from: 2026-07-24
     valid_from_confidence: low
     valid_to: null
+  - era_id: voice.v6
+    valid_from: 2026-10-01
+    valid_from_confidence: high
+    valid_to: null
+    root_trace_names: [agent_journey]
+    schema_version: voice.turn.v1
 """.strip(),
         encoding="utf-8",
     )
@@ -60,6 +66,33 @@ def test_from_yaml_still_defaults_to_chat_eras(registry_path):
 def test_from_yaml_names_the_missing_section(registry_path):
     with pytest.raises(TelemetryEraRegistryError, match="no missing_eras list"):
         TelemetryEraRegistry.from_yaml(registry_path, section="missing_eras")
+
+
+def test_an_era_can_be_found_by_its_schema_version_stamp(registry_path):
+    registry = TelemetryEraRegistry.from_yaml(registry_path, section="voice_eras")
+
+    assert registry.for_schema_version("voice.turn.v1").era_id == "voice.v6"
+    assert registry.for_schema_version("voice.turn.v2") is None
+    assert registry.require("voice.v3").schema_version is None
+
+
+def test_two_eras_cannot_claim_one_schema_version(tmp_path):
+    path = tmp_path / "eras.yaml"
+    path.write_text(
+        """
+voice_eras:
+  - era_id: voice.v6
+    valid_from: 2026-10-01
+    schema_version: voice.turn.v1
+  - era_id: voice.v7
+    valid_from: 2026-11-01
+    schema_version: voice.turn.v1
+""".strip(),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(TelemetryEraRegistryError, match="both declare schema_version voice.turn.v1"):
+        TelemetryEraRegistry.from_yaml(path, section="voice_eras")
 
 
 def test_registry_file_is_parsed_once_until_it_changes(registry_path, monkeypatch):

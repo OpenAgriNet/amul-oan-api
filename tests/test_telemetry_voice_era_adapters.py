@@ -24,7 +24,17 @@ VOCABULARY = {
 }
 
 
-def _write_registry(tmp_path, *, v3_confidence="high", v4_confidence="high"):
+# A future stamped era, written the way eras.yaml would record it once the stamp is live.
+STAMPED_ERA = """
+  - era_id: voice.v6
+    valid_from: 2026-10-01
+    valid_from_confidence: high
+    valid_to: null
+    root_trace_names: [agent_journey]
+    schema_version: voice.turn.v1"""
+
+
+def _write_registry(tmp_path, *, v3_confidence="high", v4_confidence="high", v4_valid_to="null", extra_eras=""):
     registry_path = tmp_path / "eras.yaml"
     registry_path.write_text(
         """
@@ -59,7 +69,7 @@ voice_eras:
   - era_id: voice.v4
     valid_from: 2026-07-22
     valid_from_confidence: {v4_confidence}
-    valid_to: null
+    valid_to: {v4_valid_to}
     root_trace_names: [agent_journey]
   - era_id: voice.v5
     valid_from: 2026-07-24
@@ -68,17 +78,32 @@ voice_eras:
   - era_id: voice.v5b
     valid_from: 2026-08-05
     valid_from_confidence: low
-    valid_to: null
+    valid_to: null{extra_eras}
 voice_outcome_vocabulary:
   delivered: [success]
   non_question: [stale_request, stt_signal, hold_message, greeting_fast_path, identity_fast_path, fragment_fast_path, non_meaningful_hangup, outbound_intro]
   refused_or_blocked: [moderation_rejected, outbound_declined, outbound_no_data]
   failed: [error, pretranslation_empty, client_disconnected]
   pre_v3_convention: success
-""".strip().format(v3_confidence=v3_confidence, v4_confidence=v4_confidence),
+""".strip().format(
+            v3_confidence=v3_confidence,
+            v4_confidence=v4_confidence,
+            v4_valid_to=v4_valid_to,
+            extra_eras=extra_eras,
+        ),
         encoding="utf-8",
     )
     return registry_path
+
+
+def _adapter(registry_path):
+    registry = TelemetryEraRegistry.from_yaml(registry_path, section="voice_eras")
+    vocabulary = VoiceOutcomeVocabulary.from_yaml(registry_path)
+
+    def _adapt(trace, **kwargs):
+        return adapt_voice_trace(trace, era_registry=registry, outcome_vocabulary=vocabulary, **kwargs)
+
+    return _adapt
 
 
 @pytest.fixture
@@ -88,13 +113,12 @@ def registry_path(tmp_path):
 
 @pytest.fixture
 def adapt(registry_path):
-    registry = TelemetryEraRegistry.from_yaml(registry_path, section="voice_eras")
-    vocabulary = VoiceOutcomeVocabulary.from_yaml(registry_path)
+    return _adapter(registry_path)
 
-    def _adapt(trace, **kwargs):
-        return adapt_voice_trace(trace, era_registry=registry, outcome_vocabulary=vocabulary, **kwargs)
 
-    return _adapt
+@pytest.fixture
+def adapt_with_stamped_era(tmp_path):
+    return _adapter(_write_registry(tmp_path, v4_valid_to="2026-10-01", extra_eras=STAMPED_ERA))
 
 
 def _sanitized(label, **extra):
@@ -361,6 +385,55 @@ def test_resolver_refuses_dispatch_on_an_unverified_deciding_boundary(tmp_path, 
 def test_resolver_requires_a_timestamp(adapt):
     with pytest.raises(UnsupportedTelemetryEra):
         adapt({"name": "agent_journey", "metadata": {}})
+
+
+def _stamped(trace, stamp="voice.turn.v1"):
+    trace["metadata"].update({"amul.schema_version": stamp, "service": "voice-oan-api", "release": "test-release-sha"})
+    return trace
+
+
+def test_stamped_trace_is_routed_by_its_stamp_not_its_date(adapt_with_stamped_era):
+    # Dated before voice.v6 starts, like a dev trace ahead of the prod rollout.
+    turn = adapt_with_stamped_era(
+        _stamped(_voice_turn_trace("agent_journey", "2026-09-01T10:00:00Z", pipeline_profile="managed"))
+    )
+
+    assert turn.source_era == "voice.v6"
+    assert turn.source_schema_version == "voice.turn.v1"
+    assert turn.source_era_extensions == []
+    assert turn.pipeline_profile == "managed"
+    assert turn.outcome_class == "delivered"
+
+
+def test_stamped_trace_does_not_need_the_dated_boundaries(tmp_path):
+    path = _write_registry(tmp_path, v4_confidence="low", extra_eras=STAMPED_ERA)
+    adapt = _adapter(path)
+
+    assert adapt(_stamped(_voice_turn_trace("agent_journey", "2026-10-05T10:00:00Z"))).source_era == "voice.v6"
+    with pytest.raises(UnsupportedTelemetryEra, match="confidence"):
+        adapt(_voice_turn_trace("agent_journey", "2026-10-05T10:00:00Z"))
+
+
+@pytest.mark.parametrize("stamp", ["voice.turn.v2", "chat.turn.v1", "", None])
+def test_unknown_stamp_is_rejected_even_on_a_known_root(adapt_with_stamped_era, stamp):
+    with pytest.raises(UnsupportedTelemetryEra, match="Unknown voice schema version"):
+        adapt_with_stamped_era(_stamped(_voice_turn_trace("agent_journey", "2026-10-05T10:00:00Z"), stamp))
+
+
+def test_stamp_on_the_wrong_root_is_rejected(adapt_with_stamped_era):
+    with pytest.raises(UnsupportedTelemetryEra, match="agent_journey"):
+        adapt_with_stamped_era(_stamped(_voice_turn_trace("voice_request", "2026-10-05T10:00:00Z")))
+
+
+def test_stamp_needs_its_era_recorded_in_eras_yaml(adapt):
+    with pytest.raises(UnsupportedTelemetryEra, match="eras.yaml declares schema_version voice.turn.v1"):
+        adapt(_stamped(_voice_turn_trace("agent_journey", "2026-10-05T10:00:00Z")))
+
+
+def test_unstamped_agent_journey_stops_where_eras_yaml_closes_v4(adapt_with_stamped_era):
+    assert adapt_with_stamped_era(_voice_turn_trace("agent_journey", "2026-09-30T10:00:00Z")).source_era == "voice.v4"
+    with pytest.raises(UnsupportedTelemetryEra):
+        adapt_with_stamped_era(_voice_turn_trace("agent_journey", "2026-10-02T10:00:00Z"))
 
 
 def test_vocabulary_refuses_an_outcome_listed_in_two_buckets():
