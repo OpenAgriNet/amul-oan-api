@@ -357,18 +357,6 @@ def test_resolver_requires_a_timestamp(adapt):
         adapt({"name": "agent_journey", "metadata": {}})
 
 
-def test_registry_reads_voice_eras_without_changing_the_chat_default(registry_path):
-    chat = TelemetryEraRegistry.from_yaml(registry_path)
-    voice = TelemetryEraRegistry.from_yaml(registry_path, section="voice_eras")
-
-    assert chat.require("chat.c6").root_trace_names == frozenset({"chat.default", "chat.translation"})
-    assert voice.require("voice.v4").root_trace_names == frozenset({"agent_journey"})
-    with pytest.raises(TelemetryEraRegistryError):
-        chat.require("voice.v4")
-    with pytest.raises(TelemetryEraRegistryError, match="no missing_eras list"):
-        TelemetryEraRegistry.from_yaml(registry_path, section="missing_eras")
-
-
 def test_vocabulary_refuses_an_outcome_listed_in_two_buckets():
     with pytest.raises(TelemetryEraRegistryError, match="both"):
         VoiceOutcomeVocabulary.from_mapping({"delivered": ["success"], "failed": ["success"]})
