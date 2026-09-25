@@ -416,12 +416,25 @@ voice_eras:
     tags: ["pipeline_profile:<x>"]
 
   - era_id: voice.v5b
+    valid_from: 2026-08-01            # was 2026-08-05, see notes
+    valid_from_confidence: low        # prod merge date, not checked in data yet
+    valid_to: null
+    merge_date: 2026-08-01
+    defining_commits: ["83b79af"]     # prod merge 1b390ed (#234)
+    summary: Outbound call opener. New outcomes outbound_intro, outbound_declined, outbound_no_data.
+    adds_keys: [metadata.call_type, metadata.outbound_consent_intent]
+    notes: >
+      Corrected 2026-09-25. This era used to start 2026-08-05 on ae2b8f4, but
+      that commit removed outbound_intro (see voice.v5c); 83b79af added it.
+      outbound_intro only appears where OUTBOUND_INTRO_ENABLED was on.
+
+  - era_id: voice.v5c
     valid_from: 2026-08-05
-    valid_from_confidence: low
+    valid_from_confidence: low        # prod merge date, not checked in data yet
     valid_to: null
     merge_date: 2026-08-05
-    defining_commits: ["ae2b8f4"]
-    summary: outcome vocabulary gains outbound_intro.
+    defining_commits: ["ae2b8f4"]     # prod cef039b, merge 9411906 (#242)
+    summary: outbound_intro outcome and route removed. outbound_declined and outbound_no_data stay.
 
 voice_outcome_vocabulary:
   # [code] app/services/voice.py + voice_trace.py:293-295,492-499
