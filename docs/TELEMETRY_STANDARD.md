@@ -32,6 +32,8 @@ and the contract disagree.
 Once the new version is live in production, add an era to `telemetry/eras.yaml`
 with the first production day and its `schema_version`.
 
+Every step, with the file to edit: `TELEMETRY_CHANGES.md`.
+
 ## telemetry/eras.yaml
 
 - Append eras, never rewrite one. A corrected boundary keeps a note of the old value.

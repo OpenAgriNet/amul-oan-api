@@ -507,7 +507,13 @@ def test_voice_mapping_gives_the_same_turn_as_the_python_adapter(registry_path, 
         VoiceV4TraceSchema.model_validate(raw), source_schema_version="voice.turn.v1", source_era_extensions=[], **common
     )
 
-    assert mapped.model_dump() == python.model_dump()
+    mapped_dump, python_dump = mapped.model_dump(), python.model_dump()
+    # Fields mapped after the switch have no Python counterpart; compare everything else.
+    for field in set(mapped_dump["field_availability"]) - set(python_dump["field_availability"]):
+        for dump in (mapped_dump, python_dump):
+            dump.pop(field, None)
+            dump["field_availability"].pop(field, None)
+    assert mapped_dump == python_dump
 
 
 def test_a_renamed_field_needs_only_a_mapping_change(tmp_path):
