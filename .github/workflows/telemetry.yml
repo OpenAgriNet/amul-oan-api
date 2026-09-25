@@ -1,0 +1,20 @@
+name: telemetry
+
+# Runs the telemetry tests (registry checks, adapters, stamps) on every PR.
+# Any new tests/test_telemetry_*.py file is picked up automatically.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  telemetry:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: pip
+      - run: pip install -r requirements.txt pytest
+      - run: python -m pytest -q tests/test_telemetry_*.py tests/test_chat_telemetry_schema_stamps.py
