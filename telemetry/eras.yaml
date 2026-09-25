@@ -453,6 +453,7 @@ voice_outcome_vocabulary:
     - identity_fast_path
     - fragment_fast_path
     - non_meaningful_hangup
+    - stt_signal_auto_hangup        # dev only: 7892cc3 on fix/voice-stt-hangup-threshold, never merged
     - outbound_intro
   refused_or_blocked: [moderation_rejected, outbound_declined, outbound_no_data]
   failed: [error, pretranslation_empty, client_disconnected]
