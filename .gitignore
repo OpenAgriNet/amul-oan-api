@@ -190,6 +190,7 @@ cython_debug/
 # Local
 /scripts/*
 !/scripts/validate_district_coords.py
+!/scripts/telemetry_import.py
 /exploration/*
 /evals/*
 
