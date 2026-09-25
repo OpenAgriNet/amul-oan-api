@@ -3,7 +3,11 @@ from datetime import datetime, timezone
 import pytest
 import yaml
 
-from app.services.telemetry_era_registry import TelemetryEraRegistry, TelemetryEraRegistryError
+from app.services.telemetry_era_registry import (
+    TelemetryEraRegistry,
+    TelemetryEraRegistryError,
+    check_registry,
+)
 
 
 @pytest.fixture
@@ -112,3 +116,59 @@ def test_registry_file_is_parsed_once_until_it_changes(registry_path, monkeypatc
 def test_missing_registry_file_points_at_the_registry_pr(tmp_path):
     with pytest.raises(TelemetryEraRegistryError, match="#297"):
         TelemetryEraRegistry.from_yaml(tmp_path / "eras.yaml")
+
+
+def _registry(chat=None, voice=None):
+    return {
+        "chat_eras": chat if chat is not None else [{"era_id": "chat.c1", "valid_from": "2026-02-02"}],
+        "voice_eras": voice if voice is not None else [{"era_id": "voice.v1", "valid_from": "2026-02-02"}],
+    }
+
+
+def test_check_registry_passes_a_clean_file():
+    assert check_registry(_registry()) == []
+
+
+def test_check_registry_passes_a_root_handover_at_the_same_instant():
+    chat = [
+        {"era_id": "chat.c1", "valid_from": "2026-02-02", "valid_to": "2026-08-05T06:30:00Z", "root_trace_names": ["a"]},
+        {"era_id": "chat.c2", "valid_from": "2026-08-05T06:30:00Z", "root_trace_names": ["b"]},
+    ]
+
+    assert check_registry(_registry(chat=chat)) == []
+
+
+def test_check_registry_flags_a_gap_between_root_eras():
+    chat = [
+        {"era_id": "chat.c3", "valid_from": "2026-05-13", "valid_to": "2026-08-05", "root_trace_names": ["a"]},
+        {"era_id": "chat.c6", "valid_from": "2026-08-05T06:30:00Z", "root_trace_names": ["b"]},
+    ]
+
+    assert check_registry(_registry(chat=chat)) == [
+        "chat.c3 ends at 2026-08-05T00:00:00+00:00 but no chat_eras root era starts then"
+    ]
+
+
+def test_check_registry_ignores_an_extension_era_that_ends_without_a_successor():
+    voice = [
+        {"era_id": "voice.v1", "valid_from": "2026-02-02", "root_trace_names": ["a"]},
+        {"era_id": "voice.v2", "valid_from": "2026-08-05", "valid_to": "2026-08-06"},
+    ]
+
+    assert check_registry(_registry(voice=voice)) == []
+
+
+@pytest.mark.parametrize(
+    ("payload", "problem"),
+    [
+        ({"chat_eras": []}, "voice_eras is missing or not a list"),
+        (_registry(chat=[{"era_id": "voice.v9", "valid_from": "2026-02-02"}]), "chat_eras[0] needs an era_id starting with 'chat.'"),
+        (_registry(chat=[{"era_id": "chat.c1", "valid_from": "2026-02-02"}] * 2), "chat.c1 is listed twice"),
+        (_registry(chat=[{"era_id": "chat.c1", "valid_from": "someday"}]), "chat.c1: "),
+        (_registry(chat=[{"era_id": "chat.c1", "valid_from": "2026-03-01", "valid_to": "2026-02-01"}]), "chat.c1 ends before it starts"),
+        (_registry(chat=[{"era_id": "chat.c1", "valid_from": "2026-02-02", "valid_from_confidence": "sure"}]), "chat.c1.valid_from_confidence must be low, medium or high"),
+        (_registry(chat=[{"era_id": "chat.c1", "valid_from": "2026-02-02", "root_trace_names": "chat.default"}]), "chat.c1.root_trace_names must be a list of trace names"),
+    ],
+)
+def test_check_registry_names_each_problem(payload, problem):
+    assert any(line.startswith(problem) for line in check_registry(payload))
