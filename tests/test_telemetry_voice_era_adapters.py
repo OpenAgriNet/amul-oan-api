@@ -5,12 +5,11 @@ import pytest
 from app.models.telemetry_voice_analytics import VoiceV4TraceSchema
 from app.services.telemetry_era_adapters import UnsupportedTelemetryEra
 from app.services.telemetry_era_registry import TelemetryEraRegistry, TelemetryEraRegistryError
-from app.services.telemetry_mappings import default_mappings_path
+from app.services.telemetry_mappings import default_mappings_path, mapping_or_none
 from app.services.telemetry_voice_era_adapters import (
     VoiceOutcomeVocabulary,
     _adapt_mapped_voice_turn,
     _adapt_voice_turn,
-    _mapping_or_none,
     _parse_timestamp,
     adapt_voice_trace,
     load_voice_mappings,
@@ -296,6 +295,36 @@ def test_v4_is_the_v3_shape_under_a_new_root_name(adapt):
     assert turn.outcome_class == "delivered"
 
 
+@pytest.mark.parametrize(
+    ("name", "timestamp", "stamped"),
+    [
+        ("voice_request", "2026-06-01T10:00:00Z", False),
+        ("agent_journey", "2026-08-10T10:00:00Z", False),
+        ("agent_journey", "2026-10-05T10:00:00Z", True),
+    ],
+    ids=["v3", "v4", "stamped"],
+)
+def test_signed_in_is_read_from_the_agent_block(adapt, name, timestamp, stamped):
+    trace = _voice_turn_trace(name, timestamp, agent={"signed_in": False, "tool_call_count": 1})
+    trace = _stamped(trace) if stamped else trace
+    exported = dict(trace)
+    exported["metadata"] = {
+        key: json.dumps(value) if isinstance(value, dict) else str(value) for key, value in trace["metadata"].items()
+    }
+
+    for shape in (trace, exported):
+        turn = adapt(shape)
+        assert turn.signed_in is False
+        assert turn.field_availability["signed_in"] == "recorded"
+
+
+def test_a_turn_that_never_reached_the_agent_has_no_signed_in(adapt):
+    turn = adapt(_stamped(_voice_turn_trace("agent_journey", "2026-10-05T10:00:00Z", outcome="stt_signal")))
+
+    assert turn.signed_in is None
+    assert turn.field_availability["signed_in"] == "unavailable"
+
+
 def test_v5_and_v5b_are_labels_on_the_v4_root(adapt):
     turn = adapt(
         _voice_turn_trace(
@@ -468,7 +497,7 @@ def test_vocabulary_ignores_scalar_notes():
 def _prepared(trace):
     raw = dict(trace)
     raw["timestamp"] = _parse_timestamp(raw["timestamp"])
-    raw["metadata"] = _mapping_or_none(trace.get("metadata")) or {}
+    raw["metadata"] = mapping_or_none(trace.get("metadata")) or {}
     return raw
 
 
@@ -481,7 +510,13 @@ def _clickhouse_shape(trace):
 
 
 _FULL_STAMPED = _stamped(
-    _voice_turn_trace("agent_journey", "2026-10-05T10:00:00Z", pipeline_profile="managed", call_type="outbound")
+    _voice_turn_trace(
+        "agent_journey",
+        "2026-10-05T10:00:00Z",
+        pipeline_profile="managed",
+        call_type="outbound",
+        agent={"signed_in": True},
+    )
 )
 _NO_SESSION_OR_QUERY = _stamped(_voice_turn_trace("agent_journey", "2026-10-05T10:00:00Z", session_id="s-meta"))
 del _NO_SESSION_OR_QUERY["sessionId"]

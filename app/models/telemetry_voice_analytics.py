@@ -103,6 +103,7 @@ class VoiceTurnMetadataSchema(BaseModel):
     outcome: str | None = None
     pipeline_variant: str | None = None
     pipeline_profile: str | None = None
+    agent: Any | None = None
     query: Any | None = None
     response: Any | None = None
     total_ms: Any | None = None

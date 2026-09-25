@@ -31,7 +31,8 @@ into the canonical output that dashboards read, also:
    `_string_or_none` for text, `_float_or_none` for numbers, `_bool_or_none`,
    or `_identifier_or_none` for ids that can arrive as numbers.
 5. amul-oan-api: say where it lives in `telemetry/mappings/voice.yaml`, under the
-   current version: `farmer_type: [metadata.farmer_type]`.
+   current version: `farmer_type: [metadata.farmer_type]`. A key inside a block
+   works too: `[metadata.farmer_context.source]`.
 6. Add a test with a stamped trace that carries the field, next to the other
    stamped tests in `tests/test_telemetry_voice_era_adapters.py`.
 

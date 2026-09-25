@@ -6,7 +6,6 @@ A trace stamped with ``amul.schema_version`` is routed by the stamp, not the dat
 and read through telemetry/mappings/voice.yaml. Its source_era is the stamp.
 """
 
-import json
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -27,7 +26,13 @@ from app.services.telemetry_era_registry import (
     default_era_registry_path,
     load_registry_file,
 )
-from app.services.telemetry_mappings import ContractMapping, default_mappings_path, load_mappings, value_at
+from app.services.telemetry_mappings import (
+    ContractMapping,
+    default_mappings_path,
+    load_mappings,
+    mapping_or_none,
+    value_at,
+)
 
 
 # Raw caller id on every voice trace since 8d82835, documented as the farmer's phone.
@@ -241,7 +246,7 @@ def adapt_voice_trace(
 
     raw = dict(trace)
     raw["timestamp"] = timestamp
-    metadata = _mapping_or_none(trace.get("metadata")) or {}
+    metadata = mapping_or_none(trace.get("metadata")) or {}
     raw["metadata"] = metadata
 
     if SCHEMA_VERSION_KEY in metadata:
@@ -381,6 +386,8 @@ def _adapt_voice_turn(
     process_id = _identifier_or_none(metadata.process_id)
     user_id = _identifier_or_none(trace.user_id)
     user_id_hash = _string_or_none(metadata.user_id_hash)
+    # Only turns that reached the agent carry metadata.agent.
+    signed_in = _bool_or_none((mapping_or_none(metadata.agent) or {}).get("signed_in"))
     provider = _string_or_none(metadata.provider)
     call_type = _string_or_none(metadata.call_type)
     route = _string_or_none(metadata.route)
@@ -415,6 +422,7 @@ def _adapt_voice_turn(
         user_id=user_id,
         user_id_semantics=_USER_ID_SEMANTICS,
         user_id_hash=user_id_hash,
+        signed_in=signed_in,
         provider=provider,
         call_type=call_type,
         route=route,
@@ -435,7 +443,7 @@ def _adapt_voice_turn(
             "process_id": _availability(process_id),
             "user_id": _availability(user_id),
             "user_id_hash": _availability(user_id_hash),
-            "signed_in": "unavailable",
+            "signed_in": _availability(signed_in),
             "channel": "derived",
             "provider": _availability(provider),
             "call_type": _availability(call_type),
@@ -503,22 +511,9 @@ def _parse_timestamp(value: Any) -> datetime:
     return parsed.astimezone(timezone.utc)
 
 
-def _mapping_or_none(value: Any) -> Mapping[str, Any] | None:
-    """Accept an object (Langfuse API) or a JSON-encoded object (ClickHouse export)."""
-    if isinstance(value, Mapping):
-        return value
-    if isinstance(value, str) and value.lstrip().startswith("{"):
-        try:
-            parsed = json.loads(value)
-        except ValueError:
-            return None
-        return parsed if isinstance(parsed, Mapping) else None
-    return None
-
-
 def _sanitized_or_none(value: Any) -> SanitizedVoiceText | None:
     # A plain string would be raw caller text.
-    mapping = _mapping_or_none(value)
+    mapping = mapping_or_none(value)
     if mapping is None or ("sha256" not in mapping and "chars" not in mapping):
         return None
     return SanitizedVoiceText.model_validate(mapping)
@@ -538,7 +533,7 @@ def _float_or_none(value: Any) -> float | None:
 
 
 def _float_mapping_or_none(value: Any) -> dict[str, float] | None:
-    mapping = _mapping_or_none(value)
+    mapping = mapping_or_none(value)
     if mapping is None:
         return None
     parsed = {
