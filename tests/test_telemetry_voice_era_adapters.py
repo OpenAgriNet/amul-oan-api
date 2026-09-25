@@ -408,7 +408,7 @@ def test_stamped_trace_is_routed_by_its_stamp_not_its_date(adapt_with_stamped_er
         _stamped(_voice_turn_trace("agent_journey", "2026-09-01T10:00:00Z", pipeline_profile="managed"))
     )
 
-    assert turn.source_era == "voice.v6"
+    assert turn.source_era == "voice.turn.v1"
     assert turn.source_schema_version == "voice.turn.v1"
     assert turn.source_era_extensions == []
     assert turn.pipeline_profile == "managed"
@@ -419,7 +419,7 @@ def test_stamped_trace_does_not_need_the_dated_boundaries(tmp_path):
     path = _write_registry(tmp_path, v4_confidence="low", extra_eras=STAMPED_ERA)
     adapt = _adapter(path)
 
-    assert adapt(_stamped(_voice_turn_trace("agent_journey", "2026-10-05T10:00:00Z"))).source_era == "voice.v6"
+    assert adapt(_stamped(_voice_turn_trace("agent_journey", "2026-10-05T10:00:00Z"))).source_era == "voice.turn.v1"
     with pytest.raises(UnsupportedTelemetryEra, match="confidence"):
         adapt(_voice_turn_trace("agent_journey", "2026-10-05T10:00:00Z"))
 
@@ -435,9 +435,11 @@ def test_stamp_on_the_wrong_root_is_rejected(adapt_with_stamped_era):
         adapt_with_stamped_era(_stamped(_voice_turn_trace("voice_request", "2026-10-05T10:00:00Z")))
 
 
-def test_stamp_needs_its_era_recorded_in_eras_yaml(adapt):
-    with pytest.raises(UnsupportedTelemetryEra, match="eras.yaml declares schema_version voice.turn.v1"):
-        adapt(_stamped(_voice_turn_trace("agent_journey", "2026-10-05T10:00:00Z")))
+def test_stamped_trace_is_read_before_eras_yaml_records_its_era(adapt):
+    turn = adapt(_stamped(_voice_turn_trace("agent_journey", "2026-10-05T10:00:00Z")))
+
+    assert turn.source_era == "voice.turn.v1"
+    assert turn.outcome_class == "delivered"
 
 
 def test_unstamped_agent_journey_stops_where_eras_yaml_closes_v4(adapt_with_stamped_era):
@@ -500,7 +502,7 @@ del _NO_SESSION_OR_QUERY["metadata"]["query"], _NO_SESSION_OR_QUERY["metadata"][
 def test_voice_mapping_gives_the_same_turn_as_the_python_adapter(registry_path, trace):
     vocabulary = VoiceOutcomeVocabulary.from_yaml(registry_path)
     raw = _prepared(trace)
-    common = dict(era_id="voice.v6", outcome_vocabulary=vocabulary, observations=[{"name": "moderation"}], scores=[])
+    common = dict(era_id="voice.turn.v1", outcome_vocabulary=vocabulary, observations=[{"name": "moderation"}], scores=[])
 
     mapped = _adapt_mapped_voice_turn(raw, load_voice_mappings()["voice.turn.v1"], **common)
     python = _adapt_voice_turn(
@@ -523,14 +525,13 @@ def test_a_renamed_field_needs_only_a_mapping_change(tmp_path):
         + "\nvoice.turn.v2:\n  extends: voice.turn.v1\n  fields:\n    outcome: [metadata.turn_outcome]\n",
         encoding="utf-8",
     )
-    v2_era = STAMPED_ERA.replace("voice.v6", "voice.v7").replace("voice.turn.v1", "voice.turn.v2")
-    adapt = _adapter(_write_registry(tmp_path, extra_eras=STAMPED_ERA + v2_era))
+    adapt = _adapter(_write_registry(tmp_path))
     trace = _stamped(_voice_turn_trace("agent_journey", "2026-11-02T10:00:00Z"), "voice.turn.v2")
     trace["metadata"]["turn_outcome"] = trace["metadata"].pop("outcome")
 
     turn = adapt(trace, voice_mappings=load_voice_mappings(mappings_path))
 
-    assert turn.source_era == "voice.v7"
+    assert turn.source_era == "voice.turn.v2"
     assert turn.source_schema_version == "voice.turn.v2"
     assert turn.outcome == "success"
     assert turn.outcome_class == "delivered"

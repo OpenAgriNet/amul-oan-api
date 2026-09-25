@@ -74,8 +74,9 @@ No Python change is needed for this.
 ## Once a new version is in production
 
 Add an era to `voice_eras` in `telemetry/eras.yaml` with the first production day
-(UTC) and `schema_version: voice.turn.v2`. Until it's there, the adapter rejects
-traces with the new stamp, so nothing gets read with the wrong mapping.
+(UTC) and `schema_version: voice.turn.v2`, so the history shows when it went live.
+The adapter doesn't wait for this: a stamped trace is read by its stamp, and its
+`source_era` is the stamp itself.
 
 ## When something fails
 
@@ -88,5 +89,4 @@ traces with the new stamp, so nothing gets read with the wrong mapping.
 | `No contract for voice.turn.vN` | Add the contract file for the version you bumped to. |
 | `...: 'x' is not a canonical field` | Typo in `voice.yaml`, or step 4 of "Add a new field" is missing. |
 | `Unknown voice schema version` | The new version isn't in `voice.yaml` yet. |
-| `No voice era in telemetry/eras.yaml declares schema_version` | The new version reached the adapter before its era was added. |
 | `... ends at ... but no ... root era starts then` | An `eras.yaml` boundary leaves a gap: start the next era at the same instant. |

@@ -72,33 +72,6 @@ def test_from_yaml_names_the_missing_section(registry_path):
         TelemetryEraRegistry.from_yaml(registry_path, section="missing_eras")
 
 
-def test_an_era_can_be_found_by_its_schema_version_stamp(registry_path):
-    registry = TelemetryEraRegistry.from_yaml(registry_path, section="voice_eras")
-
-    assert registry.for_schema_version("voice.turn.v1").era_id == "voice.v6"
-    assert registry.for_schema_version("voice.turn.v2") is None
-    assert registry.require("voice.v3").schema_version is None
-
-
-def test_two_eras_cannot_claim_one_schema_version(tmp_path):
-    path = tmp_path / "eras.yaml"
-    path.write_text(
-        """
-voice_eras:
-  - era_id: voice.v6
-    valid_from: 2026-10-01
-    schema_version: voice.turn.v1
-  - era_id: voice.v7
-    valid_from: 2026-11-01
-    schema_version: voice.turn.v1
-""".strip(),
-        encoding="utf-8",
-    )
-
-    with pytest.raises(TelemetryEraRegistryError, match="both declare schema_version voice.turn.v1"):
-        TelemetryEraRegistry.from_yaml(path, section="voice_eras")
-
-
 def test_registry_file_is_parsed_once_until_it_changes(registry_path, monkeypatch):
     parses = []
     real_safe_load = yaml.safe_load
@@ -168,6 +141,16 @@ def test_check_registry_ignores_an_extension_era_that_ends_without_a_successor()
         (_registry(chat=[{"era_id": "chat.c1", "valid_from": "2026-03-01", "valid_to": "2026-02-01"}]), "chat.c1 ends before it starts"),
         (_registry(chat=[{"era_id": "chat.c1", "valid_from": "2026-02-02", "valid_from_confidence": "sure"}]), "chat.c1.valid_from_confidence must be low, medium or high"),
         (_registry(chat=[{"era_id": "chat.c1", "valid_from": "2026-02-02", "root_trace_names": "chat.default"}]), "chat.c1.root_trace_names must be a list of trace names"),
+        (_registry(voice=[{"era_id": "voice.v6", "valid_from": "2026-10-01", "schema_version": 1}]), "voice.v6.schema_version must be a stamp"),
+        (
+            _registry(
+                voice=[
+                    {"era_id": "voice.v6", "valid_from": "2026-10-01", "schema_version": "voice.turn.v1"},
+                    {"era_id": "voice.v7", "valid_from": "2026-11-01", "schema_version": "voice.turn.v1"},
+                ]
+            ),
+            "voice.v6 and voice.v7 both declare schema_version voice.turn.v1",
+        ),
     ],
 )
 def test_check_registry_names_each_problem(payload, problem):

@@ -3,7 +3,7 @@
 Only the two root renames (v3, v4) pick an adapter. Later eras just add keys and
 become extensions when both the date and the key match. v1 has nothing to match.
 A trace stamped with ``amul.schema_version`` is routed by the stamp, not the date,
-and read through telemetry/mappings/voice.yaml.
+and read through telemetry/mappings/voice.yaml. Its source_era is the stamp.
 """
 
 import json
@@ -237,7 +237,6 @@ def adapt_voice_trace(
     timestamp = _parse_timestamp(trace.get("timestamp") or trace.get("startTime"))
     name = trace.get("name")
     parsed_scores = [LangfuseScoreSchema.model_validate(score) for score in scores]
-    registry = era_registry or TelemetryEraRegistry.from_yaml(default_era_registry_path(), section="voice_eras")
     vocabulary = outcome_vocabulary or VoiceOutcomeVocabulary.from_yaml(default_era_registry_path())
 
     raw = dict(trace)
@@ -249,13 +248,13 @@ def adapt_voice_trace(
         return _adapt_stamped_voice_trace(
             raw,
             metadata[SCHEMA_VERSION_KEY],
-            registry=registry,
             mappings=voice_mappings or load_voice_mappings(),
             outcome_vocabulary=vocabulary,
             observations=observations,
             scores=parsed_scores,
         )
 
+    registry = era_registry or TelemetryEraRegistry.from_yaml(default_era_registry_path(), section="voice_eras")
     v0 = registry.require("voice.v0")
     v2 = registry.require("voice.v2")
     v3 = registry.require("voice.v3")
@@ -309,7 +308,6 @@ def _adapt_stamped_voice_trace(
     raw: Mapping[str, Any],
     stamp: Any,
     *,
-    registry: TelemetryEraRegistry,
     mappings: Mapping[str, ContractMapping],
     outcome_vocabulary: VoiceOutcomeVocabulary,
     observations: Sequence[Mapping[str, Any]],
@@ -320,13 +318,11 @@ def _adapt_stamped_voice_trace(
         raise UnsupportedTelemetryEra(f"Unknown voice schema version {stamp!r}")
     if raw.get("name") != mapping.root:
         raise UnsupportedTelemetryEra(f"{stamp} is emitted on {mapping.root!r} roots, not {raw.get('name')!r}")
-    era = registry.for_schema_version(stamp)
-    if era is None:
-        raise UnsupportedTelemetryEra(f"No voice era in telemetry/eras.yaml declares schema_version {stamp}")
+    # The stamp is the era, so the turn doesn't wait on an eras.yaml entry.
     return _adapt_mapped_voice_turn(
         raw,
         mapping,
-        era_id=era.era_id,
+        era_id=mapping.schema_version,
         outcome_vocabulary=outcome_vocabulary,
         observations=observations,
         scores=scores,

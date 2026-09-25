@@ -30,7 +30,8 @@ chat next). The telemetry tests fail with the exact step to take when the code
 and the contract disagree.
 
 Once the new version is live in production, add an era to `telemetry/eras.yaml`
-with the first production day and its `schema_version`.
+with the first production day and its `schema_version`. It's a record of when it
+went live; the adapters read stamped traces without it.
 
 Every step, with the file to edit: `TELEMETRY_CHANGES.md`.
 
