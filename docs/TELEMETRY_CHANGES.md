@@ -85,6 +85,9 @@ The adapter doesn't wait for this: a stamped trace is read by its stamp, and its
 | --- | --- |
 | `New metadata keys [...]` | List them in the contract file. |
 | `Voice traces no longer send [...]` | A key was renamed or removed: see "Rename or remove". |
+| `Voice traces no longer send these keys inside metadata blocks` | A key inside a block like `agent` was renamed or removed: see "Rename or remove". |
+| `Voice traces no longer send the trace fields [...]` | `input`, `output`, `sessionId` or `userId` stopped being sent: see "Rename or remove". |
+| `Voice turns are now sent as [...]` | The root was renamed: see "Rename or remove", and set the new `root:` in `voice.yaml`. |
 | `New outcomes [...]` | See "Add an outcome value". |
 | `Outcomes no longer emitted: [...]` | Remove them from the contract, and note it in `eras.yaml` once it ships. |
 | `No contract for voice.turn.vN` | Add the contract file for the version you bumped to. |
