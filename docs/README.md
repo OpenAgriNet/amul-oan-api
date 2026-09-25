@@ -8,6 +8,7 @@ This folder contains the maintained, repo-specific documentation set.
 - `TRANSLATION_PIPELINE_API.md`: request/response behavior for the translation pipeline.
 - `WEBVIEW_URL_API.md`: integration guide for the webview URL endpoint.
 - `TELEMETRY_VERSIONED_ADAPTERS.md`: supported historical telemetry adapters and their canonical query boundary.
+- `TELEMETRY_STANDARD.md`: rules for changing what chat and voice send to Langfuse.
 - `REPOSITORY_REVIEW_2026-03-10.md`: codebase review notes, cleanup findings, and follow-up recommendations.
 
 ## Documentation Policy
