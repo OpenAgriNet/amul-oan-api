@@ -22,7 +22,7 @@ the stamp existed are matched by root name and date.
 | --- | --- |
 | Add a metadata key | Add it to the contract file. No version change. |
 | Add an outcome value | Add it to the contract file and to `voice_outcome_vocabulary` in `telemetry/eras.yaml`. No version change. |
-| Rename or remove a key | Bump the schema version, add a contract file for the new version, and teach the adapter the new version. |
+| Rename or remove a key | Bump the schema version, add a contract file for it, and add the version to `telemetry/mappings/voice.yaml` (it can `extends` the old one and list only what moved). Chat still needs an adapter change until it moves to mappings. |
 | Keep a key but change what it means | Same as a rename. Nothing can detect this for you. |
 
 Contract files live in `telemetry/contracts/<schema version>.json` (voice today,

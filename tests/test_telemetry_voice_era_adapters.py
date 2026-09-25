@@ -2,9 +2,19 @@ import json
 
 import pytest
 
+from app.models.telemetry_voice_analytics import VoiceV4TraceSchema
 from app.services.telemetry_era_adapters import UnsupportedTelemetryEra
 from app.services.telemetry_era_registry import TelemetryEraRegistry, TelemetryEraRegistryError
-from app.services.telemetry_voice_era_adapters import VoiceOutcomeVocabulary, adapt_voice_trace
+from app.services.telemetry_mappings import default_mappings_path
+from app.services.telemetry_voice_era_adapters import (
+    VoiceOutcomeVocabulary,
+    _adapt_mapped_voice_turn,
+    _adapt_voice_turn,
+    _mapping_or_none,
+    _parse_timestamp,
+    adapt_voice_trace,
+    load_voice_mappings,
+)
 
 
 VOCABULARY = {
@@ -451,3 +461,76 @@ def test_vocabulary_ignores_scalar_notes():
 
     assert vocabulary.classify("success") == "delivered"
     assert vocabulary.classify(None) is None
+
+
+def _prepared(trace):
+    raw = dict(trace)
+    raw["timestamp"] = _parse_timestamp(raw["timestamp"])
+    raw["metadata"] = _mapping_or_none(trace.get("metadata")) or {}
+    return raw
+
+
+def _clickhouse_shape(trace):
+    exported = dict(trace, timestamp="2026-10-05 10:00:00.000")
+    exported["metadata"] = {
+        key: json.dumps(value) if isinstance(value, dict) else str(value) for key, value in trace["metadata"].items()
+    }
+    return exported
+
+
+_FULL_STAMPED = _stamped(
+    _voice_turn_trace("agent_journey", "2026-10-05T10:00:00Z", pipeline_profile="managed", call_type="outbound")
+)
+_NO_SESSION_OR_QUERY = _stamped(_voice_turn_trace("agent_journey", "2026-10-05T10:00:00Z", session_id="s-meta"))
+del _NO_SESSION_OR_QUERY["sessionId"]
+del _NO_SESSION_OR_QUERY["metadata"]["query"], _NO_SESSION_OR_QUERY["metadata"]["response"]
+
+
+@pytest.mark.parametrize(
+    "trace",
+    [
+        _FULL_STAMPED,
+        _clickhouse_shape(_FULL_STAMPED),
+        _NO_SESSION_OR_QUERY,
+        _stamped(_voice_turn_trace("agent_journey", "2026-10-05T10:00:00Z", process_id=7, outcome="new_outcome")),
+        {"id": "t", "name": "agent_journey", "timestamp": "2026-10-05T10:00:00Z", "metadata": {"amul.schema_version": "voice.turn.v1"}},
+    ],
+    ids=["full", "clickhouse-export", "fallback-paths", "int-and-unknown-outcome", "empty"],
+)
+def test_voice_mapping_gives_the_same_turn_as_the_python_adapter(registry_path, trace):
+    vocabulary = VoiceOutcomeVocabulary.from_yaml(registry_path)
+    raw = _prepared(trace)
+    common = dict(era_id="voice.v6", outcome_vocabulary=vocabulary, observations=[{"name": "moderation"}], scores=[])
+
+    mapped = _adapt_mapped_voice_turn(raw, load_voice_mappings()["voice.turn.v1"], **common)
+    python = _adapt_voice_turn(
+        VoiceV4TraceSchema.model_validate(raw), source_schema_version="voice.turn.v1", source_era_extensions=[], **common
+    )
+
+    assert mapped.model_dump() == python.model_dump()
+
+
+def test_a_renamed_field_needs_only_a_mapping_change(tmp_path):
+    mappings_path = tmp_path / "voice.yaml"
+    mappings_path.write_text(
+        default_mappings_path("voice").read_text(encoding="utf-8")
+        + "\nvoice.turn.v2:\n  extends: voice.turn.v1\n  fields:\n    outcome: [metadata.turn_outcome]\n",
+        encoding="utf-8",
+    )
+    v2_era = STAMPED_ERA.replace("voice.v6", "voice.v7").replace("voice.turn.v1", "voice.turn.v2")
+    adapt = _adapter(_write_registry(tmp_path, extra_eras=STAMPED_ERA + v2_era))
+    trace = _stamped(_voice_turn_trace("agent_journey", "2026-11-02T10:00:00Z"), "voice.turn.v2")
+    trace["metadata"]["turn_outcome"] = trace["metadata"].pop("outcome")
+
+    turn = adapt(trace, voice_mappings=load_voice_mappings(mappings_path))
+
+    assert turn.source_era == "voice.v7"
+    assert turn.source_schema_version == "voice.turn.v2"
+    assert turn.outcome == "success"
+    assert turn.outcome_class == "delivered"
+    assert turn.field_availability["outcome"] == "recorded"
+    assert turn.question_sanitized.preview == "<redacted question preview>"
+
+
+def test_the_voice_mappings_file_loads():
+    assert load_voice_mappings()["voice.turn.v1"].root == "agent_journey"

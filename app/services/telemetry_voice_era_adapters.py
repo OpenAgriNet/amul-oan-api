@@ -2,7 +2,8 @@
 
 Only the two root renames (v3, v4) pick an adapter. Later eras just add keys and
 become extensions when both the date and the key match. v1 has nothing to match.
-A trace stamped with ``amul.schema_version`` is routed by the stamp, not the date.
+A trace stamped with ``amul.schema_version`` is routed by the stamp, not the date,
+and read through telemetry/mappings/voice.yaml.
 """
 
 import json
@@ -26,6 +27,7 @@ from app.services.telemetry_era_registry import (
     default_era_registry_path,
     load_registry_file,
 )
+from app.services.telemetry_mappings import ContractMapping, default_mappings_path, load_mappings, value_at
 
 
 # Raw caller id on every voice trace since 8d82835, documented as the farmer's phone.
@@ -36,11 +38,6 @@ _USER_ID_SEMANTICS = "request_user_id_expected_phone_then_anonymous"
 UNCLASSIFIED_OUTCOME = "unclassified"
 
 SCHEMA_VERSION_KEY = "amul.schema_version"
-
-# Stamps written by voice-oan-api, with the root and source schema each one is emitted on.
-_STAMPED_VOICE_CONTRACTS: dict[str, tuple[str, type[VoiceV3TraceSchema]]] = {
-    "voice.turn.v1": ("agent_journey", VoiceV4TraceSchema),
-}
 
 # Spans added by deeea7a, the voice.v2 commit.
 _V2_EXTERNAL_API_OBSERVATIONS = frozenset(
@@ -233,6 +230,7 @@ def adapt_voice_trace(
     scores: Sequence[Mapping[str, Any]] = (),
     era_registry: TelemetryEraRegistry | None = None,
     outcome_vocabulary: VoiceOutcomeVocabulary | None = None,
+    voice_mappings: Mapping[str, ContractMapping] | None = None,
 ) -> CanonicalVoiceTurn:
     """Resolve and adapt a voice trace by its stamp, or by name *and* timestamp when unstamped."""
 
@@ -252,6 +250,7 @@ def adapt_voice_trace(
             raw,
             metadata[SCHEMA_VERSION_KEY],
             registry=registry,
+            mappings=voice_mappings or load_voice_mappings(),
             outcome_vocabulary=vocabulary,
             observations=observations,
             scores=parsed_scores,
@@ -302,33 +301,72 @@ def adapt_voice_trace(
     )
 
 
+def load_voice_mappings(path: Path | None = None) -> dict[str, ContractMapping]:
+    return load_mappings(path or default_mappings_path("voice"), allowed_fields=_MAPPED_FIELDS)
+
+
 def _adapt_stamped_voice_trace(
     raw: Mapping[str, Any],
     stamp: Any,
     *,
     registry: TelemetryEraRegistry,
+    mappings: Mapping[str, ContractMapping],
     outcome_vocabulary: VoiceOutcomeVocabulary,
     observations: Sequence[Mapping[str, Any]],
     scores: Sequence[LangfuseScoreSchema],
 ) -> CanonicalVoiceTurn:
-    contract = _STAMPED_VOICE_CONTRACTS.get(stamp) if isinstance(stamp, str) else None
-    if contract is None:
+    mapping = mappings.get(stamp) if isinstance(stamp, str) else None
+    if mapping is None:
         raise UnsupportedTelemetryEra(f"Unknown voice schema version {stamp!r}")
-    root_name, source_schema = contract
-    if raw.get("name") != root_name:
-        raise UnsupportedTelemetryEra(f"{stamp} is emitted on {root_name!r} roots, not {raw.get('name')!r}")
+    if raw.get("name") != mapping.root:
+        raise UnsupportedTelemetryEra(f"{stamp} is emitted on {mapping.root!r} roots, not {raw.get('name')!r}")
     era = registry.for_schema_version(stamp)
     if era is None:
         raise UnsupportedTelemetryEra(f"No voice era in telemetry/eras.yaml declares schema_version {stamp}")
-    # The stamp names the whole contract, so there are no dated extensions to guess.
-    return _adapt_voice_turn(
-        source_schema.model_validate(raw),
+    return _adapt_mapped_voice_turn(
+        raw,
+        mapping,
         era_id=era.era_id,
-        source_schema_version=stamp,
         outcome_vocabulary=outcome_vocabulary,
         observations=observations,
         scores=scores,
-        source_era_extensions=[],
+    )
+
+
+def _adapt_mapped_voice_turn(
+    raw: Mapping[str, Any],
+    mapping: ContractMapping,
+    *,
+    era_id: str,
+    outcome_vocabulary: VoiceOutcomeVocabulary,
+    observations: Sequence[Mapping[str, Any]],
+    scores: Sequence[LangfuseScoreSchema],
+) -> CanonicalVoiceTurn:
+    values = {
+        field: next(
+            (value for path in mapping.fields.get(field, ()) if (value := parse(value_at(raw, path))) is not None),
+            None,
+        )
+        for field, parse in _MAPPED_FIELDS.items()
+    }
+    outcome_class = outcome_vocabulary.classify(values["outcome"])
+    availability = {field: _availability(value) for field, value in values.items()}
+    availability["channel"] = "derived"
+    availability["outcome_class"] = "derived" if outcome_class else "unavailable"
+
+    # The stamp names the whole contract, so there are no dated extensions to guess.
+    return CanonicalVoiceTurn(
+        source_era=era_id,
+        source_schema_version=mapping.schema_version,
+        source_trace_id=raw.get("id"),
+        source_trace_name=mapping.root,
+        timestamp=raw["timestamp"],
+        user_id_semantics=_USER_ID_SEMANTICS,
+        outcome_class=outcome_class,
+        observation_names=_names(observations),
+        score_names=[score.name for score in scores],
+        field_availability=availability,
+        **values,
     )
 
 
@@ -539,3 +577,26 @@ def _availability(value: Any) -> str:
 
 def _names(items: Sequence[Mapping[str, Any]]) -> list[str]:
     return [name for item in items if isinstance((name := item.get("name")), str)]
+
+
+# CanonicalVoiceTurn fields a mapping may fill, and how each raw value is read.
+# A field name in voice.yaml that isn't here is rejected as a typo.
+_MAPPED_FIELDS = {
+    "session_id": _string_or_none,
+    "process_id": _identifier_or_none,
+    "user_id": _identifier_or_none,
+    "user_id_hash": _string_or_none,
+    "signed_in": _bool_or_none,
+    "provider": _string_or_none,
+    "call_type": _string_or_none,
+    "route": _string_or_none,
+    "pipeline_profile": _string_or_none,
+    "source_lang": _string_or_none,
+    "target_lang": _string_or_none,
+    "question_sanitized": _sanitized_or_none,
+    "answer_sanitized": _sanitized_or_none,
+    "outcome": _string_or_none,
+    "full_turn_latency_ms": _float_or_none,
+    "stage_totals_ms": _float_mapping_or_none,
+    "timings_ms": _float_mapping_or_none,
+}
