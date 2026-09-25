@@ -162,7 +162,7 @@ chat_eras:
   - era_id: chat.c3
     valid_from: 2026-05-13
     valid_from_confidence: high       # data-observed; two schemas coexist in May
-    valid_to: 2026-08-05
+    valid_to: 2026-08-05T06:30:00Z    # was 2026-08-05; now ends where chat.c6 starts
     root_trace_names: ["Amul AI Agent"]
     merge_date: 2026-05-02
     defining_commits: ["e220c3e"]     # "optimised for langfuse"
