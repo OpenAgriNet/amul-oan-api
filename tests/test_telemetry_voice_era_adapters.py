@@ -175,7 +175,7 @@ def test_v0_root_never_reads_its_message_history_and_leaves_outcome_unavailable(
         }
     )
 
-    assert turn.schema_version == "voice.turn.v1"
+    assert turn.schema_version == "voice.canonical.v1"
     assert turn.source_era == "voice.v0"
     assert turn.source_schema_version == "voice.v0.v1"
     assert turn.user_id == "<redacted-user-id>"

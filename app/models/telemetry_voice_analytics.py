@@ -25,7 +25,8 @@ class CanonicalVoiceTurn(BaseModel):
     ``outcome_class`` rather than raw turn totals.
     """
 
-    schema_version: Literal["voice.turn.v1"] = "voice.turn.v1"
+    # Version of this output shape. source_schema_version is the stamp that came in.
+    schema_version: Literal["voice.canonical.v1"] = "voice.canonical.v1"
     source_era: str
     source_schema_version: str
     source_era_extensions: list[str] = Field(default_factory=list)
