@@ -51,6 +51,12 @@ Every step, with the file to edit: `TELEMETRY_CHANGES.md`.
   `unavailable`. Never fill in a value the trace didn't have.
 - Test fixtures are redacted: no phone numbers or farmer text. This repo is public.
 
+## Reading telemetry
+
+Anything that reads this data (a dashboard, an export, a report) goes in
+`telemetry/consumers.yaml`, with what it reads and what for. Before removing or
+renaming something, check that file for who depends on it.
+
 ## CI
 
 The `telemetry` workflow runs `tests/test_telemetry_*.py` and the stamp tests on
