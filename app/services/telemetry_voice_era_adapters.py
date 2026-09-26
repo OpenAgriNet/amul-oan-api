@@ -21,26 +21,21 @@ from app.models.telemetry_voice_analytics import (
 from app.services.telemetry_era_adapters import UnsupportedTelemetryEra
 from app.services.telemetry_era_registry import (
     EraBoundary,
+    OutcomeVocabulary,
     TelemetryEraRegistry,
-    TelemetryEraRegistryError,
     default_era_registry_path,
-    load_registry_file,
 )
 from app.services.telemetry_mappings import (
     ContractMapping,
     default_mappings_path,
     load_mappings,
     mapping_or_none,
-    value_at,
+    mapped_values,
 )
 
 
 # Raw caller id on every voice trace since 8d82835, documented as the farmer's phone.
 _USER_ID_SEMANTICS = "request_user_id_expected_phone_then_anonymous"
-
-# A recorded outcome missing from voice_outcome_vocabulary. Kept visible so a new
-# outcome shows up in counts instead of quietly falling out of every bucket.
-UNCLASSIFIED_OUTCOME = "unclassified"
 
 SCHEMA_VERSION_KEY = "amul.schema_version"
 
@@ -58,44 +53,12 @@ _V2_EXTERNAL_API_OBSERVATIONS = frozenset(
 )
 
 
-class VoiceOutcomeVocabulary:
+class VoiceOutcomeVocabulary(OutcomeVocabulary):
     """Outcome buckets read from ``voice_outcome_vocabulary`` in telemetry/eras.yaml."""
-
-    def __init__(self, bucket_by_outcome: Mapping[str, str]):
-        self._bucket_by_outcome = dict(bucket_by_outcome)
 
     @classmethod
     def from_yaml(cls, path: Path) -> "VoiceOutcomeVocabulary":
-        payload = load_registry_file(path)
-        raw = payload.get("voice_outcome_vocabulary") if isinstance(payload, Mapping) else None
-        if not isinstance(raw, Mapping):
-            raise TelemetryEraRegistryError("telemetry/eras.yaml has no voice_outcome_vocabulary")
-        return cls.from_mapping(raw)
-
-    @classmethod
-    def from_mapping(cls, raw: Mapping[str, Any]) -> "VoiceOutcomeVocabulary":
-        bucket_by_outcome: dict[str, str] = {}
-        for bucket, outcomes in raw.items():
-            # e.g. pre_v3_convention, a note rather than a bucket
-            if not isinstance(outcomes, list):
-                continue
-            for outcome in outcomes:
-                if not isinstance(outcome, str):
-                    continue
-                if bucket == UNCLASSIFIED_OUTCOME:
-                    raise TelemetryEraRegistryError(f"{UNCLASSIFIED_OUTCOME!r} is reserved for unknown outcomes")
-                if outcome in bucket_by_outcome and bucket_by_outcome[outcome] != bucket:
-                    raise TelemetryEraRegistryError(
-                        f"voice outcome {outcome!r} is listed under both "
-                        f"{bucket_by_outcome[outcome]!r} and {bucket!r}"
-                    )
-                bucket_by_outcome[outcome] = str(bucket)
-        return cls(bucket_by_outcome)
-
-    def classify(self, outcome: str | None) -> str | None:
-        if not outcome:
-            return None
-        return self._bucket_by_outcome.get(outcome, UNCLASSIFIED_OUTCOME)
+        return super().from_yaml(path, section="voice_outcome_vocabulary")
 
 
 class VoiceV0Adapter:
@@ -343,13 +306,7 @@ def _adapt_mapped_voice_turn(
     observations: Sequence[Mapping[str, Any]],
     scores: Sequence[LangfuseScoreSchema],
 ) -> CanonicalVoiceTurn:
-    values = {
-        field: next(
-            (value for path in mapping.fields.get(field, ()) if (value := parse(value_at(raw, path))) is not None),
-            None,
-        )
-        for field, parse in _MAPPED_FIELDS.items()
-    }
+    values = mapped_values(mapping, raw, _MAPPED_FIELDS)
     outcome_class = outcome_vocabulary.classify(values["outcome"])
     availability = {field: _availability(value) for field, value in values.items()}
     availability["channel"] = "derived"
