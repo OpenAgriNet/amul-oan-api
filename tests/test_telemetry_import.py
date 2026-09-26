@@ -6,15 +6,21 @@ from pathlib import Path
 
 import pytest
 
+from app.models.telemetry_analytics import CanonicalChatTurn
 from app.models.telemetry_voice_analytics import CanonicalVoiceTurn
 from app.services import telemetry_fetcher
+from app.services.telemetry_era_adapters import load_chat_mappings
 from app.services.telemetry_era_registry import TelemetryEraRegistry, default_era_registry_path
-from app.services.telemetry_fetcher import REDACTED_USER_ID, fetch_voice_bundles
+from app.services.telemetry_fetcher import REDACTED_USER_ID, fetch_chat_bundles, fetch_voice_bundles
 from app.services.telemetry_import import (
+    CHAT_NOT_STORED,
+    CHAT_TURN_COLUMNS,
     IMPORT_DAY_COLUMNS,
     NOT_STORED,
     REJECTION_COLUMNS,
     VOICE_TURN_COLUMNS,
+    chat_turn_row,
+    import_chat_days,
     import_voice_days,
     rejection_reason,
     voice_turn_row,
@@ -405,3 +411,152 @@ def test_the_script_reads_the_password_from_the_env_or_a_file(monkeypatch, tmp_p
     assert script._password("reader") == "from-file"
     monkeypatch.setenv("TELEMETRY_READER_PASSWORD", "from-env")
     assert script._password("reader") == "from-env"
+
+
+# Chat
+
+
+def chat_row(trace_id, *, name="chat.translation", when="2026-09-20T10:00:00Z", session="session-a", metadata=None, input=None, output=None):
+    """A chat root as ClickHouse returns it: metadata values as strings, input and output as JSON text."""
+    moment = datetime.fromisoformat(when.replace("Z", "+00:00"))
+    return {
+        "id": trace_id,
+        "name": name,
+        "timestamp_ms": int(moment.timestamp() * 1000),
+        "session_id": session,
+        "user_id": REDACTED_USER_ID,
+        "metadata": metadata if metadata is not None else {"pipeline": "translation", "pipeline_profile": "oss", "user_id": "9990001112"},
+        "input": json.dumps(input) if input is not None else None,
+        "output": json.dumps(output) if output is not None else None,
+        "is_deleted": 0,
+    }
+
+
+def chat_observation(obs_id, trace_id, *, name, type="SPAN", start_ms=0, metadata=None, output=None):
+    return {
+        "id": obs_id,
+        "trace_id": trace_id,
+        "type": type,
+        "name": name,
+        "start_ms": start_ms,
+        "metadata": {key: json.dumps(value) if isinstance(value, dict) else value for key, value in (metadata or {}).items()},
+        "input": json.dumps({"farmer_code": "<redacted>"}) if type == "TOOL" else None,
+        "output": json.dumps(output) if output is not None else None,
+        "is_deleted": 0,
+    }
+
+
+def _import_chat(client, *, writer=True, first_day=date(2026, 9, 20)):
+    return import_chat_days(
+        client,
+        client if writer else None,
+        environment="chat-development",
+        first_day=first_day,
+        last_day=first_day,
+        registry=TelemetryEraRegistry.from_yaml(default_era_registry_path(), section="chat_eras"),
+        mappings=load_chat_mappings(),
+    )
+
+
+def test_chat_rows_keep_no_phone_number_text_or_tool_data():
+    client = FakeClickHouse(
+        traces=[
+            chat_row("c8", input={"query": "<redacted question>", "channel": "web"}, output="<redacted answer>"),
+            chat_row("c4", name="Amul AI Agent", when="2026-07-23T10:00:00Z", input={"action": "<redacted action>"}, output="<redacted answer>"),
+        ],
+        observations=[
+            chat_observation("tool", "c4", name="get_farmer_bonus_amount (redacted)", type="TOOL",
+                             metadata={"attributes": {"gen_ai.tool.name": "get_farmer_bonus_amount"}}, output="<redacted tool response>"),
+        ],
+    )
+
+    _import_chat(client, first_day=date(2026, 9, 20))
+    _import_chat(client, first_day=date(2026, 7, 23))
+
+    rows = {row["source_trace_id"]: row for row in client.inserts["chat_turns"]}
+    assert rows["c8"]["source_era"] == "chat.c8"
+    assert rows["c8"]["question_chars"] == len("<redacted question>")
+    assert rows["c8"]["answer_chars"] == len("<redacted answer>")
+    assert rows["c4"]["tool_names"] == ["get_farmer_bonus_amount"]
+    assert rows["c4"]["tool_call_count"] == 1
+    for row in rows.values():
+        assert "9990001112" not in repr(row) and "<redacted" not in repr(row)
+        assert row["user_id_hash"] and "user_id" not in row
+
+
+def test_a_c2_turn_finds_its_question_in_a_pretranslation_just_before_midnight():
+    client = FakeClickHouse(
+        traces=[
+            chat_row("question", when="2026-05-11T23:59:40Z", session="s1",
+                     metadata={"pipeline_stage": "query_pretranslation"}, input={"text": "<redacted question>"}),
+            chat_row("turn", when="2026-05-12T00:00:30Z", session="s1", metadata={"pipeline": "translation"}),
+        ],
+        observations=[
+            chat_observation("agent", "turn", name="Amul AI Agent run (redacted)",
+                             metadata={"attributes": {"agent_name": "Amul AI Agent", "final_result": "<redacted answer>"}}),
+        ],
+    )
+
+    report = _import_chat(client, first_day=date(2026, 5, 12))
+
+    (sql, params), *_ = client.queries
+    assert params["start"] == "2026-05-11 23:58:00.000"
+    [row] = client.inserts["chat_turns"]
+    assert row["source_trace_id"] == "turn"
+    assert row["question_chars"] == len("<redacted question>")
+    assert report.traces == 1
+
+
+def test_c2_traces_without_an_agent_run_are_rejected_with_the_reason():
+    client = FakeClickHouse(traces=[chat_row("noise", when="2026-05-12T10:00:00Z", metadata={"pipeline_stage": "text_translation"})])
+
+    report = _import_chat(client, writer=False, first_day=date(2026, 5, 12))
+
+    [(name, reason)] = report.rejected
+    assert name == "chat.translation" and reason.startswith("chat.c2 requires an 'Amul AI Agent run' observation")
+
+
+def test_chat_reads_full_rows_only_for_the_observations_the_adapters_use():
+    client = FakeClickHouse(traces=[chat_row("c8", when="2026-09-24T10:00:00Z", input={"query": "q"})])
+
+    list(fetch_chat_bundles(client, environment="chat-development", start=DAY_START, end=DAY_END, root_names=["chat.translation"]))
+
+    names_sql, details_sql = [sql for sql, _ in client.queries if "FROM observations" in sql]
+    assert "input" not in names_sql.split("FROM")[0]
+    assert "type = 'TOOL'" in details_sql and "stream_translation" in details_sql
+
+
+CHAT_SQL = (REPO / "telemetry" / "clickhouse" / "chat.sql").read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    ("table", "columns"),
+    [("chat_turns", CHAT_TURN_COLUMNS), ("chat_import_days", IMPORT_DAY_COLUMNS), ("chat_rejections", REJECTION_COLUMNS)],
+)
+def test_written_chat_columns_match_the_tables(table, columns):
+    assert tuple(_table_columns(CHAT_SQL, table)) == columns, (
+        f"telemetry.{table} and the importer disagree. A new column goes at the end of both: an ALTER at the "
+        "bottom of telemetry/clickhouse/chat.sql, and the end of the importer's column list."
+    )
+
+
+def test_every_canonical_chat_field_is_stored_or_left_out_on_purpose():
+    fields = set(CanonicalChatTurn.model_fields)
+    missing = sorted(fields - set(CHAT_TURN_COLUMNS) - set(CHAT_NOT_STORED))
+
+    assert not missing, (
+        f"CanonicalChatTurn has {missing}, but telemetry.chat_turns doesn't store it. Add a column (an ALTER in "
+        "chat.sql, CHAT_TURN_COLUMNS and chat_turn_row), or list it in CHAT_NOT_STORED with the reason."
+    )
+    assert set(CHAT_NOT_STORED) <= fields, f"CHAT_NOT_STORED lists {sorted(set(CHAT_NOT_STORED) - fields)}, which isn't a field"
+
+
+def test_a_chat_row_has_exactly_the_table_columns():
+    turn = CanonicalChatTurn(source_era="chat.c8", source_schema_version="chat.c8.v1", source_trace_name="chat.translation", timestamp=DAY_START)
+
+    assert set(chat_turn_row(turn, environment="chat-development", imported_at=DAY_START)) == set(CHAT_TURN_COLUMNS)
+
+
+def test_the_script_takes_a_channel():
+    assert _script()._parse_args(["--channel", "chat", "--env", "chat-production"]).channel == "chat"
+    assert _script()._parse_args(["--env", "voice-production"]).channel == "voice"
