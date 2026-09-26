@@ -1,5 +1,6 @@
 -- Canonical voice turns, filled by scripts/telemetry_import.py.
--- Run once as the ClickHouse admin, next to Langfuse's own tables.
+-- Run as the ClickHouse admin, next to Langfuse's own tables. Safe to re-run:
+-- it only adds what's missing, so run it again after pulling a new column.
 
 CREATE DATABASE IF NOT EXISTS telemetry;
 
@@ -69,3 +70,8 @@ CREATE TABLE IF NOT EXISTS telemetry.voice_rejections
 )
 ENGINE = MergeTree
 ORDER BY (environment, day, imported_at, trace_name, reason);
+
+-- New columns go below this line, one per statement, e.g.
+--   ALTER TABLE telemetry.voice_turns ADD COLUMN IF NOT EXISTS farmer_type LowCardinality(Nullable(String));
+-- Don't edit or remove the columns above. Dashboards read them, and a table
+-- that already exists won't pick up a change there.
