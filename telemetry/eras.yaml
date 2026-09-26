@@ -162,7 +162,7 @@ chat_eras:
   - era_id: chat.c3
     valid_from: 2026-05-13
     valid_from_confidence: high       # data-observed; two schemas coexist in May
-    valid_to: 2026-08-05
+    valid_to: 2026-08-05T06:30:00Z    # was 2026-08-05; now ends where chat.c6 starts
     root_trace_names: ["Amul AI Agent"]
     merge_date: 2026-05-02
     defining_commits: ["e220c3e"]     # "optimised for langfuse"
@@ -416,12 +416,31 @@ voice_eras:
     tags: ["pipeline_profile:<x>"]
 
   - era_id: voice.v5b
+    valid_from: 2026-08-01            # was 2026-08-05, see notes
+    valid_from_confidence: low        # prod merge date, not checked in data yet
+    valid_to: null
+    merge_date: 2026-08-01
+    defining_commits: ["83b79af"]     # prod merge 1b390ed (#234)
+    summary: Outbound call opener. New outcomes outbound_intro, outbound_declined, outbound_no_data.
+    adds_keys: [metadata.call_type, metadata.outbound_consent_intent]
+    notes: >
+      Corrected 2026-09-25. This era used to start 2026-08-05 on ae2b8f4, but
+      that commit removed outbound_intro (see voice.v5c); 83b79af added it.
+      outbound_intro only appears where OUTBOUND_INTRO_ENABLED was on.
+
+  - era_id: voice.v5c
     valid_from: 2026-08-05
-    valid_from_confidence: low
+    valid_from_confidence: low        # prod merge date, not checked in data yet
     valid_to: null
     merge_date: 2026-08-05
-    defining_commits: ["ae2b8f4"]
-    summary: outcome vocabulary gains outbound_intro.
+    defining_commits: ["ae2b8f4"]     # prod cef039b, merge 9411906 (#242)
+    summary: outbound_intro outcome and route removed. outbound_declined and outbound_no_data stay.
+
+chat_outcome_vocabulary:
+  # Chat began recording turn_outcome on 2026-08-03 (chat.c6b). Missing values
+  # before that date remain null; unrecognised recorded values are unclassified.
+  delivered: [success]
+  failed: [error, cancelled]
 
 voice_outcome_vocabulary:
   # [code] app/services/voice.py + voice_trace.py:293-295,492-499
@@ -440,6 +459,7 @@ voice_outcome_vocabulary:
     - identity_fast_path
     - fragment_fast_path
     - non_meaningful_hangup
+    - stt_signal_auto_hangup        # dev only: 7892cc3 on fix/voice-stt-hangup-threshold, never merged
     - outbound_intro
   refused_or_blocked: [moderation_rejected, outbound_declined, outbound_no_data]
   failed: [error, pretranslation_empty, client_disconnected]
