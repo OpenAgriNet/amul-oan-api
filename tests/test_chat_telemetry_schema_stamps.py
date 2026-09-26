@@ -83,3 +83,10 @@ def test_forward_telemetry_metadata_reads_a_packed_branch_ref(monkeypatch, tmp_p
     telemetry_stamps.chat_telemetry_release.cache_clear()
 
     assert forward_chat_telemetry_metadata()["release"] == "a" * 40
+
+
+def test_the_image_build_passes_the_commit_for_the_release_stamp():
+    # .dockerignore drops .git, so without this every prod trace says "unknown".
+    workflow = Path(__file__).resolve().parents[1] / ".github" / "workflows" / "build-and-push.yml"
+
+    assert "GIT_SHA=${{ github.sha }}" in workflow.read_text(encoding="utf-8")
