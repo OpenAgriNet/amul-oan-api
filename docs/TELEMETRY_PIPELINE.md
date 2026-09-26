@@ -1,16 +1,16 @@
 # Telemetry Pipeline
 
-Voice turns go from Langfuse's ClickHouse into a separate `telemetry` database
-on the same server:
+Voice and chat turns go from Langfuse's ClickHouse into a separate `telemetry`
+database on the same server:
 
 ```
 Langfuse tables (traces, observations, scores)
   -> app/services/telemetry_fetcher.py   one UTC day at a time
-  -> voice adapters                      CanonicalVoiceTurn
-  -> app/services/telemetry_import.py    telemetry.voice_turns
+  -> voice or chat adapters              CanonicalVoiceTurn / CanonicalChatTurn
+  -> app/services/telemetry_import.py    telemetry.voice_turns / telemetry.chat_turns
 ```
 
-`scripts/telemetry_import.py` runs the whole thing.
+`scripts/telemetry_import.py` runs the whole thing, `--channel chat` for chat.
 
 ## What is stored
 
@@ -21,13 +21,22 @@ Langfuse tables (traces, observations, scores)
 - `telemetry.voice_import_days`: per day, how many traces were read, turned into
   turns, or rejected.
 - `telemetry.voice_rejections`: per day, why traces were rejected.
+- `telemetry.chat_turns`, `chat_import_days`, `chat_rejections`: the same for
+  chat. The user id is only kept hashed, and tools keep only their names and a
+  count, since their inputs and outputs carry farmer data.
 
-The tables are in `telemetry/clickhouse/voice.sql`.
+The tables are in `telemetry/clickhouse/voice.sql` and `chat.sql`.
+
+Chat needs more than voice to build a turn, so the importer reads the root's
+input and output, and the full rows of the few observations the chat adapters
+use (the agent run, stream_translation and tools). They are hashed or measured
+in memory and never stored. A c2 turn's question sits in a pretranslation trace
+of the same session, so each day is read from 2 minutes before midnight.
 
 ## Setup, once per ClickHouse
 
-1. Run `telemetry/clickhouse/voice.sql` as the ClickHouse admin. It's safe to
-   re-run, and needs re-running whenever a change adds a column.
+1. Run `telemetry/clickhouse/voice.sql` and `chat.sql` as the ClickHouse admin.
+   They're safe to re-run, and need re-running whenever a change adds a column.
 2. Create the users in `telemetry/clickhouse/users.sql`. `telemetry_reader` can
    only read Langfuse's three tables, and `telemetry_writer` can only write the
    `telemetry` database.
@@ -48,6 +57,9 @@ python scripts/telemetry_import.py --env voice-development --from 2026-09-20 --t
 
 # Yesterday (UTC), for a daily cron
 python scripts/telemetry_import.py --env voice-production
+
+# Chat
+python scripts/telemetry_import.py --channel chat --env chat-production
 ```
 
 Days are UTC. Re-running a day is safe: its rows are replaced, not doubled.

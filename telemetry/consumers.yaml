@@ -20,18 +20,28 @@ consumers:
       paths: [app/services/telemetry_fetcher.py, app/services/telemetry_import.py]
     interface: langfuse clickhouse tables (traces, observations, scores)
     verified_from: code
-    verified_on: 2026-09-25
+    verified_on: 2026-09-26
     reads:
       - kind: trace_name
         values: ["Voice Agent run", "Voice Agent Signed In run", voice_request, agent_journey]
         used_for: voice turns in telemetry.voice_turns
-        path: app/services/telemetry_fetcher.py:27
+        path: app/services/telemetry_fetcher.py:31
         written_for_eras: [voice.v0, voice.v3, voice.v4]
         note: Names come from eras.yaml and mappings/voice.yaml; fields are read through the voice adapters.
       - kind: trace_field
         values: [id, timestamp, sessionId, userId, metadata]
-        used_for: the turn itself; userId only as present or not, the value never leaves ClickHouse
-        path: app/services/telemetry_fetcher.py:23-25
+        used_for: the voice turn itself; userId only as present or not, the value never leaves ClickHouse
+        path: app/services/telemetry_fetcher.py:26-28
+      - kind: trace_name
+        values: [chat.default, chat.translation, "Amul AI Agent"]
+        used_for: chat turns in telemetry.chat_turns
+        path: app/services/telemetry_fetcher.py:44
+        written_for_eras: [chat.c2, chat.c3, chat.c6, chat.c8]
+        note: Names come from eras.yaml and mappings/chat.yaml; fields are read through the chat adapters.
+      - kind: trace_field
+        values: [id, timestamp, sessionId, metadata, input, output]
+        used_for: the chat turn; input and output are only hashed and measured, never stored
+        path: app/services/telemetry_fetcher.py:39-41
     status: working
 
   - consumer: oan-telemetry-dashboard-service
