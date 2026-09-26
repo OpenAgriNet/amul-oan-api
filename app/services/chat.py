@@ -37,7 +37,7 @@ from app.services.identity_profile import (
 )
 from app.personas import ChatPersona
 from app.chat_artifacts import encode_chat_artifacts
-from app.services.telemetry_stamps import forward_chat_telemetry_metadata
+from app.services.telemetry_stamps import CHAT_TURN_V1_ROOT, chat_turn_v1_input, chat_turn_v1_metadata
 
 
 class SentenceSegmenter:
@@ -272,16 +272,15 @@ async def stream_chat_messages(
         (user_info.get("phone") or user_info.get("sub")) if user_info else None
     ) or user_id or "anonymous"
     effective_user_id = effective_user_id[:200]
-    langfuse_metadata = {
-        **forward_chat_telemetry_metadata(settings.langfuse_release),
-        "pipeline": _PIPELINE_NAME,
-        "channel": (channel or "web")[:200],
-        "source_lang": (source_lang or "unknown").lower()[:200],
-        "target_lang": (target_lang or "unknown").lower()[:200],
-        "user_id": effective_user_id,
-        "pipeline_profile": pipeline_profile,
-        "persona": persona,
-    }
+    langfuse_metadata = chat_turn_v1_metadata(
+        pipeline=_PIPELINE_NAME,
+        channel=(channel or "web")[:200],
+        source_lang=(source_lang or "unknown").lower()[:200],
+        target_lang=(target_lang or "unknown").lower()[:200],
+        user_id=effective_user_id,
+        pipeline_profile=pipeline_profile,
+        persona=persona,
+    )
     langfuse_tags = [
         f"pipeline:{_PIPELINE_NAME}",
         f"pipeline_profile:{pipeline_profile}",
@@ -314,7 +313,7 @@ async def stream_chat_messages(
     # has gaps, and why turn-level scores never landed.
     _root_ctx = (
         get_langfuse_client().start_as_current_observation(
-            name=f"chat.{_PIPELINE_NAME}", as_type="span"
+            name=CHAT_TURN_V1_ROOT, as_type="span"
         )
         if get_langfuse_client
         else nullcontext()
@@ -331,13 +330,13 @@ async def stream_chat_messages(
                 try:
                     langfuse = get_langfuse_client()
                     langfuse.set_current_trace_io(
-                        input={
-                            "query": query,
-                            "channel": channel,
-                            "source_lang": source_lang,
-                            "target_lang": target_lang,
-                            "persona": persona,
-                        }
+                        input=chat_turn_v1_input(
+                            query=query,
+                            channel=channel,
+                            source_lang=source_lang,
+                            target_lang=target_lang,
+                            persona=persona,
+                        )
                     )
                     #this is the same as the update_current_trace method,
                     #but it is more explicit about the type of the output

@@ -1,0 +1,72 @@
+# Where each canonical field lives in a stamped chat trace, per schema version.
+#
+# Paths are tried in order. Future compatible additions belong here; a new
+# Python adapter is only needed when the trace's structure or field semantics
+# change.
+#
+# Historical entries use their adapter source-schema version as the key. Their
+# root is documentary; name/date resolution still comes from eras.yaml because
+# historical root names are reused.
+chat.c2.v1:
+  root: chat.translation
+  fields:
+    session_id: [sessionId, session_id]
+    user_id: [metadata.user_id]
+    channel: [metadata.channel]
+    pipeline: [metadata.pipeline]
+    source_lang: [metadata.source_lang]
+    target_lang: [metadata.target_lang]
+
+chat.c3.v1:
+  root: Amul AI Agent
+  fields:
+    session_id: [sessionId, session_id]
+    user_id: [metadata.user_id]
+    channel: [metadata.channel]
+    pipeline: [metadata.pipeline]
+    pipeline_profile: [metadata.variant]
+    source_lang: [metadata.source_lang]
+    target_lang: [metadata.target_lang]
+    answer: [output]
+
+chat.c4.v1:
+  extends: chat.c3.v1
+  fields:
+    pipeline_profile: [metadata.pipeline_profile, metadata.variant]
+
+chat.c5.v1:
+  extends: chat.c3.v1
+  fields:
+    pipeline_profile: [metadata.pipeline_profile]
+
+chat.c6.v1:
+  root: chat.translation
+  fields:
+    session_id: [sessionId, session_id]
+    user_id: [metadata.user_id]
+    channel: [input.channel, metadata.channel]
+    pipeline: [metadata.pipeline]
+    pipeline_profile: [metadata.pipeline_profile]
+    source_lang: [input.source_lang, metadata.source_lang]
+    target_lang: [input.target_lang, metadata.target_lang]
+    original_question: [input.query]
+    answer: [output]
+    persona: [input.persona, metadata.persona]
+
+chat.c8.v1:
+  extends: chat.c6.v1
+  root: chat.translation
+
+chat.turn.v1:
+  root: chat.translation
+  fields:
+    session_id: [sessionId, session_id]
+    user_id: [metadata.user_id]
+    channel: [input.channel, metadata.channel]
+    pipeline: [metadata.pipeline]
+    pipeline_profile: [metadata.pipeline_profile, metadata.variant]
+    source_lang: [input.source_lang, metadata.source_lang]
+    target_lang: [input.target_lang, metadata.target_lang]
+    original_question: [input.query]
+    answer: [output]
+    persona: [input.persona, metadata.persona]
