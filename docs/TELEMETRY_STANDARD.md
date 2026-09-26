@@ -11,26 +11,30 @@ Turn traces carry three metadata keys, set in `app/services/telemetry_stamps.py`
 
 - `amul.schema_version`: the format of the trace, e.g. `voice.turn.v1`
 - `service`: `amul-oan-api` or `voice-oan-api`
-- `release`: the deployed build. Chat takes it from `LANGFUSE_RELEASE`; voice
-  uses the git commit of the running code (the checkout's HEAD, or `GIT_SHA`
-  from the image build)
+- `release`: the git commit of the running code, the same way in both repos:
+  the checkout's HEAD, else `GIT_SHA` from the image build, else `unknown`
 
 Adapters pick the format from `amul.schema_version`. Only traces from before
 the stamp existed are matched by root name and date.
+
+The stamp is the version of the trace. What the adapters produce has its own
+version, `voice.canonical.v1` or `chat.canonical.v1`, which only changes when
+the canonical model does.
 
 ## When you change what a trace sends
 
 | Change | What to do |
 | --- | --- |
 | Add a metadata key | Add it to the contract file. No version change. |
-| Add an outcome value | Add it to the contract file and to `voice_outcome_vocabulary` in `telemetry/eras.yaml`. No version change. |
-| Rename or remove a key | Bump the schema version, add a contract file for it, and add the version to `telemetry/mappings/voice.yaml` (it can `extends` the old one and list only what moved). Chat still needs an adapter change until it moves to mappings. |
-| Rename the root, drop a trace field (`sessionId`, `userId`, input, output), or rename a key inside a metadata block | Same as a rename. The voice contract lists these too (`root`, `trace_fields`, `nested_keys`). |
+| Add an outcome value | Voice: add it to the contract file and to `voice_outcome_vocabulary` in `telemetry/eras.yaml`. Chat: add it to `chat_outcome_vocabulary`. No version change. |
+| Rename or remove a key | Bump the schema version, add a contract file for it, and add the version to `telemetry/mappings/<channel>.yaml` (it can `extends` the old one and list only what moved). |
+| Rename the root, drop a trace field (`sessionId`, `userId`, input, output), or rename a key inside a metadata block | Same as a rename. The contracts list these too (voice: `root`, `trace_fields`, `nested_keys`; chat: `root`, `trace_input`). |
 | Keep a key but change what it means | Same as a rename. Nothing can detect this for you. |
 
-Contract files live in `telemetry/contracts/<schema version>.json` (voice today,
-chat next). The telemetry tests fail with the exact step to take when the code
-and the contract disagree.
+Contract files live in `telemetry/contracts/<schema version>.json` in the repo
+that sends the trace: `voice.turn.v1.json` in voice-oan-api, `chat.turn.v1.json`
+here. The telemetry tests fail with the exact step to take when the code and
+the contract disagree.
 
 Once the new version is live in production, add an era to `telemetry/eras.yaml`
 with the first production day and its `schema_version`. It's a record of when it
@@ -53,6 +57,8 @@ Every step, with the file to edit: `TELEMETRY_CHANGES.md`.
 - Every canonical field says whether it was `recorded` (the trace carried it),
   `derived` (computed, or taken from an older name or another trace) or
   `unavailable`. Never fill in a value the trace didn't have.
+- No outcome recorded means `outcome_class` is null. A recorded outcome missing
+  from the vocabulary becomes `unclassified`, so it still shows up in counts.
 - Test fixtures are redacted: no phone numbers or farmer text. This repo is public.
 
 ## Reading telemetry

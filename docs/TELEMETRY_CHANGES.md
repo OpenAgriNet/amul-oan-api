@@ -9,8 +9,9 @@ Two repos are involved:
 - **voice-oan-api** sends the trace.
 - **amul-oan-api** reads it: the mapping, the canonical model and `telemetry/eras.yaml`.
 
-Chat will follow the same steps once it has `telemetry/mappings/chat.yaml`.
-Until then, chat changes go through the chat adapter.
+Chat has the same pieces, all in this repo: `telemetry/contracts/chat.turn.v1.json`,
+`telemetry/mappings/chat.yaml` and `chat_outcome_vocabulary`. The examples below
+use voice.
 
 ## Add a new field
 
