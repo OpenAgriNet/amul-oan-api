@@ -436,6 +436,12 @@ voice_eras:
     defining_commits: ["ae2b8f4"]     # prod cef039b, merge 9411906 (#242)
     summary: outbound_intro outcome and route removed. outbound_declined and outbound_no_data stay.
 
+chat_outcome_vocabulary:
+  # Chat began recording turn_outcome on 2026-08-03 (chat.c6b). Missing values
+  # before that date remain null; unrecognised recorded values are unclassified.
+  delivered: [success]
+  failed: [error, cancelled]
+
 voice_outcome_vocabulary:
   # [code] app/services/voice.py + voice_trace.py:293-295,492-499
   # ⚠️ THESE ARE SEMANTICS, NOT STATUS CODES. Rendering "not success" as a failure
