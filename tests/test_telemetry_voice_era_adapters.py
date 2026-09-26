@@ -1,3 +1,4 @@
+import hashlib
 import json
 
 import pytest
@@ -323,6 +324,36 @@ def test_a_turn_that_never_reached_the_agent_has_no_signed_in(adapt):
 
     assert turn.signed_in is None
     assert turn.field_availability["signed_in"] == "unavailable"
+
+
+@pytest.mark.parametrize(
+    ("name", "timestamp", "stamped"),
+    [
+        ("voice_request", "2026-06-01T10:00:00Z", False),
+        ("agent_journey", "2026-08-10T10:00:00Z", False),
+        ("agent_journey", "2026-10-05T10:00:00Z", True),
+    ],
+    ids=["v3", "v4", "stamped"],
+)
+@pytest.mark.parametrize(
+    ("user_id", "user_id_hash"),
+    [
+        ("anonymous", hashlib.sha256(b"voice-oan-api:anonymous").hexdigest()),
+        (None, hashlib.sha256(b"voice-oan-api:anonymous").hexdigest()),
+        ("Anonymous", "1" * 64),
+    ],
+    ids=["anonymous", "hash-only", "capitalised"],
+)
+def test_anonymous_callers_have_no_user_id_hash(adapt, name, timestamp, stamped, user_id, user_id_hash):
+    # They all share one hash, which would count every anonymous caller as the same user.
+    trace = _voice_turn_trace(name, timestamp, user_id_hash=user_id_hash)
+    trace["userId"] = user_id
+    trace = _stamped(trace) if stamped else trace
+
+    turn = adapt(trace)
+
+    assert turn.user_id_hash is None
+    assert turn.field_availability["user_id_hash"] == "unavailable"
 
 
 def test_v5_and_v5b_are_labels_on_the_v4_root(adapt):

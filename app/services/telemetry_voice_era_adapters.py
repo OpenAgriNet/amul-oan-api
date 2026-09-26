@@ -6,6 +6,7 @@ A trace stamped with ``amul.schema_version`` is routed by the stamp, not the dat
 and read through telemetry/mappings/voice.yaml. Its source_era is the stamp.
 """
 
+import hashlib
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -36,6 +37,10 @@ from app.services.telemetry_mappings import (
 
 # Raw caller id on every voice trace since 8d82835, documented as the farmer's phone.
 _USER_ID_SEMANTICS = "request_user_id_expected_phone_then_anonymous"
+
+# voice-oan-api hashes a missing caller id as "anonymous", so every anonymous
+# caller shares this hash. Dropped, so they don't count as one user.
+_ANONYMOUS_USER_ID_HASH = hashlib.sha256(b"voice-oan-api:anonymous").hexdigest()
 
 SCHEMA_VERSION_KEY = "amul.schema_version"
 
@@ -307,6 +312,7 @@ def _adapt_mapped_voice_turn(
     scores: Sequence[LangfuseScoreSchema],
 ) -> CanonicalVoiceTurn:
     values = mapped_values(mapping, raw, _MAPPED_FIELDS)
+    values["user_id_hash"] = _caller_hash_or_none(values["user_id"], values["user_id_hash"])
     outcome_class = outcome_vocabulary.classify(values["outcome"])
     availability = {field: _availability(value) for field, value in values.items()}
     availability["channel"] = "derived"
@@ -342,7 +348,7 @@ def _adapt_voice_turn(
     session_id = _string_or_none(trace.session_id) or _string_or_none(metadata.session_id)
     process_id = _identifier_or_none(metadata.process_id)
     user_id = _identifier_or_none(trace.user_id)
-    user_id_hash = _string_or_none(metadata.user_id_hash)
+    user_id_hash = _caller_hash_or_none(user_id, _string_or_none(metadata.user_id_hash))
     # Only turns that reached the agent carry metadata.agent.
     signed_in = _bool_or_none((mapping_or_none(metadata.agent) or {}).get("signed_in"))
     provider = _string_or_none(metadata.provider)
@@ -517,6 +523,14 @@ def _identifier_or_none(value: Any) -> str | None:
     if isinstance(value, (str, int)):
         return str(value) or None
     return None
+
+
+def _caller_hash_or_none(user_id: str | None, user_id_hash: str | None) -> str | None:
+    if user_id_hash == _ANONYMOUS_USER_ID_HASH:
+        return None
+    if user_id is not None and user_id.strip().lower() == "anonymous":
+        return None
+    return user_id_hash
 
 
 def _availability(value: Any) -> str:

@@ -59,6 +59,8 @@ Every step, with the file to edit: `TELEMETRY_CHANGES.md`.
   `unavailable`. Never fill in a value the trace didn't have.
 - No outcome recorded means `outcome_class` is null. A recorded outcome missing
   from the vocabulary becomes `unclassified`, so it still shows up in counts.
+- Anonymous users get a null `user_id_hash` in both channels, so they are not
+  counted as one user.
 - Test fixtures are redacted: no phone numbers or farmer text. This repo is public.
 
 ## Reading telemetry
