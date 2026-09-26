@@ -560,3 +560,15 @@ def test_a_chat_row_has_exactly_the_table_columns():
 def test_the_script_takes_a_channel():
     assert _script()._parse_args(["--channel", "chat", "--env", "chat-production"]).channel == "chat"
     assert _script()._parse_args(["--env", "voice-production"]).channel == "voice"
+
+
+def test_tool_names_are_read_from_the_old_and_new_tool_call_shapes():
+    from types import SimpleNamespace
+
+    turn = CanonicalChatTurn(source_era="chat.c4", source_schema_version="chat.c4.v1", source_trace_name="Amul AI Agent", timestamp=DAY_START)
+    calls = [SimpleNamespace(tool_name="get_bonus", call_id="c1"), {"tool_name": "get_scheme"}, {"name": "search_documents"}, {"call_id": "c4"}]
+
+    row = chat_turn_row(turn.model_copy(update={"tool_calls": calls}), environment="chat-development", imported_at=DAY_START)
+
+    assert row["tool_names"] == ["get_bonus", "get_scheme", "search_documents"]
+    assert row["tool_call_count"] == 4

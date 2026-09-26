@@ -322,13 +322,22 @@ def chat_turn_row(turn: CanonicalChatTurn, *, environment: str, imported_at: dat
         "outcome_class": turn.outcome_class,
         "served_tier": turn.served_tier,
         "full_turn_latency_ms": turn.full_turn_latency_ms,
-        "tool_names": [name for call in tool_calls or [] if isinstance(name := call.get("name"), str)],
+        "tool_names": [name for call in tool_calls or [] if (name := _tool_name(call))],
         "tool_call_count": len(tool_calls) if tool_calls is not None else None,
         "observation_names": list(turn.observation_names),
         "score_names": list(turn.score_names),
         "field_availability": dict(turn.field_availability),
         "imported_at": imported_at,
     }
+
+
+def _tool_name(call: Any) -> str | None:
+    """A tool call's name: CanonicalToolCall.tool_name, or the older dict shape."""
+    if isinstance(call, Mapping):
+        name = call.get("tool_name") or call.get("name")
+    else:
+        name = getattr(call, "tool_name", None)
+    return name if isinstance(name, str) and name else None
 
 
 def rejection_reason(exc: Exception) -> str:
