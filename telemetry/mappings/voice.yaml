@@ -1,0 +1,28 @@
+# Where each canonical field lives in a stamped voice trace, per schema version.
+#
+# Paths are tried in order and the first one with a value wins. A path is a
+# trace field (sessionId, input), metadata.<key>, or a nested key such as
+# metadata.agent.signed_in. A new version can say `extends: voice.turn.v1` and
+# list only the fields that moved.
+# The metadata keys come from telemetry/contracts/ in voice-oan-api.
+
+voice.turn.v1:
+  root: agent_journey
+  fields:
+    session_id: [sessionId, session_id, metadata.session_id]
+    process_id: [metadata.process_id]
+    user_id: [userId, user_id]
+    user_id_hash: [metadata.user_id_hash]
+    signed_in: [metadata.agent.signed_in]
+    provider: [metadata.provider]
+    call_type: [metadata.call_type]
+    route: [metadata.route]
+    pipeline_profile: [metadata.pipeline_profile]
+    source_lang: [metadata.source_lang]
+    target_lang: [metadata.target_lang]
+    question_sanitized: [metadata.query, input]
+    answer_sanitized: [metadata.response, output]
+    outcome: [metadata.outcome]
+    full_turn_latency_ms: [metadata.total_ms]
+    stage_totals_ms: [metadata.stage_totals_ms]
+    timings_ms: [metadata.timings_ms]
