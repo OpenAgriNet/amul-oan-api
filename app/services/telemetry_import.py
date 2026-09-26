@@ -55,6 +55,15 @@ VOICE_TURN_COLUMNS = (
     "field_availability",
     "imported_at",
 )
+# CanonicalVoiceTurn fields voice_turns leaves out on purpose. Every other field
+# needs a column, or tests fail, so a new field can't quietly miss the table.
+NOT_STORED = {
+    "user_id": "the caller's phone number; user_id_hash is kept",
+    "user_id_semantics": "the same for every voice turn",
+    "channel": "always voice",
+    "question_sanitized": "kept as question_chars and question_sha256",
+    "answer_sanitized": "kept as answer_chars and answer_sha256",
+}
 IMPORT_DAY_COLUMNS = ("environment", "day", "traces", "turns", "rejected", "imported_at")
 REJECTION_COLUMNS = ("environment", "day", "imported_at", "trace_name", "reason", "count")
 

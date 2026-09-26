@@ -12,10 +12,12 @@ from app.services.telemetry_era_registry import TelemetryEraRegistry, default_er
 from app.services.telemetry_fetcher import REDACTED_USER_ID, fetch_voice_bundles
 from app.services.telemetry_import import (
     IMPORT_DAY_COLUMNS,
+    NOT_STORED,
     REJECTION_COLUMNS,
     VOICE_TURN_COLUMNS,
     import_voice_days,
     rejection_reason,
+    voice_turn_row,
 )
 from app.services.telemetry_voice_era_adapters import VoiceOutcomeVocabulary, load_voice_mappings
 
@@ -265,10 +267,56 @@ def test_the_report_shows_counts_and_field_coverage():
     assert "  100.0%  outcome" in lines
 
 
-def _ddl_columns(table):
-    ddl = (REPO / "telemetry" / "clickhouse" / "voice.sql").read_text(encoding="utf-8")
-    body = re.search(rf"CREATE TABLE IF NOT EXISTS telemetry\.{table}\s*\((.*?)\n\)", ddl, re.S).group(1)
-    return tuple(line.split()[0] for line in body.strip().splitlines())
+VOICE_SQL = (REPO / "telemetry" / "clickhouse" / "voice.sql").read_text(encoding="utf-8")
+
+# voice_turns as released with voice.canonical.v1. Dashboards read these, so each
+# keeps its name and type for good. Only ever add to this list.
+RELEASED_VOICE_TURN_COLUMNS = {
+    "source_trace_id": "String",
+    "timestamp": "DateTime64(3, 'UTC')",
+    "environment": "LowCardinality(String)",
+    "schema_version": "LowCardinality(String)",
+    "source_era": "LowCardinality(String)",
+    "source_schema_version": "LowCardinality(String)",
+    "source_era_extensions": "Array(LowCardinality(String))",
+    "source_trace_name": "LowCardinality(String)",
+    "session_id": "Nullable(String)",
+    "process_id": "Nullable(String)",
+    "user_id_hash": "Nullable(String)",
+    "signed_in": "Nullable(Bool)",
+    "provider": "LowCardinality(Nullable(String))",
+    "call_type": "LowCardinality(Nullable(String))",
+    "route": "LowCardinality(Nullable(String))",
+    "pipeline_profile": "LowCardinality(Nullable(String))",
+    "source_lang": "LowCardinality(Nullable(String))",
+    "target_lang": "LowCardinality(Nullable(String))",
+    "question_chars": "Nullable(UInt32)",
+    "question_sha256": "Nullable(String)",
+    "answer_chars": "Nullable(UInt32)",
+    "answer_sha256": "Nullable(String)",
+    "outcome": "LowCardinality(Nullable(String))",
+    "outcome_class": "LowCardinality(Nullable(String))",
+    "full_turn_latency_ms": "Nullable(Float64)",
+    "stage_totals_ms": "Map(String, Float64)",
+    "timings_ms": "Map(String, Float64)",
+    "observation_names": "Array(String)",
+    "score_names": "Array(String)",
+    "field_availability": "Map(String, LowCardinality(String))",
+    "imported_at": "DateTime64(3, 'UTC')",
+}
+
+
+def _table_columns(sql, table):
+    """Column name -> type: the CREATE for the table, then each ALTER ... ADD COLUMN, in file order."""
+    text = "\n".join(line for line in sql.splitlines() if not line.lstrip().startswith("--"))
+    body = re.search(rf"CREATE TABLE IF NOT EXISTS telemetry\.{table}\s*\((.*?)\n\)", text, re.S).group(1)
+    columns = {}
+    for line in body.strip().splitlines():
+        name, _, kind = line.strip().rstrip(",").partition(" ")
+        columns[name] = kind
+    for name, kind in re.findall(rf"ALTER TABLE telemetry\.{table} ADD COLUMN IF NOT EXISTS (\w+) ([^;]+);", text):
+        columns[name] = kind.strip()
+    return columns
 
 
 @pytest.mark.parametrize(
@@ -276,7 +324,57 @@ def _ddl_columns(table):
     [("voice_turns", VOICE_TURN_COLUMNS), ("voice_import_days", IMPORT_DAY_COLUMNS), ("voice_rejections", REJECTION_COLUMNS)],
 )
 def test_written_columns_match_the_tables(table, columns):
-    assert _ddl_columns(table) == columns
+    assert tuple(_table_columns(VOICE_SQL, table)) == columns, (
+        f"telemetry.{table} and the importer disagree. A new column goes at the end of both: an ALTER at the "
+        "bottom of telemetry/clickhouse/voice.sql, and the end of the importer's column list."
+    )
+
+
+def test_released_columns_keep_their_name_and_type():
+    current = _table_columns(VOICE_SQL, "voice_turns")
+    changed = sorted(name for name, kind in RELEASED_VOICE_TURN_COLUMNS.items() if current.get(name) != kind)
+
+    assert not changed, (
+        f"telemetry.voice_turns changed the released columns {changed}. Dashboards read them, so add a new "
+        "column instead. A change that can't be avoided needs a new table and a new canonical version."
+    )
+
+
+def test_every_canonical_field_is_stored_or_left_out_on_purpose():
+    fields = set(CanonicalVoiceTurn.model_fields)
+    missing = sorted(fields - set(VOICE_TURN_COLUMNS) - set(NOT_STORED))
+
+    assert not missing, (
+        f"CanonicalVoiceTurn has {missing}, but telemetry.voice_turns doesn't store it, so dashboards can't read "
+        "it. Add a column (an ALTER in voice.sql, VOICE_TURN_COLUMNS and voice_turn_row), or list it in "
+        "NOT_STORED with the reason."
+    )
+    assert set(NOT_STORED) <= fields, f"NOT_STORED lists {sorted(set(NOT_STORED) - fields)}, which isn't a field"
+
+
+def test_a_row_has_exactly_the_table_columns():
+    turn = CanonicalVoiceTurn(source_era="voice.v4", source_schema_version="voice.v4.v1", source_trace_name="agent_journey", timestamp=DAY_START)
+
+    assert set(voice_turn_row(turn, environment="voice-development", imported_at=DAY_START)) == set(VOICE_TURN_COLUMNS)
+
+
+def test_new_columns_are_read_from_alter_statements():
+    sql = """
+CREATE TABLE IF NOT EXISTS telemetry.voice_turns
+(
+    source_trace_id String,
+    imported_at DateTime64(3, 'UTC')
+)
+ENGINE = ReplacingMergeTree(imported_at);
+--   ALTER TABLE telemetry.voice_turns ADD COLUMN IF NOT EXISTS example String;
+ALTER TABLE telemetry.voice_turns ADD COLUMN IF NOT EXISTS farmer_type LowCardinality(Nullable(String));
+"""
+
+    assert _table_columns(sql, "voice_turns") == {
+        "source_trace_id": "String",
+        "imported_at": "DateTime64(3, 'UTC')",
+        "farmer_type": "LowCardinality(Nullable(String))",
+    }
 
 
 def _script():
