@@ -16,7 +16,9 @@ from app.services.telemetry_stamps import (
 CONTRACT = Path(__file__).resolve().parents[1] / "telemetry" / "contracts" / "chat.turn.v1.json"
 
 
-def test_forward_telemetry_metadata_stamps_schema_service_and_release(monkeypatch):
+def test_forward_telemetry_metadata_stamps_schema_service_and_release(monkeypatch, tmp_path):
+    # No checkout here, so the build arg is used. A real .git would win over it.
+    monkeypatch.setattr(telemetry_stamps, "_repository_root", lambda: tmp_path)
     monkeypatch.setenv("GIT_SHA", "test-release-sha")
     telemetry_stamps.chat_telemetry_release.cache_clear()
 
@@ -64,3 +66,20 @@ def test_chat_turn_v1_contract_matches_what_chat_py_sends():
     } == metadata_keys
     assert set(contract["trace_input"]["required"]) == input_keys
     assert CHAT_TELEMETRY_SERVICE == "amul-oan-api"
+
+
+def test_forward_telemetry_metadata_reads_a_packed_branch_ref(monkeypatch, tmp_path):
+    git_dir = tmp_path / ".git"
+    git_dir.mkdir()
+    (git_dir / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
+    (git_dir / "packed-refs").write_text(
+        "# pack-refs with: peeled fully-peeled sorted\n"
+        f"{'f' * 40} refs/heads/other\n"
+        f"{'a' * 40} refs/heads/main\n",
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("GIT_SHA", raising=False)
+    monkeypatch.setattr(telemetry_stamps, "_repository_root", lambda: tmp_path)
+    telemetry_stamps.chat_telemetry_release.cache_clear()
+
+    assert forward_chat_telemetry_metadata()["release"] == "a" * 40

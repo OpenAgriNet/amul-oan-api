@@ -40,10 +40,21 @@ def _read_git_head(repository: Path) -> str | None:
         return None
     if not head.startswith("ref: "):
         return head or None
+    ref = head.removeprefix("ref: ")
     try:
-        return (git_dir / head.removeprefix("ref: ")).read_text(encoding="utf-8").strip() or None
+        return (git_dir / ref).read_text(encoding="utf-8").strip() or None
+    except OSError:
+        pass
+    # After git gc the branch may only be listed in packed-refs.
+    try:
+        packed = (git_dir / "packed-refs").read_text(encoding="utf-8")
     except OSError:
         return None
+    for line in packed.splitlines():
+        sha, _, name = line.partition(" ")
+        if name == ref:
+            return sha or None
+    return None
 
 
 def forward_chat_telemetry_metadata() -> dict[str, str]:
