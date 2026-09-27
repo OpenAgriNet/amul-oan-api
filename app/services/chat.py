@@ -192,6 +192,30 @@ GENERIC_UNAVAILABLE_MESSAGE_PA = (
 GENERIC_UNAVAILABLE_MESSAGE_MR = (
     "सध्या मी तुमची विनंती पूर्ण करू शकत नाही. कृपया थोड्या वेळाने पुन्हा प्रयत्न करा."
 )
+# Localized fallback when translating a system message fails. Hindi has none, so
+# it falls back to the English text.
+_UNAVAILABLE_MESSAGE_BY_LANG = {
+    "gu": GENERIC_UNAVAILABLE_MESSAGE_GU,
+    "gujarati": GENERIC_UNAVAILABLE_MESSAGE_GU,
+    "bn": GENERIC_UNAVAILABLE_MESSAGE_BN,
+    "bengali": GENERIC_UNAVAILABLE_MESSAGE_BN,
+    "pa": GENERIC_UNAVAILABLE_MESSAGE_PA,
+    "punjabi": GENERIC_UNAVAILABLE_MESSAGE_PA,
+    "mr": GENERIC_UNAVAILABLE_MESSAGE_MR,
+    "marathi": GENERIC_UNAVAILABLE_MESSAGE_MR,
+}
+
+# Per-language kill switches: settings flag -> the language codes it governs.
+# Gujarati is always on. A disabled language drops out of both pretranslation
+# (src->en) and output translation (en->target), so its requests are served in
+# English like an unsupported language. Adding a language is one entry here.
+_LANGUAGE_KILL_SWITCHES: dict[str, tuple[str, ...]] = {
+    "hindi_chat_enabled": ("hi", "hindi"),
+    "bengali_chat_enabled": ("bn", "bengali"),
+    "punjabi_chat_enabled": ("pa", "punjabi"),
+    "marathi_chat_enabled": ("mr", "marathi"),
+}
+_ALWAYS_ON_PRETRANSLATION_LANGS = frozenset({"gu", "gujarati"})
 
 try:
     from langfuse import propagate_attributes, get_client as get_langfuse_client
@@ -223,6 +247,228 @@ def _record_turn_outcome(outcome: str, session_id_safe: str) -> None:
         )
     except Exception as e:
         logger.debug("Langfuse: turn_outcome score failed: %s", e)
+
+
+def _record_trace_output(output: str, label: str) -> None:
+    """Best-effort: set the current trace's output. Telemetry never breaks a turn."""
+    if not get_langfuse_client:
+        return
+    try:
+        get_langfuse_client().set_current_trace_io(output=output)
+    except Exception as e:
+        logger.warning("Langfuse: failed to record %s output: %s", label, e)
+
+
+def _disabled_chat_langs() -> set[str]:
+    """Language codes whose kill switch is off. Read per turn so flags apply live."""
+    disabled: set[str] = set()
+    for flag, codes in _LANGUAGE_KILL_SWITCHES.items():
+        if not getattr(settings, flag, True):
+            disabled.update(codes)
+    return disabled
+
+
+def _pretranslation_source_langs(disabled_langs: set[str]) -> set[str]:
+    enabled = {code for codes in _LANGUAGE_KILL_SWITCHES.values() for code in codes}
+    return set(_ALWAYS_ON_PRETRANSLATION_LANGS) | (enabled - disabled_langs)
+
+
+async def _localize_system_text(
+    text_en: str,
+    *,
+    target_lang: str,
+    disabled_langs: set[str],
+    execution,
+    max_output_chars: int | None,
+    request_id: str,
+) -> str:
+    """Localize a short system-generated message to the target language.
+
+    Falls back to a canned "unavailable" message in the target language when
+    translation fails, or to the English text if there is none.
+    """
+    if not text_en or not target_lang:
+        return text_en
+    lang = target_lang.lower()
+    if lang in {"english", "en"} or lang in disabled_langs or lang not in INDIAN_LANGUAGES:
+        return text_en
+    try:
+        return await translate_text(
+            text=text_en,
+            source_lang="english",
+            target_lang=target_lang,
+            max_output_chars=max_output_chars,
+            execution=execution,
+        )
+    except Exception as e:
+        logger.warning(
+            "request_id=%s system text translation failed target_lang=%s error=%s",
+            request_id,
+            target_lang,
+            e,
+        )
+        return _UNAVAILABLE_MESSAGE_BY_LANG.get(lang, text_en)
+
+
+async def _pretranslate_query(
+    query: str,
+    *,
+    source_lang: str,
+    target_lang: str,
+    disabled_langs: set[str],
+    execution,
+    request_id: str,
+) -> tuple[str, str]:
+    """Translate the farmer's query to English when the source language allows it.
+
+    Returns ``(processing_query, processing_lang)``. On failure the original
+    query is kept and the agent is asked to answer in ``target_lang``.
+    """
+    processing_lang = "en" if target_lang.lower() in disabled_langs else target_lang
+    if source_lang.lower() not in _pretranslation_source_langs(disabled_langs):
+        return query, processing_lang
+
+    pretrans_info = execution.info(_LlmStep.PRE_TRANSLATION)
+    logger.info(
+        "request_id=%s variant=%s pretranslating %s->en with %s/%s",
+        request_id,
+        execution.profile_name,
+        source_lang,
+        pretrans_info.provider,
+        pretrans_info.model_name,
+    )
+    try:
+        translated = await execution.run_adapter(
+            _LlmStep.PRE_TRANSLATION,
+            lambda tier: pretranslate_with_tier(tier, text=query, source_lang=source_lang),
+        )
+    except Exception as e:
+        logger.error(
+            "request_id=%s pretranslation_success=False source_lang=%s error=%s",
+            request_id,
+            source_lang,
+            e,
+        )
+        return query, target_lang
+    logger.info(
+        "request_id=%s pretranslation_success=True source_preview=%s translated_preview=%s",
+        request_id,
+        query[:80],
+        translated[:80],
+    )
+    return translated, "en"
+
+
+async def _load_farmer_context(
+    persona: ChatPersona, user_info: dict, request_id: str
+) -> tuple[str, list[str], dict[str, str]]:
+    """Cache-first farmer context for the phone in the JWT; empty when unavailable."""
+    if persona != "farmer" or not user_info or not user_info.get("phone"):
+        return "", [], {}
+    try:
+        farmer_data, farmer_unions, farmer_location = await get_farmer_context_bundle_by_mobile(user_info["phone"])
+    except Exception as e:
+        logger.warning(f"request_id={request_id} farmer_context_fetch_failed={e}")
+        return "", [], {}
+    logger.info(f"request_id={request_id} farmer_context_length={len(farmer_data)}")
+    logger.info("request_id=%s farmer_unions=%s", request_id, farmer_unions)
+    logger.info("request_id=%s farmer_district=%s", request_id, farmer_location.get("district"))
+    return farmer_data, farmer_unions, farmer_location
+
+
+def _build_deps(
+    *,
+    query: str,
+    session_id: str,
+    lang_code: str,
+    persona: ChatPersona,
+    channel: str,
+    user_info: dict,
+    farmer_context: tuple[str, list[str], dict[str, str]],
+    response_max_chars: int | None,
+) -> FarmerContext:
+    farmer_data, farmer_unions, farmer_location = farmer_context
+    return FarmerContext(
+        query=query,
+        session_id=session_id,
+        lang_code=lang_code,
+        farmer_info=farmer_data,
+        farmer_unions=farmer_unions,
+        farmer_district=farmer_location.get("district") or None,
+        farmer_village=farmer_location.get("village") or None,
+        farmer_state=farmer_location.get("state") or None,
+        response_max_chars=response_max_chars,
+        supports_rich_artifacts=(channel or "web").lower() == "web",
+        # Normalized caller phone — the micro-loan tool reads this from deps so it
+        # never has to trust an LLM-supplied number. None for anonymous sessions.
+        mobile=(
+            normalize_phone_to_mobile(user_info["phone"])
+            if persona == "farmer" and user_info and user_info.get("phone")
+            else None
+        ),
+        persona=persona,
+    )
+
+
+async def _stream_to_client(
+    english_src,
+    *,
+    translate_to: str | None,
+    max_output_chars: int | None,
+    execution,
+    output_chunks: list[str],
+):
+    """Pass the English stream through, or sentence-batch and stream-translate it.
+
+    Everything yielded is also appended to ``output_chunks`` for the trace.
+    A batch whose translation fails is sent in English rather than dropped.
+    """
+    if not translate_to:
+        async for chunk in english_src:
+            output_chunks.append(chunk)
+            yield chunk
+        return
+
+    async def translate(text: str, label: str):
+        # Sentence batching drops the line break before a list item; restore it.
+        if output_chunks and _batch_starts_new_line_or_list(text):
+            output_chunks.append("\n")
+            yield "\n"
+        try:
+            async for translated_chunk in translate_text_stream_fast(
+                text=text,
+                source_lang="english",
+                target_lang=translate_to,
+                max_output_chars=max_output_chars,
+                execution=execution,
+            ):
+                output_chunks.append(translated_chunk)
+                yield translated_chunk
+        except Exception as e:
+            logger.error(f"{label} translation failed, falling back to English: {e}")
+            output_chunks.append(text)
+            yield text
+
+    sentence_buffer = ""
+    batch: list[str] = []
+    batch_word_count = 0
+    async for chunk in english_src:
+        complete_sentences, sentence_buffer = extract_complete_sentences(sentence_buffer + chunk)
+        if not complete_sentences:
+            continue
+        batch.extend(complete_sentences)
+        batch_word_count += sum(len(s.split()) for s in complete_sentences)
+        batch_text = "".join(batch)
+        if should_translate_batch(batch_text, batch_word_count):
+            async for out in translate(batch_text, "Optimised batch"):
+                yield out
+            batch, batch_word_count = [], 0
+    if batch:
+        async for out in translate("".join(batch), "Final batch"):
+            yield out
+    if sentence_buffer.strip():
+        async for out in translate(sentence_buffer, "Tail fragment"):
+            yield out
 
 
 async def stream_chat_messages(
@@ -361,64 +607,19 @@ async def stream_chat_messages(
             # Resolve per-language kill switches before any response path. This
             # keeps deterministic short-circuits and tool language selection in
             # the same English-passthrough mode as the translation pipeline.
-            hindi_enabled = getattr(settings, "hindi_chat_enabled", True)
-            bengali_enabled = getattr(settings, "bengali_chat_enabled", True)
-            punjabi_enabled = getattr(settings, "punjabi_chat_enabled", True)
-            marathi_enabled = getattr(settings, "marathi_chat_enabled", True)
-            disabled_langs: set[str] = set()
-            if not hindi_enabled:
-                disabled_langs |= {"hi", "hindi"}
-            if not bengali_enabled:
-                disabled_langs |= {"bn", "bengali"}
-            if not punjabi_enabled:
-                disabled_langs |= {"pa", "punjabi"}
-            if not marathi_enabled:
-                disabled_langs |= {"mr", "marathi"}
-
-            async def localize_system_text(text_en: str) -> str:
-                """
-                Localize short system-generated outputs to target language when needed.
-                Falls back to Gujarati default text if translation fails for Gujarati targets.
-                """
-                if not text_en:
-                    return text_en
-                if not target_lang:
-                    return text_en
-
-                lang = target_lang.lower()
-                if lang == "english" or lang == "en":
-                    return text_en
-
-                if lang in disabled_langs:
-                    return text_en
-
-                if lang in INDIAN_LANGUAGES:
-                    try:
-                        return await translate_text(
-                            text=text_en,
-                            source_lang="english",
-                            target_lang=target_lang,
-                            max_output_chars=profile.response_max_chars,
-                            execution=execution,
-                        )
-                    except Exception as e:
-                        logger.warning(
-                            "request_id=%s system text translation failed target_lang=%s error=%s",
-                            request_id if 'request_id' in locals() else "unknown",
-                            target_lang,
-                            e,
-                        )
-                        if lang in {"gu", "gujarati"}:
-                            return GENERIC_UNAVAILABLE_MESSAGE_GU
-                        if lang in {"bn", "bengali"}:
-                            return GENERIC_UNAVAILABLE_MESSAGE_BN
-                        if lang in {"pa", "punjabi"}:
-                            return GENERIC_UNAVAILABLE_MESSAGE_PA
-                        if lang in {"mr", "marathi"}:
-                            return GENERIC_UNAVAILABLE_MESSAGE_MR
-                return text_en
-
+            disabled_langs = _disabled_chat_langs()
             request_id = session_id
+
+            def localize_system_text(text_en: str):
+                return _localize_system_text(
+                    text_en,
+                    target_lang=target_lang,
+                    disabled_langs=disabled_langs,
+                    execution=execution,
+                    max_output_chars=profile.response_max_chars,
+                    request_id=request_id,
+                )
+
             # Generate a unique content ID for this query
             content_id = f"query_{session_id}_{len(history)//2 + 1}"
             logger.info("request_id=%s user_info=%s", request_id, user_info)
@@ -434,12 +635,7 @@ async def stream_chat_messages(
                     else build_identity_profile_table(source_lang, target_lang, query)
                 )
                 logger.info("request_id=%s identity_short_circuit=True", request_id)
-                if get_langfuse_client:
-                    try:
-                        langfuse = get_langfuse_client()
-                        langfuse.set_current_trace_io(output=identity_response)
-                    except Exception as e:
-                        logger.warning("Langfuse: failed to record identity output: %s", e)
+                _record_trace_output(identity_response, "identity")
 
                 messages = [
                     *history,
@@ -460,99 +656,32 @@ async def stream_chat_messages(
                 yield identity_response
                 return
 
-            # Extract farmer context from phone in JWT via cache-first fetch
-            farmer_data = ""
-            farmer_unions: list[str] = []
-            farmer_location: dict[str, str] = {}
-            if persona == "farmer" and user_info and user_info.get('phone'):
-                try:
-                    farmer_data, farmer_unions, farmer_location = await get_farmer_context_bundle_by_mobile(user_info['phone'])
-                    logger.info(f"request_id={request_id} farmer_context_length={len(farmer_data)}")
-                    logger.info("request_id=%s farmer_unions=%s", request_id, farmer_unions)
-                    logger.info("request_id=%s farmer_district=%s", request_id, farmer_location.get("district"))
-                except Exception as e:
-                    logger.warning(f"request_id={request_id} farmer_context_fetch_failed={e}")
-
-            # Hindi and Bengali kill switches (HINDI_CHAT_ENABLED /
-            # BENGALI_CHAT_ENABLED, default on). When disabled, that language drops
-            # out of both the pretranslation (src->en) and output (en->target)
-            # gates, so its requests bypass the pipeline entirely and are served
-            # like an unsupported language. Gujarati is unaffected.
-            output_translation_langs = [lang for lang in INDIAN_LANGUAGES if lang not in disabled_langs]
-
-            processing_query = query
-            processing_lang = "en" if target_lang.lower() in disabled_langs else target_lang
-            needs_output_translation = target_lang.lower() in output_translation_langs
-
-            pretranslation_source_langs = {"gu", "gujarati"}
-            if hindi_enabled:
-                pretranslation_source_langs |= {"hi", "hindi"}
-            if bengali_enabled:
-                pretranslation_source_langs |= {"bn", "bengali"}
-            if punjabi_enabled:
-                pretranslation_source_langs |= {"pa", "punjabi"}
-            if marathi_enabled:
-                pretranslation_source_langs |= {"mr", "marathi"}
-            if source_lang.lower() in pretranslation_source_langs:
-                pretrans_info = execution.info(_LlmStep.PRE_TRANSLATION)
-                logger.info(
-                    "request_id=%s variant=%s pretranslating %s->en with %s/%s",
-                    request_id,
-                    pipeline_profile,
-                    source_lang,
-                    pretrans_info.provider,
-                    pretrans_info.model_name,
-                )
-                try:
-                    processing_query = await execution.run_adapter(
-                        _LlmStep.PRE_TRANSLATION,
-                        lambda tier: pretranslate_with_tier(
-                            tier,
-                            text=query,
-                            source_lang=source_lang,
-                        ),
-                    )
-                    processing_lang = "en"
-                    logger.info(
-                        "request_id=%s pretranslation_success=True source_preview=%s translated_preview=%s",
-                        request_id,
-                        query[:80],
-                        processing_query[:80],
-                    )
-                except Exception as e:
-                    logger.error(
-                        "request_id=%s pretranslation_success=False source_lang=%s error=%s",
-                        request_id,
-                        source_lang,
-                        e,
-                    )
-                    processing_query = query
-                    processing_lang = target_lang
+            farmer_context = await _load_farmer_context(persona, user_info, request_id)
+            processing_query, processing_lang = await _pretranslate_query(
+                query,
+                source_lang=source_lang,
+                target_lang=target_lang,
+                disabled_langs=disabled_langs,
+                execution=execution,
+                request_id=request_id,
+            )
+            needs_output_translation = (
+                target_lang.lower() in INDIAN_LANGUAGES
+                and target_lang.lower() not in disabled_langs
+            )
             if needs_output_translation:
                 # Agent responds in English; response will be translated to target_lang downstream
                 processing_lang = "en"
 
-            # Normalized caller phone — the micro-loan tool reads this from deps so it
-            # never has to trust an LLM-supplied number. None for anonymous sessions.
-            loan_mobile = (
-                normalize_phone_to_mobile(user_info['phone'])
-                if persona == "farmer" and user_info and user_info.get('phone')
-                else None
-            )
-
-            deps = FarmerContext(
+            deps = _build_deps(
                 query=processing_query,
                 session_id=session_id,
                 lang_code=processing_lang,
-                farmer_info=farmer_data,
-                farmer_unions=farmer_unions,
-                farmer_district=farmer_location.get("district") or None,
-                farmer_village=farmer_location.get("village") or None,
-                farmer_state=farmer_location.get("state") or None,
-                response_max_chars=profile.response_max_chars,
-                supports_rich_artifacts=(channel or "web").lower() == "web",
-                mobile=loan_mobile,
                 persona=persona,
+                channel=channel,
+                user_info=user_info,
+                farmer_context=farmer_context,
+                response_max_chars=profile.response_max_chars,
             )
 
             message_pairs = "\n\n".join(format_message_pairs(history, 3))
@@ -634,12 +763,7 @@ async def stream_chat_messages(
                         # carries no output and the chat export records the turn as
                         # a blank answer (~470 rows on 2026-08-06). Same best-effort
                         # shape as the identity path: telemetry never breaks a turn.
-                        if get_langfuse_client:
-                            try:
-                                langfuse = get_langfuse_client()
-                                langfuse.set_current_trace_io(output=decline_text)
-                            except Exception as e:
-                                logger.warning("Langfuse: failed to record moderation decline output: %s", e)
+                        _record_trace_output(decline_text, "moderation decline")
                         # Moderation ran and decided: the turn ended the way it was
                         # supposed to. Recording "error" here inflated the error rate
                         # by one row per moderated query.
@@ -660,18 +784,13 @@ async def stream_chat_messages(
                 # error rate. `_turn_outcome` is left at "error". The trace output
                 # is still recorded so the export shows what the farmer actually
                 # saw rather than a blank row.
-                if get_langfuse_client:
-                    try:
-                        langfuse = get_langfuse_client()
-                        langfuse.set_current_trace_io(output=fail_closed_message)
-                    except Exception as e:
-                        logger.warning("Langfuse: failed to record fail-closed output: %s", e)
+                _record_trace_output(fail_closed_message, "fail-closed")
                 yield fail_closed_message
                 return
 
             if persona == "farmer":
                 deps.soil_health_card_context = (
-                    await get_session_shc_context(session_id, loan_mobile)
+                    await get_session_shc_context(session_id, deps.mobile)
                 ) or ""
             user_message = deps.get_user_message()
             logger.info(
@@ -698,8 +817,7 @@ async def stream_chat_messages(
             logger.info(f"Trimmed history length: {len(trimmed_history)} messages")
 
             # Buffer streamed output for Langfuse trace output
-            translated_output_chunks: list[str] = []
-            raw_output_chunks: list[str] = []
+            output_chunks: list[str] = []
 
             _lf_ag = get_langfuse_client() if get_langfuse_client else None
             agent_observation_name = "Amul Doctor Agent" if persona == "doctor" else "Amul AI Agent"
@@ -733,82 +851,6 @@ async def stream_chat_messages(
                 # disconnect-safe first-token-commit primitives are reused verbatim.
                 new_messages: list = []
 
-                async def _stream_to_client(english_src):
-                    if needs_output_translation:
-                        sentence_buffer = ""
-                        translation_batch = []
-                        batch_word_count = 0
-                        async for chunk in english_src:
-                            sentence_buffer += chunk
-                            complete_sentences, remaining = extract_complete_sentences(sentence_buffer)
-                            if complete_sentences:
-                                for sentence in complete_sentences:
-                                    translation_batch.append(sentence)
-                                    batch_word_count += len(sentence.split())
-                                batch_text = "".join(translation_batch)
-                                if should_translate_batch(batch_text, batch_word_count):
-                                    if translated_output_chunks and _batch_starts_new_line_or_list(batch_text):
-                                        translated_output_chunks.append("\n")
-                                        yield "\n"
-                                    try:
-                                        async for translated_chunk in translate_text_stream_fast(
-                                            text=batch_text,
-                                            source_lang="english",
-                                            target_lang=target_lang,
-                                            max_output_chars=deps.response_max_chars,
-                                            execution=execution,
-                                        ):
-                                            translated_output_chunks.append(translated_chunk)
-                                            yield translated_chunk
-                                    except Exception as e:
-                                        logger.error(f"Optimised batch translation failed, falling back to English batch: {e}")
-                                        translated_output_chunks.append(batch_text)
-                                        yield batch_text
-                                    translation_batch = []
-                                    batch_word_count = 0
-                                sentence_buffer = remaining
-                        if translation_batch:
-                            batch_text = "".join(translation_batch)
-                            if translated_output_chunks and _batch_starts_new_line_or_list(batch_text):
-                                translated_output_chunks.append("\n")
-                                yield "\n"
-                            try:
-                                async for translated_chunk in translate_text_stream_fast(
-                                    text=batch_text,
-                                    source_lang="english",
-                                    target_lang=target_lang,
-                                    max_output_chars=deps.response_max_chars,
-                                    execution=execution,
-                                ):
-                                    translated_output_chunks.append(translated_chunk)
-                                    yield translated_chunk
-                            except Exception as e:
-                                logger.error(f"Final batch translation failed, falling back to English batch: {e}")
-                                translated_output_chunks.append(batch_text)
-                                yield batch_text
-                        if sentence_buffer.strip():
-                            if translated_output_chunks and _batch_starts_new_line_or_list(sentence_buffer):
-                                translated_output_chunks.append("\n")
-                                yield "\n"
-                            try:
-                                async for translated_chunk in translate_text_stream_fast(
-                                    text=sentence_buffer,
-                                    source_lang="english",
-                                    target_lang=target_lang,
-                                    max_output_chars=deps.response_max_chars,
-                                    execution=execution,
-                                ):
-                                    translated_output_chunks.append(translated_chunk)
-                                    yield translated_chunk
-                            except Exception as e:
-                                logger.error(f"Tail fragment translation failed, falling back to English fragment: {e}")
-                                translated_output_chunks.append(sentence_buffer)
-                                yield sentence_buffer
-                    else:
-                        async for chunk in english_src:
-                            raw_output_chunks.append(chunk)
-                            yield chunk
-
                 english_src = execution.stream(
                     active_agent,
                     user_message,
@@ -820,7 +862,13 @@ async def stream_chat_messages(
                 if persona == "doctor":
                     english_src = _sanitize_doctor_stream(english_src)
 
-                client_src = _stream_to_client(english_src)
+                client_src = _stream_to_client(
+                    english_src,
+                    translate_to=target_lang if needs_output_translation else None,
+                    max_output_chars=deps.response_max_chars,
+                    execution=execution,
+                    output_chunks=output_chunks,
+                )
                 if persona == "doctor":
                     # Defence in depth: also remove a provenance label invented by
                     # post-translation rather than present in the English answer.
@@ -831,21 +879,13 @@ async def stream_chat_messages(
                 logger.info(f"Streaming complete for session {session_id}")
 
                 # Record trace output: translated response for translation pipeline, raw agent output otherwise.
+                trace_output = "".join(output_chunks) or None
+                if trace_output and needs_output_translation and persona == "doctor":
+                    trace_output = sanitize_doctor_answer(trace_output)
+                if trace_output:
+                    _record_trace_output(trace_output, "final")
                 if get_langfuse_client:
                     try:
-                        if needs_output_translation and translated_output_chunks:
-                            trace_output = sanitize_doctor_answer("".join(translated_output_chunks)) if persona == "doctor" else "".join(translated_output_chunks)
-                        elif raw_output_chunks:
-                            trace_output = "".join(raw_output_chunks)
-                        else:
-                            trace_output = None
-                        if trace_output:
-                            langfuse = get_langfuse_client()
-                            langfuse.set_current_trace_io(output=trace_output)
-                            #this is the same as the update_current_trace method,
-                            #but it is more explicit about the type of the output
-                            # and is supported by the latest version of the langfuse SDK.
-                            logger.debug("Langfuse: updated trace output")
                         # Match moderation: structured output so Langfuse shows JSON in the observation panel.
                         if agrinet_obs is not None:
                             agrinet_obs.update(
@@ -858,17 +898,14 @@ async def stream_chat_messages(
                         # knows the answer once the turn is over.
                         served = _pipeline_trace.served_summary(pt)
                         if served:
-                            try:
-                                langfuse.score_current_trace(
-                                    name="served_tier",
-                                    value=served,
-                                    data_type="CATEGORICAL",
-                                    comment="Tier that actually produced this turn, per step",
-                                )
-                            except Exception as e:
-                                logger.warning("Langfuse: served_tier score failed: %s", e)
+                            get_langfuse_client().score_current_trace(
+                                name="served_tier",
+                                value=served,
+                                data_type="CATEGORICAL",
+                                comment="Tier that actually produced this turn, per step",
+                            )
                     except Exception as e:
-                        logger.warning(f"Langfuse: failed to record trace output: {e}")
+                        logger.warning("Langfuse: failed to record agent output / served_tier: %s", e)
 
             # Rich provider documents are deliberately emitted only after the
             # model/translation/trace pipeline is finished. They are not model
