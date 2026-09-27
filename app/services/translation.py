@@ -647,110 +647,86 @@ def _prepare_translation_inputs(text, source_lang, target_lang, max_output_chars
 
 
 async def _translategemma_stream(descriptor, prompt, source_lang, target_lang, text, temperature, max_tokens):
-    """VERBATIM TranslateGemma streaming SSE decode (aiohttp), incl. the
-    ``stream_translation`` Langfuse observation and its ``if not langfuse:`` branch.
-    Every yielded chunk passes ``_fix_dandas -> _post_normalize_gu_translation``."""
-    translated_parts: list[str] = []
+    """Stream TranslateGemma chunks. Langfuse wraps the call when it is available."""
     langfuse = _get_langfuse()
+    observation = (
+        langfuse.start_as_current_observation(
+            name="stream_translation",
+            as_type="generation",
+            input={
+                "source_lang": source_lang,
+                "target_lang": target_lang,
+                "text": text,
+            },
+            model=descriptor.model_id,
+            metadata={
+                "translation_provider": "translategemma",
+                "model_size": "27b-base",
+                "stream": "true",
+                "pipeline_stage": "stream_translation",
+            },
+        )
+        if langfuse else nullcontext()
+    )
+    translated_parts: list[str] = []
+    with observation as span:
+        async for content in _raw_translategemma_stream(
+            descriptor,
+            prompt,
+            target_lang,
+            temperature,
+            max_tokens,
+        ):
+            translated_parts.append(content)
+            yield content
+        if span is not None:
+            span.update(output="".join(translated_parts))
 
-    if not langfuse:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                descriptor.completions_url,
-                json={
-                    "model": descriptor.model_id,
-                    "prompt": prompt,
-                    "temperature": temperature,
-                    "max_tokens": max_tokens,
-                    "stream": True,
-                },
-                timeout=aiohttp.ClientTimeout(total=60),
-            ) as response:
-                if response.status != 200:
-                    error_text = await response.text()
-                    logger.error(f"Translation API error {response.status}: {error_text}")
-                    raise _TranslationHTTPError(response.status, error_text)
 
-                buffer = b''
-                async for chunk in response.content.iter_chunked(64):
-                    buffer += chunk
-                    while b'\n' in buffer:
-                        line, buffer = buffer.split(b'\n', 1)
-                        line = line.decode('utf-8').strip()
-                        if line.startswith('data: '):
-                            data = line[6:]
-                            if data == '[DONE]':
-                                break
-                            try:
-                                chunk_data = json.loads(data)
-                                content = chunk_data['choices'][0].get('text', '')
-                                if content:
-                                    content = _fix_dandas(content, target_lang)
-                                    content = _post_normalize_gu_translation(
-                                        content, target_lang, strip_outer=False,
-                                    )
-                                    translated_parts.append(content)
-                                    yield content
-                            except json.JSONDecodeError:
-                                continue
-        return
+async def _raw_translategemma_stream(
+    descriptor, prompt, target_lang, temperature, max_tokens
+):
+    """Execute TranslateGemma streaming request and yield transformed chunks."""
+    async with aiohttp.ClientSession() as session:
+        async with session.post(
+            descriptor.completions_url,
+            json={
+                "model": descriptor.model_id,
+                "prompt": prompt,
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+                "stream": True,
+            },
+            timeout=aiohttp.ClientTimeout(total=60),
+        ) as response:
+            if response.status != 200:
+                error_text = await response.text()
+                logger.error(f"Translation API error {response.status}: {error_text}")
+                raise _TranslationHTTPError(response.status, error_text)
 
-    with langfuse.start_as_current_observation(
-        name="stream_translation",
-        as_type="generation",
-        input={
-            "source_lang": source_lang,
-            "target_lang": target_lang,
-            "text": text,
-        },
-        model=descriptor.model_id,
-        metadata={
-            "translation_provider": "translategemma",
-            "model_size": "27b-base",
-            "stream": "true",
-            "pipeline_stage": "stream_translation",
-        },
-    ) as observation:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                descriptor.completions_url,
-                json={
-                    "model": descriptor.model_id,
-                    "prompt": prompt,
-                    "temperature": temperature,
-                    "max_tokens": max_tokens,
-                    "stream": True,
-                },
-                timeout=aiohttp.ClientTimeout(total=60),
-            ) as response:
-                if response.status != 200:
-                    error_text = await response.text()
-                    logger.error(f"Translation API error {response.status}: {error_text}")
-                    raise _TranslationHTTPError(response.status, error_text)
-
-                buffer = b''
-                async for chunk in response.content.iter_chunked(64):
-                    buffer += chunk
-                    while b'\n' in buffer:
-                        line, buffer = buffer.split(b'\n', 1)
-                        line = line.decode('utf-8').strip()
-                        if line.startswith('data: '):
-                            data = line[6:]
-                            if data == '[DONE]':
-                                break
-                            try:
-                                chunk_data = json.loads(data)
-                                content = chunk_data['choices'][0].get('text', '')
-                                if content:
-                                    content = _fix_dandas(content, target_lang)
-                                    content = _post_normalize_gu_translation(
-                                        content, target_lang, strip_outer=False,
-                                    )
-                                    translated_parts.append(content)
-                                    yield content
-                            except json.JSONDecodeError:
-                                continue
-        observation.update(output="".join(translated_parts))
+            buffer = b""
+            async for chunk in response.content.iter_chunked(64):
+                buffer += chunk
+                while b"\n" in buffer:
+                    line, buffer = buffer.split(b"\n", 1)
+                    line = line.decode("utf-8").strip()
+                    if not line.startswith("data: "):
+                        continue
+                    data = line[6:]
+                    if data == "[DONE]":
+                        break
+                    try:
+                        chunk_data = json.loads(data)
+                    except json.JSONDecodeError:
+                        continue
+                    content = chunk_data["choices"][0].get("text", "")
+                    if not content:
+                        continue
+                    content = _fix_dandas(content, target_lang)
+                    content = _post_normalize_gu_translation(
+                        content, target_lang, strip_outer=False,
+                    )
+                    yield content
 
 
 async def _raw_llm_translation_stream(
@@ -827,73 +803,60 @@ async def _llm_translation_stream(
 
 
 async def _translategemma_unary(descriptor, prompt, source_lang, target_lang, text, temperature, max_tokens):
-    """VERBATIM non-stream TranslateGemma call (reads full body ``choices[0].text``)
-    incl. the ``text_translation`` Langfuse observation and its ``if not langfuse:``
-    branch. Per-response transforms ``_fix_dandas -> _post_normalize_gu_translation``."""
+    """Translate once via TranslateGemma. Langfuse wraps the call when available."""
     langfuse = _get_langfuse()
+    observation = (
+        langfuse.start_as_current_observation(
+            name="text_translation",
+            as_type="generation",
+            input={
+                "source_lang": source_lang,
+                "target_lang": target_lang,
+                "text": text,
+            },
+            model=descriptor.model_id,
+            metadata={
+                "translation_provider": "translategemma",
+                "model_size": "27b-base",
+                "pipeline_stage": "text_translation",
+            },
+        )
+        if langfuse else nullcontext()
+    )
+    with observation as span:
+        translated_text = await _raw_translategemma_unary(
+            descriptor, prompt, target_lang, temperature, max_tokens
+        )
+        if span is not None:
+            span.update(output=translated_text)
+        logger.info(f"Translation successful ({len(text)} -> {len(translated_text)} chars)")
+        return translated_text
 
-    if not langfuse:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                descriptor.completions_url,
-                json={
-                    "model": descriptor.model_id,
-                    "prompt": prompt,
-                    "temperature": temperature,
-                    "max_tokens": max_tokens,
-                },
-                timeout=aiohttp.ClientTimeout(total=60),
-            ) as response:
-                if response.status != 200:
-                    error_text = await response.text()
-                    logger.error(f"Translation API error {response.status}: {error_text}")
-                    raise _TranslationHTTPError(response.status, error_text)
 
-                result = await response.json()
-                translated_text = result["choices"][0]["text"].strip()
-                translated_text = _fix_dandas(translated_text, target_lang)
-                translated_text = _post_normalize_gu_translation(translated_text, target_lang)
-                logger.info(f"Translation successful ({len(text)} -> {len(translated_text)} chars)")
-                return translated_text
+async def _raw_translategemma_unary(
+    descriptor, prompt, target_lang, temperature, max_tokens
+) -> str:
+    """Execute one TranslateGemma request and return the transformed text."""
+    async with aiohttp.ClientSession() as session:
+        async with session.post(
+            descriptor.completions_url,
+            json={
+                "model": descriptor.model_id,
+                "prompt": prompt,
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+            },
+            timeout=aiohttp.ClientTimeout(total=60),
+        ) as response:
+            if response.status != 200:
+                error_text = await response.text()
+                logger.error(f"Translation API error {response.status}: {error_text}")
+                raise _TranslationHTTPError(response.status, error_text)
 
-    with langfuse.start_as_current_observation(
-        name="text_translation",
-        as_type="generation",
-        input={
-            "source_lang": source_lang,
-            "target_lang": target_lang,
-            "text": text,
-        },
-        model=descriptor.model_id,
-        metadata={
-            "translation_provider": "translategemma",
-            "model_size": "27b-base",
-            "pipeline_stage": "text_translation",
-        },
-    ) as observation:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                descriptor.completions_url,
-                json={
-                    "model": descriptor.model_id,
-                    "prompt": prompt,
-                    "temperature": temperature,
-                    "max_tokens": max_tokens,
-                },
-                timeout=aiohttp.ClientTimeout(total=60),
-            ) as response:
-                if response.status != 200:
-                    error_text = await response.text()
-                    logger.error(f"Translation API error {response.status}: {error_text}")
-                    raise _TranslationHTTPError(response.status, error_text)
-
-                result = await response.json()
-                translated_text = result["choices"][0]["text"].strip()
-                translated_text = _fix_dandas(translated_text, target_lang)
-                translated_text = _post_normalize_gu_translation(translated_text, target_lang)
-                observation.update(output=translated_text)
-                logger.info(f"Translation successful ({len(text)} -> {len(translated_text)} chars)")
-                return translated_text
+            result = await response.json()
+            translated_text = result["choices"][0]["text"].strip()
+            translated_text = _fix_dandas(translated_text, target_lang)
+            return _post_normalize_gu_translation(translated_text, target_lang)
 
 
 async def _raw_llm_translation_unary(
