@@ -13,8 +13,6 @@ import simplejson as json
 from jinja2 import Environment, FileSystemLoader, Template
 import pytz
 from helpers.gujarati_numbers import normalize_numbers_for_tts
-from agents.tools.models.farmer import FarmerModel
-from agents.tools.models.union import UnionName
 from app.config import settings
 
 # In-memory prompt template cache (populated at app startup; no disk I/O at request time)
@@ -418,7 +416,3 @@ def upload_audio_to_s3(audio_base64: str, session_id: str, bucket_name: str | No
         logger = get_logger(__name__)
         logger.error(f"Error uploading audio to S3: {str(e)}")
         raise
-
-
-def is_from_union(records: list[FarmerModel], union_name: UnionName) -> bool:
-    return any(record.union_name == union_name.value for record in records)
