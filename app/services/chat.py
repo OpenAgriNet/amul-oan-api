@@ -186,12 +186,47 @@ GENERIC_UNAVAILABLE_MESSAGE_GU = (
 GENERIC_UNAVAILABLE_MESSAGE_BN = (
     "এই মুহূর্তে আমি আপনার অনুরোধটি প্রক্রিয়া করতে পারছি না। অনুগ্রহ করে কিছুক্ষণ পরে আবার চেষ্টা করুন।"
 )
+GENERIC_UNAVAILABLE_MESSAGE_HI = (
+    "इस समय मैं आपके अनुरोध को पूरा नहीं कर पा रही हूँ। कृपया थोड़ी देर बाद फिर से प्रयास करें।"
+)
 GENERIC_UNAVAILABLE_MESSAGE_PA = (
     "ਇਸ ਸਮੇਂ ਮੈਂ ਤੁਹਾਡੀ ਬੇਨਤੀ ਤੇ ਕਾਰਵਾਈ ਨਹੀਂ ਕਰ ਸਕਦੀ। ਕਿਰਪਾ ਕਰਕੇ ਥੋੜ੍ਹੇ ਸਮੇਂ ਬਾਅਦ ਦੁਬਾਰਾ ਕੋਸ਼ਿਸ਼ ਕਰੋ।"
 )
 GENERIC_UNAVAILABLE_MESSAGE_MR = (
     "सध्या मी तुमची विनंती पूर्ण करू शकत नाही. कृपया थोड्या वेळाने पुन्हा प्रयत्न करा."
 )
+
+# One row per language that can be switched off. Gujarati has no switch.
+_GATED_CHAT_LANGUAGES = {
+    "hindi_chat_enabled": ("hi", "hindi"),
+    "bengali_chat_enabled": ("bn", "bengali"),
+    "punjabi_chat_enabled": ("pa", "punjabi"),
+    "marathi_chat_enabled": ("mr", "marathi"),
+}
+_PRETRANSLATION_LANGS = {"gu", "gujarati"}.union(*_GATED_CHAT_LANGUAGES.values())
+_UNAVAILABLE_MESSAGES = {
+    "gu": GENERIC_UNAVAILABLE_MESSAGE_GU,
+    "gujarati": GENERIC_UNAVAILABLE_MESSAGE_GU,
+    "hi": GENERIC_UNAVAILABLE_MESSAGE_HI,
+    "hindi": GENERIC_UNAVAILABLE_MESSAGE_HI,
+    "bn": GENERIC_UNAVAILABLE_MESSAGE_BN,
+    "bengali": GENERIC_UNAVAILABLE_MESSAGE_BN,
+    "pa": GENERIC_UNAVAILABLE_MESSAGE_PA,
+    "punjabi": GENERIC_UNAVAILABLE_MESSAGE_PA,
+    "mr": GENERIC_UNAVAILABLE_MESSAGE_MR,
+    "marathi": GENERIC_UNAVAILABLE_MESSAGE_MR,
+}
+
+
+def _disabled_chat_langs() -> set[str]:
+    """Language codes whose chat switch is off. Reads settings on each call."""
+    return {
+        code
+        for flag, codes in _GATED_CHAT_LANGUAGES.items()
+        if not getattr(settings, flag, True)
+        for code in codes
+    }
+
 
 try:
     from langfuse import propagate_attributes, get_client as get_langfuse_client
@@ -361,24 +396,12 @@ async def stream_chat_messages(
             # Resolve per-language kill switches before any response path. This
             # keeps deterministic short-circuits and tool language selection in
             # the same English-passthrough mode as the translation pipeline.
-            hindi_enabled = getattr(settings, "hindi_chat_enabled", True)
-            bengali_enabled = getattr(settings, "bengali_chat_enabled", True)
-            punjabi_enabled = getattr(settings, "punjabi_chat_enabled", True)
-            marathi_enabled = getattr(settings, "marathi_chat_enabled", True)
-            disabled_langs: set[str] = set()
-            if not hindi_enabled:
-                disabled_langs |= {"hi", "hindi"}
-            if not bengali_enabled:
-                disabled_langs |= {"bn", "bengali"}
-            if not punjabi_enabled:
-                disabled_langs |= {"pa", "punjabi"}
-            if not marathi_enabled:
-                disabled_langs |= {"mr", "marathi"}
+            disabled_langs = _disabled_chat_langs()
 
             async def localize_system_text(text_en: str) -> str:
                 """
                 Localize short system-generated outputs to target language when needed.
-                Falls back to Gujarati default text if translation fails for Gujarati targets.
+                If translation fails, use the canned message for that language.
                 """
                 if not text_en:
                     return text_en
@@ -408,14 +431,7 @@ async def stream_chat_messages(
                             target_lang,
                             e,
                         )
-                        if lang in {"gu", "gujarati"}:
-                            return GENERIC_UNAVAILABLE_MESSAGE_GU
-                        if lang in {"bn", "bengali"}:
-                            return GENERIC_UNAVAILABLE_MESSAGE_BN
-                        if lang in {"pa", "punjabi"}:
-                            return GENERIC_UNAVAILABLE_MESSAGE_PA
-                        if lang in {"mr", "marathi"}:
-                            return GENERIC_UNAVAILABLE_MESSAGE_MR
+                        return _UNAVAILABLE_MESSAGES.get(lang, text_en)
                 return text_en
 
             request_id = session_id
@@ -473,26 +489,18 @@ async def stream_chat_messages(
                 except Exception as e:
                     logger.warning(f"request_id={request_id} farmer_context_fetch_failed={e}")
 
-            # Hindi and Bengali kill switches (HINDI_CHAT_ENABLED /
-            # BENGALI_CHAT_ENABLED, default on). When disabled, that language drops
-            # out of both the pretranslation (src->en) and output (en->target)
-            # gates, so its requests bypass the pipeline entirely and are served
-            # like an unsupported language. Gujarati is unaffected.
+            # Hindi, Bengali, Punjabi, and Marathi each have an on/off setting
+            # (default on), resolved once in _disabled_chat_langs(). When a language
+            # is off it drops out of both the pretranslation (src->en) and output
+            # (en->target) gates, so its requests bypass the pipeline and are served
+            # like an unsupported language. Gujarati is always on.
             output_translation_langs = [lang for lang in INDIAN_LANGUAGES if lang not in disabled_langs]
 
             processing_query = query
             processing_lang = "en" if target_lang.lower() in disabled_langs else target_lang
             needs_output_translation = target_lang.lower() in output_translation_langs
 
-            pretranslation_source_langs = {"gu", "gujarati"}
-            if hindi_enabled:
-                pretranslation_source_langs |= {"hi", "hindi"}
-            if bengali_enabled:
-                pretranslation_source_langs |= {"bn", "bengali"}
-            if punjabi_enabled:
-                pretranslation_source_langs |= {"pa", "punjabi"}
-            if marathi_enabled:
-                pretranslation_source_langs |= {"mr", "marathi"}
+            pretranslation_source_langs = _PRETRANSLATION_LANGS - disabled_langs
             if source_lang.lower() in pretranslation_source_langs:
                 pretrans_info = execution.info(_LlmStep.PRE_TRANSLATION)
                 logger.info(
