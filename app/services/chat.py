@@ -20,7 +20,7 @@ from app.tasks.suggestions import create_suggestions
 from app.config import settings
 from app.core.cache import cache
 from agents.deps import FarmerContext
-from agents.farmer_context import get_farmer_context_bundle_by_mobile
+from agents.farmer_context import FarmerContextBundle, get_farmer_context_bundle_by_mobile
 from agents.tools.farmer import normalize_phone_to_mobile
 from agents.tools.session_shc import get_session_shc_context
 from app.services.translation import (
@@ -361,19 +361,26 @@ async def _pretranslate_query(
 
 async def _load_farmer_context(
     persona: ChatPersona, user_info: dict, request_id: str
-) -> tuple[str, list[str], dict[str, str]]:
-    """Cache-first farmer context for the phone in the JWT; empty when unavailable."""
+) -> tuple[FarmerContextBundle, str]:
+    """Cache-first farmer context for the phone in the JWT, plus its profile status.
+
+    The status (found / anonymous / not_found / unavailable) gates farmer-only
+    tools and tells the agent what it cannot do; see FarmerContext.
+    """
     if persona != "farmer" or not user_info or not user_info.get("phone"):
-        return "", [], {}
+        return FarmerContextBundle(markdown=""), "anonymous"
     try:
-        farmer_data, farmer_unions, farmer_location = await get_farmer_context_bundle_by_mobile(user_info["phone"])
+        bundle = await get_farmer_context_bundle_by_mobile(user_info["phone"])
     except Exception as e:
         logger.warning(f"request_id={request_id} farmer_context_fetch_failed={e}")
-        return "", [], {}
-    logger.info(f"request_id={request_id} farmer_context_length={len(farmer_data)}")
-    logger.info("request_id=%s farmer_unions=%s", request_id, farmer_unions)
-    logger.info("request_id=%s farmer_district=%s", request_id, farmer_location.get("district"))
-    return farmer_data, farmer_unions, farmer_location
+        logger.info("request_id=%s farmer_profile_status=unavailable", request_id)
+        return FarmerContextBundle(markdown=""), "unavailable"
+    status = "found" if bundle.found else "not_found"
+    logger.info(f"request_id={request_id} farmer_context_length={len(bundle.markdown)}")
+    logger.info("request_id=%s farmer_unions=%s", request_id, bundle.unions)
+    logger.info("request_id=%s farmer_district=%s", request_id, bundle.location.get("district"))
+    logger.info("request_id=%s farmer_profile_status=%s", request_id, status)
+    return bundle, status
 
 
 def _build_deps(
@@ -384,19 +391,20 @@ def _build_deps(
     persona: ChatPersona,
     channel: str,
     user_info: dict,
-    farmer_context: tuple[str, list[str], dict[str, str]],
+    farmer_context: tuple[FarmerContextBundle, str],
     response_max_chars: int | None,
 ) -> FarmerContext:
-    farmer_data, farmer_unions, farmer_location = farmer_context
+    bundle, farmer_profile_status = farmer_context
     return FarmerContext(
         query=query,
         session_id=session_id,
         lang_code=lang_code,
-        farmer_info=farmer_data,
-        farmer_unions=farmer_unions,
-        farmer_district=farmer_location.get("district") or None,
-        farmer_village=farmer_location.get("village") or None,
-        farmer_state=farmer_location.get("state") or None,
+        farmer_info=bundle.markdown,
+        farmer_unions=bundle.unions,
+        farmer_profile_status=farmer_profile_status,
+        farmer_district=bundle.location.get("district") or None,
+        farmer_village=bundle.location.get("village") or None,
+        farmer_state=bundle.location.get("state") or None,
         response_max_chars=response_max_chars,
         supports_rich_artifacts=(channel or "web").lower() == "web",
         # Normalized caller phone — the micro-loan tool reads this from deps so it
