@@ -511,6 +511,55 @@ def _load_ambiguity_terms() -> list:
 
 _AMBIGUITY_TERMS = _load_ambiguity_terms()
 
+# Ambiguity terms are matched token-window by token-window, NOT against the whole
+# query. `fuzz.partial_ratio(term, query)` slides the SHORTER of the two, so a
+# query shorter than the trigger term silently inverts the comparison and scores
+# far higher than the same word inside a sentence: "tanki" scored 80 against
+# `tanakhi` while "paani ni tanki saaf karvi" scored 71, and "તણખા ઉડે છે"
+# (sparks) scored 85 while the longer "ચૂલામાંથી તણખા ઉડે છે" scored 75. Short
+# queries are the common case in chat, so the looser reading was the one users
+# actually hit. Windows keep the comparison symmetric (plain `ratio`), and the
+# substring fast path above still covers inflected forms (તણખી → તણખીની).
+#
+# Split on whitespace and punctuation ONLY. `[^\w]+` cannot be used here: Python's
+# \w excludes Gujarati/Devanagari/Gurmukhi combining marks (category Mn), so it
+# shreds every Indic word into fragments (મારી -> મ, ર).
+_AMBIGUITY_TOKEN_SPLIT = re.compile(r"[\s/\\|,;:.!?()\[\]{}\"'’“”…–—-]+")
+
+# Romanised triggers are short and share an alphabet with ordinary English, so a
+# one-character miss is a real word rather than a typo: tanki (water tank) is one
+# edit from `tanakhi`, and at the shared 0.80 cutoff it matched. Terms in an
+# Indic script carry no such traffic and keep the shared cutoff.
+_ROMAN_TERM_MAX_CHARS = 10
+_ROMAN_TERM_CUTOFF = 90
+
+
+def _ambiguity_tokens(text: str) -> list[str]:
+    return [tok for tok in _AMBIGUITY_TOKEN_SPLIT.split(text.strip()) if tok]
+
+
+def _ambiguity_cutoff_for(term: str, base_cutoff: int) -> int:
+    """Short ASCII terms need a near-exact hit; everything else keeps the cutoff."""
+    if term.isascii() and len(term) <= _ROMAN_TERM_MAX_CHARS:
+        return max(base_cutoff, _ROMAN_TERM_CUTOFF)
+    return base_cutoff
+
+
+def _ambiguity_fuzzy_score(term: str, query: str) -> float:
+    """Best `ratio` of `term` against the query's same-length token windows."""
+    term_tokens = _ambiguity_tokens(term)
+    query_tokens = _ambiguity_tokens(query)
+    if not term_tokens or not query_tokens:
+        return 0.0
+    width = len(term_tokens)
+    term_norm = " ".join(term_tokens)
+    best = 0.0
+    for start in range(max(1, len(query_tokens) - width + 1)):
+        window = " ".join(query_tokens[start:start + width])
+        if window:
+            best = max(best, fuzz.ratio(term_norm, window))
+    return best
+
 
 def get_ambiguity_hints_for_query(query: str, threshold: float | None = None, include_ask: bool = True) -> str:
     """
@@ -570,9 +619,9 @@ def get_ambiguity_hints_for_query(query: str, threshold: float | None = None, in
                     matched_rules.append(f"- {rule}")
                     seen.add(rule)
                 break
-            # Fuzzy match fallback
-            score = fuzz.partial_ratio(term_lower, query_lower)
-            if score >= score_cutoff:
+            # Fuzzy match fallback, window-scoped (see _ambiguity_fuzzy_score)
+            score = _ambiguity_fuzzy_score(term_lower, query_lower)
+            if score >= _ambiguity_cutoff_for(term_lower, score_cutoff):
                 if rule not in seen:
                     matched_rules.append(f"- {rule}")
                     seen.add(rule)
