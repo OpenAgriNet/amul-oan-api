@@ -104,13 +104,40 @@ def test_tanakhi_spelling_variants_all_match(query):
 
 
 @pytest.mark.parametrize("query", [
-    "ચૂલામાંથી તણખા ઉડે છે",     # sparks
+    "ચૂલામાંથી તણખા ઉડે છે",     # sparks, in a sentence
+    "તણખા ઉડે છે",               # sparks, short query — scored 85 before the window fix
     "તનખા ક્યારે મળશે",          # salary
-    "paani ni tanki saaf karvi",  # water tank — why `tankhi` is not a trigger
+    "paani ni tanki saaf karvi",  # water tank, in a sentence
+    "tanki",                      # water tank, bare — scored 80 before the window fix
+    "tanki cleaning",
+    "tank",
+    "tank cleaning",
+    "thanki",
     "ટાંકી સાફ કરવી",
 ])
 def test_tanakhi_rule_does_not_fire_on_lookalike_words(query):
+    """Short queries are the case that broke: `fuzz.partial_ratio` slides the
+    SHORTER string, so a query shorter than the trigger term inverted the
+    comparison and scored far higher than the same word in a sentence."""
     assert "upward fixation of patella" not in get_ambiguity_hints_for_query(query).lower()
+
+
+def test_every_ambiguity_term_still_triggers_its_own_rule():
+    """Guard for the whole file, not just તણખી: window matching must never stop a
+    term from pulling the rule it belongs to."""
+    import json
+    from pathlib import Path
+
+    entries = json.loads(
+        (Path(__file__).resolve().parents[1] / "assets" / "ambiguity_terms.json").read_text(encoding="utf-8")
+    )
+    missed = [
+        (term, entry["rule"][:40])
+        for entry in entries
+        for term in entry["gu_terms"]
+        if entry["rule"] not in get_ambiguity_hints_for_query(term)
+    ]
+    assert missed == []
 
 
 def test_upward_fixation_of_patella_translates_back_to_tanakhi():
