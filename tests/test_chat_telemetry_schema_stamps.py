@@ -15,6 +15,35 @@ from app.services.telemetry_stamps import (
 
 CONTRACT = Path(__file__).resolve().parents[1] / "telemetry" / "contracts" / "chat.turn.v1.json"
 
+# A released schema-version contract is immutable. Keep this deliberately
+# explicit rather than deriving it from the contract file: changing the file
+# and chat.py together must still fail until a new schema version is created.
+CHAT_TURN_V1_CONTRACT = {
+    "schema_version": "chat.turn.v1",
+    "root": "chat.translation",
+    "trace_input": {
+        "required": ["query", "channel", "source_lang", "target_lang", "persona"],
+    },
+    "metadata": {
+        "required": [
+            "amul.schema_version",
+            "service",
+            "release",
+            "pipeline",
+            "channel",
+            "source_lang",
+            "target_lang",
+            "user_id",
+            "pipeline_profile",
+            "persona",
+        ],
+        "optional": ["pipeline_flags", "pc_<step>"],
+    },
+    "scores": {
+        "categorical": ["pipeline_profile", "turn_outcome", "served_tier"],
+    },
+}
+
 
 def test_forward_telemetry_metadata_stamps_schema_service_and_release(monkeypatch, tmp_path):
     # No checkout here, so the build arg is used. A real .git would win over it.
@@ -46,6 +75,12 @@ def test_forward_telemetry_metadata_reads_a_git_head_file(monkeypatch, tmp_path)
     telemetry_stamps.chat_telemetry_release.cache_clear()
 
     assert forward_chat_telemetry_metadata()["release"] == "test-git-sha"
+
+
+def test_chat_turn_v1_contract_is_immutable():
+    """Any field-set or semantic change must be released as chat.turn.v2+."""
+
+    assert json.loads(CONTRACT.read_text(encoding="utf-8")) == CHAT_TURN_V1_CONTRACT
 
 
 def test_chat_turn_v1_contract_matches_what_chat_py_sends():

@@ -14,9 +14,10 @@ raw stamped chat trace -> telemetry/mappings/chat.yaml -> CanonicalChatTurn
 ```
 
 `chat.turn.v1` is read from `metadata.amul.schema_version`, before any date
-lookup. A compatible rename is a mapping-file change; historical, unstamped
-traces still use the documented era adapters for resolution and structural
-recovery. Their ordinary field paths are also read from
+lookup. Historical source-field aliases are mapping-file changes; they do not
+alter a published stamped contract. Historical, unstamped traces still use the
+documented era adapters for resolution and structural recovery. Their ordinary
+field paths are also read from
 `telemetry/mappings/chat.yaml`, keyed by source-schema version.
 
 The adapter's output is `chat.canonical.v1`, not the incoming `chat.turn.v1`
@@ -146,3 +147,17 @@ stamp, not the date:
 
 Forward-emitted chat telemetry is stamped with `amul.schema_version`, `service`,
 and `release` to make future schema selection explicit.
+
+## Forward schema evolution
+
+Published telemetry contracts are immutable. **Every change to a stamped
+contract requires a new schema version**, including adding an optional key,
+adding a score, renaming or removing a key, changing a value's meaning, or
+changing its type. Do not add fields to `chat.turn.v1` after it has been
+released.
+
+For example, a new metadata key is `chat.turn.v2`: add a new versioned contract
+file and mapping entry, update the emitting stamp, and add a corresponding
+contract test. Keep the prior version's adapter and contract unchanged so old
+traces remain queryable. Mapping aliases may still be used to read historical
+source fields, but they never change the contract of an already-stamped trace.
