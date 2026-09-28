@@ -15,14 +15,17 @@ trace ancestry first, then this classification.
    parent turn.
 3. A child provider/API observation is folded into its enclosing root only
    when the export gives a verified same-trace parent/root relationship. Do not
-   join by session, user, name, or nearest timestamp.
+   join by session, user, name, or nearest timestamp. **The only documented
+   exception is c2 question recovery below.**
 
 ## Inventory
 
 | Trace / observation family | Current relationship | Classification | Import decision |
 | --- | --- | --- | --- |
 | `chat.translation` / historical chat roots | Farmer request root | canonical chat turn | Adapt through the chat era resolver. |
-| `Amul AI Agent`, `Moderation`, `query_pretranslation`, `stream_translation`, `text_translation`, tool observations | Child observations while a `chat.translation` root is active | turn component | Fold into the enclosing canonical turn. Keep structural information only; do not create a second turn. |
+| C3+ `Amul AI Agent`, `Moderation`, `query_pretranslation`, `stream_translation`, `text_translation`, tool observations | Child observations while a `chat.translation` root is active | turn component | Fold into the enclosing canonical turn. Keep structural information only; do not create a second turn. |
+| C2 `query_pretranslation` root trace | Separate top-level trace; not a child of the c2 agent turn | c2 enrichment-only trace | Do not import it as a turn. It may supply a **derived** original-question hash/length to one c2 turn only through the documented unique-match rule below. |
+| C2 moderation root trace | Separate top-level trace; not a child of the c2 agent turn | non-turn stage trace | Do not import or join it to a turn. It has no safe turn-level contribution. |
 | `suggestions` | FastAPI background task started after the response; currently carries session and language but no parent turn ID | detached auxiliary activity | Do **not** attach it to a chat turn. Store separately until scheduling propagates a stable `parent_trace_id` or `turn_id`. |
 | `farmer_background_refresh` | Lifespan/Redis worker root; source explicitly says it is not tied to a voice session | detached operational activity | Do not map to a turn. Store separately as an operational refresh activity. |
 | `fetch_farmer_amulpashudhan`, `get_ai_technicians_by_society`, and similar provider/API spans | May execute below an agent turn or below `farmer_background_refresh` | ancestry-dependent component | Fold only when the exported parent is a canonical turn. Otherwise retain below its background activity; never promote based on name. |
@@ -42,6 +45,26 @@ request root into the background task:
 Until then, `suggestions` remains an unparented auxiliary activity. This is
 preferable to a plausible but incorrect analytics join.
 
+## C2 question-recovery exception
+
+C2 was emitted before a single root span enclosed all stages. Its
+`query_pretranslation` and moderation records are distinct top-level traces.
+The c2 adapter therefore makes one deliberately narrow exception to the normal
+no-session/no-time-join rule: it can read the original-question value from a
+pretranslation trace only when all of the following hold:
+
+- it was explicitly fetched as related c2 context, rather than found by a
+  global search;
+- it has the same session ID as the candidate c2 turn;
+- `metadata.pipeline_stage == "query_pretranslation"`;
+- its timestamp is within two minutes of the turn; and
+- it is the uniquely nearest candidate (a nearest-timestamp tie yields no
+  question).
+
+The resulting canonical field is marked `derived`. C2 moderation traces are
+never joined. If any pretranslation condition is missing or ambiguous, the
+question remains unavailable rather than guessed.
+
 ## Production validation needed
 
 The code establishes the classifications above. The fetcher/ClickHouse report
@@ -51,6 +74,8 @@ should additionally count, by day and trace name:
 - children whose parent/root was absent from the fetched page;
 - detached auxiliary activities;
 - provider/API spans split by parent root family.
+- c2 pretranslation matches, misses, and ambiguity rejections, separately from
+  c2 moderation roots.
 
 Those counts show whether production contains another non-turn family before
 we add a mapper. No raw question, answer, prompt, tool input/output, farmer
