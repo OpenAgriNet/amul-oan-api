@@ -524,5 +524,14 @@
     ],
     "type": "hardcode",
     "rule": "CRITICAL DOMAIN DISTINCTION — ગરમી (heat/estrus) and ગાભણ (pregnancy) are COMPLETELY DIFFERENT concepts. ગરમી means the animal is in heat (estrus cycle, ready for mating). ગાભણ means the animal is pregnant (carrying a calf). When a farmer says 'ગરમી નથી આવતી' or 'not coming in heat', they mean the animal is NOT showing estrus signs — do NOT use the word ગાભણ (pregnant) in your response. Say 'ગરમીમાં ન આવવું' NOT 'ગાભણ ન આવવું'. Say 'છેલ્લે ગરમીમાં ક્યારે આવ્યું?' NOT 'છેલ્લે ક્યારે ગાભણ આવ્યું?'. Anestrus (not coming in heat) is about missing estrus cycles. Pregnancy is about carrying offspring. Never confuse these."
+  },
+  {
+    "gu_terms": [
+      "તણખી",
+      "તણખિ",
+      "tanakhi"
+    ],
+    "type": "hardcode",
+    "rule": "તણખી / તણખિ / tanakhi / tankhi means upward fixation of patella (stifle locking) in cattle, buffalo and bullocks: when the animal gets up or starts walking, a hind leg suddenly locks stretched backward or jerks upward, the hoof drags, and the leg then releases with a jerk. When translating to English, always render it as 'upward fixation of patella'. NEVER translate it as spark or sparks (that is તણખો / તણખા), fever, a hoof wound, a fracture or paralysis. It is a hind-leg (stifle joint) lameness problem, so search for upward fixation of patella cattle treatment."
   }
 ]

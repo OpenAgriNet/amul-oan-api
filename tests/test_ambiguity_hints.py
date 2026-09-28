@@ -82,3 +82,43 @@ def test_include_ask_false_is_the_chat_pretranslation_path():
     )
     assert isinstance(without_ask, str)
     assert len(without_ask) <= len(with_ask)
+
+
+def test_tanakhi_is_upward_fixation_of_patella():
+    """AMUL-84: તણખી had no rule, so pretranslation read it as તણખા (sparks) and
+    the agent could not place it. It is the hind-leg stifle lock."""
+    result = get_ambiguity_hints_for_query("મારી ગાયને તણખી થઈ છે, પગ ખેંચાય છે")
+    assert "upward fixation of patella" in result.lower()
+
+
+@pytest.mark.parametrize("query", [
+    "બળદને તણખીની તકલીફ છે",
+    "ભેંસને તણખિ છે",
+    "gaay ne tanakhi thai che",
+    "gaay ne tankhi thai che",
+])
+def test_tanakhi_spelling_variants_all_match(query):
+    """The ticket itself spells it both Tanakhi and Tankhi; `tanakhi` covers both
+    romanisations, so `tankhi` is deliberately not a trigger term (see below)."""
+    assert "upward fixation of patella" in get_ambiguity_hints_for_query(query).lower()
+
+
+@pytest.mark.parametrize("query", [
+    "ચૂલામાંથી તણખા ઉડે છે",     # sparks
+    "તનખા ક્યારે મળશે",          # salary
+    "paani ni tanki saaf karvi",  # water tank — why `tankhi` is not a trigger
+    "ટાંકી સાફ કરવી",
+])
+def test_tanakhi_rule_does_not_fire_on_lookalike_words(query):
+    assert "upward fixation of patella" not in get_ambiguity_hints_for_query(query).lower()
+
+
+def test_upward_fixation_of_patella_translates_back_to_tanakhi():
+    """The answer should reach the farmer in their own word, not a textbook term."""
+    from agents.tools.terms import get_mini_glossary_for_text
+
+    mini = get_mini_glossary_for_text(
+        text="Upward fixation of patella makes the hind leg lock.",
+        target_lang="gu", threshold=0.9, max_terms=10,
+    )
+    assert "Upward Fixation of Patella -> તણખી" in mini
