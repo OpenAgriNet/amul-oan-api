@@ -14,8 +14,9 @@ from app.services.telemetry_stamps import (
 )
 
 
-CONTRACT = Path(__file__).resolve().parents[1] / "telemetry" / "contracts" / "chat.turn.v1.json"
-CONTRACTS = CONTRACT.parent
+CONTRACTS = Path(__file__).resolve().parents[1] / "telemetry" / "contracts"
+CURRENT_CONTRACT = CONTRACTS / f"{CHAT_TELEMETRY_SCHEMA_VERSION}.json"
+V1_CONTRACT = CONTRACTS / "chat.turn.v1.json"
 
 _GENERIC_FIELD_NAMES = {"data", "id", "result", "status", "time", "type", "value"}
 _FIELD_NAME = re.compile(r"[a-z][a-z0-9_]*(?:_<[a-z][a-z0-9_]*>)?$")
@@ -57,7 +58,7 @@ def test_forward_telemetry_metadata_stamps_schema_service_and_release(monkeypatc
     telemetry_stamps.chat_telemetry_release.cache_clear()
 
     assert forward_chat_telemetry_metadata() == {
-        "amul.schema_version": "chat.turn.v1",
+        "amul.schema_version": CHAT_TELEMETRY_SCHEMA_VERSION,
         "service": "amul-oan-api",
         "release": "test-release-sha",
     }
@@ -85,7 +86,10 @@ def test_forward_telemetry_metadata_reads_a_git_head_file(monkeypatch, tmp_path)
 def test_chat_turn_v1_contract_is_immutable():
     """Any field-set or semantic change must be released as chat.turn.v2+."""
 
-    assert json.loads(CONTRACT.read_text(encoding="utf-8")) == CHAT_TURN_V1_CONTRACT
+    assert json.loads(V1_CONTRACT.read_text(encoding="utf-8")) == CHAT_TURN_V1_CONTRACT, (
+        "chat.turn.v1 was changed after release. Restore it and create a new "
+        "contract/stamp (for example chat.turn.v2) for the changed shape."
+    )
 
 
 def test_contract_field_names_are_explicit_and_stable():
@@ -110,8 +114,13 @@ def test_contract_field_names_are_explicit_and_stable():
             )
 
 
-def test_chat_turn_v1_contract_matches_what_chat_py_sends():
-    contract = json.loads(CONTRACT.read_text(encoding="utf-8"))
+def test_current_chat_contract_matches_what_chat_py_sends():
+    assert CURRENT_CONTRACT.is_file(), (
+        f"chat.py emits {CHAT_TELEMETRY_SCHEMA_VERSION!r}, but its contract "
+        f"file is missing: {CURRENT_CONTRACT}. Add that versioned contract "
+        "before changing the emitted schema."
+    )
+    contract = json.loads(CURRENT_CONTRACT.read_text(encoding="utf-8"))
     chat_source = Path(__file__).resolve().parents[1] / "app" / "services" / "chat.py"
     tree = ast.parse(chat_source.read_text(encoding="utf-8"))
 
@@ -121,12 +130,27 @@ def test_chat_turn_v1_contract_matches_what_chat_py_sends():
     metadata_keys = {keyword.arg for keyword in metadata_call.keywords}
     input_keys = {keyword.arg for keyword in input_call.keywords}
 
-    assert contract["schema_version"] == CHAT_TELEMETRY_SCHEMA_VERSION
-    assert contract["root"] == CHAT_TURN_V1_ROOT
+    assert contract["schema_version"] == CHAT_TELEMETRY_SCHEMA_VERSION, (
+        f"{CURRENT_CONTRACT.name} declares {contract['schema_version']!r}, "
+        f"but chat.py emits {CHAT_TELEMETRY_SCHEMA_VERSION!r}. Keep the stamp "
+        "and contract version aligned."
+    )
+    assert contract["root"] == CHAT_TURN_V1_ROOT, (
+        f"{CURRENT_CONTRACT.name} declares root {contract['root']!r}, but "
+        f"chat.py emits {CHAT_TURN_V1_ROOT!r}."
+    )
     assert set(contract["metadata"]["required"]) - {
         "amul.schema_version", "service", "release"
-    } == metadata_keys
-    assert set(contract["trace_input"]["required"]) == input_keys
+    } == metadata_keys, (
+        f"chat.py metadata keys {sorted(metadata_keys)} do not match "
+        f"{CURRENT_CONTRACT.name}. Bump the schema version and update its "
+        "contract if the emitted field set changed."
+    )
+    assert set(contract["trace_input"]["required"]) == input_keys, (
+        f"chat.py input keys {sorted(input_keys)} do not match "
+        f"{CURRENT_CONTRACT.name}. Bump the schema version and update its "
+        "contract if the emitted field set changed."
+    )
     assert CHAT_TELEMETRY_SERVICE == "amul-oan-api"
 
 
