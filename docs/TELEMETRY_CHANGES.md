@@ -13,14 +13,43 @@ Chat has the same pieces, all in this repo: `telemetry/contracts/chat.turn.v1.js
 `telemetry/mappings/chat.yaml` and `chat_outcome_vocabulary`. The examples below
 use voice.
 
+## Every change is a new version
+
+A released contract never changes, because traces already in Langfuse follow it.
+Whatever you change (a key or an outcome added, renamed or removed, the root, a
+key inside a block, or what a key means), release it as a new version:
+
+1. voice-oan-api: bump `VOICE_TELEMETRY_SCHEMA_VERSION` in
+   `app/services/telemetry_stamps.py`, e.g. to `voice.turn.v2`.
+2. voice-oan-api: copy `telemetry/contracts/voice.turn.v1.json` to
+   `voice.turn.v2.json` and make the change there. Leave the v1 file as it is;
+   the tests fail if it changes.
+3. amul-oan-api: add the version to `telemetry/mappings/voice.yaml`. It extends
+   the old one and lists only what moved. For a key that was only added, two
+   lines are enough:
+
+   ```yaml
+   voice.turn.v2:
+     extends: voice.turn.v1
+   ```
+
+4. Merge the amul-oan-api change first. voice-oan-api's CI checks that its main
+   branch already reads the new version.
+5. Once it ships, add the new version's fingerprint to `RELEASED_CONTRACTS` in
+   voice-oan-api's `tests/test_voice_telemetry_contract.py` (the command is in its
+   `telemetry/README.md`).
+
+Chat is the same, all in this repo: `CHAT_TELEMETRY_SCHEMA_VERSION`,
+`telemetry/contracts/chat.turn.v2.json` and `telemetry/mappings/chat.yaml`.
+
 ## Add a new field
 
 Example: record `farmer_type` on every voice turn.
 
 1. voice-oan-api: set it on the trace, e.g. `trace.metadata["farmer_type"] = ...`
    in `app/services/voice.py`, or in `VoiceTrace` if every turn has it.
-2. voice-oan-api: add `"farmer_type"` to `metadata_keys` in
-   `telemetry/contracts/voice.turn.v1.json`. No version bump.
+2. Release it as a new version, with `"farmer_type"` in the new contract's
+   `metadata_keys` (see "Every change is a new version").
 
 That's enough if the field is only for looking at traces in Langfuse. To get it
 into the canonical output that dashboards read, also:
@@ -51,7 +80,7 @@ Traces from before the change don't have the field, so it reads as
 ## Add an outcome value
 
 1. voice-oan-api: set it, e.g. `trace.set_outcome("cancelled")`.
-2. voice-oan-api: add it to `outcomes` in the contract file.
+2. Release it as a new version, with the outcome in the new contract's `outcomes`.
 3. amul-oan-api: add it to one bucket of `voice_outcome_vocabulary` in
    `telemetry/eras.yaml`: `delivered`, `non_question`, `refused_or_blocked` or
    `failed`. Until then it's counted as `unclassified`.
@@ -61,12 +90,8 @@ Traces from before the change don't have the field, so it reads as
 Example: `outcome` becomes `turn_outcome`.
 
 1. voice-oan-api: change the code.
-2. voice-oan-api: bump `VOICE_TELEMETRY_SCHEMA_VERSION` in
-   `app/services/telemetry_stamps.py`, e.g. to `voice.turn.v2`.
-3. voice-oan-api: copy the contract to `telemetry/contracts/voice.turn.v2.json`
-   and update it. Leave the v1 file as it is; old traces still follow it.
-4. amul-oan-api: add the version to `telemetry/mappings/voice.yaml`, listing only
-   what moved:
+2. Release it as a new version (see "Every change is a new version"). In the new
+   mapping, list only what moved:
 
    ```yaml
    voice.turn.v2:
@@ -92,14 +117,19 @@ The adapter doesn't wait for this: a stamped trace is read by its stamp, and its
 
 | Message | What to do |
 | --- | --- |
-| `New metadata keys [...]` | List them in the contract file. |
+| `New metadata keys [...]` | A key was added: release a new version with it in the new contract. |
+| `New keys inside metadata blocks` | Same, for a key inside a block like `agent`. |
 | `Voice traces no longer send [...]` | A key was renamed or removed: see "Rename or remove". |
 | `Voice traces no longer send these keys inside metadata blocks` | A key inside a block like `agent` was renamed or removed: see "Rename or remove". |
 | `Voice traces no longer send the trace fields [...]` | `input`, `output`, `sessionId` or `userId` stopped being sent: see "Rename or remove". |
 | `Voice turns are now sent as [...]` | The root was renamed: see "Rename or remove", and set the new `root:` in `voice.yaml`. |
 | `New outcomes [...]` | See "Add an outcome value". |
-| `Outcomes no longer emitted: [...]` | Remove them from the contract, and note it in `eras.yaml` once it ships. |
+| `Outcomes no longer emitted: [...]` | Release a new version without them, and note it in `eras.yaml` once it ships. |
+| `telemetry/contracts/voice.turn.v1.json is released and can't change` | Undo the edit to the old file and put the change in a new version. |
+| `Unclear key names [...]` | Rename the key to say what it holds, e.g. `error_type`, not `type`. |
 | `No contract for voice.turn.vN` | Add the contract file for the version you bumped to. |
+| `chat.turn.vN reads ... but the contract doesn't send it` | `chat.yaml` reads a key the chat contract no longer lists: point the field at a key that is sent. |
+| `chat.turn.vN has no entry in telemetry/mappings/chat.yaml` | Add the version to `chat.yaml` in the same change as the contract. |
 | `...: 'x' is not a canonical field` | Typo in `voice.yaml`, or step 4 of "Add a new field" is missing. |
 | `Unknown voice schema version` | The new version isn't in `voice.yaml` yet. |
 | `... ends at ... but no ... root era starts then` | An `eras.yaml` boundary leaves a gap: start the next era at the same instant. |

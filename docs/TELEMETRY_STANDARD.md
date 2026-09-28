@@ -23,13 +23,23 @@ the canonical model does.
 
 ## When you change what a trace sends
 
-| Change | What to do |
+A released contract never changes: traces already in Langfuse follow it. So
+**every** change to what a trace sends is a new schema version, adding a key
+included. For each one: bump the stamp, copy the contract to the new version's
+file and change it there, and add the version to
+`telemetry/mappings/<channel>.yaml`. The new mapping `extends` the old one and
+lists only what moved, so an added key is two lines.
+
+| Change | New version, plus |
 | --- | --- |
-| Add a metadata key | Add it to the contract file. No version change. |
-| Add an outcome value | Voice: add it to the contract file and to `voice_outcome_vocabulary` in `telemetry/eras.yaml`. Chat: add it to `chat_outcome_vocabulary`. No version change. |
-| Rename or remove a key | Bump the schema version, add a contract file for it, and add the version to `telemetry/mappings/<channel>.yaml` (it can `extends` the old one and list only what moved). |
-| Rename the root, drop a trace field (`sessionId`, `userId`, input, output), or rename a key inside a metadata block | Same as a rename. The contracts list these too (voice: `root`, `trace_fields`, `nested_keys`; chat: `root`, `trace_input`). |
-| Keep a key but change what it means | Same as a rename. Nothing can detect this for you. |
+| Add a metadata key | Nothing else. To show it on a dashboard, map it (see "Add a new field" in `TELEMETRY_CHANGES.md`). |
+| Add an outcome value | A bucket for it in `voice_outcome_vocabulary` or `chat_outcome_vocabulary` in `telemetry/eras.yaml`. |
+| Rename or remove a key | In the new mapping, point the canonical field at the new key. |
+| Rename the root, drop a trace field (`sessionId`, `userId`, input, output), or change a key inside a metadata block | The new `root:` or path in the mapping. The contracts list these too (voice: `root`, `trace_fields`, `nested_keys`; chat: `root`, `trace_input`). |
+| Keep a key but change what it means | Point the canonical field at a key that means the right thing, or leave it out. Nothing can detect this for you. |
+
+Names say what the value is: lowercase snake_case, never `data`, `id`, `result`,
+`status`, `time`, `type` or `value` on their own. The contract tests check this.
 
 Contract files live in `telemetry/contracts/<schema version>.json` in the repo
 that sends the trace: `voice.turn.v1.json` in voice-oan-api, `chat.turn.v1.json`
