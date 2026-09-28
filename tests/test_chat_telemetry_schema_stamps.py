@@ -1,5 +1,6 @@
 import ast
 import json
+import re
 from pathlib import Path
 
 from app.services import telemetry_stamps
@@ -14,6 +15,10 @@ from app.services.telemetry_stamps import (
 
 
 CONTRACT = Path(__file__).resolve().parents[1] / "telemetry" / "contracts" / "chat.turn.v1.json"
+CONTRACTS = CONTRACT.parent
+
+_GENERIC_FIELD_NAMES = {"data", "id", "result", "status", "time", "type", "value"}
+_FIELD_NAME = re.compile(r"[a-z][a-z0-9_]*(?:_<[a-z][a-z0-9_]*>)?$")
 
 # A released schema-version contract is immutable. Keep this deliberately
 # explicit rather than deriving it from the contract file: changing the file
@@ -81,6 +86,28 @@ def test_chat_turn_v1_contract_is_immutable():
     """Any field-set or semantic change must be released as chat.turn.v2+."""
 
     assert json.loads(CONTRACT.read_text(encoding="utf-8")) == CHAT_TURN_V1_CONTRACT
+
+
+def test_contract_field_names_are_explicit_and_stable():
+    """Keep published contracts queryable without relying on ambiguous aliases."""
+
+    for path in CONTRACTS.glob("*.json"):
+        contract = json.loads(path.read_text(encoding="utf-8"))
+        fields = (
+            contract.get("trace_input", {}).get("required", [])
+            + contract.get("metadata", {}).get("required", [])
+            + contract.get("metadata", {}).get("optional", [])
+            + contract.get("scores", {}).get("categorical", [])
+        )
+        for field in fields:
+            assert field not in _GENERIC_FIELD_NAMES, (
+                f"{path.name} uses the ambiguous field name {field!r}; choose a "
+                "specific domain name instead"
+            )
+            assert field == "amul.schema_version" or _FIELD_NAME.fullmatch(field), (
+                f"{path.name} field {field!r} must be lowercase snake_case; "
+                "only vendor namespaced stamp keys may use dots"
+            )
 
 
 def test_chat_turn_v1_contract_matches_what_chat_py_sends():

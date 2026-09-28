@@ -129,8 +129,10 @@ stamp, not the date:
   read. When the stamp goes live, still add an era with its prod-observed
   `valid_from` and `schema_version: voice.turn.v1`, as the record of when it started.
 - Where each field lives is read from `telemetry/mappings/voice.yaml`, so a new
-  version with a renamed field is a mapping change, not a code change. A field
-  name there that isn't a CanonicalVoiceTurn field is rejected.
+  historical-source alias is a mapping change, not a code change. A renamed,
+  added, removed, or semantically changed **forward contract** field still
+  needs a new stamped version. A field name there that isn't a
+  CanonicalVoiceTurn field is rejected.
 - An unknown stamp, or a known stamp on the wrong root, is rejected.
 - Stamped turns have no extensions; the stamp already names the contract.
 - Unstamped `agent_journey` traces are read as v4 until `voice.v4` gets a
@@ -161,3 +163,31 @@ file and mapping entry, update the emitting stamp, and add a corresponding
 contract test. Keep the prior version's adapter and contract unchanged so old
 traces remain queryable. Mapping aliases may still be used to read historical
 source fields, but they never change the contract of an already-stamped trace.
+
+## Naming and append-only conventions
+
+Canonical field names are an analytics API. Use lowercase `snake_case` names
+that describe both the entity and the meaning: `source_trace_id`,
+`source_schema_version`, `outcome_class`, `full_turn_latency_ms`, and
+`user_id_hash` are intentional redundancy. Do not use generic names such as
+`status`, `result`, `data`, `value`, `type`, `id`, or `time` when a specific
+name is possible. Vendor-owned stamp keys may keep their namespace, for example
+`amul.schema_version`.
+
+Never reuse a field name for a new meaning. Preserve the raw source value and
+the normalized value separately when both are useful: `outcome` is the source
+value; `outcome_class` is the dashboard bucket. Use `source_` for provenance,
+`*_at` for timestamps, `*_ms` for durations, `*_hash`/`*_sha256` for
+privacy-safe identifiers, and explicit units in every numeric measurement.
+
+Contracts, mappings, and canonical storage are append-only:
+
+- A published contract file and its schema version are never edited. Add a new
+  versioned contract, mapping, and stamp instead.
+- Historical aliases belong in mappings; they do not rename canonical output
+  fields.
+- New canonical fields are added alongside prior fields. Consumers migrate at
+  their own pace; old fields remain readable.
+- Re-imports append a newer physical record keyed by `source_trace_id` and
+  `imported_at`; dashboards read the latest logical record (`FINAL` in the
+  ClickHouse canonical tables). Do not deduplicate by session or process ID.
