@@ -51,13 +51,20 @@ update history. If there are several rows with the same ID and the *same*
 
 ## 2. Does the fetcher collapse source versions correctly?
 
+Use the same root-name filter as the importer. For chat this is currently
+`chat.translation`; replace it with the configured voice root names when
+checking voice. C2 deliberately reuses `chat.translation` for stage traces, so
+the result is the maximum candidate-root count before adapters reject those
+non-turn rows.
+
 ```sql
 SELECT
     count() AS physical_rows,
     uniqExact(id) AS distinct_trace_ids,
     physical_rows - distinct_trace_ids AS extra_source_versions
 FROM traces
-WHERE environment = 'chat-production'
+WHERE environment = '<environment>'
+  AND name IN ('chat.translation')
   AND timestamp >= toDateTime64('2026-09-20 00:00:00', 3, 'UTC')
   AND timestamp <  toDateTime64('2026-09-21 00:00:00', 3, 'UTC');
 
@@ -66,7 +73,8 @@ FROM
 (
     SELECT id, is_deleted
     FROM traces
-    WHERE environment = 'chat-production'
+    WHERE environment = '<environment>'
+      AND name IN ('chat.translation')
       AND timestamp >= toDateTime64('2026-09-20 00:00:00', 3, 'UTC')
       AND timestamp <  toDateTime64('2026-09-21 00:00:00', 3, 'UTC')
     ORDER BY event_ts DESC
@@ -81,16 +89,21 @@ same root-name filter and day.
 
 ## 3. Are canonical duplicates only re-import copies?
 
+Run this against the environment where canonical data exists, including dev
+(for example replace `<environment>` with `chat-development`). The canonical
+tables are separate from Langfuse, so this check works even when production
+access is unavailable.
+
 ```sql
 SELECT
     (SELECT count()
      FROM telemetry.chat_turns
-     WHERE environment = 'chat-production'
+     WHERE environment = '<environment>'
        AND timestamp >= toDateTime64('2026-09-20 00:00:00', 3, 'UTC')
        AND timestamp <  toDateTime64('2026-09-21 00:00:00', 3, 'UTC')) AS physical_rows,
     (SELECT count()
      FROM telemetry.chat_turns FINAL
-     WHERE environment = 'chat-production'
+     WHERE environment = '<environment>'
        AND timestamp >= toDateTime64('2026-09-20 00:00:00', 3, 'UTC')
        AND timestamp <  toDateTime64('2026-09-21 00:00:00', 3, 'UTC')) AS logical_rows,
     physical_rows - logical_rows AS replaceable_copies;
@@ -101,7 +114,7 @@ SELECT
     min(imported_at) AS first_imported_at,
     max(imported_at) AS latest_imported_at
 FROM telemetry.chat_turns
-WHERE environment = 'chat-production'
+WHERE environment = '<environment>'
   AND timestamp >= toDateTime64('2026-09-20 00:00:00', 3, 'UTC')
   AND timestamp <  toDateTime64('2026-09-21 00:00:00', 3, 'UTC')
 GROUP BY source_trace_id
@@ -116,6 +129,9 @@ queries use `FINAL`.
 
 ## 4. Was a day re-imported?
 
+This also runs on dev. Replace `<environment>` with the environment being
+checked; use the same value as query 3.
+
 ```sql
 SELECT
     environment,
@@ -126,7 +142,7 @@ SELECT
     argMax(turns, imported_at) AS latest_turns,
     argMax(rejected, imported_at) AS latest_rejected
 FROM telemetry.chat_import_days
-WHERE environment = 'chat-production'
+WHERE environment = '<environment>'
 GROUP BY environment, day
 HAVING import_attempts > 1
 ORDER BY day DESC;
