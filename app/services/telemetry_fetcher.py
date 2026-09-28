@@ -86,6 +86,21 @@ LIMIT 1 BY id
 """
 
 
+# Every live root trace of a day, whatever its name, so the import can account for
+# each one in telemetry.trace_ledger. Only what identifies a trace: no input,
+# output, user id or metadata beyond the schema stamp.
+_TRACE_IDENTITIES_SQL = """
+SELECT id, ifNull(name, '') AS name, toUnixTimestamp64Milli(timestamp) AS timestamp_ms,
+       metadata['amul.schema_version'] AS schema_version, is_deleted
+FROM traces
+WHERE environment = {environment:String}
+  AND timestamp >= toDateTime64({start:String}, 3, 'UTC')
+  AND timestamp < toDateTime64({end:String}, 3, 'UTC')
+ORDER BY event_ts DESC
+LIMIT 1 BY id
+"""
+
+
 class ClickHouseReader(Protocol):
     def query(self, query: str, parameters: Mapping[str, Any] | None = None) -> Any: ...
 
@@ -96,6 +111,27 @@ class TraceBundle:
     observations: list[dict[str, Any]] = field(default_factory=list)
     scores: list[dict[str, Any]] = field(default_factory=list)
     related_traces: list[dict[str, Any]] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class TraceIdentity:
+    trace_id: str
+    name: str
+    timestamp: datetime
+    schema_version: str
+
+
+def fetch_trace_identities(
+    client: ClickHouseReader, *, environment: str, start: datetime, end: datetime
+) -> list[TraceIdentity]:
+    """Every live root trace with timestamp in [start, end), any name, newest version only."""
+    identities = []
+    parameters = {"environment": environment, "start": _sql_time(start), "end": _sql_time(end)}
+    for row in _live_rows(client, _TRACE_IDENTITIES_SQL, parameters):
+        timestamp = _EPOCH + timedelta(milliseconds=row["timestamp_ms"])
+        if start <= timestamp < end:
+            identities.append(TraceIdentity(row["id"], row.get("name") or "", timestamp, row.get("schema_version") or ""))
+    return identities
 
 
 def fetch_voice_bundles(

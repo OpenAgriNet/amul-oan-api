@@ -2,12 +2,17 @@
 
 Rows never carry a phone number or anyone's words: user ids are only kept
 hashed, and question/answer keep only their length and sha256.
+
+No trace is dropped without a record: every root trace of a day gets one row in
+telemetry.trace_ledger saying what became of it (a turn, rejected with the
+reason, a known non-turn activity, or unrecognised).
 """
 
 import re
 from collections import Counter
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta, timezone
+from pathlib import Path
 from typing import Any, Callable, Iterable, Iterator, Mapping, Protocol, Sequence
 
 from pydantic import ValidationError
@@ -15,8 +20,14 @@ from pydantic import ValidationError
 from app.models.telemetry_analytics import CanonicalChatTurn
 from app.models.telemetry_voice_analytics import CanonicalVoiceTurn
 from app.services.telemetry_era_adapters import UnsupportedTelemetryEra, adapt_chat_trace
-from app.services.telemetry_era_registry import TelemetryEraRegistry
-from app.services.telemetry_fetcher import ClickHouseReader, TraceBundle, fetch_chat_bundles, fetch_voice_bundles
+from app.services.telemetry_era_registry import TelemetryEraRegistry, load_yaml_file
+from app.services.telemetry_fetcher import (
+    ClickHouseReader,
+    TraceBundle,
+    fetch_chat_bundles,
+    fetch_trace_identities,
+    fetch_voice_bundles,
+)
 from app.services.telemetry_mappings import ContractMapping
 from app.services.telemetry_voice_era_adapters import VoiceOutcomeVocabulary, adapt_voice_trace
 
@@ -55,6 +66,7 @@ VOICE_TURN_COLUMNS = (
     "score_names",
     "field_availability",
     "imported_at",
+    "attributes",
 )
 # CanonicalVoiceTurn fields voice_turns leaves out on purpose. Every other field
 # needs a column, or tests fail, so a new field can't quietly miss the table.
@@ -99,6 +111,7 @@ CHAT_TURN_COLUMNS = (
     "score_names",
     "field_availability",
     "imported_at",
+    "attributes",
 )
 # CanonicalChatTurn fields chat_turns leaves out on purpose.
 CHAT_NOT_STORED = {
@@ -108,6 +121,39 @@ CHAT_NOT_STORED = {
 }
 IMPORT_DAY_COLUMNS = ("environment", "day", "traces", "turns", "rejected", "imported_at")
 REJECTION_COLUMNS = ("environment", "day", "imported_at", "trace_name", "reason", "count")
+# Must match telemetry/clickhouse/ledger.sql.
+LEDGER_COLUMNS = (
+    "environment",
+    "channel",
+    "day",
+    "source_trace_id",
+    "timestamp",
+    "trace_name",
+    "disposition",
+    "reason",
+    "schema_version",
+    "imported_at",
+)
+
+
+def default_non_turn_traces_path() -> Path:
+    return Path(__file__).resolve().parents[2] / "telemetry" / "non_turn_traces.yaml"
+
+
+@dataclass(frozen=True)
+class NonTurnTraces:
+    """Root trace names known not to be turns, from telemetry/non_turn_traces.yaml."""
+
+    names: frozenset[str] = frozenset()
+    prefixes: tuple[str, ...] = ()
+
+    @classmethod
+    def from_yaml(cls, path: Path | None = None) -> "NonTurnTraces":
+        payload = load_yaml_file(path or default_non_turn_traces_path()) or {}
+        return cls(frozenset(payload.get("names") or ()), tuple(payload.get("prefixes") or ()))
+
+    def __contains__(self, name: str) -> bool:
+        return name in self.names or name.startswith(self.prefixes)
 
 
 class ClickHouseWriter(Protocol):
@@ -127,6 +173,10 @@ class ImportReport:
     rejected: Counter = field(default_factory=Counter)
     # Turns where each field was recorded or derived, not unavailable.
     available: Counter = field(default_factory=Counter)
+    # Every root trace read, by what became of it (telemetry.trace_ledger).
+    ledger: Counter = field(default_factory=Counter)
+    # Activities and unrecognised roots by name, to spot a new family of traces.
+    not_turns: Counter = field(default_factory=Counter)
 
     def add(self, turn: CanonicalVoiceTurn) -> None:
         self.turns += 1
@@ -143,6 +193,11 @@ class ImportReport:
             f"rejected     {sum(self.rejected.values())}",
         ]
         lines += [f"  {count}  {name}: {reason}" for (name, reason), count in self.rejected.most_common()]
+        lines += ["every root trace, by what became of it"]
+        lines += [f"  {count}  {disposition}" for disposition, count in self.ledger.most_common()]
+        if self.not_turns:
+            lines.append("not turns, by name")
+            lines += [f"  {count}  {name} ({kind})" for (kind, name), count in self.not_turns.most_common()]
         lines += ["by era"] + [f"  {count}  {era}" for era, count in self.by_era.most_common()]
         lines += ["outcome class"] + [f"  {count}  {name}" for name, count in self.by_outcome_class.most_common()]
         if self.turns:
@@ -163,6 +218,7 @@ def import_voice_days(
     registry: TelemetryEraRegistry,
     vocabulary: VoiceOutcomeVocabulary,
     mappings: Mapping[str, ContractMapping],
+    non_turn: NonTurnTraces | None = None,
 ) -> ImportReport:
     """Adapt every voice turn from first_day to last_day (UTC, inclusive). Without a writer nothing is written."""
     return _import_days(
@@ -184,6 +240,7 @@ def import_voice_days(
         row=voice_turn_row,
         table="voice",
         columns=VOICE_TURN_COLUMNS,
+        non_turn=non_turn or NonTurnTraces.from_yaml(),
     )
 
 
@@ -196,6 +253,7 @@ def import_chat_days(
     last_day: date,
     registry: TelemetryEraRegistry,
     mappings: Mapping[str, ContractMapping],
+    non_turn: NonTurnTraces | None = None,
 ) -> ImportReport:
     """Adapt every chat turn from first_day to last_day (UTC, inclusive). Without a writer nothing is written."""
     return _import_days(
@@ -217,6 +275,7 @@ def import_chat_days(
         row=chat_turn_row,
         table="chat",
         columns=CHAT_TURN_COLUMNS,
+        non_turn=non_turn or NonTurnTraces.from_yaml(),
     )
 
 
@@ -233,26 +292,58 @@ def _import_days(
     row: Callable[..., dict[str, Any]],
     table: str,
     columns: Sequence[str],
+    non_turn: NonTurnTraces,
 ) -> ImportReport:
     report = ImportReport(environment, first_day, last_day, written=writer is not None)
+    root_names = set(root_names)
     for day in _days(first_day, last_day):
         start = datetime.combine(day, time.min, tzinfo=timezone.utc)
+        end = start + timedelta(days=1)
         imported_at = datetime.now(timezone.utc)
-        rows, rejected, traces = [], Counter(), 0
-        for bundle in fetch(reader, environment=environment, start=start, end=start + timedelta(days=1), root_names=root_names):
+        rows, rejected, traces, ledger = [], Counter(), 0, []
+
+        def account(trace_id, name, timestamp, schema_version, disposition, reason=""):
+            ledger.append([environment, table, day, trace_id, timestamp, name, disposition, reason, schema_version, imported_at])
+            report.ledger[disposition] += 1
+            if disposition in ("activity", "unrecognised"):
+                report.not_turns[(disposition, name)] += 1
+
+        for bundle in fetch(reader, environment=environment, start=start, end=end, root_names=root_names):
             traces += 1
+            trace = bundle.trace
+            stamp = str(trace["metadata"].get("amul.schema_version") or "")
             try:
                 turn = adapt(bundle)
             except (UnsupportedTelemetryEra, ValidationError) as exc:
-                rejected[(bundle.trace["name"], rejection_reason(exc))] += 1
+                reason = rejection_reason(exc)
+                rejected[(trace["name"], reason)] += 1
+                account(trace["id"], trace["name"], trace["timestamp"], stamp, "rejected", reason)
                 continue
             report.add(turn)
             rows.append(row(turn, environment=environment, imported_at=imported_at))
+            account(trace["id"], trace["name"], trace["timestamp"], stamp, "turn")
+
+        # Every other root trace of the day: known activities, and anything nobody
+        # has looked at yet, so a new kind of trace shows up instead of vanishing.
+        seen = {entry[3] for entry in ledger}
+        for identity in fetch_trace_identities(reader, environment=environment, start=start, end=end):
+            if identity.trace_id in seen:
+                continue
+            fields = (identity.trace_id, identity.name, identity.timestamp, identity.schema_version)
+            if identity.name in root_names:
+                # Written between the two reads; the next import of the day picks it up.
+                reason = "arrived during the import; re-import the day"
+                rejected[(identity.name, reason)] += 1
+                account(*fields, "rejected", reason)
+            elif identity.name in non_turn:
+                account(*fields, "activity")
+            else:
+                account(*fields, "unrecognised", "no importer reads this trace name")
 
         report.traces += traces
         report.rejected.update(rejected)
         if writer is not None:
-            _write_day(writer, table, columns, environment, day, imported_at, rows, rejected, traces)
+            _write_day(writer, table, columns, environment, day, imported_at, rows, rejected, traces, ledger)
     return report
 
 
@@ -290,6 +381,7 @@ def voice_turn_row(turn: CanonicalVoiceTurn, *, environment: str, imported_at: d
         "score_names": list(turn.score_names),
         "field_availability": dict(turn.field_availability),
         "imported_at": imported_at,
+        "attributes": dict(turn.attributes),
     }
 
 
@@ -328,6 +420,7 @@ def chat_turn_row(turn: CanonicalChatTurn, *, environment: str, imported_at: dat
         "score_names": list(turn.score_names),
         "field_availability": dict(turn.field_availability),
         "imported_at": imported_at,
+        "attributes": dict(turn.attributes),
     }
 
 
@@ -358,6 +451,7 @@ def _write_day(
     rows: list[dict[str, Any]],
     rejected: Counter,
     traces: int,
+    ledger: list[list[Any]],
 ) -> None:
     if rows:
         writer.insert(
@@ -373,6 +467,8 @@ def _write_day(
             column_names=REJECTION_COLUMNS,
             database=DATABASE,
         )
+    if ledger:
+        writer.insert("trace_ledger", ledger, column_names=LEDGER_COLUMNS, database=DATABASE)
     # Written last, so a day only shows as imported once its turns are in.
     writer.insert(
         f"{table}_import_days",

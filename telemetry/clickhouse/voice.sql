@@ -75,3 +75,4 @@ ORDER BY (environment, day, imported_at, trace_name, reason);
 --   ALTER TABLE telemetry.voice_turns ADD COLUMN IF NOT EXISTS farmer_type LowCardinality(Nullable(String));
 -- Don't edit or remove the columns above. Dashboards read them, and a table
 -- that already exists won't pick up a change there.
+ALTER TABLE telemetry.voice_turns ADD COLUMN IF NOT EXISTS attributes Map(String, String);

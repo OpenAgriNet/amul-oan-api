@@ -2,17 +2,29 @@
 
 Each schema version names the root trace it is emitted on and where every
 canonical field lives in the raw trace, so a renamed field is a mapping change
-rather than a code change.
+rather than a code change. A version can also list `attributes`: extra values
+kept as text in the turn's `attributes` map, so a new field reaches the
+telemetry tables without a code change or a new column.
 """
 
 import json
-from dataclasses import dataclass
+import re
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Collection, Mapping
 
 from app.services.telemetry_era_registry import TelemetryEraRegistryError, load_yaml_file
 
-_CONTRACT_KEYS = {"root", "fields", "extends"}
+_CONTRACT_KEYS = {"root", "fields", "extends", "attributes"}
+
+# Parts of a trace that can hold a farmer's words or phone number. An attribute
+# is stored as it is, so it may never read from them.
+_PRIVATE_PATH_PARTS = {
+    "input", "output", "query", "response", "text", "preview", "prompt", "question", "answer",
+    "messages", "user_id", "userId", "phone", "mobile", "farmer_info", "technician_info",
+}
+_ATTRIBUTE_NAME = re.compile(r"[a-z][a-z0-9_]*")
+_GENERIC_NAMES = {"data", "id", "result", "status", "time", "type", "value"}
 
 
 @dataclass(frozen=True)
@@ -20,6 +32,7 @@ class ContractMapping:
     schema_version: str
     root: str
     fields: Mapping[str, tuple[str, ...]]
+    attributes: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
 
 
 def default_mappings_path(channel: str) -> Path:
@@ -78,6 +91,25 @@ def mapped_value_and_source(
     return None, None
 
 
+def mapped_attributes(mapping: ContractMapping, trace: Mapping[str, Any]) -> dict[str, str]:
+    """The version's attributes as text, first path with a plain value wins.
+
+    Objects and lists are skipped rather than flattened, so a whole block can't
+    slip into storage through one attribute.
+    """
+    attributes = {}
+    for name, paths in mapping.attributes.items():
+        for path in paths:
+            value = value_at(trace, path)
+            if isinstance(value, bool):
+                attributes[name] = "true" if value else "false"
+                break
+            if isinstance(value, (str, int, float)) and value != "":
+                attributes[name] = str(value)
+                break
+    return attributes
+
+
 def mapping_or_none(value: Any) -> Mapping[str, Any] | None:
     """Accept an object (Langfuse API) or a JSON-encoded object (ClickHouse export)."""
     if isinstance(value, Mapping):
@@ -119,11 +151,33 @@ def _resolve(
         raise TelemetryEraRegistryError(f"{version} needs a root trace name")
 
     fields = dict(parent.fields) if parent else {}
-    for field, paths in (contract.get("fields") or {}).items():
-        if field not in allowed_fields:
-            raise TelemetryEraRegistryError(f"{version}: {field!r} is not a canonical field")
-        paths = [paths] if isinstance(paths, str) else paths
-        if not isinstance(paths, list) or not paths or not all(isinstance(p, str) and p for p in paths):
-            raise TelemetryEraRegistryError(f"{version}.{field} needs one or more paths")
-        fields[field] = tuple(paths)
-    return ContractMapping(schema_version=version, root=root, fields=fields)
+    for name, paths in (contract.get("fields") or {}).items():
+        if name not in allowed_fields:
+            raise TelemetryEraRegistryError(f"{version}: {name!r} is not a canonical field")
+        fields[name] = _paths(version, name, paths)
+
+    attributes = dict(parent.attributes) if parent else {}
+    for name, paths in (contract.get("attributes") or {}).items():
+        if not isinstance(name, str) or not _ATTRIBUTE_NAME.fullmatch(name) or name in _GENERIC_NAMES:
+            raise TelemetryEraRegistryError(
+                f"{version}.attributes: {name!r} needs a specific lowercase snake_case name"
+            )
+        if name in allowed_fields:
+            raise TelemetryEraRegistryError(
+                f"{version}.attributes: {name!r} is a canonical field; map it under fields instead"
+            )
+        paths = _paths(version, f"attributes.{name}", paths)
+        private = [path for path in paths if _PRIVATE_PATH_PARTS & set(path.split("."))]
+        if private:
+            raise TelemetryEraRegistryError(
+                f"{version}.attributes.{name} reads {private}, which can hold farmer text or a phone number"
+            )
+        attributes[name] = paths
+    return ContractMapping(schema_version=version, root=root, fields=fields, attributes=attributes)
+
+
+def _paths(version: str, name: str, paths: Any) -> tuple[str, ...]:
+    paths = [paths] if isinstance(paths, str) else paths
+    if not isinstance(paths, list) or not paths or not all(isinstance(p, str) and p for p in paths):
+        raise TelemetryEraRegistryError(f"{version}.{name} needs one or more paths")
+    return tuple(paths)

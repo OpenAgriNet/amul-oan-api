@@ -20,6 +20,7 @@ from app.services.telemetry_era_registry import (
     default_era_registry_path,
 )
 from app.services.telemetry_mappings import (
+    mapped_attributes,
     ContractMapping,
     default_mappings_path,
     load_mappings,
@@ -618,6 +619,7 @@ def _adapt_stamped_chat_trace(
         observation_names=_names(observations),
         score_names=[score.name for score in scores],
         field_availability=availability,
+        attributes=mapped_attributes(mapping, raw),
         **values,
     )
 

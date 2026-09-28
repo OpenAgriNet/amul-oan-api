@@ -56,6 +56,8 @@ class CanonicalVoiceTurn(BaseModel):
     observation_names: list[str] = Field(default_factory=list)
     score_names: list[str] = Field(default_factory=list)
     field_availability: dict[str, FieldAvailability] = Field(default_factory=dict)
+    # Extra values named under `attributes` in telemetry/mappings/voice.yaml, as text.
+    attributes: dict[str, str] = Field(default_factory=dict)
 
 
 class VoiceV0MetadataSchema(BaseModel):

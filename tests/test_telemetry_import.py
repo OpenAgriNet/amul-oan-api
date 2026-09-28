@@ -16,9 +16,11 @@ from app.services.telemetry_import import (
     CHAT_NOT_STORED,
     CHAT_TURN_COLUMNS,
     IMPORT_DAY_COLUMNS,
+    LEDGER_COLUMNS,
     NOT_STORED,
     REJECTION_COLUMNS,
     VOICE_TURN_COLUMNS,
+    NonTurnTraces,
     chat_turn_row,
     import_chat_days,
     import_voice_days,
@@ -26,6 +28,7 @@ from app.services.telemetry_import import (
     voice_turn_row,
 )
 from app.services.telemetry_voice_era_adapters import VoiceOutcomeVocabulary, load_voice_mappings
+from app.services.telemetry_mappings import ContractMapping
 
 REPO = Path(__file__).resolve().parents[1]
 IST = timezone(timedelta(hours=5, minutes=30))
@@ -51,14 +54,28 @@ class FakeClickHouse:
 
     def query(self, query, parameters=None):
         self.queries.append((query, parameters))
-        rows = self.tables[re.search(r"FROM (\w+)", query).group(1)]
+        table = re.search(r"FROM (\w+)", query).group(1)
+        rows = self.tables[table]
         if "trace_ids" in parameters:
             rows = [row for row in rows if row["trace_id"] in parameters["trace_ids"]]
+        if table == "traces":
+            # What the SQL filters on: root names, when given, and the time window.
+            if "names" in parameters:
+                rows = [row for row in rows if row["name"] in parameters["names"]]
+            start, end = (_sql_moment(parameters[key]) for key in ("start", "end"))
+            rows = [row for row in rows if start <= row["timestamp_ms"] < end]
+            if "AS schema_version" in query:
+                rows = [{**row, "schema_version": row["metadata"].get("amul.schema_version", "")} for row in rows]
         return FakeResult(rows)
 
     def insert(self, table, data, column_names, database):
         assert database == "telemetry"
         self.inserts.setdefault(table, []).extend(dict(zip(column_names, row)) for row in data)
+
+
+def _sql_moment(text):
+    """A '%Y-%m-%d %H:%M:%S.fff' UTC parameter as epoch milliseconds."""
+    return int(datetime.strptime(text, "%Y-%m-%d %H:%M:%S.%f").replace(tzinfo=timezone.utc).timestamp() * 1000)
 
 
 def trace_row(trace_id, *, name="agent_journey", when="2026-09-24T10:00:00Z", metadata=None, is_deleted=0):
@@ -241,8 +258,9 @@ def test_each_utc_day_is_read_once():
 
     _import(client, first_day=date(2026, 9, 24), last_day=date(2026, 9, 25))
 
-    starts = [params["start"] for sql, params in client.queries if "FROM traces" in sql]
-    assert starts == ["2026-09-24 00:00:00.000", "2026-09-25 00:00:00.000"]
+    turn_reads = [params["start"] for sql, params in client.queries if "FROM traces" in sql and "names" in params]
+    ledger_reads = [params["start"] for sql, params in client.queries if "FROM traces" in sql and "names" not in params]
+    assert turn_reads == ledger_reads == ["2026-09-24 00:00:00.000", "2026-09-25 00:00:00.000"]
     assert [day["turns"] for day in client.inserts["voice_import_days"]] == [0, 0]
 
 
@@ -251,7 +269,7 @@ def test_every_voice_root_name_is_fetched():
 
     _import(client)
 
-    names = next(params["names"] for sql, params in client.queries if "FROM traces" in sql)
+    names = next(params["names"] for sql, params in client.queries if "FROM traces" in sql and "names" in params)
     assert {"Voice Agent run", "Voice Agent Signed In run", "voice_request", "agent_journey"} <= set(names)
 
 
@@ -271,6 +289,85 @@ def test_the_report_shows_counts_and_field_coverage():
     assert "  1  voice.v4" in lines
     assert "  1  delivered" in lines
     assert "  100.0%  outcome" in lines
+
+
+def test_every_root_trace_of_the_day_is_accounted_for():
+    client = FakeClickHouse(
+        traces=[
+            trace_row("turn", metadata=turn_metadata()),
+            trace_row("bad-stamp", metadata=turn_metadata(**{"amul.schema_version": "voice.turn.v9"})),
+            trace_row("refresh", name="farmer_background_refresh", metadata={"task": "refresh"}),
+            trace_row("frontend", name="frontend.question", metadata={}),
+            trace_row("mystery", name="nightly_mystery_job", metadata={}),
+            trace_row("deleted", name="nightly_mystery_job", is_deleted=1),
+            trace_row("yesterday", name="nightly_mystery_job", when="2026-09-23T23:59:59Z"),
+        ]
+    )
+
+    report = _import(client)
+
+    ledger = {row["source_trace_id"]: row for row in client.inserts["trace_ledger"]}
+    assert {trace_id: row["disposition"] for trace_id, row in ledger.items()} == {
+        "turn": "turn",
+        "bad-stamp": "rejected",
+        "refresh": "activity",
+        "frontend": "activity",
+        "mystery": "unrecognised",
+    }
+    assert ledger["bad-stamp"]["reason"] == "Unknown voice schema version 'voice.turn.v9'"
+    assert ledger["bad-stamp"]["schema_version"] == "voice.turn.v9"
+    assert ledger["mystery"]["reason"] == "no importer reads this trace name"
+    for row in ledger.values():
+        assert set(row) == set(LEDGER_COLUMNS)
+        assert (row["environment"], row["channel"], row["day"]) == ("voice-development", "voice", date(2026, 9, 24))
+    assert report.ledger == {"turn": 1, "rejected": 1, "activity": 2, "unrecognised": 1}
+    assert report.not_turns[("unrecognised", "nightly_mystery_job")] == 1
+    # The day is only marked imported once its turns and its ledger are in.
+    assert list(client.inserts)[-2:] == ["trace_ledger", "voice_import_days"]
+
+
+def test_the_report_names_traces_that_are_not_turns():
+    client = FakeClickHouse(traces=[trace_row("mystery", name="nightly_mystery_job", metadata={})])
+
+    lines = _import(client, writer=False).lines()
+
+    assert "  1  unrecognised" in lines
+    assert "  1  nightly_mystery_job (unrecognised)" in lines
+
+
+def test_non_turn_traces_come_from_the_file():
+    non_turn = NonTurnTraces.from_yaml()
+
+    assert "suggestions" in non_turn and "farmer_background_refresh" in non_turn
+    assert "frontend.feedback" in non_turn
+    assert "agent_journey" not in non_turn and "chat.translation" not in non_turn
+
+
+def test_mapped_attributes_are_stored_without_a_new_column():
+    mappings = {
+        **load_voice_mappings(),
+        "voice.turn.v1": ContractMapping(
+            schema_version="voice.turn.v1",
+            root="agent_journey",
+            fields=load_voice_mappings()["voice.turn.v1"].fields,
+            attributes={"call_quality": ("metadata.call_quality",), "retries": ("metadata.retries",)},
+        ),
+    }
+    client = FakeClickHouse(traces=[trace_row("t1", metadata=turn_metadata(**STAMP, call_quality="good", retries="2"))])
+
+    import_voice_days(
+        client,
+        client,
+        environment="voice-development",
+        first_day=date(2026, 9, 24),
+        last_day=date(2026, 9, 24),
+        registry=TelemetryEraRegistry.from_yaml(default_era_registry_path(), section="voice_eras"),
+        vocabulary=VoiceOutcomeVocabulary.from_yaml(default_era_registry_path()),
+        mappings=mappings,
+    )
+
+    [row] = client.inserts["voice_turns"]
+    assert row["attributes"] == {"call_quality": "good", "retries": "2"}
 
 
 VOICE_SQL = (REPO / "telemetry" / "clickhouse" / "voice.sql").read_text(encoding="utf-8")
@@ -309,6 +406,7 @@ RELEASED_VOICE_TURN_COLUMNS = {
     "score_names": "Array(String)",
     "field_availability": "Map(String, LowCardinality(String))",
     "imported_at": "DateTime64(3, 'UTC')",
+    "attributes": "Map(String, String)",
 }
 
 
@@ -333,6 +431,16 @@ def test_written_columns_match_the_tables(table, columns):
     assert tuple(_table_columns(VOICE_SQL, table)) == columns, (
         f"telemetry.{table} and the importer disagree. A new column goes at the end of both: an ALTER at the "
         "bottom of telemetry/clickhouse/voice.sql, and the end of the importer's column list."
+    )
+
+
+LEDGER_SQL = (REPO / "telemetry" / "clickhouse" / "ledger.sql").read_text(encoding="utf-8")
+
+
+def test_written_ledger_columns_match_the_table():
+    assert tuple(_table_columns(LEDGER_SQL, "trace_ledger")) == LEDGER_COLUMNS, (
+        "telemetry.trace_ledger and the importer disagree. A new column goes at the end of both: an ALTER at the "
+        "bottom of telemetry/clickhouse/ledger.sql, and the end of LEDGER_COLUMNS."
     )
 
 
@@ -572,3 +680,35 @@ def test_tool_names_are_read_from_the_old_and_new_tool_call_shapes():
 
     assert row["tool_names"] == ["get_bonus", "get_scheme", "search_documents"]
     assert row["tool_call_count"] == 4
+
+
+def test_chat_attributes_are_stored_too():
+    base = load_chat_mappings()
+    mappings = {
+        **base,
+        "chat.turn.v1": ContractMapping(
+            schema_version="chat.turn.v1",
+            root="chat.translation",
+            fields=base["chat.turn.v1"].fields,
+            attributes={"entry_surface": ("metadata.entry_surface",)},
+        ),
+    }
+    stamped = {"amul.schema_version": "chat.turn.v1", "pipeline": "translation", "user_id": "9990001112", "entry_surface": "whatsapp"}
+    client = FakeClickHouse(traces=[chat_row("s1", metadata=stamped, input={"query": "<redacted question>"}, output="<redacted answer>")])
+
+    import_chat_days(
+        client,
+        client,
+        environment="chat-development",
+        first_day=date(2026, 9, 20),
+        last_day=date(2026, 9, 20),
+        registry=TelemetryEraRegistry.from_yaml(default_era_registry_path(), section="chat_eras"),
+        mappings=mappings,
+    )
+
+    [row] = client.inserts["chat_turns"]
+    assert row["source_era"] == "chat.turn.v1"
+    assert row["attributes"] == {"entry_surface": "whatsapp"}
+    assert "9990001112" not in repr(row) and "<redacted" not in repr(row)
+    [ledger] = client.inserts["trace_ledger"]
+    assert (ledger["disposition"], ledger["channel"], ledger["schema_version"]) == ("turn", "chat", "chat.turn.v1")

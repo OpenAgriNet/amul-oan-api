@@ -20,7 +20,7 @@ consumers:
       paths: [app/services/telemetry_fetcher.py, app/services/telemetry_import.py]
     interface: langfuse clickhouse tables (traces, observations, scores)
     verified_from: code
-    verified_on: 2026-09-26
+    verified_on: 2026-09-28
     reads:
       - kind: trace_name
         values: ["Voice Agent run", "Voice Agent Signed In run", voice_request, agent_journey]
@@ -42,6 +42,11 @@ consumers:
         values: [id, timestamp, sessionId, metadata, input, output]
         used_for: the chat turn; input and output are only hashed and measured, never stored
         path: app/services/telemetry_fetcher.py:39-41
+      - kind: trace_field
+        values: [id, name, timestamp, metadata.amul.schema_version]
+        used_for: one row per root trace of any name in telemetry.trace_ledger, so none is dropped without a record
+        path: app/services/telemetry_fetcher.py:92-102
+        note: Every trace name, not only the turn roots; non-turn names come from telemetry/non_turn_traces.yaml.
     status: working
 
   - consumer: oan-telemetry-dashboard-service

@@ -3,7 +3,7 @@ import re
 import pytest
 
 from app.services.telemetry_era_registry import TelemetryEraRegistryError
-from app.services.telemetry_mappings import load_mappings, value_at
+from app.services.telemetry_mappings import load_mappings, mapped_attributes, value_at
 
 FIELDS = {"outcome", "route"}
 
@@ -47,6 +47,13 @@ v2:
         ("v1:\n  root: r\n  fields:\n    outcome: []\n", "v1.outcome needs one or more paths"),
         ("v1:\n  extends: v2\nv2:\n  extends: v1\n", "extends itself"),
         ("v1:\n  extends: v9\n", "v9 is not defined"),
+        ("v1:\n  root: r\n  attributes:\n    route: [metadata.route]\n", "'route' is a canonical field"),
+        ("v1:\n  root: r\n  attributes:\n    status: [metadata.status]\n", "'status' needs a specific lowercase snake_case name"),
+        ("v1:\n  root: r\n  attributes:\n    CallQuality: [metadata.q]\n", "'CallQuality' needs a specific lowercase snake_case name"),
+        ("v1:\n  root: r\n  attributes:\n    asked: [metadata.query.preview]\n", "can hold farmer text or a phone number"),
+        ("v1:\n  root: r\n  attributes:\n    caller: [userId]\n", "can hold farmer text or a phone number"),
+        ("v1:\n  root: r\n  attributes:\n    said: [input.text]\n", "can hold farmer text or a phone number"),
+        ("v1:\n  root: r\n  attributes:\n    call_quality: []\n", "v1.attributes.call_quality needs one or more paths"),
     ],
 )
 def test_mapping_problems_are_named(tmp_path, text, problem):
@@ -83,3 +90,36 @@ def test_a_key_with_dots_wins_over_a_nested_read():
     trace = {"metadata": {"amul.schema_version": "flat", "amul": {"schema_version": "nested"}}}
 
     assert value_at(trace, "metadata.amul.schema_version") == "flat"
+
+
+def test_attributes_extend_like_fields_and_are_read_as_text(tmp_path):
+    mappings = _mappings(
+        tmp_path,
+        """
+v1:
+  root: agent_journey
+  fields:
+    outcome: [metadata.outcome]
+  attributes:
+    call_quality: [metadata.call_quality]
+v2:
+  extends: v1
+  attributes:
+    retries: [metadata.retries, metadata.attempts]
+    agent_signed_in: [metadata.agent.signed_in]
+    farmer_context: [metadata.farmer_context]
+""",
+    )
+    trace = {
+        "metadata": {
+            "call_quality": "good",
+            "attempts": 2,
+            "agent": '{"signed_in": true}',
+            "farmer_context": {"source": "cache", "unions": ["<redacted>"]},
+        }
+    }
+
+    assert set(mappings["v2"].attributes) == {"call_quality", "retries", "agent_signed_in", "farmer_context"}
+    # A whole block is skipped rather than flattened into storage.
+    assert mapped_attributes(mappings["v2"], trace) == {"call_quality": "good", "retries": "2", "agent_signed_in": "true"}
+    assert mapped_attributes(mappings["v1"], {"metadata": {}}) == {}
