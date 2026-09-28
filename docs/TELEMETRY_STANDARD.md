@@ -71,6 +71,12 @@ Every step, with the file to edit: `TELEMETRY_CHANGES.md`.
   from the vocabulary becomes `unclassified`, so it still shows up in counts.
 - Anonymous users get a null `user_id_hash` in both channels, so they are not
   counted as one user.
+- No trace is dropped without a record: every root trace the import reads gets a
+  row in `telemetry.trace_ledger` (turn, rejected with the reason, activity, or
+  unrecognised). A new kind of trace shows up there instead of disappearing.
+- Extra values go under `attributes` in the mapping and are stored as text, so a
+  new field needs no migration. Attributes may never read a path that can hold
+  farmer text or a phone number.
 - Test fixtures are redacted: no phone numbers or farmer text. This repo is public.
 
 ## Reading telemetry
