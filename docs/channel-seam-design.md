@@ -369,9 +369,21 @@ through `Turn`; it does not construct or carry a live span. This matches the roo
 turn-outcome guard (#198), so every surface's turn carries both and turn outcome recording stays
 correct for success, cancellation, and error exits.
 
-The chat adapter closes `run_turn` explicitly (`contextlib.aclosing`) when its own stream is
-closed. A client disconnect then records `cancelled` and unwinds the root span immediately,
-rather than whenever the garbage collector finalises the inner generator.
+Closing is explicit at every layer, because nothing below does it for us:
+
+- **The response layer closes the adapter's stream on every exit.** Starlette's
+  `StreamingResponse` leaves its body iterator suspended when the client goes away: on ASGI 2.4
+  `send` raises out of the streaming loop, and on older servers the stream task is cancelled
+  mid-`send`. The chat router therefore uses `ClosingStreamingResponse`, which closes the
+  iterator (shielded from the cancellation) before the response's background tasks run. Without
+  it the turn stays suspended — root span open, no outcome — until the event loop finalises the
+  generator, and suggestions run inside the still-open turn span.
+- **The adapter closes `run_turn` with its own stream** (`contextlib.aclosing`), so a hang-up
+  records `cancelled` and unwinds the root span immediately.
+- **An adapter rendering failure is thrown into `run_turn`** (`athrow`), not closed over. The
+  adapter renders artifacts outside the turn; if that raises, closing the turn would inject
+  `GeneratorExit` and record the failure as `cancelled`. Thrown in, the turn's outcome guard
+  records it as `error`.
 
 ## Reconciliation with `feat/run-turn-classifier-chain`
 

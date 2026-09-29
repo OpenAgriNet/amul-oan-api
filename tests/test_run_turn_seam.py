@@ -17,6 +17,7 @@ os.environ.setdefault("OPENAI_API_KEY", "test-key")
 import pytest
 from fastapi import BackgroundTasks, FastAPI
 from fastapi.testclient import TestClient
+from starlette.requests import ClientDisconnect
 
 from app.auth.jwt_auth import get_chat_user
 from app.channels.base import Channel
@@ -85,6 +86,12 @@ def _fake_run_turn(monkeypatch, emissions, seen=None):
         try:
             for emission in emissions:
                 yield emission
+        except BaseException as exc:
+            # How the turn was ended: GeneratorExit is a hang-up, anything else
+            # is a failure the turn must record as an error.
+            if seen is not None:
+                seen["ended_by"] = type(exc).__name__
+            raise
         finally:
             if seen is not None:
                 seen["closed"] = True
@@ -199,10 +206,12 @@ def test_adapter_without_frames_fills_only_the_sink(monkeypatch):
 
 
 def test_adapter_refuses_an_emission_it_cannot_render(monkeypatch):
-    _fake_run_turn(monkeypatch, [TextEmission("ok"), object()])
+    seen = {}
+    _fake_run_turn(monkeypatch, [TextEmission("ok"), object()], seen)
 
     with pytest.raises(TypeError, match="cannot render"):
         asyncio.run(_collect(_stream()))
+    assert seen["ended_by"] == "TypeError", "a rendering failure must reach the turn as an error"
 
 
 def test_disconnect_closes_the_turn_immediately(monkeypatch):
@@ -217,6 +226,31 @@ def test_disconnect_closes_the_turn_immediately(monkeypatch):
         return seen.get("closed")
 
     assert asyncio.run(_go()) is True
+    assert seen["ended_by"] == "GeneratorExit"
+
+
+def _outcomes(seen):
+    return [
+        call.kwargs["value"]
+        for call in seen["langfuse"].score_current_trace.call_args_list
+        if call.kwargs.get("name") == "turn_outcome"
+    ]
+
+
+def test_artifact_encoding_failure_is_recorded_as_error_not_cancelled(monkeypatch):
+    """The adapter renders artifacts outside run_turn; its failure is still the turn's.
+
+    Closing the turn on the way out would inject GeneratorExit and record the
+    failure as a client hang-up.
+    """
+    unserializable = {"id": "bad", "kind": "soil_health_card", "content": object()}
+    seen = patch_turn(monkeypatch, artifact=unserializable)
+
+    with pytest.raises(TypeError):
+        asyncio.run(_collect(_stream(source_lang="gu", target_lang="gu")))
+
+    assert _outcomes(seen) == ["error"]
+    assert ("exit", "chat.translation") in seen["spans"], "the root span was left open"
 
 
 # ── run_turn itself ─────────────────────────────────────────────────────────
@@ -369,6 +403,146 @@ def test_json_response_carries_artifacts_without_a_frame(monkeypatch):
     assert body["artifacts"] == [_ARTIFACT]
     assert CHAT_ARTIFACTS_START not in body["response"]
     assert body["response"].strip()
+
+
+def _asgi_app(monkeypatch):
+    async def _no_history(_key):
+        return []
+
+    monkeypatch.setattr(chat_router, "_get_message_history", _no_history)
+    app = FastAPI()
+    app.include_router(chat_router.router)
+    app.dependency_overrides[get_chat_user] = lambda: {}
+    return app
+
+
+def _asgi_scope(spec_version):
+    return {
+        "type": "http",
+        "asgi": {"version": "3.0", "spec_version": spec_version},
+        "http_version": "1.1",
+        "method": "GET",
+        "scheme": "http",
+        "path": "/chat/",
+        "raw_path": b"/chat/",
+        "root_path": "",
+        "query_string": b"query=How+much+water%3F&source_lang=gu&target_lang=gu",
+        "headers": [(b"host", b"test")],
+        "client": ("127.0.0.1", 1234),
+        "server": ("test", 80),
+    }
+
+
+def test_disconnect_raised_by_send_closes_the_turn_before_the_response_returns(monkeypatch):
+    """ASGI 2.4: the server's send raises when the client is gone.
+
+    Starlette's StreamingResponse does not close its body iterator on that path,
+    so without an explicit close the turn stays suspended — root span open, no
+    outcome — until the loop gets round to finalising the generator.
+    """
+    seen = patch_turn(monkeypatch)
+    app = _asgi_app(monkeypatch)
+
+    async def receive():
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def send(message):
+        if message["type"] == "http.response.body" and message.get("body"):
+            raise OSError("client went away")
+
+    async def _go():
+        with pytest.raises(ClientDisconnect):
+            await app(_asgi_scope("2.4"), receive, send)
+        # Read immediately: no await has run since, so no async-generator
+        # finalizer can have closed the turn behind the response's back.
+        return _outcomes(seen), list(seen["spans"])
+
+    outcomes, spans = asyncio.run(_go())
+    assert outcomes == ["cancelled"]
+    assert spans[-1] == ("exit", "chat.translation"), spans
+
+
+def test_disconnect_that_cancels_the_stream_closes_the_turn_before_background_work(monkeypatch):
+    """ASGI < 2.4: http.disconnect cancels the stream task mid-send.
+
+    The turn must be closed as part of the response, before background tasks
+    run, so suggestions never execute inside a still-open turn span.
+    """
+    seen = patch_turn(monkeypatch)
+    spans_when_suggestions_ran = []
+    monkeypatch.setattr(
+        chat_service,
+        "create_suggestions",
+        lambda *_a: spans_when_suggestions_ran.append(list(seen["spans"])),
+    )
+    app = _asgi_app(monkeypatch)
+    first_chunk_sent = asyncio.Event()
+    requested = []
+
+    async def receive():
+        if not requested:
+            requested.append(True)
+            return {"type": "http.request", "body": b"", "more_body": False}
+        await first_chunk_sent.wait()
+        return {"type": "http.disconnect"}
+
+    async def send(message):
+        if message["type"] == "http.response.body" and message.get("body"):
+            first_chunk_sent.set()
+            await asyncio.Event().wait()  # a slow client: blocks until cancelled
+
+    async def _go():
+        await app(_asgi_scope("2.3"), receive, send)
+        return _outcomes(seen), list(seen["spans"])
+
+    outcomes, spans = asyncio.run(_go())
+    assert outcomes == ["cancelled"]
+    assert spans[-1] == ("exit", "chat.translation"), spans
+    assert len(spans_when_suggestions_ran) == 1, "background work did not run"
+    assert spans_when_suggestions_ran[0][-1] == ("exit", "chat.translation"), (
+        "suggestions ran while the turn's root span was still open"
+    )
+
+
+def test_turn_close_completes_even_if_the_turn_awaits_while_unwinding(monkeypatch):
+    """The close runs inside the cancelled stream task, so it must be shielded.
+
+    Today's run_turn unwinds without suspending, but a turn that awaits on the
+    way out (voice cancelling its background set, say) would otherwise be cut
+    off half-way by the pending cancellation.
+    """
+    state = {}
+
+    async def _run_turn(turn, surface, *, scheduler):
+        try:
+            yield TextEmission("a")
+            yield TextEmission("b")
+        finally:
+            await asyncio.sleep(0)
+            state["closed"] = True
+
+    monkeypatch.setattr(chat_service, "run_turn", _run_turn)
+    app = _asgi_app(monkeypatch)
+    first_chunk_sent = asyncio.Event()
+    requested = []
+
+    async def receive():
+        if not requested:
+            requested.append(True)
+            return {"type": "http.request", "body": b"", "more_body": False}
+        await first_chunk_sent.wait()
+        return {"type": "http.disconnect"}
+
+    async def send(message):
+        if message["type"] == "http.response.body" and message.get("body"):
+            first_chunk_sent.set()
+            await asyncio.Event().wait()
+
+    async def _go():
+        await app(_asgi_scope("2.3"), receive, send)
+        return state.get("closed")
+
+    assert asyncio.run(_go()) is True
 
 
 def test_suggestions_run_after_the_turn_has_written_its_history(monkeypatch):

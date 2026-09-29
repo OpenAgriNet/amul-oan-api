@@ -588,25 +588,45 @@ async def stream_chat_messages(
         persona=persona,
     )
     scheduler = _BackgroundTasksScheduler(background_tasks)
-    # aclosing: a client disconnect closes THIS generator; the turn must be
+    # aclosing: when the caller closes THIS generator (a hang-up), the turn is
     # closed with it, synchronously, so it records "cancelled" and unwinds its
-    # root span now rather than whenever the garbage collector gets to it.
+    # root span now rather than whenever the event loop finalises it. The
+    # response layer guarantees that close; see app/routers/chat.py.
     async with aclosing(run_turn(turn, CHAT_SURFACE, scheduler=scheduler)) as emissions:
         async for emission in emissions:
-            if isinstance(emission, TextEmission):
-                yield emission.text
-            elif isinstance(emission, ArtifactEmission):
-                if artifact_sink is not None:
-                    artifact_sink.extend(emission.artifacts)
-                if emit_artifact_frames and emission.artifacts:
-                    yield encode_chat_artifacts(emission.artifacts)
-            elif isinstance(emission, (AgentActivityEmission, SideChannelEmission)):
-                continue
-            else:
-                # A new emission kind must be handled here, not silently dropped:
-                # dropping unknown output is exactly how telephony liveness would
-                # have died in the merge.
-                raise TypeError(f"chat adapter cannot render emission {emission!r}")
+            try:
+                chunks = _render_chat_emission(emission, artifact_sink, emit_artifact_frames)
+            except Exception as exc:
+                # Rendering failed: the turn failed, the caller did not leave.
+                # Raise it inside run_turn so its outcome guard records "error";
+                # letting aclosing close the turn would inject GeneratorExit and
+                # record the failure as "cancelled".
+                await emissions.athrow(exc)
+                raise
+            for chunk in chunks:
+                yield chunk
+
+
+def _render_chat_emission(
+    emission: Emission,
+    artifact_sink: list[dict[str, Any]] | None,
+    emit_artifact_frames: bool,
+) -> tuple[str, ...]:
+    """What one emission becomes on the chat wire: zero or one chunk."""
+    if isinstance(emission, TextEmission):
+        return (emission.text,)
+    if isinstance(emission, ArtifactEmission):
+        if artifact_sink is not None:
+            artifact_sink.extend(emission.artifacts)
+        if emit_artifact_frames and emission.artifacts:
+            return (encode_chat_artifacts(emission.artifacts),)
+        return ()
+    if isinstance(emission, (AgentActivityEmission, SideChannelEmission)):
+        # Chat has no side channel and no consumer for the commit signal.
+        return ()
+    # A new emission kind must be handled here, not silently dropped: dropping
+    # unknown output is exactly how telephony liveness would have died in the merge.
+    raise TypeError(f"chat adapter cannot render emission {emission!r}")
 
 
 async def run_turn(
