@@ -326,6 +326,27 @@ def test_every_root_trace_of_the_day_is_accounted_for():
     assert list(client.inserts)[-2:] == ["trace_ledger", "voice_import_days"]
 
 
+class _LateTraceClickHouse(FakeClickHouse):
+    """A turn trace that lands after the turns were read but before the ledger read."""
+
+    def query(self, query, parameters=None):
+        result = super().query(query, parameters)
+        if "names" in (parameters or {}):
+            return FakeResult([row for row in result.named_results() if row["id"] != "late"])
+        return result
+
+
+def test_a_trace_written_during_the_import_is_kept_as_rejected():
+    client = _LateTraceClickHouse(traces=[trace_row("on-time", metadata=turn_metadata()), trace_row("late", metadata=turn_metadata())])
+
+    _import(client)
+
+    ledger = {row["source_trace_id"]: row for row in client.inserts["trace_ledger"]}
+    assert ledger["late"]["disposition"] == "rejected"
+    assert ledger["late"]["reason"] == "arrived during the import; re-import the day"
+    [day] = client.inserts["voice_import_days"]
+    assert (day["traces"], day["turns"], day["rejected"]) == (2, 1, 1)
+
 def test_the_report_names_traces_that_are_not_turns():
     client = FakeClickHouse(traces=[trace_row("mystery", name="nightly_mystery_job", metadata={})])
 
@@ -443,6 +464,68 @@ def test_written_ledger_columns_match_the_table():
         "bottom of telemetry/clickhouse/ledger.sql, and the end of LEDGER_COLUMNS."
     )
 
+
+# chat_turns and trace_ledger as released. Same rule as voice_turns: only ever add.
+RELEASED_CHAT_TURN_COLUMNS = {
+    "source_trace_id": "String",
+    "timestamp": "DateTime64(3, 'UTC')",
+    "environment": "LowCardinality(String)",
+    "schema_version": "LowCardinality(String)",
+    "source_era": "LowCardinality(String)",
+    "source_schema_version": "LowCardinality(String)",
+    "source_era_extensions": "Array(LowCardinality(String))",
+    "source_trace_name": "LowCardinality(String)",
+    "session_id": "Nullable(String)",
+    "user_id_hash": "Nullable(String)",
+    "user_id_semantics": "LowCardinality(Nullable(String))",
+    "channel": "LowCardinality(Nullable(String))",
+    "pipeline": "LowCardinality(Nullable(String))",
+    "pipeline_profile": "LowCardinality(Nullable(String))",
+    "source_lang": "LowCardinality(Nullable(String))",
+    "target_lang": "LowCardinality(Nullable(String))",
+    "question_chars": "Nullable(UInt32)",
+    "question_sha256": "Nullable(String)",
+    "answer_chars": "Nullable(UInt32)",
+    "answer_sha256": "Nullable(String)",
+    "persona": "LowCardinality(Nullable(String))",
+    "outcome": "LowCardinality(Nullable(String))",
+    "outcome_class": "LowCardinality(Nullable(String))",
+    "served_tier": "LowCardinality(Nullable(String))",
+    "full_turn_latency_ms": "Nullable(Float64)",
+    "tool_names": "Array(LowCardinality(String))",
+    "tool_call_count": "Nullable(UInt16)",
+    "observation_names": "Array(String)",
+    "score_names": "Array(String)",
+    "field_availability": "Map(String, LowCardinality(String))",
+    "imported_at": "DateTime64(3, 'UTC')",
+    "attributes": "Map(String, String)",
+}
+RELEASED_LEDGER_COLUMNS = {
+    "environment": "LowCardinality(String)",
+    "channel": "LowCardinality(String)",
+    "day": "Date",
+    "source_trace_id": "String",
+    "timestamp": "DateTime64(3, 'UTC')",
+    "trace_name": "LowCardinality(String)",
+    "disposition": "LowCardinality(String)",
+    "reason": "String",
+    "schema_version": "LowCardinality(String)",
+    "imported_at": "DateTime64(3, 'UTC')",
+}
+
+
+@pytest.mark.parametrize(
+    ("sql_file", "table", "released"),
+    [("chat.sql", "chat_turns", RELEASED_CHAT_TURN_COLUMNS), ("ledger.sql", "trace_ledger", RELEASED_LEDGER_COLUMNS)],
+)
+def test_released_chat_and_ledger_columns_keep_their_name_and_type(sql_file, table, released):
+    current = _table_columns((REPO / "telemetry" / "clickhouse" / sql_file).read_text(encoding="utf-8"), table)
+    changed = sorted(name for name, kind in released.items() if current.get(name) != kind)
+
+    assert not changed, (
+        f"telemetry.{table} changed the released columns {changed}. Dashboards read them, so add a new "
+        f"column with an ALTER at the bottom of {sql_file} instead."
+    )
 
 def test_released_columns_keep_their_name_and_type():
     current = _table_columns(VOICE_SQL, "voice_turns")

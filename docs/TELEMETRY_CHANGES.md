@@ -67,7 +67,9 @@ into the telemetry tables that dashboards read:
    A key inside a block works too: `[metadata.farmer_context.source]`. No code,
    no new column: it lands in the `attributes` column as text, and dashboards
    read `attributes['farmer_type']`. The mapping refuses paths that can hold
-   farmer text or a phone number.
+   farmer text or a phone number. Attributes are read on stamped versions
+   (`voice.turn.vN`, `chat.turn.vN`) only, and the readers checks fail if one
+   reads a key the contract doesn't send.
 4. Once it's live, re-import the days you want it filled for.
 
 Traces from before the change don't have it, so `attributes` has no

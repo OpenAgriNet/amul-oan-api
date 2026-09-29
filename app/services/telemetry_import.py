@@ -332,7 +332,9 @@ def _import_days(
             fields = (identity.trace_id, identity.name, identity.timestamp, identity.schema_version)
             if identity.name in root_names:
                 # Written between the two reads; the next import of the day picks it up.
+                # Counted as read too, so a day's traces still equal turns plus rejected.
                 reason = "arrived during the import; re-import the day"
+                traces += 1
                 rejected[(identity.name, reason)] += 1
                 account(*fields, "rejected", reason)
             elif identity.name in non_turn:
