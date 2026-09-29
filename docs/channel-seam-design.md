@@ -416,7 +416,8 @@ chat.** Otherwise a behaviour change and a port land together and neither can be
    taxonomy merge.
 4. **Voice port** — re-derived from deployed `voice-oan-api@origin/amul-dev`, never from the
    fork deleted in #189/#190/#192. Populate the four structures; delete the legacy
-   gate-before-model branch per the decision above.
+   gate-before-model branch per the decision above. The piece-by-piece mapping, its
+   prerequisites and PR plan are in `docs/voice-run-turn-mapping.md`.
 5. **`translation.py`** last (weeks), rewritten around channels.
 
 Steps 1–3 are independently shippable and none of them requires voice to move.
