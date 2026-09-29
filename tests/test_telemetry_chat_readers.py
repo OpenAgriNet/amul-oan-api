@@ -52,7 +52,10 @@ def test_every_chat_contract_has_a_mapping(version):
 @pytest.mark.parametrize("version", sorted(_contracts()))
 def test_every_mapped_chat_field_is_sent(version):
     contract = _contracts()[version]
-    mapping = load_chat_mappings()[version]
+    mappings = load_chat_mappings()
+    if version not in mappings:
+        pytest.skip(f"{version} has no mapping; test_every_chat_contract_has_a_mapping reports it")
+    mapping = mappings[version]
     read = {**mapping.fields, **{f"attributes.{name}": paths for name, paths in mapping.attributes.items()}}
     unreadable = {field: list(paths) for field, paths in read.items() if not any(_sent(path, contract) for path in paths)}
 

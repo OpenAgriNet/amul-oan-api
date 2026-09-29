@@ -220,14 +220,14 @@ def test_rejected_traces_are_counted_by_reason_not_raised():
     client = FakeClickHouse(
         traces=[
             trace_row("ok", metadata=turn_metadata()),
-            trace_row("future", metadata=turn_metadata(**{"amul.schema_version": "voice.turn.v9"})),
-            trace_row("early", name="agent_journey", when="2026-09-24T01:00:00Z", metadata=turn_metadata(**{"amul.schema_version": "voice.turn.v9"})),
+            trace_row("future", metadata=turn_metadata(**{"amul.schema_version": "voice.turn.v999"})),
+            trace_row("early", name="agent_journey", when="2026-09-24T01:00:00Z", metadata=turn_metadata(**{"amul.schema_version": "voice.turn.v999"})),
         ]
     )
 
     report = _import(client)
 
-    assert report.rejected == {("agent_journey", "Unknown voice schema version 'voice.turn.v9'"): 2}
+    assert report.rejected == {("agent_journey", "Unknown voice schema version 'voice.turn.v999'"): 2}
     [rejection] = client.inserts["voice_rejections"]
     assert rejection["count"] == 2 and rejection["day"] == date(2026, 9, 24)
     [day] = client.inserts["voice_import_days"]
@@ -295,7 +295,7 @@ def test_every_root_trace_of_the_day_is_accounted_for():
     client = FakeClickHouse(
         traces=[
             trace_row("turn", metadata=turn_metadata()),
-            trace_row("bad-stamp", metadata=turn_metadata(**{"amul.schema_version": "voice.turn.v9"})),
+            trace_row("bad-stamp", metadata=turn_metadata(**{"amul.schema_version": "voice.turn.v999"})),
             trace_row("refresh", name="farmer_background_refresh", metadata={"task": "refresh"}),
             trace_row("frontend", name="frontend.question", metadata={}),
             trace_row("mystery", name="nightly_mystery_job", metadata={}),
@@ -314,8 +314,8 @@ def test_every_root_trace_of_the_day_is_accounted_for():
         "frontend": "activity",
         "mystery": "unrecognised",
     }
-    assert ledger["bad-stamp"]["reason"] == "Unknown voice schema version 'voice.turn.v9'"
-    assert ledger["bad-stamp"]["schema_version"] == "voice.turn.v9"
+    assert ledger["bad-stamp"]["reason"] == "Unknown voice schema version 'voice.turn.v999'"
+    assert ledger["bad-stamp"]["schema_version"] == "voice.turn.v999"
     assert ledger["mystery"]["reason"] == "no importer reads this trace name"
     for row in ledger.values():
         assert set(row) == set(LEDGER_COLUMNS)
