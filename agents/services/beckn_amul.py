@@ -12,7 +12,7 @@ import json
 from dataclasses import dataclass
 from typing import Any, Iterable, Mapping, Optional
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, field_validator
 
 from app.models.animal import AnimalModel
 from app.models.banas_visit import BanasOperatedVisitModel
@@ -51,6 +51,13 @@ class AITechnicianRecord(BaseModel):
     userId: Optional[str] = None
     fullName: Optional[str] = None
     mobileNumber: Optional[str] = None
+
+    @field_validator("fullName", mode="before")
+    @classmethod
+    def _speakable(cls, value: Optional[str]) -> Optional[str]:
+        from agents.tools.farmer_animal_backends import speakable_name
+
+        return speakable_name(value)
 
 
 def _record(value: Any) -> dict[str, Any]:
