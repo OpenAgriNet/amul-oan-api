@@ -1,7 +1,7 @@
 """Tools for the Sunbird VA API."""
 from pydantic_ai import Tool
 
-from agents.tools.ai_call import create_ai_call
+from agents.tools.ai_call import create_ai_call, prepare_create_ai_call
 from agents.tools.health_call import create_health_call
 from agents.tools.milk_collection import (
     get_farmer_milk_collection_details,
@@ -50,6 +50,7 @@ TOOLS = [
         takes_ctx=True,  # needs ctx.deps.ensure_in_scope for moderation gating
         docstring_format='auto',
         require_parameter_descriptions=True,
+        prepare=prepare_create_ai_call,  # hidden unless a farmer record was resolved
     ),
 
     Tool(

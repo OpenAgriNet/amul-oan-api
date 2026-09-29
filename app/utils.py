@@ -182,35 +182,6 @@ async def update_message_history(session_id: str, all_messages: List[ModelMessag
     """Update message history."""
     await set_cache(f"{session_id}_{HISTORY_SUFFIX}", to_jsonable_python(all_messages), ttl=DEFAULT_CACHE_TTL)
 
-def filter_out_tool_calls(messages: List[ModelMessage]) -> List[ModelMessage]:
-    """Filter out tool calls and tool returns from the message history.
-    
-    Args:
-        messages: List of messages (ModelRequest/ModelResponse objects)
-        
-    Returns:
-        List of messages with tool calls and returns removed
-    """
-    if not messages:
-        return []
-    
-    filtered_messages = []
-    for message in messages:
-        # Create a deep copy to avoid modifying the original
-        msg_copy = deepcopy(message)
-        filtered_parts = []
-        
-        for part in msg_copy.parts:
-            # Only keep non-tool parts
-            if not hasattr(part, 'part_kind') or part.part_kind not in ['tool-call', 'tool-return']:
-                filtered_parts.append(part)
-        
-        # Only add messages that have non-tool parts
-        if filtered_parts:
-            msg_copy.parts = filtered_parts
-            filtered_messages.append(msg_copy)            
-    return filtered_messages
-
 
 def get_message_pairs(history: List[ModelMessage], limit: int = None) -> List[List]:
     """Extract user/assistant message part pairs from history, starting with the most recent.
@@ -286,80 +257,6 @@ def format_message_pairs(history: List[ModelMessage], limit: int = None) -> List
         formatted_messages.append(formatted_pair)
     
     return formatted_messages
-
-
-def clean_message_history_for_openai(history: List[ModelMessage]) -> List[ModelMessage]:
-    """Clean message history to ensure it's safe for OpenAI API.
-    
-    Removes orphaned tool calls (tool calls without responses) from the message history
-    to prevent OpenAI API errors. Processes messages in order and removes any tool call 
-    parts that don't have corresponding tool response parts.
-    
-    Args:
-        history: List of messages to clean
-        
-    Returns:
-        Cleaned list of messages safe for OpenAI API
-    """
-    if not history:
-        return []
-    
-    logger.debug(f"Cleaning message history with {len(history)} messages")
-    
-    # First pass: collect all tool call IDs and their corresponding responses
-    tool_calls = set()
-    tool_responses = set()
-    
-    for message in history:
-        for part in message.parts:
-            part_kind = getattr(part, "part_kind", "")
-            tool_call_id = getattr(part, "tool_call_id", None)
-            
-            if not tool_call_id:
-                continue
-                
-            if part_kind == "tool-call":
-                tool_calls.add(tool_call_id)
-            elif part_kind in ("tool-return", "retry-prompt"):
-                tool_responses.add(tool_call_id)
-    
-    # Identify orphaned tool calls (calls without responses)
-    orphaned_calls = tool_calls - tool_responses
-    
-    # Second pass: filter out orphaned tool calls and their responses
-    cleaned_history = []
-    
-    for message in history:
-        cleaned_parts = []
-        
-        for part in message.parts:
-            part_kind = getattr(part, "part_kind", "")
-            tool_call_id = getattr(part, "tool_call_id", None)
-            
-            # Skip orphaned tool calls
-            if part_kind == "tool-call" and tool_call_id in orphaned_calls:
-                logger.debug(f"Removing orphaned tool call: {tool_call_id}")
-                continue
-            
-            # Skip responses to orphaned tool calls
-            if part_kind in ("tool-return", "retry-prompt") and tool_call_id in orphaned_calls:
-                logger.debug(f"Removing response to orphaned tool call: {tool_call_id}")
-                continue
-            
-            cleaned_parts.append(part)
-        
-        # Only keep messages with remaining parts
-        if cleaned_parts:
-            cleaned_message = deepcopy(message)
-            cleaned_message.parts = cleaned_parts
-            cleaned_history.append(cleaned_message)
-    
-    if orphaned_calls:
-        logger.warning(f"Removed {len(orphaned_calls)} orphaned tool calls: {orphaned_calls}")
-    
-    logger.info(f"Cleaned message history: {len(history)} -> {len(cleaned_history)} messages")
-    return cleaned_history
-
 
 def trim_history(
     history: List[ModelMessage],
