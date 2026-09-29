@@ -18,7 +18,7 @@ CONTRACTS = Path(__file__).resolve().parents[1] / "telemetry" / "contracts"
 CURRENT_CONTRACT = CONTRACTS / f"{CHAT_TELEMETRY_SCHEMA_VERSION}.json"
 V1_CONTRACT = CONTRACTS / "chat.turn.v1.json"
 
-_GENERIC_FIELD_NAMES = {"data", "id", "result", "status", "time", "type", "value"}
+_GENERIC_FIELD_NAMES = {"data", "id", "result", "score", "status", "time", "type", "value"}
 _FIELD_NAME = re.compile(r"[a-z][a-z0-9_]*(?:_<[a-z][a-z0-9_]*>)?$")
 
 # A released schema-version contract is immutable. Keep this deliberately
