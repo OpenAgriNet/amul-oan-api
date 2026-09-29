@@ -11,14 +11,25 @@ telemetry client, and nothing here may. The transport adapter (the chat router's
 and decides what each one means on its wire.
 
 Following the rule in ``app/channels/base``, a field appears only when something
-reads it. The background set, the liveness channel and the sink are not stubbed
-on ``SurfaceProfile``: they land with the second surface that populates them.
+reads it. The sink is on ``SurfaceProfile`` because ``run_turn`` reads it and chat
+populates it with its real sink. The background set and the liveness channel are
+not stubbed: they land with the voice surface that populates them.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Awaitable, Callable, Mapping, Optional, Protocol, Union
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    AsyncIterator,
+    Awaitable,
+    Callable,
+    Mapping,
+    Optional,
+    Protocol,
+    Union,
+)
 
 from app.channels.base import ChannelProfile
 
@@ -154,8 +165,8 @@ class ClassifierResult:
     label: str
 
     #: Messages to append to the session history, or None to persist nothing.
-    #: Chat's identity path persists a (user, assistant) pair; several of voice's
-    #: classifiers (hold-message, STT signal) deliberately persist nothing.
+    #: Chat's identity path persists a (user, assistant) pair; voice's
+    #: hold-message path deliberately persists nothing.
     history_pair: Optional[tuple[ModelMessage, ...]] = None
 
     #: Carried onto the ``TextEmission``; see ``TextEmission.raw``.
@@ -168,10 +179,46 @@ class ClassifierResult:
 Classifier = Callable[[Turn], Awaitable[Optional[ClassifierResult]]]
 
 
+# ── the sink ────────────────────────────────────────────────────────────────
+
+
+class TurnSink(Protocol):
+    """One turn's sink: the agent's English token stream in, the caller's text out.
+
+    Chat and voice need different objects here, not two settings of one. Chat
+    passes English through or stream-translates it in sentence batches; voice is
+    a streaming batcher with its own normalizer and cross-chunk state.
+    """
+
+    def stream(self, english: AsyncIterator[str]) -> AsyncIterator[str]:
+        """What the caller receives, chunk by chunk."""
+        ...
+
+    def final_text(self) -> Optional[str]:
+        """The turn's complete output for the trace, or None if nothing was produced."""
+        ...
+
+
+class SinkFactory(Protocol):
+    """Builds a turn's sink from what ``run_turn`` knows at that point."""
+
+    def __call__(
+        self,
+        turn: Turn,
+        *,
+        execution: Any,
+        deps: Any,
+        translate_to: Optional[str],
+    ) -> TurnSink: ...
+
+
 @dataclass(frozen=True)
 class SurfaceProfile:
     """What a surface populates. One field per structure that is built."""
 
     surface: Surface
-    #: Ordered. First match wins and ends the turn. Chat has one; voice has six.
+    #: Ordered. First match wins and ends the turn. Chat has one; voice has five.
     classifiers: tuple[Classifier, ...] = ()
+    #: Turns the agent's English stream into caller text. A surface that always
+    #: answers from its classifiers never reaches it, so it may be left unset.
+    sink: Optional[SinkFactory] = None
