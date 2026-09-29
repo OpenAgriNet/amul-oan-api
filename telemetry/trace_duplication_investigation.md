@@ -51,11 +51,12 @@ update history. If there are several rows with the same ID and the *same*
 
 ## 2. Does the fetcher collapse source versions correctly?
 
-Use the same root-name filter as the importer. For chat this is currently
-`chat.translation`; replace it with the configured voice root names when
-checking voice. C2 deliberately reuses `chat.translation` for stage traces, so
-the result is the maximum candidate-root count before adapters reject those
-non-turn rows.
+Use the same root-name filter as the importer. The historical chat set is
+`chat.default`, `chat.translation`, and `Amul AI Agent`; omitting either of the
+first two undercounts older days, and omitting `Amul AI Agent` drops c3/c4.
+Replace this list with the configured voice root names when checking voice. C2
+deliberately reuses `chat.translation` for stage traces, so the result is the
+maximum candidate-root count before adapters reject those non-turn rows.
 
 ```sql
 SELECT
@@ -64,7 +65,7 @@ SELECT
     physical_rows - distinct_trace_ids AS extra_source_versions
 FROM traces
 WHERE environment = '<environment>'
-  AND name IN ('chat.translation')
+  AND name IN ('chat.default', 'chat.translation', 'Amul AI Agent')
   AND timestamp >= toDateTime64('2026-09-20 00:00:00', 3, 'UTC')
   AND timestamp <  toDateTime64('2026-09-21 00:00:00', 3, 'UTC');
 
@@ -74,7 +75,7 @@ FROM
     SELECT id, is_deleted
     FROM traces
     WHERE environment = '<environment>'
-      AND name IN ('chat.translation')
+      AND name IN ('chat.default', 'chat.translation', 'Amul AI Agent')
       AND timestamp >= toDateTime64('2026-09-20 00:00:00', 3, 'UTC')
       AND timestamp <  toDateTime64('2026-09-21 00:00:00', 3, 'UTC')
     ORDER BY event_ts DESC
