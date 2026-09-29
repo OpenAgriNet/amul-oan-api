@@ -24,7 +24,7 @@ _PRIVATE_PATH_PARTS = {
     "messages", "user_id", "userId", "phone", "mobile", "farmer_info", "technician_info",
 }
 _ATTRIBUTE_NAME = re.compile(r"[a-z][a-z0-9_]*")
-_GENERIC_NAMES = {"data", "id", "result", "status", "time", "type", "value"}
+_GENERIC_NAMES = {"data", "id", "result", "score", "status", "time", "type", "value"}
 
 
 @dataclass(frozen=True)

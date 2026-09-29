@@ -39,7 +39,9 @@ lists only what moved, so an added key is two lines.
 | Keep a key but change what it means | Point the canonical field at a key that means the right thing, or leave it out. Nothing can detect this for you. |
 
 Names say what the value is: lowercase snake_case, never `data`, `id`, `result`,
-`status`, `time`, `type` or `value` on their own. The contract tests check this.
+`score`, `status`, `time`, `type` or `value` on their own. Score names too: a
+score is `turn_outcome` or `turn_rating`, never just `score`. The contract tests
+and the mapping loader check this.
 
 Contract files live in `telemetry/contracts/<schema version>.json` in the repo
 that sends the trace: `voice.turn.v1.json` in voice-oan-api, `chat.turn.v1.json`

@@ -49,6 +49,7 @@ v2:
         ("v1:\n  extends: v9\n", "v9 is not defined"),
         ("v1:\n  root: r\n  attributes:\n    route: [metadata.route]\n", "'route' is a canonical field"),
         ("v1:\n  root: r\n  attributes:\n    status: [metadata.status]\n", "'status' needs a specific lowercase snake_case name"),
+        ("v1:\n  root: r\n  attributes:\n    score: [metadata.score]\n", "'score' needs a specific lowercase snake_case name"),
         ("v1:\n  root: r\n  attributes:\n    CallQuality: [metadata.q]\n", "'CallQuality' needs a specific lowercase snake_case name"),
         ("v1:\n  root: r\n  attributes:\n    asked: [metadata.query.preview]\n", "can hold farmer text or a phone number"),
         ("v1:\n  root: r\n  attributes:\n    caller: [userId]\n", "can hold farmer text or a phone number"),
