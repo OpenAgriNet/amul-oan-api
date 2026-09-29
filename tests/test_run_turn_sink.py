@@ -7,6 +7,7 @@ the caller received, so a voice sink can replace it without touching the
 skeleton.
 """
 import asyncio
+import dataclasses
 import os
 from types import MappingProxyType, SimpleNamespace
 
@@ -16,7 +17,7 @@ import pytest
 
 from app.channels.chat import WEB
 from app.services import chat as chat_service
-from app.turn.types import Surface, SurfaceProfile, TextEmission, Turn
+from app.turn.types import TextEmission, Turn
 from tests.test_chat_turn_contract import patch_turn
 
 
@@ -76,8 +77,9 @@ class _RecordingSink:
 
 
 def _recording_surface():
+    # Everything else stays chat's own, so only the sink differs from production.
     _RecordingSink.built = []
-    return SurfaceProfile(surface=Surface.CHAT, sink=_RecordingSink)
+    return dataclasses.replace(chat_service.CHAT_SURFACE, sink=_RecordingSink)
 
 
 def test_chat_surface_populates_its_real_sink():
@@ -120,7 +122,7 @@ def test_english_turn_asks_the_sink_not_to_translate(monkeypatch):
 
 def test_a_surface_without_a_sink_fails_before_the_agent_streams(monkeypatch):
     seen = patch_turn(monkeypatch)
-    sinkless = SurfaceProfile(surface=Surface.CHAT)
+    sinkless = dataclasses.replace(chat_service.CHAT_SURFACE, sink=None)
 
     with pytest.raises(TypeError, match="without a sink"):
         asyncio.run(_collect(chat_service.run_turn(_turn(), sinkless, scheduler=_Scheduler())))
