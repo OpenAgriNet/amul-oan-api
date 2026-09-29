@@ -3,7 +3,7 @@
 How a voice turn moves onto the `run_turn` seam, piece by piece, and which pieces are shared
 with chat versus populated separately.
 
-Status: proposal for review. Read against `voice-oan-api@amul-dev` (`3b19835`, 2026-09-29) and
+Status: decided, in progress (PR 1 done). Read against `voice-oan-api@amul-dev` (`3b19835`, 2026-09-29) and
 `amul-oan-api@main` (`c08a5f1`, after #327). Line numbers below are `app/services/voice.py` at
 that voice commit unless a path says otherwise. Background is in `docs/channel-seam-design.md`;
 this is step 4 of its landing order.
@@ -139,24 +139,35 @@ Each lands on its own, and none changes chat behaviour.
 1. **`llm_core` parity.** Add `Step.NON_MEANINGFUL` and whatever else voice's walker relies on,
    so voice's agent can run through `ExecutionContext.stream`. Check it with voice's
    `scripts/check_pipeline_parity.py`.
-2. **One identity field on `FarmerContext`.** Pick `farmer_profile_status` or `farmer_identity`,
-   map the other's values onto it, and update the tools that read it on both sides.
+2. **One identity field on `FarmerContext`.** Keep chat's `farmer_profile_status`; voice's
+   `farmer_identity` maps onto it one to one except `unresolved`, which becomes `unavailable`.
+   Update voice's readers when its code comes over.
 3. **Telemetry per surface.** Root span name and stamps come from the surface; chat's stamps
    (`chat.turn.v1`, from #310) stay byte-identical. Voice's contract (`voice.turn.v1`) lands with
    voice-oan-api #308.
-4. **Seam extensions, proven inert on chat.** Telephony call details, classifier context
-   (voice's short-circuits need `has_meaningful_history` and the consent-turn flag, not just the
-   `Turn`), the staleness hook, the side-channel sender, and the telemetry factory. Chat populates
-   degenerate versions, and no existing test is edited.
+
+## Slots land with their first reader
+
+The rule in `app/channels/base.py` applies to the seam too: a field appears only when something
+reads it. So a slot lands in the same PR as the code that reads it, never ahead of it as a stub.
+
+- **Chat pieces that voice replaces** move behind `SurfaceProfile` first, with chat populating
+  its real implementation. The sink is the first of these (PR 1).
+- **Voice-only slots** (telephony call details on `Turn`, the classifier context, the staleness
+  hook, the side-channel sender, liveness and the background set) arrive with the voice code
+  that reads them, in the population PRs.
 
 ## PR plan
 
-1. Seam extensions (prerequisite 4).
+1. **Chat's sink behind `SurfaceProfile`.** Done on `refactor/run-turn-surface-sink`: no
+   behaviour change, no existing test edited, and a trial merge onto the telemetry PRs is clean.
 2. `llm_core` parity (prerequisite 1).
 3. `FarmerContext` identity field (prerequisite 2).
-4. Voice-only modules copied in from `amul-dev` with their tests, not wired yet.
-5. Voice surface population: classifiers, background tasks, liveness, sink, pretranslation,
-   agent input.
+4. Telemetry per surface (prerequisite 3), on top of #310.
+5. Voice surface population, one structure per PR, each with the slots it reads: classifiers
+   (with the classifier context and telephony details), background tasks and the gate,
+   liveness (with the side-channel sender and staleness hook), sink, pretranslation, agent
+   input. The voice-only modules from `amul-dev` come over with the PR that first uses them.
 6. Voice adapter and route behind a flag, off by default, emitting `voice.turn.v1`.
 7. Parity: voice's own tests against the new path, `check_pipeline_parity.py`,
    `measure_voice_ttft.py`, then shadow traffic in dev, comparing `voice_turns` old against new:
@@ -165,23 +176,24 @@ Each lands on its own, and none changes chat behaviour.
    `LANGFUSE_TRACING_ENVIRONMENT=voice-production`, the telephony provider pointed at it,
    voice-oan-api kept deployable for rollback, and a new era in `telemetry/eras.yaml`.
 
-## Decisions for review
+## Decisions
 
-1. **Side-channel send.** Either the liveness task sends through a sender injected at the
-   composition root, or `run_turn` fans the agent stream and background output into one queue so
-   a side-channel emission can be yielded while the model is still running. The injected sender
-   is simpler and is how voice works today; the queue keeps every output inside the `Emission`
-   stream. Leaning towards the sender.
-2. **Where telephony details live.** An optional typed field on `Turn` (provider, process ID,
-   call type) or a voice-specific record next to it.
-3. **Classifier signature.** `(turn)` today; voice needs a small context as well.
-4. **One deployment or two.** Two deployments of one image keep `voice-production` intact and
-   keep voice latency isolated from chat load. Leaning towards two.
-5. **Tools.** Keep the voice agent on its current tool behaviour and unify one tool at a time,
-   each with a parity test, or unify now. Leaning towards one at a time.
-6. **`service` stamp.** Voice traces served from amul-oan-api change `service` from
-   `voice-oan-api` to `amul-oan-api`. That needs a new era; the adapters route on
-   `amul.schema_version`, so reading them keeps working.
+Decided 2026-09-29 by the owner of this work.
+
+1. **Side-channel send: an injected sender.** The liveness task sends through a sender wired at
+   the composition root, like the scheduler. It is how voice works today; fanning everything
+   into one queue so the nudge could be yielded would make `run_turn` much harder to follow for
+   one output.
+2. **Telephony details: an optional typed field on `Turn`** (provider, process ID, call type),
+   `None` on chat. Both the classifiers and liveness need them, so they live in one place.
+3. **Classifier signature: `(turn, ctx)`,** with a small frozen context (meaningful history,
+   outbound consent turn). Chat's identity classifier ignores it. Lands with voice's classifiers.
+4. **Two deployments of one image.** Keeps `voice-production` intact and voice latency isolated
+   from chat load. Needs a heads-up to whoever runs the deployments before cutover.
+5. **Tools: one at a time.** The voice agent keeps its current tool behaviour; each tool is
+   unified on its own, with a parity test.
+6. **`service` stamp: `amul-oan-api`** for voice traces served from the new path, with a new
+   era. The adapters route on `amul.schema_version`, so reading them keeps working.
 
 ## Risks
 
