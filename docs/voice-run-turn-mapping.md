@@ -3,7 +3,7 @@
 How a voice turn moves onto the `run_turn` seam, piece by piece, and which pieces are shared
 with chat versus populated separately.
 
-Status: decided, in progress (PR 1 done). Read against `voice-oan-api@amul-dev` (`3b19835`, 2026-09-29) and
+Status: decided, in progress (PRs 1 and 2 done). Read against `voice-oan-api@amul-dev` (`3b19835`, 2026-09-29) and
 `amul-oan-api@main` (`c08a5f1`, after #327). Line numbers below are `app/services/voice.py` at
 that voice commit unless a path says otherwise. Background is in `docs/channel-seam-design.md`;
 this is step 4 of its landing order.
@@ -136,12 +136,20 @@ alone for now.
 
 Each lands on its own, and none changes chat behaviour.
 
-1. **`llm_core` parity.** Add `Step.NON_MEANINGFUL` and whatever else voice's walker relies on,
-   so voice's agent can run through `ExecutionContext.stream`. Check it with voice's
-   `scripts/check_pipeline_parity.py`.
+1. **`llm_core` parity.** Smaller than it looked. Chat's `app/llm_core/execution.py` is the
+   successor of voice's `app/services/fallback.py` and `resolver.py`: it has the same
+   `classify`, `AGENT_ACTIVITY`, `execute_with_fallback` and `stream_with_fallback`, plus
+   `ExecutionContext`. What voice lacks is its call sites on that API and `Step.NON_MEANINGFUL`,
+   and both move with the voice modules that use them.
+
+   One thing had to go first. When `PIPELINE_CHANNEL` was unset, `config_source` inferred the
+   live-config channel from the enum: `"voice"` if `Step` had `NON_MEANINGFUL`. With voice's
+   step in this repo's enum, every chat deployment without that variable would have read voice's
+   live config. The default is now stated as `"chat"` (PR 2), and a voice deployment of this image
+   sets `PIPELINE_CHANNEL=voice`.
 2. **One identity field on `FarmerContext`.** Keep chat's `farmer_profile_status`; voice's
    `farmer_identity` maps onto it one to one except `unresolved`, which becomes `unavailable`.
-   Update voice's readers when its code comes over.
+   Chat needs no change for this; the mapping lands with voice's farmer-context code.
 3. **Telemetry per surface.** Root span name and stamps come from the surface; chat's stamps
    (`chat.turn.v1`, from #310) stay byte-identical. Voice's contract (`voice.turn.v1`) lands with
    voice-oan-api #308.
@@ -159,22 +167,28 @@ reads it. So a slot lands in the same PR as the code that reads it, never ahead 
 
 ## PR plan
 
-1. **Chat's sink behind `SurfaceProfile`.** Done on `refactor/run-turn-surface-sink`: no
-   behaviour change, no existing test edited, and a trial merge onto the telemetry PRs is clean.
-2. `llm_core` parity (prerequisite 1).
-3. `FarmerContext` identity field (prerequisite 2).
-4. Telemetry per surface (prerequisite 3), on top of #310.
-5. Voice surface population, one structure per PR, each with the slots it reads: classifiers
-   (with the classifier context and telephony details), background tasks and the gate,
-   liveness (with the side-channel sender and staleness hook), sink, pretranslation, agent
-   input. The voice-only modules from `amul-dev` come over with the PR that first uses them.
-6. Voice adapter and route behind a flag, off by default, emitting `voice.turn.v1`.
-7. Parity: voice's own tests against the new path, `check_pipeline_parity.py`,
+1. **Chat's sink behind `SurfaceProfile`.** Done on `refactor/run-turn-surface-sink`.
+2. **Config channel from the deployment, not the `Step` enum.** Done on
+   `fix/pipeline-channel-from-deployment`. Clears the way for `Step.NON_MEANINGFUL`.
+3. Telemetry per surface (prerequisite 3), on top of #310.
+4. Voice surface population, one structure per PR. Each brings the slots it reads, the voice
+   modules it needs from `amul-dev` with their `llm_core` call sites moved onto
+   `ExecutionContext`, and any `llm_core` or `FarmerContext` change it depends on:
+   classifiers (with the classifier context and telephony details), background tasks and the
+   gate (with `Step.NON_MEANINGFUL`), liveness (with the side-channel sender and staleness
+   hook), sink, pretranslation, agent input.
+5. Voice adapter and route behind a flag, off by default, emitting `voice.turn.v1`.
+6. Parity: voice's own tests against the new path, `check_pipeline_parity.py`,
    `measure_voice_ttft.py`, then shadow traffic in dev, comparing `voice_turns` old against new:
    `outcome_class` mix, `route`, `full_turn_latency_ms`.
-8. Cutover: the amul-oan-api image deployed as the voice service with
-   `LANGFUSE_TRACING_ENVIRONMENT=voice-production`, the telephony provider pointed at it,
-   voice-oan-api kept deployable for rollback, and a new era in `telemetry/eras.yaml`.
+7. Cutover: the amul-oan-api image deployed as the voice service with
+   `PIPELINE_CHANNEL=voice` and `LANGFUSE_TRACING_ENVIRONMENT=voice-production`, the telephony
+   provider pointed at it, voice-oan-api kept deployable for rollback, and a new era in
+   `telemetry/eras.yaml`.
+
+Each PR is checked the same way: no existing test edited, every existing test's result unchanged,
+a mutation check on what it adds, and a trial merge onto the open telemetry PRs and the earlier
+PRs here.
 
 ## Decisions
 
