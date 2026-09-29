@@ -13,7 +13,7 @@ import re
 from typing import Any, Optional
 
 import httpx
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.core.cache import (
     build_api_cache_key,
@@ -891,12 +891,29 @@ class GetAITechniciansBySocietyQueryParams(BaseModel):
         return {"unionCode": self.union_code, "societyCode": self.society_code}
 
 
+def speakable_name(value: Optional[str]) -> Optional[str]:
+    if not value:
+        return value
+    words = re.sub(r"[-_]", " ", re.sub(r"\d+", "", value)).split()
+    if not words:
+        return value
+    if not any(ch.islower() for word in words for ch in word):
+        words = [word.capitalize() for word in words]
+    return " ".join(words)
+
+
 class AITechnicianBySocietyRecord(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     userId: Optional[str] = None
     fullName: Optional[str] = None
+    gujratiFullName: Optional[str] = None
     mobileNumber: Optional[str] = None
+
+    @field_validator("fullName", "gujratiFullName", mode="before")
+    @classmethod
+    def _speakable(cls, value: Optional[str]) -> Optional[str]:
+        return speakable_name(value)
 
 
 def build_ai_technician_cache_key(union_code: str, society_code: str) -> str:

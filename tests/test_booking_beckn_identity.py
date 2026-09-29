@@ -116,3 +116,11 @@ async def test_health_confirm_uses_canonical_owned_account(monkeypatch):
 
     assert "booked successfully" in result
     assert captured["args"][:3] == ("CANON-U", "CANON-S", "CANON-F")
+
+
+def test_technician_names_are_speakable_on_both_paths():
+    from agents.tools.farmer_animal_backends import AITechnicianBySocietyRecord
+
+    raw = "1712 ULPESHPURI-KODARPURI-GOSHVAMI"
+    assert beckn_amul.AITechnicianRecord(fullName=raw).fullName == "Ulpeshpuri Kodarpuri Goshvami"
+    assert AITechnicianBySocietyRecord.model_validate({"fullName": raw}).fullName == "Ulpeshpuri Kodarpuri Goshvami"
