@@ -3,7 +3,7 @@
 How a voice turn moves onto the `run_turn` seam, piece by piece, and which pieces are shared
 with chat versus populated separately.
 
-Status: decided, in progress (PRs 1 and 2 done). Read against `voice-oan-api@amul-dev` (`3b19835`, 2026-09-29) and
+Status: decided, in progress (PRs 1–3 done). Read against `voice-oan-api@amul-dev` (`3b19835`, 2026-09-29) and
 `amul-oan-api@main` (`c08a5f1`, after #327). Line numbers below are `app/services/voice.py` at
 that voice commit unless a path says otherwise. Background is in `docs/channel-seam-design.md`;
 this is step 4 of its landing order.
@@ -170,7 +170,10 @@ reads it. So a slot lands in the same PR as the code that reads it, never ahead 
 1. **Chat's sink behind `SurfaceProfile`.** Done on `refactor/run-turn-surface-sink`.
 2. **Config channel from the deployment, not the `Step` enum.** Done on
    `fix/pipeline-channel-from-deployment`. Clears the way for `Step.NON_MEANINGFUL`.
-3. Telemetry per surface (prerequisite 3), on top of #310.
+3. **Telemetry per surface.** Done on `refactor/run-turn-surface-telemetry`, stacked on the
+   adapters branch (#310, for the `chat.turn.v1` stamps) with PR 1 merged in, so the sink and
+   telemetry fields on `SurfaceProfile` land without a conflict. Merge order at the end:
+   #310 → #314 → #315, PR 1, PR 2, then this.
 4. Voice surface population, one structure per PR. Each brings the slots it reads, the voice
    modules it needs from `amul-dev` with their `llm_core` call sites moved onto
    `ExecutionContext`, and any `llm_core` or `FarmerContext` change it depends on:
