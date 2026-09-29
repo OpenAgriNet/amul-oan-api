@@ -3,7 +3,7 @@
 How a voice turn moves onto the `run_turn` seam, piece by piece, and which pieces are shared
 with chat versus populated separately.
 
-Status: decided, in progress (PRs 1–3 done). Read against `voice-oan-api@amul-dev` (`3b19835`, 2026-09-29) and
+Status: decided, in progress (PRs 1–4 done). Read against `voice-oan-api@amul-dev` (`3b19835`, 2026-09-29) and
 `amul-oan-api@main` (`c08a5f1`, after #327). Line numbers below are `app/services/voice.py` at
 that voice commit unless a path says otherwise. Background is in `docs/channel-seam-design.md`;
 this is step 4 of its landing order.
@@ -81,7 +81,7 @@ Found while mapping; each changes what the port has to do.
 | `/voice/` route, ownership claim, history load | Voice adapter: claims ownership, builds the `Turn`, releases ownership in its `finally` | Voice adapter; the `Turn` type is shared |
 | `provider`, `process_id`, `call_type` | Telephony call details carried with the turn | Voice only. See decision 2 |
 | `_request_is_stale` | A staleness check wired at the composition root, like the scheduler; no-op on chat | Hook shared, implementation per surface |
-| STT signal, hold message, greeting, identity, fragment | `SurfaceProfile.classifiers` for voice; hold message sets `raw=True` | Runner shared, classifiers per surface. Voice identity is not chat identity: different text and history markers |
+| STT signal, hold message, greeting, identity, fragment | `SurfaceProfile.classifiers` for voice (`app/voice/classifiers.py`); hold message sets `raw=True` | Runner shared, classifiers per surface. Voice identity is not chat identity: different text and history markers |
 | Outbound consent (stage read, classifier, gate) | Stage and consent-turn flag computed before the chain; classifier as a background task; gate before the agent input is built | Voice only |
 | Nudge | Liveness: deadline from request start, triggers timer and tool call, cancelled by the first `TextEmission` or any decline or hang-up | Voice only; the send path is decision 1 |
 | Farmer data fetch | Background task | Per surface. Chat loads a context bundle before the agent; voice fetches the envelope concurrently and builds summaries |
@@ -161,9 +161,9 @@ reads it. So a slot lands in the same PR as the code that reads it, never ahead 
 
 - **Chat pieces that voice replaces** move behind `SurfaceProfile` first, with chat populating
   its real implementation. The sink is the first of these (PR 1).
-- **Voice-only slots** (telephony call details on `Turn`, the classifier context, the staleness
-  hook, the side-channel sender, liveness and the background set) arrive with the voice code
-  that reads them, in the population PRs.
+- **Voice-only slots** (telephony call details on `Turn`, the staleness hook, the side-channel
+  sender, liveness and the background set) arrive with the voice code that reads them, in the
+  population PRs.
 
 ## PR plan
 
@@ -177,9 +177,16 @@ reads it. So a slot lands in the same PR as the code that reads it, never ahead 
 4. Voice surface population, one structure per PR. Each brings the slots it reads, the voice
    modules it needs from `amul-dev` with their `llm_core` call sites moved onto
    `ExecutionContext`, and any `llm_core` or `FarmerContext` change it depends on:
-   classifiers (with the classifier context and telephony details), background tasks and the
-   gate (with `Step.NON_MEANINGFUL`), liveness (with the side-channel sender and staleness
-   hook), sink, pretranslation, agent input.
+   classifiers, background tasks and the gate (with `Step.NON_MEANINGFUL`), liveness (with the
+   side-channel sender and staleness hook), sink, pretranslation, agent input.
+
+   **Classifiers: done** on `feat/voice-surface-classifiers`, stacked on PR 3. The five
+   short-circuits are in `app/voice/classifiers.py` with voice's detection rules, canned lines,
+   history markers and route names; `stt_signals.py` came over unchanged. `Turn.call` carries
+   the process ID and the outbound consent-turn flag. Two things are left for later PRs on
+   purpose: translating an English line for the caller is passed in as `render` and the real
+   one comes with the sink, and the STT path's stale check before it replies comes back with
+   the staleness hook. Nothing is wired to a route yet.
 5. Voice adapter and route behind a flag, off by default, emitting `voice.turn.v1`.
 6. Parity: voice's own tests against the new path, `check_pipeline_parity.py`,
    `measure_voice_ttft.py`, then shadow traffic in dev, comparing `voice_turns` old against new:
@@ -201,10 +208,14 @@ Decided 2026-09-29 by the owner of this work.
    the composition root, like the scheduler. It is how voice works today; fanning everything
    into one queue so the nudge could be yielded would make `run_turn` much harder to follow for
    one output.
-2. **Telephony details: an optional typed field on `Turn`** (provider, process ID, call type),
-   `None` on chat. Both the classifiers and liveness need them, so they live in one place.
-3. **Classifier signature: `(turn, ctx)`,** with a small frozen context (meaningful history,
-   outbound consent turn). Chat's identity classifier ignores it. Lands with voice's classifiers.
+2. **Telephony details: an optional typed field on `Turn`** (`Turn.call`), `None` on chat. Both
+   the classifiers and liveness need them, so they live in one place. Fields arrive with their
+   first reader: the process ID and the outbound consent-turn flag came with the classifiers;
+   the provider and the call type come with liveness and the consent gate.
+3. **Classifier signature: stays `(turn)`.** Changed while building the classifiers from the
+   `(turn, ctx)` first planned. Meaningful history is worked out from `turn.history` and the
+   consent-turn flag is on `Turn.call`, so nothing was left for a context to carry, and the
+   existing seam tests did not need editing.
 4. **Two deployments of one image.** Keeps `voice-production` intact and voice latency isolated
    from chat load. Needs a heads-up to whoever runs the deployments before cutover.
 5. **Tools: one at a time.** The voice agent keeps its current tool behaviour; each tool is
@@ -216,7 +227,9 @@ Decided 2026-09-29 by the owner of this work.
 
 - **Stale checks and nudge timing are behaviour.** The port must keep at least one check before
   every emission, before the nudge send and before the history write, or a superseded request
-  can speak over a newer one.
+  can speak over a newer one. The STT short-circuit's check before its reply
+  (`before_stt_signal_response`) is not in the classifier yet; it returns with the staleness
+  hook.
 - **The hang-up token must bypass the normalizer.** Hold message, non-meaningful hang-up,
   outbound decline and `conversation_closing` all rely on exact ASCII `"Goodbye."`; the Gujarati
   normalizer turns it into `"."`.
