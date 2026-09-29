@@ -11,5 +11,8 @@
 names:
   - suggestions                  # amul-oan-api app/tasks/suggestions.py, after the response
   - farmer_background_refresh    # farmer cache refresh worker, both repos, no session
+  # PashuGPT call from voice-oan-api's loan eligibility and milk collection tools.
+  # Inside a turn it is a child span; these ran with no turn around them.
+  - get_farmer_milk_collection_details_api
 prefixes:
   - frontend.                    # frontend telemetry writer: question, response, error, feedback
