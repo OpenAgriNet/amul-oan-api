@@ -7,8 +7,12 @@ from app.channels.base import Channel, ChannelProfile
 #: are capped before rendering rather than after.
 WHATSAPP_RESPONSE_MAX_CHARS = 1600
 
-WEB = ChannelProfile(channel=Channel.WEB, response_max_chars=None)
-WHATSAPP = ChannelProfile(channel=Channel.WHATSAPP, response_max_chars=WHATSAPP_RESPONSE_MAX_CHARS)
+WEB = ChannelProfile(channel=Channel.WEB, response_max_chars=None, supports_rich_artifacts=True)
+WHATSAPP = ChannelProfile(
+    channel=Channel.WHATSAPP,
+    response_max_chars=WHATSAPP_RESPONSE_MAX_CHARS,
+    supports_rich_artifacts=False,
+)
 
 _BY_CHANNEL = {WEB.channel: WEB, WHATSAPP.channel: WHATSAPP}
 
