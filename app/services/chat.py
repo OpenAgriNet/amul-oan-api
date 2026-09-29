@@ -1,5 +1,6 @@
-from contextlib import nullcontext
-from typing import Any, AsyncGenerator
+from contextlib import aclosing, nullcontext
+from types import MappingProxyType
+from typing import Any, AsyncGenerator, Mapping
 from functools import lru_cache
 import regex
 import re
@@ -37,6 +38,19 @@ from app.services.identity_profile import (
 )
 from app.personas import ChatPersona
 from app.chat_artifacts import encode_chat_artifacts
+from app.channels.base import ChannelProfile
+from app.turn.types import (
+    AgentActivityEmission,
+    ArtifactEmission,
+    ClassifierResult,
+    DeferredScheduler,
+    Emission,
+    SideChannelEmission,
+    Surface,
+    SurfaceProfile,
+    TextEmission,
+    Turn,
+)
 
 
 class SentenceSegmenter:
@@ -360,7 +374,7 @@ async def _pretranslate_query(
 
 
 async def _load_farmer_context(
-    persona: ChatPersona, user_info: dict, request_id: str
+    persona: ChatPersona, user_info: Mapping[str, Any], request_id: str
 ) -> tuple[FarmerContextBundle, str]:
     """Cache-first farmer context for the phone in the JWT, plus its profile status.
 
@@ -389,11 +403,17 @@ def _build_deps(
     session_id: str,
     lang_code: str,
     persona: ChatPersona,
-    channel: str,
-    user_info: dict,
+    channel: ChannelProfile,
+    user_info: Mapping[str, Any],
     farmer_context: tuple[FarmerContextBundle, str],
-    response_max_chars: int | None,
 ) -> FarmerContext:
+    """The ONE FarmerContext of a turn, handed to pydantic-ai as ``deps``.
+
+    This is the only way trusted identity reaches the agent: the caller's phone
+    comes from the verified JWT, tools read it from ``ctx.deps`` and validate
+    model-authored arguments against it, so the model never chooses whose data
+    a tool touches.
+    """
     bundle, farmer_profile_status = farmer_context
     return FarmerContext(
         query=query,
@@ -405,8 +425,8 @@ def _build_deps(
         farmer_district=bundle.location.get("district") or None,
         farmer_village=bundle.location.get("village") or None,
         farmer_state=bundle.location.get("state") or None,
-        response_max_chars=response_max_chars,
-        supports_rich_artifacts=(channel or "web").lower() == "web",
+        response_max_chars=channel.response_max_chars,
+        supports_rich_artifacts=channel.supports_rich_artifacts,
         # Normalized caller phone — the micro-loan tool reads this from deps so it
         # never has to trust an LLM-supplied number. None for anonymous sessions.
         mobile=(
@@ -479,6 +499,57 @@ async def _stream_to_client(
             yield out
 
 
+async def _identity_classifier(turn: Turn) -> ClassifierResult | None:
+    """"Who are you?" — answered from a template, without moderation or the agent.
+
+    Skipped when either language's kill switch is off, so a disabled language
+    stays on the English-passthrough path like the rest of its turn.
+    """
+    disabled_langs = _disabled_chat_langs()
+    if turn.source_lang.lower() in disabled_langs or turn.target_lang.lower() in disabled_langs:
+        return None
+    if not is_identity_query(turn.query):
+        return None
+    response = (
+        build_doctor_identity_response(turn.source_lang, turn.target_lang, turn.query)
+        if turn.persona == "doctor"
+        else build_identity_profile_table(turn.source_lang, turn.target_lang, turn.query)
+    )
+    logger.info("request_id=%s identity_short_circuit=True", turn.session_id)
+    return ClassifierResult(
+        canned_text=response,
+        label="identity",
+        # One of only two chat exit paths that persist history (the other is
+        # normal completion) — see docs/channel-seam-design.md.
+        history_pair=(
+            ModelRequest(parts=[UserPromptPart(content=turn.query)]),
+            ModelResponse(parts=[TextPart(content=response)]),
+        ),
+    )
+
+
+#: The chat surface's population of the seam. Chat is the degenerate case: one
+#: classifier where voice has six.
+CHAT_SURFACE = SurfaceProfile(
+    surface=Surface.CHAT,
+    classifiers=(_identity_classifier,),
+)
+
+
+class _BackgroundTasksScheduler:
+    """``DeferredScheduler`` over FastAPI's BackgroundTasks.
+
+    Starlette runs them once the response — streaming or not — has finished,
+    i.e. after the turn has written its history.
+    """
+
+    def __init__(self, background_tasks: BackgroundTasks) -> None:
+        self._background_tasks = background_tasks
+
+    def schedule(self, fn, /, *args) -> None:
+        self._background_tasks.add_task(fn, *args)
+
+
 async def stream_chat_messages(
     query: str,
     session_id: str,
@@ -494,15 +565,80 @@ async def stream_chat_messages(
     artifact_sink: list[dict[str, Any]] | None = None,
     emit_artifact_frames: bool = True,
 ) -> AsyncGenerator[str, None]:
-    """Async generator for streaming chat messages."""
+    """The chat transport's adapter over ``run_turn``.
+
+    Composes the turn — request values into a ``Turn``, FastAPI's
+    BackgroundTasks behind the deferred-work scheduler — then renders each
+    emission onto the chat wire: text as-is; artifacts into ``artifact_sink``
+    (the non-streaming JSON body) and, when streaming, as the terminal frame.
+    Chat has no side channel and no consumer for the agent-activity signal.
+    """
+    turn = Turn(
+        query=query,
+        session_id=session_id,
+        source_lang=source_lang,
+        target_lang=target_lang,
+        user_id=user_id,
+        authenticated_user=MappingProxyType(dict(user_info or {})),
+        history=tuple(history),
+        history_session_id=history_session_id or session_id,
+        # The turn's channel profile: what differs between delivery channels,
+        # resolved once here rather than re-derived at each use site.
+        channel=_profile_for(channel),
+        persona=persona,
+    )
+    scheduler = _BackgroundTasksScheduler(background_tasks)
+    # aclosing: a client disconnect closes THIS generator; the turn must be
+    # closed with it, synchronously, so it records "cancelled" and unwinds its
+    # root span now rather than whenever the garbage collector gets to it.
+    async with aclosing(run_turn(turn, CHAT_SURFACE, scheduler=scheduler)) as emissions:
+        async for emission in emissions:
+            if isinstance(emission, TextEmission):
+                yield emission.text
+            elif isinstance(emission, ArtifactEmission):
+                if artifact_sink is not None:
+                    artifact_sink.extend(emission.artifacts)
+                if emit_artifact_frames and emission.artifacts:
+                    yield encode_chat_artifacts(emission.artifacts)
+            elif isinstance(emission, (AgentActivityEmission, SideChannelEmission)):
+                continue
+            else:
+                # A new emission kind must be handled here, not silently dropped:
+                # dropping unknown output is exactly how telephony liveness would
+                # have died in the merge.
+                raise TypeError(f"chat adapter cannot render emission {emission!r}")
+
+
+async def run_turn(
+    turn: Turn,
+    surface: SurfaceProfile,
+    *,
+    scheduler: DeferredScheduler,
+) -> AsyncGenerator[Emission, None]:
+    """One turn, transport-free.
+
+    Opens and closes exactly one root span, records how the turn ended on every
+    exit path, runs the surface's pre-turn classifiers before anything is
+    spawned, and yields ``Emission`` values for the transport adapter to render.
+    Deferred work goes through ``scheduler``; private documents leave only as an
+    ``ArtifactEmission``.
+    """
+    query = turn.query
+    session_id = turn.session_id
+    source_lang = turn.source_lang
+    target_lang = turn.target_lang
+    user_id = turn.user_id
+    user_info = turn.authenticated_user
+    history = turn.history
+    persona = turn.persona
+    profile = turn.channel
+    channel = profile.channel.value
+    message_history_session_id = turn.history_session_id
+
     execution = await llm_core.context(session_id)
     pipeline_profile = execution.profile_name
     active_agent = doctor_agent if persona == "doctor" else agrinet_agent
     active_moderation_agent = doctor_moderation_agent if persona == "doctor" else moderation_agent
-    message_history_session_id = history_session_id or session_id
-    # The turn's channel profile: what differs between delivery channels, resolved
-    # once here rather than re-derived at each use site.
-    profile = _profile_for(channel)
     agent_info = execution.info(_LlmStep.AGENT)
     # Open the per-turn pipeline-config tracer and hold the EXPLICIT instance.
     # Populate the static fields directly and pass the trace state explicitly
@@ -575,8 +711,8 @@ async def stream_chat_messages(
     with session_ctx, _root_ctx:
         # ONE exit point for the turn. Without this, an outcome is recorded only
         # on normal completion: a client disconnect or an exception leaves the
-        # trace with no output and no signal at all, which is #179's B2.
-        # `run_turn` inherits this guard when the body moves behind the profile.
+        # trace with no output and no signal at all, which is #179's B2. It lives
+        # in run_turn, not the adapter, so every surface's turn carries it.
         _turn_outcome = "error"
         try:
             if get_langfuse_client:
@@ -628,40 +764,30 @@ async def stream_chat_messages(
                     request_id=request_id,
                 )
 
-            # Generate a unique content ID for this query
-            content_id = f"query_{session_id}_{len(history)//2 + 1}"
-            logger.info("request_id=%s user_info=%s", request_id, user_info)
+            logger.info("request_id=%s user_info=%s", request_id, dict(user_info))
 
-            identity_language_enabled = (
-                source_lang.lower() not in disabled_langs
-                and target_lang.lower() not in disabled_langs
-            )
-            if identity_language_enabled and is_identity_query(query):
-                identity_response = (
-                    build_doctor_identity_response(source_lang, target_lang, query)
-                    if persona == "doctor"
-                    else build_identity_profile_table(source_lang, target_lang, query)
-                )
-                logger.info("request_id=%s identity_short_circuit=True", request_id)
-                _record_trace_output(identity_response, "identity")
-
-                messages = [
-                    *history,
-                    ModelRequest(parts=[UserPromptPart(content=query)]),
-                    ModelResponse(parts=[TextPart(content=identity_response)]),
-                ]
-                logger.info(
-                    "request_id=%s updating_history_identity_path=True total_messages=%s",
-                    request_id,
-                    len(messages),
-                )
-                await update_message_history(message_history_session_id, messages)
+            # The pre-turn classifier chain: runs before anything is spawned, so a
+            # match has nothing to cancel. First match answers the turn.
+            for classify in surface.classifiers:
+                short_circuit = await classify(turn)
+                if short_circuit is None:
+                    continue
+                _record_trace_output(short_circuit.canned_text, short_circuit.label)
+                if short_circuit.history_pair is not None:
+                    messages = [*history, *short_circuit.history_pair]
+                    logger.info(
+                        "request_id=%s updating_history_%s_path=True total_messages=%s",
+                        request_id,
+                        short_circuit.label,
+                        len(messages),
+                    )
+                    await update_message_history(message_history_session_id, messages)
                 # A short-circuit that answered the farmer is a completed turn, not
                 # an error. `_turn_outcome` defaults to "error" so that an exit we
                 # did not anticipate is loud; every exit that DID answer has to say
                 # so on its way out.
                 _turn_outcome = "success"
-                yield identity_response
+                yield TextEmission(short_circuit.canned_text, raw=short_circuit.raw)
                 return
 
             farmer_context = await _load_farmer_context(persona, user_info, request_id)
@@ -686,10 +812,9 @@ async def stream_chat_messages(
                 session_id=session_id,
                 lang_code=processing_lang,
                 persona=persona,
-                channel=channel,
+                channel=profile,
                 user_info=user_info,
                 farmer_context=farmer_context,
-                response_max_chars=profile.response_max_chars,
             )
 
             message_pairs = "\n\n".join(format_message_pairs(history, 3))
@@ -750,7 +875,9 @@ async def stream_chat_messages(
                             # Mark pending and clear stale suggestions so callers wait for fresh output.
                             await set_cache(status_key, True, ttl=SUGGESTIONS_PENDING_TTL)
                             await cache.delete(suggestions_cache_key)
-                            background_tasks.add_task(
+                            # Deferred, never inline: suggestions read the history
+                            # this turn has not written yet.
+                            scheduler.schedule(
                                 create_suggestions, session_id, target_lang, execution
                             )
                             logger.info("Successfully added suggestions task")
@@ -776,7 +903,7 @@ async def stream_chat_messages(
                         # supposed to. Recording "error" here inflated the error rate
                         # by one row per moderated query.
                         _turn_outcome = "success"
-                        yield decline_text
+                        yield TextEmission(decline_text)
                         return
                     deps.update_moderation_str(str(moderation_data))
             except Exception as e:
@@ -793,7 +920,7 @@ async def stream_chat_messages(
                 # is still recorded so the export shows what the farmer actually
                 # saw rather than a blank row.
                 _record_trace_output(fail_closed_message, "fail-closed")
-                yield fail_closed_message
+                yield TextEmission(fail_closed_message)
                 return
 
             if persona == "farmer":
@@ -883,7 +1010,7 @@ async def stream_chat_messages(
                     client_src = _sanitize_doctor_stream(client_src)
 
                 async for _out in client_src:
-                    yield _out
+                    yield TextEmission(_out)
                 logger.info(f"Streaming complete for session {session_id}")
 
                 # Record trace output: translated response for translation pipeline, raw agent output otherwise.
@@ -918,11 +1045,11 @@ async def stream_chat_messages(
             # Rich provider documents are deliberately emitted only after the
             # model/translation/trace pipeline is finished. They are not model
             # output and must never enter TTS, prompt history, or trace bodies.
+            # They leave the turn only as an emission; how they reach the caller
+            # (terminal SSE frame, JSON array, never spoken) is the adapter's call.
             chat_artifacts = deps.take_chat_artifacts()
-            if artifact_sink is not None:
-                artifact_sink.extend(chat_artifacts)
-            if emit_artifact_frames and chat_artifacts:
-                yield encode_chat_artifacts(chat_artifacts)
+            if chat_artifacts:
+                yield ArtifactEmission(artifacts=tuple(chat_artifacts))
 
             # Post-processing happens AFTER streaming is complete
             messages = [
