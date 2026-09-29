@@ -187,8 +187,10 @@ caller, and now resolves like everything else about it: to the web profile.
 
 ## The seam interface
 
-Refreshed 2026-09-18 (#307). **Built for chat (task 15)**: the types are in `app/turn/types.py`,
-and `run_turn` plus the chat surface's population of it are in `app/services/chat.py`.
+This contract was refreshed on 2026-09-18 (#307) to include the authenticated tool-dependency and
+rich-artifact paths that were added after the original design. **Built for chat (task 15)**: the
+types are in `app/turn/types.py`, and `run_turn` plus the chat surface's population of it are in
+`app/services/chat.py`.
 
 ```python
 async def run_turn(
@@ -264,15 +266,42 @@ Chat's single classifier is identity. It is persona-aware (the Doctor identity r
 respects the per-language kill switches, both of which landed on `main` after the classifier
 prototype was written.
 
-### Agent and tool boundary
+### The agent and tool boundary
 
 `run_turn` derives private farmer state from the authenticated identity, performs any required
 pretranslation, and constructs one `agents.deps.FarmerContext`. It passes that object to
 pydantic-ai as `deps`; it does not add farmer identifiers to model-authored tool arguments.
 
-Tools obtain trusted identity from `ctx.deps`, validate model-authored arguments against it, and
-then call their Beckn adapter. The tool registry and Beckn operations stay below this seam and do
-not branch on HTTP versus telephony transports.
+`FarmerContext` is therefore the interface between the common orchestrator and every contextual
+tool. It carries the normalized query, session and language, authenticated mobile, farmer unions
+and accounts, location, rendered farmer context, persona, response limit, rich-artifact support,
+and (on voice) the moderation future awaited by irreversible tools. Tools obtain trusted identity
+from `ctx.deps`, validate model-authored arguments against it, and then call their Beckn adapter.
+The tool registry and Beckn operations stay below this seam and do not branch on HTTP versus
+telephony transports.
+
+The dependency direction is:
+
+```text
+HTTP / telephony adapter
+          |
+          v
+ Turn + SurfaceProfile
+          |
+       run_turn
+       |-- classifiers / background work / translation
+       |-- llm_core model selection and fallback
+       |-- pydantic-ai Agent
+       |      `-- FarmerContext -> tools -> Beckn
+       |-- history and telemetry
+       `-- surface sink and liveness policy
+          |
+          v
+    stream[Emission]
+          |
+          v
+ SSE / JSON / telephony callbacks
+```
 
 Precisely, because the two are easy to conflate: the caller's **phone** is never model-authored —
 it comes only from the verified JWT via `deps.mobile`. Account **codes** (`union_code`,
@@ -337,7 +366,8 @@ Two notes from building it:
 `run_turn` opens and closes exactly one root span. The transport supplies inert attributes
 through `Turn`; it does not construct or carry a live span. This matches the root-span guard
 `stream_chat_messages` already had (#200), which now lives in `run_turn` together with the
-turn-outcome guard (#198), so every surface's turn carries both.
+turn-outcome guard (#198), so every surface's turn carries both and turn outcome recording stays
+correct for success, cancellation, and error exits.
 
 The chat adapter closes `run_turn` explicitly (`contextlib.aclosing`) when its own stream is
 closed. A client disconnect then records `cancelled` and unwinds the root span immediately,
