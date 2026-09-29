@@ -36,3 +36,6 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          # .git is left out of the image, so the chat release stamp reads this.
+          build-args: |
+            GIT_SHA=${{ github.sha }}
