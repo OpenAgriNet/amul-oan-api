@@ -28,3 +28,6 @@ class ChannelProfile:
     channel: Channel
     #: Hard cap on rendered response length, or None for no cap.
     response_max_chars: Optional[int] = None
+    #: Whether the client can render private rich documents (e.g. SHC HTML)
+    #: delivered outside the model text. Gates the tools that produce them.
+    supports_rich_artifacts: bool = False

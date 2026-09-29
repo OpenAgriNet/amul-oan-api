@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 
 def prefer_local_name(
     local: str | None,
@@ -19,3 +21,14 @@ def prefer_local_name(
         if text:
             return text
     return None
+
+
+def speakable_name(value: str | None) -> str | None:
+    if not value:
+        return value
+    words = re.sub(r"[-_]", " ", re.sub(r"\d+", "", value)).split()
+    if not words:
+        return value
+    if not any(ch.islower() for word in words for ch in word):
+        words = [word.capitalize() for word in words]
+    return " ".join(words)

@@ -56,6 +56,14 @@ class FarmerContext(BaseModel):
     farmer_village: Optional[str] = Field(default=None, description="Farmer's village, lowercased as returned by the farmer API.")
     farmer_state: Optional[str] = Field(default=None, description="Farmer's state, lowercased as returned by the farmer API.")
     ai_technician_info: str = Field(default="", description="Pre-built internal AI technician context string (voice).")
+    # Whether a farmer record was actually resolved for this turn. Farmer-only
+    # tools (AI-call booking) are hidden unless "found", and the prompt tells the
+    # agent what it cannot do otherwise. farmer_unions is NOT a substitute: many
+    # real farmer records carry no union name.
+    farmer_profile_status: Literal['found', 'anonymous', 'not_found', 'unavailable'] = Field(
+        default='anonymous',
+        description="found = farmer record resolved; anonymous = no signed-in phone; not_found = no record for the phone; unavailable = lookup failed.",
+    )
     signed_in: bool = Field(default=False, description="Whether the session is signed in/authenticated for farmer-specific tools.")
     mobile: Optional[str] = Field(default=None, description="Normalized mobile number when available.")
     farmer_accounts: list[FarmerAccount] = Field(
@@ -147,6 +155,10 @@ class FarmerContext(BaseModel):
         """
         district = (self.farmer_district or "").strip()
         return district or None
+
+    def has_farmer_profile(self) -> bool:
+        """True only when a farmer record was resolved for the signed-in mobile."""
+        return self.farmer_profile_status == 'found' and bool((self.mobile or "").strip())
 
     def get_preferred_union_name(self) -> Optional[str]:
         """Get the primary farmer union name when available."""

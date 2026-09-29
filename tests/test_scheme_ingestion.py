@@ -1,5 +1,9 @@
 import asyncio
 import base64
+import os
+import subprocess
+import sys
+from pathlib import Path
 from types import SimpleNamespace
 
 import httpx
@@ -33,6 +37,7 @@ def test_scheme_site_origins_derive_from_configured_source_urls(monkeypatch):
     monkeypatch.setattr(si, "SUMUL_SITE_ORIGIN", "https://sumul-custom.test")
     monkeypatch.setattr(si, "SURSAGAR_SITE_ORIGIN", "https://sursagar-custom.test")
     monkeypatch.setattr(si, "SABAR_SITE_ORIGIN", "https://sabar-custom.test")
+    monkeypatch.setattr(si, "DUDHDHARA_SITE_ORIGIN", "https://dudhdhara-custom.test")
 
     sumul_records = si.parse_sumul_scheme_links('<a href="files/a.pdf">Download</a>')
     sursagar_records = si.parse_sursagar_scheme_links(
@@ -42,10 +47,14 @@ def test_scheme_site_origins_derive_from_configured_source_urls(monkeypatch):
         '<h5 class="sabar-soc-title-1">Scheme</h5>'
         '<a href="/wp-content/uploads/2026/09/custom.pdf">Download</a>'
     )
+    dudhdhara_records = si.parse_dudhdhara_scheme_links(
+        '<table><tr><td>Scheme</td><td><a href="assets/image/custom.pdf">Download</a></td></tr></table>'
+    )
 
     assert sumul_records[0]["scheme_url"] == "https://sumul-custom.test/files/a.pdf"
     assert sursagar_records[0]["scheme_url"] == "https://sursagar-custom.test/Farmer/DownloadMilkProducerFile?file=test.pdf"
     assert sabar_records[0]["scheme_url"] == "https://sabar-custom.test/wp-content/uploads/2026/09/custom.pdf"
+    assert dudhdhara_records[0]["scheme_url"] == "https://dudhdhara-custom.test/assets/image/custom.pdf"
 
 
 class _FakePixmap:
@@ -1626,3 +1635,110 @@ def test_ingest_sabar_source_raises_when_coverage_too_low(monkeypatch):
 
     with pytest.raises(si.SchemeParseError, match="insufficient sabar ingestion coverage"):
         asyncio.run(si._ingest_sabar_source(si.SABAR_SOURCE, SimpleNamespace()))
+
+
+# ---------------------------------------------------------------------------
+# Dudhdhara (Bharuch) tests
+# ---------------------------------------------------------------------------
+
+_DUDHDHARA_NAV_HTML = """
+<ul class="dropdown">
+  <li><a href="assets/image/supplier_pdf.pdf" target="_blank">Dudhdhara - Suppliers Invited</a></li>
+</ul>
+"""
+
+_DUDHDHARA_HTML = _DUDHDHARA_NAV_HTML + """
+<table class="table table-bordered">
+  <thead>
+    <tr><td colspan="8"><center>For Our Milk Producers</center></td></tr>
+    <tr><th>Sr.no</th><th>Title</th><th>Downloads</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <th scope="row">01</th>
+      <td>Gobardhan Yojana Pripatra</td>
+      <td><a href="assets/image/gobar_dhan_yojana_paripatra_no_12_0001_1_5.pdf" target="_blank">Download</a></td>
+    </tr>
+  </tbody>
+</table>
+"""
+
+
+def test_dudhdhara_source_url_is_configurable_via_env():
+    # Sources are built at import time and the default equals the fallback
+    # literal, so only a fresh interpreter proves the env var is honoured.
+    env = {**os.environ, "DUDHDHARA_SCHEME_SOURCE_URL": "https://dudhdhara-env.test/schemes/"}
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import app.services.scheme_ingestion as si;"
+            "print(si.DUDHDHARA_SOURCE.source_url);"
+            "print(si.DUDHDHARA_SITE_ORIGIN)",
+        ],
+        cwd=Path(__file__).resolve().parents[1],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert result.stdout.splitlines()[-2:] == [
+        "https://dudhdhara-env.test/schemes",
+        "https://dudhdhara-env.test",
+    ]
+
+
+def test_parse_dudhdhara_scheme_links_reads_table_rows_only():
+    assert si.parse_dudhdhara_scheme_links(_DUDHDHARA_HTML) == [
+        {
+            "scheme_title": "Gobardhan Yojana Pripatra",
+            "scheme_url": "https://www.dudhdharadairy.in/assets/image/gobar_dhan_yojana_paripatra_no_12_0001_1_5.pdf",
+        }
+    ]
+
+
+def test_parse_dudhdhara_scheme_links_has_no_page_wide_fallback():
+    assert si.parse_dudhdhara_scheme_links(_DUDHDHARA_NAV_HTML) == []
+
+
+def test_refresh_dudhdhara_source_caches_parsed_links_under_bharuch(monkeypatch):
+    async def fake_acquire(_cache_key, redis_client=None):
+        return "token"
+
+    async def fake_lock_noop(_cache_key, _token, redis_client=None):
+        return None
+
+    async def fake_fetch_html(_client, url):
+        assert url == si.DUDHDHARA_SOURCE.source_url
+        return _DUDHDHARA_HTML
+
+    async def fake_build(**kwargs):
+        return {
+            "union_name": kwargs["source"].union_name,
+            "scheme_title": kwargs["scheme_title"],
+            "scheme_url": kwargs["scheme_url"],
+        }
+
+    cached = {}
+
+    async def fake_cache(cache_key, records, redis_client=None):
+        cached[cache_key] = records
+
+    _stub_empty_prior_pdf_cache(monkeypatch)
+    monkeypatch.setattr(si, "acquire_refresh_lock", fake_acquire)
+    monkeypatch.setattr(si, "extend_refresh_lock", fake_lock_noop)
+    monkeypatch.setattr(si, "release_refresh_lock", fake_lock_noop)
+    monkeypatch.setattr(si, "fetch_html", fake_fetch_html)
+    monkeypatch.setattr(si, "_build_pdf_record", fake_build)
+    monkeypatch.setattr(si, "cache_source_records", fake_cache)
+
+    assert asyncio.run(si.refresh_scheme_source(si.DUDHDHARA_SOURCE, client=SimpleNamespace())) is True
+    assert cached == {
+        si.DUDHDHARA_SOURCE.cache_key: [
+            {
+                "union_name": "bharuch",
+                "scheme_title": "Gobardhan Yojana Pripatra",
+                "scheme_url": "https://www.dudhdharadairy.in/assets/image/gobar_dhan_yojana_paripatra_no_12_0001_1_5.pdf",
+            }
+        ]
+    }
