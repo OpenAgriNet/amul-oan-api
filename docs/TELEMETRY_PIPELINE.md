@@ -114,8 +114,10 @@ Langfuse's own.
 - Always filter `environment` (`voice-production`, `chat-production`), so dev
   traffic stays out.
 - Work per day with a date range: `toDate(timestamp) AS day`, then
-  `WHERE day BETWEEN {from} AND {to} GROUP BY day`. Roll up to weeks or months
-  in the chart, not in the table.
+  `WHERE day BETWEEN {from} AND {to} GROUP BY day`. Roll turn counts up to weeks
+  or months in the chart, not in the table. Unique users and sessions don't add
+  up across days, so group those by `toMonday(timestamp)` or
+  `toStartOfMonth(timestamp)` instead.
 - A rate only counts turns that had the field:
   `WHERE field_availability['outcome'] = 'recorded'`. Voice had no outcome before
   v3, and that is not the same as success.
@@ -140,18 +142,31 @@ ORDER BY day
 
 ### From the API
 
-The dashboard service can ask this app instead of ClickHouse. Two read-only
+The dashboard service can ask this app instead of ClickHouse. Read-only
 endpoints, for a server rather than a browser, with the key in `X-API-Key`:
 
-- `GET /api/telemetry/stats?from=2026-09-01&to=2026-09-30`: questions (turns),
-  sessions and users per channel, and both added up.
-- `GET /api/telemetry/daily?from=...&to=...`: the same per day and channel, for
-  graphs. Days without turns are left out.
+- `GET /api/telemetry/stats?from=2026-09-01&to=2026-09-30`: questions, sessions,
+  users and new users per channel, and both added up.
+- `GET /api/telemetry/graph?from=...&to=...&granularity=day`: questions,
+  sessions, users and failed turns per `hour`, `day`, `week` (from Monday) or
+  `month`, for each channel. Buckets without turns are left out, and the first
+  and last can be partial.
+- `GET /api/telemetry/sessions?from=...&to=...`: average questions per session
+  and seconds from its first turn to its last, over sessions with a question.
+- `GET /api/telemetry/outcomes?from=...&to=...`: turns, sessions and users per
+  `outcome_class`, and `not_recorded` for turns with no outcome.
 
 Days are UTC and both ends count. Without `from` the range starts at the first
 turn, without `to` it ends today. They read as `telemetry_dashboard` and follow
-the rules above. Someone who used both voice and chat is a user in each, since
-the hashes can't be matched, so `total.users` can count one person twice.
+the rules above.
+
+- A question is a turn, except voice's `non_question` ones (a stale re-dispatch,
+  non-speech, a greeting...). Voice before v3 recorded no outcome, so all of its
+  turns count there.
+- A new user's first turn on record is in the range, so the first days after
+  the import started count everyone as new.
+- Someone who used both voice and chat is a user in each, since the hashes
+  can't be matched, so `total.users` can count one person twice.
 
 Set on the app: `TELEMETRY_DASHBOARD_PASSWORD`, `TELEMETRY_QUERY_API_KEY`, and
 `TELEMETRY_CLICKHOUSE_HOST` / `TELEMETRY_CLICKHOUSE_PORT` if ClickHouse isn't on
