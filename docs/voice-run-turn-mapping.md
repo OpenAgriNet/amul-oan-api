@@ -3,7 +3,7 @@
 How a voice turn moves onto the `run_turn` seam, piece by piece, and which pieces are shared
 with chat versus populated separately.
 
-Status: decided, in progress (PRs 1–5 done). Read against `voice-oan-api@amul-dev` (`3b19835`, 2026-09-29) and
+Status: decided, in progress (PRs 1–6 done). Read against `voice-oan-api@amul-dev` (`3b19835`, 2026-09-29) and
 `amul-oan-api@main` (`c08a5f1`, after #327). Line numbers below are `app/services/voice.py` at
 that voice commit unless a path says otherwise. Background is in `docs/channel-seam-design.md`;
 this is step 4 of its landing order.
@@ -205,6 +205,20 @@ reads it. So a slot lands in the same PR as the code that reads it, never ahead 
    amul-dev before reaching moderation; they run here against the current signature. The one
    existing test changed here is `test_config_source`'s default-channel assertion, which still
    expected the enum inference PR 2 removed.
+
+   **Background set and the gate: done** on `feat/voice-background-and-gate` (PR 6), stacked on
+   PR 5. `SurfaceProfile.background` builds a turn's set right after the classifiers, and
+   building it starts the work. `run_turn` pulls the agent's first chunk, asks the gate before
+   anything is emitted, and closes the set on every exit. A gate decision is answered like a
+   classifier's. Chat has no background, so its turns run as before. Voice's set
+   (`app/voice/background.py`) runs moderation and the non-meaningful streak with voice's
+   timeouts and fail-open rules: a rejection is declined in the caller's language, and five
+   non-meaningful turns end the call with the raw hang-up token. These still come later, with
+   the code that reads them: the farmer data and consent tasks, the empty-pretranslation guard
+   and the consent gate, the nudge cancellation and stale checks around a decline, and the
+   English text a hang-up keeps in history (the caller's own words until pretranslation lands).
+   Until the pretranslation and agent-input PRs, a voice surface on `run_turn` would also run
+   chat's moderation before the agent; nothing serves voice from here yet.
 5. Voice adapter and route behind a flag, off by default, emitting `voice.turn.v1`.
 6. Parity: voice's own tests against the new path, `check_pipeline_parity.py`,
    `measure_voice_ttft.py`, then shadow traffic in dev, comparing `voice_turns` old against new:
