@@ -4,7 +4,8 @@
 # trace field (sessionId, input), metadata.<key>, or a nested key such as
 # metadata.agent.signed_in. A new version can say `extends: voice.turn.v1` and
 # list only the fields that moved.
-# The metadata keys come from telemetry/contracts/ in voice-oan-api.
+# The metadata keys come from telemetry/contracts/ in voice-oan-api, copied to
+# telemetry/contracts/ here for voice served from this repo.
 
 voice.turn.v1:
   root: agent_journey

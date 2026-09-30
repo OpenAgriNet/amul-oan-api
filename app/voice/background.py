@@ -15,11 +15,15 @@ The farmer data fetch starts here too, and on the farmer's reply to an outbound
 call the consent classifier and the milk prefetch. The agent input reads the
 first two. The farmer fetch is left to finish when the turn ends, as voice
 leaves it: it fills the cache for the call's next turn.
+
+Each check's latency and verdict go on the turn's trace when the check is
+resolved, timed to when it finished rather than to when it was read.
 """
 from __future__ import annotations
 
 import asyncio
 import re
+import time
 from functools import partial
 from typing import Optional
 
@@ -31,9 +35,11 @@ from app.voice import outbound as _outbound
 from app.voice.classifiers import TELEPHONY_TERMINATE_CALL_TOKEN, RenderForCaller
 from app.voice.farmer import _collect_farmer_accounts, get_or_fetch_farmer_data
 from app.voice.history import HISTORY_MARKERS, history_pair
+from app.voice.liveness import nudge_stopped
 from app.voice.moderation import ModerationVerdict, check_moderation
 from app.voice.non_meaningful import NonMeaningfulVerdict, check_non_meaningful_streak
 from app.voice.outbound_consent import ConsentVerdict, classify_consent
+from app.voice.trace import current_trace, sanitize_text
 from helpers.utils import get_logger
 
 logger = get_logger(__name__)
@@ -150,21 +156,26 @@ class VoiceBackground:
         self._process_id = turn.call.process_id if turn.call is not None else None
         self._history_text = turn.query
         history = list(turn.history)
+        self._moderation_recent_history = "\n\n".join(format_message_pairs(history, 2))
         self._non_meaningful_turns = _collect_recent_user_turns_for_non_meaningful(history, turn.query, limit=5)
-        self._moderation_task = asyncio.create_task(
+        self._started_at: dict[str, float] = {}
+        self._done_at: dict[str, float] = {}
+        self._moderation_task = self._timed(
+            "moderation",
             check_moderation(
                 text=turn.query,
                 source_lang=self._source_lang,
-                recent_history_text="\n\n".join(format_message_pairs(history, 2)),
+                recent_history_text=self._moderation_recent_history,
                 execution=execution,
-            )
+            ),
         )
-        self._non_meaningful_task = asyncio.create_task(
+        self._non_meaningful_task = self._timed(
+            "non_meaningful",
             check_non_meaningful_streak(
                 user_turns=self._non_meaningful_turns,
                 source_lang=self._source_lang,
                 execution=execution,
-            )
+            ),
         )
         self._mobile = normalize_phone_to_mobile(turn.user_id)
         self._farmer_task = (
@@ -190,6 +201,17 @@ class VoiceBackground:
         self._moderation_verdict: Optional[ModerationVerdict] = None
         self._non_meaningful_resolved = False
         self._non_meaningful_verdict: Optional[NonMeaningfulVerdict] = None
+
+    def _timed(self, name: str, check) -> asyncio.Task:
+        """Start a check, stamping when it really finishes: its verdict is read
+        later, and that wait is not the check's latency."""
+        self._started_at[name] = time.monotonic()
+        task = asyncio.create_task(check)
+        task.add_done_callback(lambda _t: self._done_at.__setitem__(name, time.monotonic()))
+        return task
+
+    def _duration_ms(self, name: str) -> float:
+        return ((self._done_at.get(name) or time.monotonic()) - self._started_at[name]) * 1000.0
 
     @property
     def mobile(self) -> Optional[str]:
@@ -260,17 +282,74 @@ class VoiceBackground:
         if self._moderation_resolved:
             return self._moderation_verdict
         self._moderation_resolved = True
+        trace = current_trace()
+        moderation_status = "ok"
+        moderation_status_message: Optional[str] = None
         try:
             self._moderation_verdict = await self._moderation_task
+            trace.attach_stage_timing(
+                "moderation",
+                self._duration_ms("moderation"),
+                source_lang=self._source_lang,
+            )
         except asyncio.CancelledError:
             raise
         except Exception as moderation_error:
+            moderation_status = "error"
+            moderation_status_message = str(moderation_error)[:300]
+            trace.attach_stage_timing(
+                "moderation",
+                self._duration_ms("moderation"),
+                status="error",
+                source_lang=self._source_lang,
+            )
             logger.error(
                 "Moderation task raised unexpectedly for session_id=%s error=%s",
                 self._turn.session_id,
                 moderation_error,
             )
             self._moderation_verdict = None
+        moderation_duration_ms = self._duration_ms("moderation")
+        trace.set_moderation(self._moderation_verdict)
+        moderation_payload = trace.metadata.get("moderation", {})
+        verdict = self._moderation_verdict
+        trace.record_child_observation(
+            name="moderation",
+            as_type="generation",
+            input={
+                "source_lang": self._source_lang,
+                "text": sanitize_text(self._turn.query),
+                "recent_history_text": sanitize_text(self._moderation_recent_history),
+            },
+            output=(
+                {
+                    "category": getattr(verdict, "category", None),
+                    "reason": getattr(verdict, "reason", None),
+                    "rejected": getattr(verdict, "rejected", None),
+                    "failed_open": getattr(verdict, "failed_open", None),
+                    "failed_closed": getattr(verdict, "failed_closed", None),
+                }
+                if verdict is not None
+                else {"available": False}
+            ),
+            metadata={
+                "duration_ms": round(moderation_duration_ms, 2),
+                "status": moderation_status,
+                "source_lang": self._source_lang,
+                "pipeline_profile": trace.metadata.get("pipeline_profile"),
+                "requested_tier": moderation_payload.get("requested_tier"),
+                "requested_provider": moderation_payload.get("requested_provider"),
+                "requested_model": moderation_payload.get("requested_model"),
+                "actual_tier": moderation_payload.get("actual_tier"),
+                "actual_provider": moderation_payload.get("actual_provider"),
+                "actual_model": moderation_payload.get("actual_model"),
+                "fallback_used": moderation_payload.get("fallback_used"),
+                "attempts": moderation_payload.get("attempts"),
+            },
+            model=moderation_payload.get("actual_model") or moderation_payload.get("requested_model"),
+            level="ERROR" if moderation_status == "error" else "DEFAULT",
+            status_message=moderation_status_message,
+        )
         if self._moderation_verdict is not None:
             logger.info(
                 "Moderation verdict: category=%s rejected=%s failed_open=%s reason=%r session_id=%s process_id=%s",
@@ -288,13 +367,22 @@ class VoiceBackground:
             return self._non_meaningful_verdict
         self._non_meaningful_resolved = True
         task = self._non_meaningful_task
+        trace = current_trace()
+        should_gate = _should_gate_non_meaningful_llm(self._non_meaningful_turns)
         try:
-            if not _should_gate_non_meaningful_llm(self._non_meaningful_turns) and not task.done():
+            if not should_gate and not task.done():
                 await _cancel_and_reap(task)
                 self._non_meaningful_verdict = NonMeaningfulVerdict(
                     five_consecutive_non_meaningful=False,
                     reason="gate skipped by heuristic",
                     failed_open=False,
+                )
+                trace.attach_stage_timing(
+                    "non_meaningful",
+                    (time.monotonic() - self._started_at["non_meaningful"]) * 1000.0,
+                    source_lang=self._source_lang,
+                    turn_count=len(self._non_meaningful_turns),
+                    gate_skipped=True,
                 )
             elif task.done():
                 self._non_meaningful_verdict = await task
@@ -322,9 +410,21 @@ class VoiceBackground:
                     )
                 else:
                     self._non_meaningful_verdict = await task
+            trace.attach_stage_timing(
+                "non_meaningful",
+                self._duration_ms("non_meaningful"),
+                source_lang=self._source_lang,
+                turn_count=len(self._non_meaningful_turns),
+            )
         except asyncio.CancelledError:
             raise
         except Exception as non_meaningful_error:
+            trace.attach_stage_timing(
+                "non_meaningful",
+                self._duration_ms("non_meaningful"),
+                status="error",
+                source_lang=self._source_lang,
+            )
             logger.error(
                 "Non-meaningful task raised unexpectedly for session_id=%s error=%s",
                 self._turn.session_id,
@@ -335,6 +435,16 @@ class VoiceBackground:
                 reason=f"task error: {type(non_meaningful_error).__name__}",
                 failed_open=True,
             )
+        trace.metadata["non_meaningful"] = {
+            "available": self._non_meaningful_verdict is not None,
+            "five_consecutive_non_meaningful": bool(
+                getattr(self._non_meaningful_verdict, "five_consecutive_non_meaningful", False)
+            ),
+            "failed_open": bool(getattr(self._non_meaningful_verdict, "failed_open", False)),
+            "reason": getattr(self._non_meaningful_verdict, "reason", ""),
+            "turn_count": len(self._non_meaningful_turns),
+            "gate_skipped": not should_gate,
+        }
         if self._non_meaningful_verdict is not None:
             logger.info(
                 "Non-meaningful verdict: five_consecutive_non_meaningful=%s failed_open=%s reason=%r session_id=%s process_id=%s",
@@ -348,16 +458,19 @@ class VoiceBackground:
 
     async def _decline(self, verdict: ModerationVerdict) -> ClassifierResult:
         """The canned decline for a rejected query. History keeps it in English."""
+        nudge_stopped("moderation_rejected")
         decline_en = verdict.decline_text_en() or _DEFAULT_DECLINE_EN
         decline_for_caller = await self._render(decline_en, self._target_lang)
         return ClassifierResult(
             canned_text=decline_for_caller,
             label="moderation_rejected",
             history_pair=history_pair(HISTORY_MARKERS["moderation_reject"], decline_en),
+            outcome="moderation_rejected",
         )
 
     def _hang_up(self, verdict: NonMeaningfulVerdict) -> ClassifierResult:
         """Say goodbye so the telephony provider ends the call."""
+        nudge_stopped("non_meaningful_hangup")
         goodbye = TELEPHONY_TERMINATE_CALL_TOKEN.get(
             self._target_lang,
             TELEPHONY_TERMINATE_CALL_TOKEN["en"],
@@ -374,6 +487,7 @@ class VoiceBackground:
             label="non_meaningful_hangup",
             history_pair=history_pair(self._history_text, TELEPHONY_TERMINATE_CALL_TOKEN["en"]),
             raw=True,
+            outcome="non_meaningful_hangup",
         )
 
 

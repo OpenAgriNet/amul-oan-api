@@ -9,6 +9,11 @@ CHAT_TELEMETRY_SCHEMA_VERSION = "chat.turn.v1"
 CHAT_TELEMETRY_SERVICE = "amul-oan-api"
 CHAT_TURN_V1_ROOT = "chat.translation"
 
+VOICE_TELEMETRY_SCHEMA_VERSION = "voice.turn.v1"
+# Voice turns served from this repo are stamped with this service, not
+# voice-oan-api's, so they can be told apart from turns served there.
+VOICE_TELEMETRY_SERVICE = CHAT_TELEMETRY_SERVICE
+
 
 @lru_cache(maxsize=1)
 def chat_telemetry_release() -> str:
@@ -61,6 +66,14 @@ def forward_chat_telemetry_metadata() -> dict[str, str]:
     return {
         "amul.schema_version": CHAT_TELEMETRY_SCHEMA_VERSION,
         "service": CHAT_TELEMETRY_SERVICE,
+        "release": chat_telemetry_release(),
+    }
+
+
+def forward_voice_telemetry_metadata() -> dict[str, str]:
+    return {
+        "amul.schema_version": VOICE_TELEMETRY_SCHEMA_VERSION,
+        "service": VOICE_TELEMETRY_SERVICE,
         "release": chat_telemetry_release(),
     }
 

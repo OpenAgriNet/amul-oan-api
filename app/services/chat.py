@@ -1,7 +1,7 @@
 from contextlib import aclosing, contextmanager, nullcontext
 from types import MappingProxyType
 from typing import Any, AsyncGenerator, Mapping, Optional
-from functools import lru_cache
+from functools import lru_cache, partial
 import regex
 import re
 import time
@@ -473,6 +473,11 @@ async def _write_short_circuit_history(history, decision, key: str, request_id: 
     await update_message_history(key, messages)
 
 
+def _heard(answer: ClassifierResult) -> str:
+    """What the caller hears for an answer given instead of the agent's."""
+    return answer.canned_text + (answer.raw_tail or "")
+
+
 async def _stale_outcome(is_stale: Optional[StalenessCheck], reason: str) -> Optional[str]:
     """The outcome to stop with if this request should no longer speak, else None."""
     if is_stale is None:
@@ -799,6 +804,29 @@ async def _identity_classifier(turn: Turn) -> ClassifierResult | None:
     )
 
 
+def _record_served_tier(execution, _new_messages) -> None:
+    """Which tier ACTUALLY answered, as chat.turn.v1's ``served_tier`` score.
+
+    compact_metadata reports the configured primary, and it is snapshotted before
+    any step runs, so a health-prune or failure fallback is invisible in the
+    trace without this. Recorded once the agent's answer is out, because the
+    walker only knows it then.
+    """
+    if not get_langfuse_client:
+        return
+    try:
+        served = _pipeline_trace.served_summary(execution.begin_trace())
+        if served:
+            get_langfuse_client().score_current_trace(
+                name="served_tier",
+                value=served,
+                data_type="CATEGORICAL",
+                comment="Tier that actually produced this turn, per step",
+            )
+    except Exception as e:
+        logger.warning("Langfuse: failed to record served_tier: %s", e)
+
+
 async def _chat_agent_input(
     turn: Turn,
     pretranslated: Pretranslated,
@@ -1014,6 +1042,7 @@ async def _chat_agent_input(
         deps=deps,
         history=history,
         observe=observe,
+        after_run=partial(_record_served_tier, execution),
     )
 
 
@@ -1196,7 +1225,7 @@ async def run_turn(
                 if stale is not None:
                     _turn_outcome = stale
                     return
-                telemetry.record_output(short_circuit.canned_text, short_circuit.label)
+                telemetry.record_output(_heard(short_circuit), short_circuit.label)
                 await _write_short_circuit_history(
                     history, short_circuit, message_history_session_id, request_id
                 )
@@ -1241,7 +1270,7 @@ async def run_turn(
                 if liveness is not None:
                     await liveness.stop()
                     liveness = None
-                telemetry.record_output(pretranslated.canned_text, pretranslated.label)
+                telemetry.record_output(_heard(pretranslated), pretranslated.label)
                 await _write_short_circuit_history(
                     history, pretranslated, message_history_session_id, request_id
                 )
@@ -1277,7 +1306,7 @@ async def run_turn(
                 if liveness is not None:
                     await liveness.stop()
                     liveness = None
-                telemetry.record_output(agent_input.canned_text, agent_input.label)
+                telemetry.record_output(_heard(agent_input), agent_input.label)
                 await _write_short_circuit_history(
                     history, agent_input, message_history_session_id, request_id
                 )
@@ -1327,7 +1356,7 @@ async def run_turn(
                         if liveness is not None:
                             await liveness.stop()
                             liveness = None
-                        telemetry.record_output(gated.canned_text, gated.label)
+                        telemetry.record_output(_heard(gated), gated.label)
                         await _write_short_circuit_history(
                             history, gated, message_history_session_id, request_id
                         )
@@ -1344,33 +1373,21 @@ async def run_turn(
                         liveness = None
                     yield TextEmission(_out)
                 logger.info(f"Streaming complete for session {session_id}")
+                if agent_input.after_run is not None:
+                    agent_input.after_run(new_messages)
 
                 # Record trace output: what the caller received, as the sink saw it.
                 trace_output = sink.final_text()
                 if trace_output:
                     telemetry.record_output(trace_output, "final")
-                if get_langfuse_client:
+                if get_langfuse_client and agent_obs is not None:
                     try:
                         # Match moderation: structured output so Langfuse shows JSON in the observation panel.
-                        if agent_obs is not None:
-                            agent_obs.update(
-                                output={"response": trace_output or ""},
-                            )
-                        # Which tier ACTUALLY answered. compact_metadata reports the
-                        # configured primary, and it is snapshotted before any step
-                        # runs, so a health-prune or failure fallback is invisible in
-                        # the trace without this. Emitted here because the walker only
-                        # knows the answer once the turn is over.
-                        served = _pipeline_trace.served_summary(pt)
-                        if served:
-                            get_langfuse_client().score_current_trace(
-                                name="served_tier",
-                                value=served,
-                                data_type="CATEGORICAL",
-                                comment="Tier that actually produced this turn, per step",
-                            )
+                        agent_obs.update(
+                            output={"response": trace_output or ""},
+                        )
                     except Exception as e:
-                        logger.warning("Langfuse: failed to record agent output / served_tier: %s", e)
+                        logger.warning("Langfuse: failed to record agent output: %s", e)
 
             # Rich provider documents are deliberately emitted only after the
             # model/translation/trace pipeline is finished. They are not model
@@ -1389,6 +1406,7 @@ async def run_turn(
                 if stale is not None:
                     _turn_outcome = stale
                     return
+                telemetry.record_output(closing, "closing")
                 yield TextEmission(closing, raw=True)
 
             # Post-processing happens AFTER streaming is complete
