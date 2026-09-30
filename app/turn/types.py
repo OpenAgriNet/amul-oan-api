@@ -12,9 +12,9 @@ and decides what each one means on its wire.
 
 Following the rule in ``app/channels/base``, a field appears only when something
 reads it. The sink and the telemetry are on ``SurfaceProfile`` because ``run_turn``
-reads them and chat populates them with its real ones. ``Turn.call`` is there
-because voice's classifiers read it, and the background set and liveness because
-``run_turn`` runs voice's.
+reads them and chat populates them with its real ones; so is pretranslation.
+``Turn.call`` is there because voice's classifiers read it, and the background set
+and liveness because ``run_turn`` runs voice's.
 """
 from __future__ import annotations
 
@@ -282,6 +282,37 @@ class LivenessFactory(Protocol):
     ) -> TurnLiveness: ...
 
 
+# ── pretranslation ──────────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class Pretranslated:
+    """The caller's query as the agent will read it."""
+
+    query: str
+    #: The language the agent answers in, before any output translation.
+    lang: str
+
+
+class Pretranslation(Protocol):
+    """Puts the caller's query into the language the agent reads.
+
+    Returns what the agent is asked, or an answer that ends the turn instead
+    (voice asks the caller to repeat when nothing usable came through). It is
+    given the turn's background set: voice's must decline a rejected query
+    rather than ask for a repeat, and hands the background the English words
+    history keeps for the turn. Chat's ignores it.
+    """
+
+    async def __call__(
+        self,
+        turn: Turn,
+        *,
+        execution: Any,
+        background: Optional[TurnBackground],
+    ) -> Union[Pretranslated, ClassifierResult]: ...
+
+
 # ── the sink ────────────────────────────────────────────────────────────────
 
 
@@ -377,3 +408,6 @@ class SurfaceProfile:
     #: What the caller hears while the model works. It needs a side channel, so a
     #: turn run without a ``SideChannelSender`` has none. Chat has none.
     liveness: Optional[LivenessFactory] = None
+    #: Puts the query into the language the agent reads. Like the sink, a surface
+    #: that always answers from its classifiers may leave it unset.
+    pretranslation: Optional[Pretranslation] = None
