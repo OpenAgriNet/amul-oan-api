@@ -303,7 +303,11 @@ class TurnSink(Protocol):
 
 
 class SinkFactory(Protocol):
-    """Builds a turn's sink from what ``run_turn`` knows at that point."""
+    """Builds a turn's sink from what ``run_turn`` knows at that point.
+
+    ``is_stale`` is the turn's staleness check, for a sink that must stop
+    speaking mid-answer when the request goes stale (voice's). Chat has none.
+    """
 
     def __call__(
         self,
@@ -312,6 +316,7 @@ class SinkFactory(Protocol):
         execution: Any,
         deps: Any,
         translate_to: Optional[str],
+        is_stale: Optional[StalenessCheck],
     ) -> TurnSink: ...
 
 

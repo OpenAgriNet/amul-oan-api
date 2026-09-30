@@ -64,7 +64,7 @@ class _RecordingSink:
 
     built = []
 
-    def __init__(self, turn, *, execution, deps, translate_to):
+    def __init__(self, turn, *, execution, deps, translate_to, is_stale=None):
         self.kwargs = dict(turn=turn, execution=execution, deps=deps, translate_to=translate_to)
         _RecordingSink.built.append(self)
 
