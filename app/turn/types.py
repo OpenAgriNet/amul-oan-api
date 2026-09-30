@@ -13,9 +13,8 @@ and decides what each one means on its wire.
 Following the rule in ``app/channels/base``, a field appears only when something
 reads it. The sink and the telemetry are on ``SurfaceProfile`` because ``run_turn``
 reads them and chat populates them with its real ones. ``Turn.call`` is there
-because voice's classifiers read it, and the background set because ``run_turn``
-runs voice's. The liveness channel is not stubbed: it lands with the voice code
-that populates it.
+because voice's classifiers read it, and the background set and liveness because
+``run_turn`` runs voice's.
 """
 from __future__ import annotations
 
@@ -133,6 +132,10 @@ class SideChannelEmission:
     Voice's telephony nudge is an HTTP POST to a separate endpoint; typed apart
     so it can neither be dropped by a text-only signature nor spoken in-band by
     the TTS batcher. Chat has none.
+
+    It is due while the turn is waiting inside an ``await`` (on the model), where
+    a generator cannot hand anything out, so it goes through the
+    ``SideChannelSender`` ``run_turn`` is given rather than being yielded.
     """
 
     text: str
@@ -166,6 +169,29 @@ class DeferredScheduler(Protocol):
     """
 
     def schedule(self, fn: Callable[..., Any], /, *args: Any) -> None: ...
+
+
+class SideChannelSender(Protocol):
+    """Delivers a ``SideChannelEmission`` now, outside the response stream.
+
+    Voice's sends the telephony nudge. Chat has none.
+    """
+
+    async def send(self, emission: SideChannelEmission) -> None: ...
+
+
+class StalenessCheck(Protocol):
+    """Whether this request should still speak.
+
+    A call turn goes stale when the caller hangs up or a newer request takes
+    over the session; one that keeps talking can speak over the newer one.
+    Returns None while the turn should carry on, otherwise the outcome to
+    record (voice's are ``client_disconnected`` and ``stale_request``), and the
+    turn stops without emitting or writing anything more. ``reason`` names the
+    point that asked, for the logs. Chat has none.
+    """
+
+    async def __call__(self, reason: str) -> Optional[str]: ...
 
 
 # ── the pre-turn classifier chain ───────────────────────────────────────────
@@ -228,6 +254,34 @@ class BackgroundFactory(Protocol):
     def __call__(self, turn: Turn, *, execution: Any) -> TurnBackground: ...
 
 
+# ── liveness ────────────────────────────────────────────────────────────────
+
+
+class TurnLiveness(Protocol):
+    """Keeps a caller who is waiting on the model from hearing only silence.
+
+    Started by ``run_turn`` right after the classifier chain, and stopped just
+    before the first thing the caller hears, or when the turn ends without that.
+    """
+
+    async def stop(self) -> None:
+        """Stop, and reap anything still running. Idempotent; never raises."""
+        ...
+
+
+class LivenessFactory(Protocol):
+    """Builds, and so starts, a turn's liveness."""
+
+    def __call__(
+        self,
+        turn: Turn,
+        *,
+        started_at: float,
+        send: SideChannelSender,
+        is_stale: Optional[StalenessCheck],
+    ) -> TurnLiveness: ...
+
+
 # ── the sink ────────────────────────────────────────────────────────────────
 
 
@@ -282,7 +336,8 @@ class TurnTelemetry(Protocol):
         ...
 
     def record_outcome(self, outcome: str) -> None:
-        """Record how the turn ended: ``success``, ``cancelled`` or ``error``."""
+        """Record how the turn ended: ``success``, ``cancelled``, ``error``, or
+        the outcome a ``StalenessCheck`` stopped it with."""
         ...
 
 
@@ -314,3 +369,6 @@ class SurfaceProfile:
     #: Checks that run alongside the turn and gate its first emission. Chat has
     #: none: its moderation decides before the agent starts.
     background: Optional[BackgroundFactory] = None
+    #: What the caller hears while the model works. It needs a side channel, so a
+    #: turn run without a ``SideChannelSender`` has none. Chat has none.
+    liveness: Optional[LivenessFactory] = None

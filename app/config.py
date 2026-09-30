@@ -359,6 +359,7 @@ class Settings(BaseSettings):
     # it folds in (voice is served by voice-oan-api today).
     nudge_api_url: str = os.getenv("NUDGE_API_URL", "https://vistaar.getraya.app/api/nudge-user")
     nudge_timeout_seconds: float = float(os.getenv("NUDGE_TIMEOUT_SECONDS", "3.0"))
+    enable_voice_nudges: bool = _get_bool_env("ENABLE_VOICE_NUDGES", default=True)
     # Voice's pre-turn classifiers (app/voice/classifiers.py) — also inert on the
     # chat path. Same names and defaults as voice-oan-api.
     stt_signal_retry_ceiling: int = int(os.getenv("STT_SIGNAL_RETRY_CEILING", "3"))
