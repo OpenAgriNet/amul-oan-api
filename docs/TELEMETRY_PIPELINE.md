@@ -138,6 +138,28 @@ GROUP BY day
 ORDER BY day
 ```
 
+### From the API
+
+The dashboard service can ask this app instead of ClickHouse. Two read-only
+endpoints, for a server rather than a browser, with the key in `X-API-Key`:
+
+- `GET /api/telemetry/stats?from=2026-09-01&to=2026-09-30`: questions (turns),
+  sessions and users per channel, and both added up.
+- `GET /api/telemetry/daily?from=...&to=...`: the same per day and channel, for
+  graphs. Days without turns are left out.
+
+Days are UTC and both ends count. Without `from` the range starts at the first
+turn, without `to` it ends today. They read as `telemetry_dashboard` and follow
+the rules above. Someone who used both voice and chat is a user in each, since
+the hashes can't be matched, so `total.users` can count one person twice.
+
+Set on the app: `TELEMETRY_DASHBOARD_PASSWORD`, `TELEMETRY_QUERY_API_KEY`, and
+`TELEMETRY_CLICKHOUSE_HOST` / `TELEMETRY_CLICKHOUSE_PORT` if ClickHouse isn't on
+localhost:8123. The environments read are `voice-production` and
+`chat-production` unless `TELEMETRY_QUERY_VOICE_ENVIRONMENT` /
+`TELEMETRY_QUERY_CHAT_ENVIRONMENT` say otherwise. Without the password or the
+key the endpoints answer 503.
+
 ## A new field
 
 A mapping can name extra values under `attributes`, and they land in the
