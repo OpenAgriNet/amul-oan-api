@@ -3,7 +3,7 @@
 How a voice turn moves onto the `run_turn` seam, piece by piece, and which pieces are shared
 with chat versus populated separately.
 
-Status: decided, in progress (PRs 1–8 done). Read against `voice-oan-api@amul-dev` (`3b19835`, 2026-09-29) and
+Status: decided, in progress (PRs 1–9 done). Read against `voice-oan-api@amul-dev` (`3b19835`, 2026-09-29) and
 `amul-oan-api@main` (`c08a5f1`, after #327). Line numbers below are `app/services/voice.py` at
 that voice commit unless a path says otherwise. Background is in `docs/channel-seam-design.md`;
 this is step 4 of its landing order.
@@ -250,6 +250,20 @@ reads it. So a slot lands in the same PR as the code that reads it, never ahead 
    liveness waits for a chunk with something to hear. The output-stage trace marks come with
    voice's telemetry. Three existing tests change: two asserted the address stripping voice
    removed, and the recording sink in `test_run_turn_sink.py` takes the new `is_stale` keyword.
+
+   **Pretranslation: done** on `feat/voice-pretranslation` (PR 9), stacked on PR 8.
+   `SurfaceProfile.pretranslation` returns the query for the agent, or an answer that ends the
+   turn, said like the gate's; chat populates it with its own `_pretranslate_query`.
+   `app/voice/pretranslation.py` is voice's: the conversation it quotes, the prompt, the JSON
+   parsing and the glossary fix-up, unchanged, on the tier `llm_core` picks with that tier's
+   client (an OpenAI-compatible one, checked at boot on the voice channel). Voice's TranslateGemma
+   fallback for a switched-off chain is not brought over. The ambiguity rules are voice's own
+   (`assets/voice_ambiguity_terms.json`), because chat's lack rules voice relies on, such as an
+   ASR'd નિદાન meaning insemination; the glossary is shared. When nothing usable comes back the
+   caller is asked to repeat, or the query is declined if moderation rejected it; the step gets
+   the background set for that, and hands it the English history keeps for a hang-up. `run_turn`
+   asks the staleness check before pretranslation on every turn with one. One existing test
+   changes: the list of points where a fresh turn is asked about staleness.
 5. Voice adapter and route behind a flag, off by default, emitting `voice.turn.v1`.
 6. Parity: voice's own tests against the new path, `check_pipeline_parity.py`,
    `measure_voice_ttft.py`, then shadow traffic in dev, comparing `voice_turns` old against new:
