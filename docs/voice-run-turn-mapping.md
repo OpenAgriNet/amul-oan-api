@@ -3,7 +3,7 @@
 How a voice turn moves onto the `run_turn` seam, piece by piece, and which pieces are shared
 with chat versus populated separately.
 
-Status: decided, in progress (PRs 1–6 done). Read against `voice-oan-api@amul-dev` (`3b19835`, 2026-09-29) and
+Status: decided, in progress (PRs 1–7 done). Read against `voice-oan-api@amul-dev` (`3b19835`, 2026-09-29) and
 `amul-oan-api@main` (`c08a5f1`, after #327). Line numbers below are `app/services/voice.py` at
 that voice commit unless a path says otherwise. Background is in `docs/channel-seam-design.md`;
 this is step 4 of its landing order.
@@ -192,8 +192,8 @@ reads it. So a slot lands in the same PR as the code that reads it, never ahead 
    history markers and route names; `stt_signals.py` came over unchanged. `Turn.call` carries
    the process ID and the outbound consent-turn flag. Two things are left for later PRs on
    purpose: translating an English line for the caller is passed in as `render` and the real
-   one comes with the sink, and the STT path's stale check before it replies comes back with
-   the staleness hook. Nothing is wired to a route yet.
+   one comes with the sink, and the STT path's stale check before it replies came back with
+   the staleness hook (PR 7). Nothing is wired to a route yet.
 
    **Voice's checks on `llm_core`: done** on `feat/voice-checks-on-llm-core` (PR 5), stacked on
    the classifiers with PR 2 merged in, because `Step.NON_MEANINGFUL` is only safe once the
@@ -219,6 +219,22 @@ reads it. So a slot lands in the same PR as the code that reads it, never ahead 
    English text a hang-up keeps in history (the caller's own words until pretranslation lands).
    Until the pretranslation and agent-input PRs, a voice surface on `run_turn` would also run
    chat's moderation before the agent; nothing serves voice from here yet.
+
+   **Liveness: done** on `feat/voice-liveness` (PR 7), stacked on PR 6. `run_turn` takes a
+   `side_channel` sender and an `is_stale` check from where the turn is composed, like the
+   scheduler; chat passes neither. It asks `is_stale` before a classifier's answer, before the
+   gate's, and before the history write, and a stale turn stops there with the outcome the check
+   gives (`client_disconnected`, `stale_request`), neither speaking nor saving. Voice checked
+   only the STT reply among the short-circuits; checking every answer is the safer superset. A
+   surface's liveness starts after the classifiers when there is a side channel, and is stopped
+   just before the first emission or when the turn ends. Voice's (`app/voice/liveness.py`) is
+   the nudge: it fires on the timeout from the start of the request or on the agent's first
+   tool call, checks staleness before sending, and sends once. The file also has voice's two
+   implementations for the adapter to wire: `RayaNudgeSender` and `CallStaleness`. One fix over
+   voice: stopping the nudge now also stops its timer and tool-call waits, which voice left
+   running. Still to come: the stale checks during streaming (with the sink), the one before
+   pretranslation, the tools that fire the tool-call signal (with agent input), and the nudge's
+   trace fields (with voice's telemetry).
 5. Voice adapter and route behind a flag, off by default, emitting `voice.turn.v1`.
 6. Parity: voice's own tests against the new path, `check_pipeline_parity.py`,
    `measure_voice_ttft.py`, then shadow traffic in dev, comparing `voice_turns` old against new:
@@ -263,9 +279,9 @@ Decided 2026-09-29 by the owner of this work.
 
 - **Stale checks and nudge timing are behaviour.** The port must keep at least one check before
   every emission, before the nudge send and before the history write, or a superseded request
-  can speak over a newer one. The STT short-circuit's check before its reply
-  (`before_stt_signal_response`) is not in the classifier yet; it returns with the staleness
-  hook.
+  can speak over a newer one. `run_turn` checks before every classifier and gate answer, before
+  the history write and before the nudge is sent; the checks during streaming come with the
+  sink.
 - **The hang-up token must bypass the normalizer.** Hold message, non-meaningful hang-up,
   outbound decline and `conversation_closing` all rely on exact ASCII `"Goodbye."`; the Gujarati
   normalizer turns it into `"."`.
