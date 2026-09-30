@@ -3,7 +3,7 @@
 How a voice turn moves onto the `run_turn` seam, piece by piece, and which pieces are shared
 with chat versus populated separately.
 
-Status: decided, in progress (PRs 1–4 done). Read against `voice-oan-api@amul-dev` (`3b19835`, 2026-09-29) and
+Status: decided, in progress (PRs 1–5 done). Read against `voice-oan-api@amul-dev` (`3b19835`, 2026-09-29) and
 `amul-oan-api@main` (`c08a5f1`, after #327). Line numbers below are `app/services/voice.py` at
 that voice commit unless a path says otherwise. Background is in `docs/channel-seam-design.md`;
 this is step 4 of its landing order.
@@ -142,6 +142,12 @@ Each lands on its own, and none changes chat behaviour.
    `ExecutionContext`. What voice lacks is its call sites on that API and `Step.NON_MEANINGFUL`,
    and both move with the voice modules that use them.
 
+   One more difference turned up when voice's checks moved over (PR 5): voice runs moderation,
+   the non-meaningful streak and outbound consent as bare `chat.completions` calls, while chat
+   runs moderation through a pydantic-ai agent. `llm_core` now has a `RAW_OPENAI` client kind
+   for that; `non_meaningful` is always built as one, and a caller can ask for any step as one
+   through `ExecutionContext.target` and `run_adapter`. Chat's calls are unchanged.
+
    One thing had to go first. When `PIPELINE_CHANNEL` was unset, `config_source` inferred the
    live-config channel from the enum: `"voice"` if `Step` had `NON_MEANINGFUL`. With voice's
    step in this repo's enum, every chat deployment without that variable would have read voice's
@@ -177,8 +183,9 @@ reads it. So a slot lands in the same PR as the code that reads it, never ahead 
 4. Voice surface population, one structure per PR. Each brings the slots it reads, the voice
    modules it needs from `amul-dev` with their `llm_core` call sites moved onto
    `ExecutionContext`, and any `llm_core` or `FarmerContext` change it depends on:
-   classifiers, background tasks and the gate (with `Step.NON_MEANINGFUL`), liveness (with the
-   side-channel sender and staleness hook), sink, pretranslation, agent input.
+   classifiers, voice's checks on `llm_core` (with `Step.NON_MEANINGFUL`), background tasks and
+   the gate, liveness (with the side-channel sender and staleness hook), sink, pretranslation,
+   agent input.
 
    **Classifiers: done** on `feat/voice-surface-classifiers`, stacked on PR 3. The five
    short-circuits are in `app/voice/classifiers.py` with voice's detection rules, canned lines,
@@ -187,6 +194,17 @@ reads it. So a slot lands in the same PR as the code that reads it, never ahead 
    purpose: translating an English line for the caller is passed in as `render` and the real
    one comes with the sink, and the STT path's stale check before it replies comes back with
    the staleness hook. Nothing is wired to a route yet.
+
+   **Voice's checks on `llm_core`: done** on `feat/voice-checks-on-llm-core` (PR 5), stacked on
+   the classifiers with PR 2 merged in, because `Step.NON_MEANINGFUL` is only safe once the
+   config channel no longer comes from the enum. Moderation, the non-meaningful streak and
+   outbound consent are in `app/voice/` with voice's prompts, parsing, fail directions and
+   timeouts, and take their clients from the turn's `ExecutionContext`. The background set and
+   the gate that run them are the next PR. Voice's own moderation tests call
+   `check_moderation(variant=...)`, a keyword the function no longer takes, so 12 of them fail on
+   amul-dev before reaching moderation; they run here against the current signature. The one
+   existing test changed here is `test_config_source`'s default-channel assertion, which still
+   expected the enum inference PR 2 removed.
 5. Voice adapter and route behind a flag, off by default, emitting `voice.turn.v1`.
 6. Parity: voice's own tests against the new path, `check_pipeline_parity.py`,
    `measure_voice_ttft.py`, then shadow traffic in dev, comparing `voice_turns` old against new:
@@ -194,7 +212,11 @@ reads it. So a slot lands in the same PR as the code that reads it, never ahead 
 7. Cutover: the amul-oan-api image deployed as the voice service with
    `PIPELINE_CHANNEL=voice` and `LANGFUSE_TRACING_ENVIRONMENT=voice-production`, the telephony
    provider pointed at it, voice-oan-api kept deployable for rollback, and a new era in
-   `telemetry/eras.yaml`.
+   `telemetry/eras.yaml`. The voice deployment takes its LLM config from `PIPELINE_CONFIG_PATH`
+   or the live `llm_pipeline_config:voice` key: this repo's env synthesis builds chat's steps,
+   not voice's (`VOICE_MODERATION_PROVIDER`, `VOICE_NON_MEANINGFUL_PROVIDER`, moderation on the
+   pretranslation models). Porting that synthesis is the alternative if the deployment has to
+   run from env alone.
 
 Each PR is checked the same way: no existing test edited, every existing test's result unchanged,
 a mutation check on what it adds, and a trial merge onto the open telemetry PRs and the earlier
