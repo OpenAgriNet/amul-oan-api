@@ -3,7 +3,7 @@
 How a voice turn moves onto the `run_turn` seam, piece by piece, and which pieces are shared
 with chat versus populated separately.
 
-Status: decided, in progress (PRs 1–9 done). Read against `voice-oan-api@amul-dev` (`3b19835`, 2026-09-29) and
+Status: decided, in progress (PRs 1–10 done). Read against `voice-oan-api@amul-dev` (`3b19835`, 2026-09-29) and
 `amul-oan-api@main` (`c08a5f1`, after #327). Line numbers below are `app/services/voice.py` at
 that voice commit unless a path says otherwise. Background is in `docs/channel-seam-design.md`;
 this is step 4 of its landing order.
@@ -124,8 +124,8 @@ input, sink and normalizer, liveness, staleness, the telemetry contract, tools.
 
 **Voice-only modules, brought over from `amul-dev` unchanged:** `app/services/moderation.py`,
 `non_meaningful.py`, `outbound.py`, `outbound_consent.py`, `stt_signals.py`, `voice_trace.py`, and
-the voice agent in `agents/voice.py`. They live under a voice namespace so it stays obvious what
-belongs to which surface.
+the voice agent with its tools and farmer data, now in `agents/voice/`. They live under a voice
+namespace so it stays obvious what belongs to which surface.
 
 Of the 51 Python files outside `tests/` present in both repos, 8 are identical and 10 differ by
 40 lines or fewer. Those are candidates to share early. The rest, `translation.py` (1,505 lines different),
@@ -264,6 +264,34 @@ reads it. So a slot lands in the same PR as the code that reads it, never ahead 
    the background set for that, and hands it the English history keeps for a hang-up. `run_turn`
    asks the staleness check before pretranslation on every turn with one. One existing test
    changes: the list of points where a fresh turn is asked about staleness.
+
+   **Agent input: done** in three PRs, stacked on PR 9.
+
+   `feat/voice-agent` brings voice's agent layer over as it is, under `agents/voice/` and
+   `app/voice/`: the agent and its three prompts, the tools, the farmer cache and identity gate,
+   loan eligibility, voice's models and its read-only scheme cache. Only module paths change,
+   plus: the agent's model comes from `llm_core`, the identity gate reads `farmer_profile_status`
+   (prerequisite 2), and the ambiguity rules are voice's own file. `onex_sms.py` is the same file
+   in both repos and is shared. Voice's document search needs `marqo`. Voice's own tests for these
+   modules come along, 294 of them.
+
+   `refactor/run-turn-surface-agent-input` moves chat's agent input behind
+   `SurfaceProfile.agent_input`: the farmer context, the FarmerContext, moderation, and the prompt
+   and history the agent sees. Chat's moderation decline and fail-closed line are answers said
+   like the gate's, and `ClassifierResult` carries the outcome, so the fail-closed line is still
+   an error. Chat's farmer context now loads after pretranslation, and a decline that fails to
+   render is recorded once, as an error, where it used to end as cancelled.
+
+   `feat/voice-agent-input` is voice's. The background set also starts the farmer fetch, and on a
+   consent turn the consent check and the milk prefetch. The consent gate hangs up with the
+   farewell on a no, and on a yes reads out the milk details or says there are none. Then the
+   FarmerContext with the moderation task attached for the booking tools, history cleaned of
+   orphaned tool calls and trimmed, the runtime context before it and the query hints after, and
+   the signed-in agent with its higher request limit. After the answer, `conversation_closing`
+   adds the hang-up token. `ClassifierResult.raw_tail` sends the token after the farewell as its
+   own chunk, as voice does, and usage limits reach the agent run. Voice's tools and the nudge
+   now share one tool-call signal; liveness had its own copy, which no tool would have fired.
+   Voice's trace stages and routes come with voice's telemetry.
 5. Voice adapter and route behind a flag, off by default, emitting `voice.turn.v1`.
 6. Parity: voice's own tests against the new path, `check_pipeline_parity.py`,
    `measure_voice_ttft.py`, then shadow traffic in dev, comparing `voice_turns` old against new:
