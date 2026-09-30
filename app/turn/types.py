@@ -13,8 +13,9 @@ and decides what each one means on its wire.
 Following the rule in ``app/channels/base``, a field appears only when something
 reads it. The sink and the telemetry are on ``SurfaceProfile`` because ``run_turn``
 reads them and chat populates them with its real ones. ``Turn.call`` is there
-because voice's classifiers read it. The background set and the liveness channel
-are not stubbed: they land with the voice surface that populates them.
+because voice's classifiers read it, and the background set because ``run_turn``
+runs voice's. The liveness channel is not stubbed: it lands with the voice code
+that populates it.
 """
 from __future__ import annotations
 
@@ -172,10 +173,11 @@ class DeferredScheduler(Protocol):
 
 @dataclass(frozen=True)
 class ClassifierResult:
-    """A pre-turn classifier's decision to answer the turn without the agent.
+    """A decision to answer the turn with fixed text instead of the agent's.
 
-    Returned by a classifier that MATCHED. A classifier that does not apply
-    returns ``None`` and the chain moves on.
+    Returned by a pre-turn classifier that MATCHED (one that does not apply
+    returns ``None`` and the chain moves on), and by the gate before the first
+    emission when a background check says the agent's answer must not be sent.
     """
 
     #: The text to emit to the caller.
@@ -197,6 +199,33 @@ class ClassifierResult:
 #: whether the turn can be answered outright. Running before the background set
 #: is why classifiers never have to cancel anything.
 Classifier = Callable[[Turn], Awaitable[Optional[ClassifierResult]]]
+
+
+# ── the background set and the gate ─────────────────────────────────────────
+
+
+class TurnBackground(Protocol):
+    """One turn's background work, and the gate that consults it.
+
+    Built by ``run_turn`` right after the classifier chain, and building it
+    starts the work, so it runs alongside everything up to the agent's first
+    chunk. ``run_turn`` pulls that chunk, then asks ``gate``; nothing reaches
+    the caller before the answer. ``close`` runs on every exit.
+    """
+
+    async def gate(self) -> Optional[ClassifierResult]:
+        """None to let the agent's answer through, else what to answer instead."""
+        ...
+
+    async def close(self) -> None:
+        """Cancel and reap whatever is still running. Never raises."""
+        ...
+
+
+class BackgroundFactory(Protocol):
+    """Builds, and so starts, a turn's background work."""
+
+    def __call__(self, turn: Turn, *, execution: Any) -> TurnBackground: ...
 
 
 # ── the sink ────────────────────────────────────────────────────────────────
@@ -282,3 +311,6 @@ class SurfaceProfile:
     #: The turn's root span and what is recorded in it. Left unset (as in tests
     #: that build a bare surface), the turn runs without writing a trace.
     telemetry: Optional[TelemetryFactory] = None
+    #: Checks that run alongside the turn and gate its first emission. Chat has
+    #: none: its moderation decides before the agent starts.
+    background: Optional[BackgroundFactory] = None

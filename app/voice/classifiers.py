@@ -19,10 +19,10 @@ import re
 from functools import partial
 from typing import Literal, Optional, Protocol
 
-from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, UserPromptPart
-
 from app.config import settings
 from app.turn.types import Classifier, ClassifierResult, Turn
+from app.voice.history import HISTORY_MARKERS as _HISTORY_MARKERS
+from app.voice.history import history_pair as _history_pair
 from app.voice.stt_signals import (
     count_consecutive_stt_signals,
     detect_stt_signal,
@@ -83,16 +83,6 @@ _FRAGMENT_RESPONSES = {
     "gu": "મને તમારો પ્રશ્ન સમજાયો નથી. કૃપા કરીને તમારો પ્રશ્ન ફરીથી પૂછો.",
     "en": "I could not understand your question. Please ask your question again.",
 }
-
-# What history keeps in place of the caller's words on these paths. Only the
-# markers these classifiers write; the rest arrive with the code that writes them.
-_HISTORY_MARKERS = {
-    "greeting": "hello",
-    "fragment": "[fragment]",
-    "stt_no_audio": "[stt:no-audio]",
-    "stt_unclear": "[stt:unclear-speech]",
-}
-
 
 def _is_fragment_query(query: str) -> bool:
     """Return True if query is too short/garbled to be a real question."""
@@ -179,13 +169,6 @@ def _fast_path_kind_for_query(text: str) -> Optional[Literal["identity"]]:
     if cleaned in _IDENTITY_PHRASES_GU or cleaned in _IDENTITY_PHRASES_EN:
         return "identity"
     return None
-
-
-def _history_pair(user_text: str, assistant_text: str) -> tuple[ModelRequest, ModelResponse]:
-    return (
-        ModelRequest(parts=[UserPromptPart(content=user_text)]),
-        ModelResponse(parts=[TextPart(content=assistant_text)]),
-    )
 
 
 # ── the classifiers ──────────────────────────────────────────────────────
