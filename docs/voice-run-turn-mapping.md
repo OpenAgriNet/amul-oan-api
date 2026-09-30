@@ -3,7 +3,7 @@
 How a voice turn moves onto the `run_turn` seam, piece by piece, and which pieces are shared
 with chat versus populated separately.
 
-Status: decided, in progress (PRs 1–7 done). Read against `voice-oan-api@amul-dev` (`3b19835`, 2026-09-29) and
+Status: decided, in progress (PRs 1–8 done). Read against `voice-oan-api@amul-dev` (`3b19835`, 2026-09-29) and
 `amul-oan-api@main` (`c08a5f1`, after #327). Line numbers below are `app/services/voice.py` at
 that voice commit unless a path says otherwise. Background is in `docs/channel-seam-design.md`;
 this is step 4 of its landing order.
@@ -235,6 +235,21 @@ reads it. So a slot lands in the same PR as the code that reads it, never ahead 
    running. Still to come: the stale checks during streaming (with the sink), the one before
    pretranslation, the tools that fire the tool-call signal (with agent input), and the nudge's
    trace fields (with voice's telemetry).
+
+   **Sink: done** on `feat/voice-sink` (PR 8), stacked on PR 7. `app/voice/sink.py` is voice's
+   output path: English spoken as it streams, other languages batched and stream-translated, the
+   identity-drift guard, the pinned union-ban line, voice's cleanup and the space after a
+   finished sentence, and the trouble line when translation or the agent fails.
+   `render_for_caller` is the real `render` for the classifiers and the gate. Translation is
+   `translation.py` in the voice channel added with #90, brought in line with amul-dev: voice's
+   spoken-language instruction and Gujarati rules, and no ભાઈ/બેન stripping, which voice removed
+   in AMUL-93. The Gujarati term policy and glossary stay this repo's; the policy has 14
+   replacements voice lacks (the Sabar spellings among them) and a few glossary entries differ,
+   which parity will show. The sink is given the turn's `is_stale` and checks where voice did.
+   `run_turn` now lets an agent failure before the first chunk reach the sink after the gate, and
+   liveness waits for a chunk with something to hear. The output-stage trace marks come with
+   voice's telemetry. Three existing tests change: two asserted the address stripping voice
+   removed, and the recording sink in `test_run_turn_sink.py` takes the new `is_stale` keyword.
 5. Voice adapter and route behind a flag, off by default, emitting `voice.turn.v1`.
 6. Parity: voice's own tests against the new path, `check_pipeline_parity.py`,
    `measure_voice_ttft.py`, then shadow traffic in dev, comparing `voice_turns` old against new:
@@ -280,8 +295,7 @@ Decided 2026-09-29 by the owner of this work.
 - **Stale checks and nudge timing are behaviour.** The port must keep at least one check before
   every emission, before the nudge send and before the history write, or a superseded request
   can speak over a newer one. `run_turn` checks before every classifier and gate answer, before
-  the history write and before the nudge is sent; the checks during streaming come with the
-  sink.
+  the history write and before the nudge is sent, and the sink checks while it speaks.
 - **The hang-up token must bypass the normalizer.** Hold message, non-meaningful hang-up,
   outbound decline and `conversation_closing` all rely on exact ASCII `"Goodbye."`; the Gujarati
   normalizer turns it into `"."`.
