@@ -56,6 +56,7 @@ from app.turn.types import (
     SurfaceProfile,
     TextEmission,
     Turn,
+    TurnBackground,
 )
 
 
@@ -805,13 +806,15 @@ async def _chat_agent_input(
     execution,
     scheduler: DeferredScheduler,
     translate_to: Optional[str],
+    background: Optional[TurnBackground] = None,
+    is_stale: Optional[StalenessCheck] = None,
 ) -> AgentInput | ClassifierResult:
     """Chat's agent input, for ``SurfaceProfile.agent_input``.
 
     Loads the farmer context and builds the turn's FarmerContext, then runs
     moderation before the agent starts: a query it rejects is declined, and one
     it cannot check gets the fail-closed line. A valid farmer query also
-    schedules its suggestions.
+    schedules its suggestions. Chat has no background set or staleness check.
     """
     session_id = turn.session_id
     target_lang = turn.target_lang
@@ -1203,6 +1206,8 @@ async def run_turn(
                 # so on its way out.
                 _turn_outcome = short_circuit.outcome
                 yield TextEmission(short_circuit.canned_text, raw=short_circuit.raw)
+                if short_circuit.raw_tail:
+                    yield TextEmission(short_circuit.raw_tail, raw=True)
                 return
 
             # What the caller hears while the model works starts here, for the
@@ -1242,6 +1247,8 @@ async def run_turn(
                 )
                 _turn_outcome = pretranslated.outcome
                 yield TextEmission(pretranslated.canned_text, raw=pretranslated.raw)
+                if pretranslated.raw_tail:
+                    yield TextEmission(pretranslated.raw_tail, raw=True)
                 return
             needs_output_translation = (
                 target_lang.lower() in INDIAN_LANGUAGES
@@ -1252,7 +1259,13 @@ async def run_turn(
             if surface.agent_input is None:
                 raise TypeError(f"surface {surface.surface.value!r} reached the agent without an agent input")
             agent_input = await surface.agent_input(
-                turn, pretranslated, execution=execution, scheduler=scheduler, translate_to=translate_to
+                turn,
+                pretranslated,
+                execution=execution,
+                scheduler=scheduler,
+                translate_to=translate_to,
+                background=background,
+                is_stale=is_stale,
             )
             if isinstance(agent_input, ClassifierResult):
                 # An answer instead of the agent's (chat's moderation decline):
@@ -1270,6 +1283,8 @@ async def run_turn(
                 )
                 _turn_outcome = agent_input.outcome
                 yield TextEmission(agent_input.canned_text, raw=agent_input.raw)
+                if agent_input.raw_tail:
+                    yield TextEmission(agent_input.raw_tail, raw=True)
                 return
 
             if surface.sink is None:
@@ -1290,6 +1305,8 @@ async def run_turn(
                 # sentence-batches + stream-translates (or passes English through). The
                 # disconnect-safe first-token-commit primitives are reused verbatim.
                 new_messages: list = []
+                # Only a surface that sets limits passes them (voice's).
+                limits = {} if agent_input.usage_limits is None else {"usage_limits": agent_input.usage_limits}
 
                 english_src = execution.stream(
                     agent_input.agent,
@@ -1297,6 +1314,7 @@ async def run_turn(
                     message_history=agent_input.message_history,
                     deps=agent_input.deps,
                     new_messages=new_messages,
+                    **limits,
                 )
 
                 if background is not None:
@@ -1315,6 +1333,8 @@ async def run_turn(
                         )
                         _turn_outcome = gated.outcome
                         yield TextEmission(gated.canned_text, raw=gated.raw)
+                        if gated.raw_tail:
+                            yield TextEmission(gated.raw_tail, raw=True)
                         return
 
                 async for _out in sink.stream(english_src):
@@ -1360,6 +1380,16 @@ async def run_turn(
             chat_artifacts = agent_input.deps.take_chat_artifacts()
             if chat_artifacts:
                 yield ArtifactEmission(artifacts=tuple(chat_artifacts))
+
+            # A last raw line after the answer: voice's hang-up token when the
+            # agent said the conversation is closing.
+            closing = agent_input.closing_line(new_messages) if agent_input.closing_line else None
+            if closing:
+                stale = await _stale_outcome(is_stale, "before_goodbye")
+                if stale is not None:
+                    _turn_outcome = stale
+                    return
+                yield TextEmission(closing, raw=True)
 
             # Post-processing happens AFTER streaming is complete
             messages = [

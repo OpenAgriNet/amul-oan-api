@@ -394,6 +394,15 @@ class Settings(BaseSettings):
     # on, capped at FARMER_API_TRACE_BODY_CHARS.
     farmer_api_trace_body: bool = _get_bool_env("FARMER_API_TRACE_BODY", default=False)
     farmer_api_trace_body_chars: int = int(os.getenv("FARMER_API_TRACE_BODY_CHARS", "8000"))
+    # Outbound calls (app/voice/outbound.py): the consent gate and the milk readout
+    # only run for calls the telephony provider stamps outbound, once this is on.
+    outbound_intro_enabled: bool = _get_bool_env("OUTBOUND_INTRO_ENABLED", default=False)
+    outbound_milk_window_days: int = int(os.getenv("OUTBOUND_MILK_WINDOW_DAYS", "7"))
+    # Bounded so a hung upstream can never keep a prefetch task alive across the
+    # whole call; the caller's reply arrives long before this.
+    outbound_milk_prefetch_timeout_seconds: float = float(
+        os.getenv("OUTBOUND_MILK_PREFETCH_TIMEOUT_SECONDS", "25.0")
+    )
     # Kill switch for Hindi chat. Default ON: hi/hindi requests use the full
     # src->en->agent->hi translation pipeline. Set HINDI_CHAT_ENABLED=false to
     # disable Hindi independently (hi/hindi then bypass the pipeline and are

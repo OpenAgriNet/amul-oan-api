@@ -93,7 +93,7 @@ class _Observation:
 
 
 def _built(agent, observe, calls):
-    async def _agent_input(turn, pretranslated, *, execution, scheduler, translate_to):
+    async def _agent_input(turn, pretranslated, *, execution, scheduler, translate_to, **_kw):
         calls.append(dict(turn=turn, pretranslated=pretranslated, scheduler=scheduler, translate_to=translate_to))
         return AgentInput(
             agent=agent,
@@ -218,6 +218,38 @@ def test_every_answer_instead_records_the_outcome_it_carries(monkeypatch, slot):
 
     assert emissions == [TextEmission("Try again later.")]
     assert _outcomes(seen) == ["error"]
+
+
+_FAREWELL = ClassifierResult(canned_text="Bye for now.", label="farewell", raw_tail=" Goodbye.")
+
+
+async def _classify_farewell(turn):
+    return _FAREWELL
+
+
+async def _pretranslate_farewell(turn, **_kw):
+    return _FAREWELL
+
+
+class _FarewellGate(_Gate):
+    async def gate(self):
+        return _FAREWELL
+
+
+@pytest.mark.parametrize("slot", [
+    dict(classifiers=(_classify_farewell,)),
+    dict(pretranslation=_pretranslate_farewell),
+    dict(background=_FarewellGate),
+    dict(agent_input=_answering(_FAREWELL)),
+])
+def test_every_answer_instead_says_its_raw_tail_after_it(monkeypatch, slot):
+    seen = patch_turn(monkeypatch)
+    surface = dataclasses.replace(chat_service.CHAT_SURFACE, **slot)
+
+    emissions = asyncio.run(_collect(chat_service.run_turn(_turn(), surface, scheduler=_Scheduler())))
+
+    assert emissions == [TextEmission("Bye for now."), TextEmission(" Goodbye.", raw=True)]
+    assert _outcomes(seen) == ["success"]
 
 
 def test_a_stale_turn_says_nothing_instead(monkeypatch):

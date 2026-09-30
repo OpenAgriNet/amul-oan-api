@@ -827,6 +827,7 @@ class ExecutionContext:
         message_history: list,
         deps: Any,
         new_messages: list,
+        usage_limits: Any = None,
     ) -> AsyncIterator[str]:
         """Stream Agent text, committing on its first model activity event."""
 
@@ -836,6 +837,7 @@ class ExecutionContext:
                 user_prompt=prompt,
                 message_history=message_history,
                 deps=deps,
+                usage_limits=usage_limits,
                 model=tier.handle,
             ) as agent_run:
                 async for node in agent_run:

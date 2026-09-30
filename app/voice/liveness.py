@@ -11,13 +11,13 @@ channel. ``run_turn`` stops it before the first thing the caller hears.
 from __future__ import annotations
 
 import asyncio
-import contextvars
 import random
 import time
 from typing import Any, Dict, Optional
 
 import httpx
 
+from agents.voice.tools import common as _tool_signal
 from app.config import settings
 from app.observability import start_observation
 from app.turn.types import SideChannelEmission, SideChannelSender, StalenessCheck, Turn
@@ -27,24 +27,11 @@ from helpers.utils import get_logger
 logger = get_logger(__name__)
 
 # ── Tool-call nudge signaling ───────────────────────────────────────────
-# A per-request asyncio.Event stored in a ContextVar.  Any tool wrapper
-# can call fire_tool_call_nudge() to tell the nudge task "a tool was
-# invoked – send the hold message now instead of waiting for the timer".
-_tool_call_nudge_event: contextvars.ContextVar[Optional[asyncio.Event]] = contextvars.ContextVar(
-    "_tool_call_nudge_event", default=None
-)
-
-
-def set_tool_call_nudge_event(event: asyncio.Event) -> contextvars.Token:
-    """Set the nudge event for the current async context (call once per request)."""
-    return _tool_call_nudge_event.set(event)
-
-
-def fire_tool_call_nudge() -> None:
-    """Signal that a tool call has started – the nudge task should fire immediately."""
-    event = _tool_call_nudge_event.get(None)
-    if event is not None and not event.is_set():
-        event.set()
+# Voice's tools say a tool call has started through the event in
+# agents.voice.tools.common, and the nudge listens on that same event, as it
+# does in voice-oan-api.
+set_tool_call_nudge_event = _tool_signal.set_tool_call_nudge_event
+fire_tool_call_nudge = _tool_signal.fire_tool_call_nudge
 
 
 _TIMEOUT_NUDGE_MESSAGES: dict[str, list[str]] = {
