@@ -375,6 +375,25 @@ class Settings(BaseSettings):
     voice_outbound_consent_timeout_seconds: float = float(
         os.getenv("VOICE_OUTBOUND_CONSENT_TIMEOUT_SECONDS", "0.60")
     )
+    # Voice's agent and its farmer data (agents/voice/), inert on the chat path.
+    # Same names and defaults as voice-oan-api.
+    voice_profile_service_channels: str = os.getenv(
+        "VOICE_PROFILE_SERVICE_CHANNELS",
+        "chat, voice call, and WhatsApp",
+    )
+    voice_profile_helpline_number_words: str = os.getenv(
+        "VOICE_PROFILE_HELPLINE_NUMBER_WORDS",
+        "zero eight zero three five four five three five four five",
+    )
+    # How long a turn waits on a cold farmer fetch before going on without it.
+    farmer_cold_fetch_timeout: float = float(os.getenv("FARMER_COLD_FETCH_TIMEOUT", "4.0"))
+    # After a cancelled cold fetch, skip the blocking retry for this long — a
+    # worker is already on it.
+    farmer_inflight_marker_ttl: int = int(os.getenv("FARMER_INFLIGHT_MARKER_TTL", "60"))
+    # Farmer API traces carry a PII-safe summary; the raw body only when this is
+    # on, capped at FARMER_API_TRACE_BODY_CHARS.
+    farmer_api_trace_body: bool = _get_bool_env("FARMER_API_TRACE_BODY", default=False)
+    farmer_api_trace_body_chars: int = int(os.getenv("FARMER_API_TRACE_BODY_CHARS", "8000"))
     # Kill switch for Hindi chat. Default ON: hi/hindi requests use the full
     # src->en->agent->hi translation pipeline. Set HINDI_CHAT_ENABLED=false to
     # disable Hindi independently (hi/hindi then bypass the pipeline and are
