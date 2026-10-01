@@ -58,7 +58,7 @@ def _format_number(value, decimals: int = 2) -> str:
 
 
 def _format_period_date(value: str | None) -> str:
-    """Render API ISO datetimes as YYYY-MM-DD when possible."""
+    """Render API ISO datetimes as DD-Mon-YYYY when possible."""
     if value is None:
         return "-"
     text = str(value).strip()
@@ -66,7 +66,7 @@ def _format_period_date(value: str | None) -> str:
         return "-"
     for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M:%S.%f", "%Y-%m-%d"):
         try:
-            return datetime.strptime(text, fmt).strftime("%Y-%m-%d")
+            return datetime.strptime(text, fmt).strftime("%d-%b-%Y")
         except ValueError:
             continue
     # Fallback: date portion before 'T' if present
