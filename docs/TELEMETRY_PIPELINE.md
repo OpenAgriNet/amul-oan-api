@@ -47,7 +47,7 @@ live root trace of the day, whatever its name, and writes one ledger row each:
 | --- | --- |
 | `turn` | Adapted; the turn is in `voice_turns` / `chat_turns`. |
 | `rejected` | Has a turn root name but no adapter took it. `reason` says why. |
-| `activity` | A known non-turn trace from `telemetry/non_turn_traces.yaml` (suggestions, background refresh, frontend events). Never attached to a turn. |
+| `activity` | A known non-turn trace from `telemetry/non_turn_traces.yaml` (suggestions, background refresh, frontend events). Never attached to a turn; why, per family, is in `telemetry/non_turn_trace_inventory.md`. |
 | `unrecognised` | A name nobody has looked at yet. It shows up in the import report under "not turns, by name"; add it to `non_turn_traces.yaml` or build an adapter. |
 
 So a trace is never dropped without a record, and a re-import can find exactly
