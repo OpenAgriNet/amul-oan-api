@@ -3,7 +3,7 @@
 How a voice turn moves onto the `run_turn` seam, piece by piece, and which pieces are shared
 with chat versus populated separately.
 
-Status: decided, in progress (PRs 1–10 done). Read against `voice-oan-api@amul-dev` (`3b19835`, 2026-09-29) and
+Status: decided, in progress (PRs 1–11 done). Read against `voice-oan-api@amul-dev` (`3b19835`, 2026-09-29) and
 `amul-oan-api@main` (`c08a5f1`, after #327). Line numbers below are `app/services/voice.py` at
 that voice commit unless a path says otherwise. Background is in `docs/channel-seam-design.md`;
 this is step 4 of its landing order.
@@ -292,6 +292,23 @@ reads it. So a slot lands in the same PR as the code that reads it, never ahead 
    own chunk, as voice does, and usage limits reach the agent run. Voice's tools and the nudge
    now share one tool-call signal; liveness had its own copy, which no tool would have fired.
    Voice's trace stages and routes come with voice's telemetry.
+
+   **Telemetry: done** on `feat/voice-telemetry` (PR 11), stacked on the agent input. Voice's
+   `SurfaceProfile.telemetry` is `VoiceTelemetry` (`app/voice/telemetry.py`): one
+   `agent_journey` root per turn with voice's metadata, tags and `pipeline_profile` score,
+   stamped `voice.turn.v1` with `service` set to `amul-oan-api` (decision 6).
+   `app/voice/trace.py` is voice's `VoiceTrace` with the stamps from voice-oan-api#308, and
+   voice's modules record their stages, marks and routes through `current_trace()` where voice
+   did. Voice's answers carry their own outcome names. The contract is copied from #308
+   unchanged, and its checks run here against `app/voice` and `run_turn`. In `run_turn`, an
+   answer's raw tail and the closing line go into the trace, and `AgentInput.after_run` is
+   called with the agent's new messages: voice's records the agent's run, chat's records
+   `served_tier`, which `run_turn` used to send itself and which would have landed on voice
+   turns. `TelephonyCall` gets the provider and the call type. Where it differs from voice: a
+   turn cut off mid-answer is `client_disconnected` rather than `success`, a short-circuit that
+   goes stale has no route, history writes aren't timed, and the agent's per-attempt tiers
+   aren't recorded because `llm_core` runs the attempts. The ownership release timing comes with
+   the adapter.
 5. Voice adapter and route behind a flag, off by default, emitting `voice.turn.v1`.
 6. Parity: voice's own tests against the new path, `check_pipeline_parity.py`,
    `measure_voice_ttft.py`, then shadow traffic in dev, comparing `voice_turns` old against new:
@@ -320,7 +337,7 @@ Decided 2026-09-29 by the owner of this work.
 2. **Telephony details: an optional typed field on `Turn`** (`Turn.call`), `None` on chat. Both
    the classifiers and liveness need them, so they live in one place. Fields arrive with their
    first reader: the process ID and the outbound consent-turn flag came with the classifiers;
-   the provider and the call type come with liveness and the consent gate.
+   the provider and the call type came with voice's telemetry, their first reader.
 3. **Classifier signature: stays `(turn)`.** Changed while building the classifiers from the
    `(turn, ctx)` first planned. Meaningful history is worked out from `turn.history` and the
    consent-turn flag is on `Turn.call`, so nothing was left for a context to carry, and the
