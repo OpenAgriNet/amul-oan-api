@@ -11,7 +11,8 @@ Two repos are involved:
 
 Voice served from amul-oan-api (`app/voice`) sends the same trace, with its own
 copy of the contract. Until voice-oan-api is retired, a change to what a voice
-turn sends is made in both, and the two contract files stay identical.
+turn sends is made in both, and the two contract files stay identical, as do
+`RELEASED_CONTRACTS` in each repo's `tests/test_voice_telemetry_contract.py`.
 
 Chat has the same pieces, all in this repo: `telemetry/contracts/chat.turn.v1.json`,
 `telemetry/mappings/chat.yaml` and `chat_outcome_vocabulary`. The examples below
