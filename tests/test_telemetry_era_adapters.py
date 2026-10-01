@@ -624,8 +624,9 @@ def test_stamped_chat_trace_uses_the_shared_mapping_engine_without_an_era_regist
 
 
 def test_unknown_stamped_chat_schema_is_rejected():
+    # Far past any real version, so releasing chat.turn.v2 later doesn't make it a known stamp.
     with pytest.raises(UnsupportedTelemetryEra, match="Unknown chat schema version"):
-        adapt_chat_trace(_stamped_chat_trace("chat.turn.v2"))
+        adapt_chat_trace(_stamped_chat_trace("chat.turn.v999"))
 
 
 def test_stamped_chat_field_rename_needs_only_a_mapping_change(tmp_path):
