@@ -24,6 +24,7 @@ def _ctx():
             session_id=None,
             mobile="9000000000",
             farmer_unions=["kaira"],
+            farmer_profile_status="found",
             ensure_in_scope=_in_scope,
         ),
         tool_call_id="tool-1",

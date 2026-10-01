@@ -40,7 +40,13 @@ key inside a block, or what a key means), release it as a new version:
    `telemetry/README.md`).
 
 Chat is the same, all in this repo: `CHAT_TELEMETRY_SCHEMA_VERSION`,
-`telemetry/contracts/chat.turn.v2.json` and `telemetry/mappings/chat.yaml`.
+`telemetry/contracts/chat.turn.v2.json`, `telemetry/mappings/chat.yaml` and,
+once it ships, the new version's fingerprint in `RELEASED_CONTRACTS` in
+`tests/test_chat_telemetry_schema_stamps.py`:
+
+```bash
+python -c "import hashlib, json, sys; c = json.load(open(sys.argv[1])); c.pop('note', None); print(hashlib.sha256(json.dumps(c, sort_keys=True, separators=(',', ':')).encode()).hexdigest())" telemetry/contracts/chat.turn.v2.json
+```
 
 ## Add a new field
 
@@ -146,8 +152,9 @@ The adapter doesn't wait for this: a stamped trace is read by its stamp, and its
 | `Voice turns are now sent as [...]` | The root was renamed: see "Rename or remove", and set the new `root:` in `voice.yaml`. |
 | `New outcomes [...]` | See "Add an outcome value". |
 | `Outcomes no longer emitted: [...]` | Release a new version without them, and note it in `eras.yaml` once it ships. |
-| `telemetry/contracts/voice.turn.v1.json is released and can't change` | Undo the edit to the old file and put the change in a new version. |
-| `Unclear key names [...]` | Rename the key to say what it holds, e.g. `error_type`, not `type`. |
+| `telemetry/contracts/<version>.json is released and can't change` | Undo the edit to the old file and put the change in a new version. |
+| `chat.py's metadata keys don't match the contract` | A chat key was added, renamed or removed: release a new version (see "Every change is a new version"). |
+| `Unclear names [...]` | Rename the key to say what it holds, e.g. `error_type`, not `type`. |
 | `No contract for voice.turn.vN` | Add the contract file for the version you bumped to. |
 | `chat.turn.vN reads ... but the contract doesn't send it` | `chat.yaml` reads a key the chat contract no longer lists: point the field at a key that is sent. |
 | `chat.turn.vN has no entry in telemetry/mappings/chat.yaml` | Add the version to `chat.yaml` in the same change as the contract. |

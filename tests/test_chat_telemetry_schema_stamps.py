@@ -1,5 +1,7 @@
 import ast
+import hashlib
 import json
+import re
 from pathlib import Path
 
 from app.services import telemetry_stamps
@@ -13,7 +15,28 @@ from app.services.telemetry_stamps import (
 )
 
 
-CONTRACT = Path(__file__).resolve().parents[1] / "telemetry" / "contracts" / "chat.turn.v1.json"
+CONTRACTS = Path(__file__).resolve().parents[1] / "telemetry" / "contracts"
+CONTRACT = CONTRACTS / f"{CHAT_TELEMETRY_SCHEMA_VERSION}.json"
+NEW_VERSION = (
+    f"{CHAT_TELEMETRY_SCHEMA_VERSION} can't change once released, so this needs a new schema version: "
+    "bump CHAT_TELEMETRY_SCHEMA_VERSION in app/services/telemetry_stamps.py, copy "
+    f"telemetry/contracts/{CHAT_TELEMETRY_SCHEMA_VERSION}.json to the new version's file and make the change "
+    f"there, and add the new version to telemetry/mappings/chat.yaml (it can extend {CHAT_TELEMETRY_SCHEMA_VERSION})."
+)
+
+# Key order, spacing and a "note" don't count.
+RELEASED_CONTRACTS = {
+    "chat.turn.v1": "47af4bd14b99f3c896e23c8bdb0c4218f4443e7990252042d65181d14a436193",
+}
+
+_GENERIC_NAMES = {"data", "id", "result", "score", "status", "time", "type", "value"}
+_SNAKE_CASE = re.compile(r"[a-z][a-z0-9_]*")
+
+
+def _fingerprint(path):
+    contract = json.loads(path.read_text(encoding="utf-8"))
+    contract.pop("note", None)
+    return hashlib.sha256(json.dumps(contract, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
 def test_forward_telemetry_metadata_stamps_schema_service_and_release(monkeypatch, tmp_path):
@@ -23,7 +46,7 @@ def test_forward_telemetry_metadata_stamps_schema_service_and_release(monkeypatc
     telemetry_stamps.chat_telemetry_release.cache_clear()
 
     assert forward_chat_telemetry_metadata() == {
-        "amul.schema_version": "chat.turn.v1",
+        "amul.schema_version": CHAT_TELEMETRY_SCHEMA_VERSION,
         "service": "amul-oan-api",
         "release": "test-release-sha",
     }
@@ -63,9 +86,42 @@ def test_chat_turn_v1_contract_matches_what_chat_py_sends():
     assert contract["root"] == CHAT_TURN_V1_ROOT
     assert set(contract["metadata"]["required"]) - {
         "amul.schema_version", "service", "release"
-    } == metadata_keys
-    assert set(contract["trace_input"]["required"]) == input_keys
+    } == metadata_keys, f"chat.py's metadata keys don't match the contract. {NEW_VERSION}"
+    assert set(contract["trace_input"]["required"]) == input_keys, (
+        f"chat.py's trace input keys don't match the contract. {NEW_VERSION}"
+    )
     assert CHAT_TELEMETRY_SERVICE == "amul-oan-api"
+
+
+def test_released_contracts_never_change():
+    for version, fingerprint in RELEASED_CONTRACTS.items():
+        path = CONTRACTS / f"{version}.json"
+        assert path.exists(), f"{version} is released: keep telemetry/contracts/{version}.json, old traces follow it."
+        # Compared as a bool so a failure doesn't print the new fingerprint to paste in.
+        unchanged = _fingerprint(path) == fingerprint
+        assert unchanged, (
+            f"telemetry/contracts/{version}.json is released and can't change: traces already in Langfuse "
+            f"follow it. Undo the edit and put the change in a new version. {NEW_VERSION}"
+        )
+
+
+def test_names_are_specific_snake_case():
+    contract = json.loads(CONTRACT.read_text(encoding="utf-8"))
+    names = (
+        contract["metadata"]["required"]
+        + contract["metadata"].get("optional", [])
+        + contract["trace_input"]["required"]
+        + contract["scores"]["categorical"]
+    )
+    unclear = [
+        name
+        for name in names
+        if name != "amul.schema_version"
+        # A family like pc_<step> is checked by its fixed part.
+        and (not _SNAKE_CASE.fullmatch(re.sub(r"<[a-z_]+>", "step", name)) or name in _GENERIC_NAMES)
+    ]
+
+    assert not unclear, f"Unclear names {unclear}."
 
 
 def test_forward_telemetry_metadata_reads_a_packed_branch_ref(monkeypatch, tmp_path):
