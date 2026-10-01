@@ -1,6 +1,7 @@
 import ast
 import hashlib
 import json
+import re
 from pathlib import Path
 
 from app.services import telemetry_stamps
@@ -27,6 +28,9 @@ NEW_VERSION = (
 RELEASED_CONTRACTS = {
     "chat.turn.v1": "47af4bd14b99f3c896e23c8bdb0c4218f4443e7990252042d65181d14a436193",
 }
+
+_GENERIC_NAMES = {"data", "id", "result", "score", "status", "time", "type", "value"}
+_SNAKE_CASE = re.compile(r"[a-z][a-z0-9_]*")
 
 
 def _fingerprint(path):
@@ -99,6 +103,25 @@ def test_released_contracts_never_change():
             f"telemetry/contracts/{version}.json is released and can't change: traces already in Langfuse "
             f"follow it. Undo the edit and put the change in a new version. {NEW_VERSION}"
         )
+
+
+def test_names_are_specific_snake_case():
+    contract = json.loads(CONTRACT.read_text(encoding="utf-8"))
+    names = (
+        contract["metadata"]["required"]
+        + contract["metadata"].get("optional", [])
+        + contract["trace_input"]["required"]
+        + contract["scores"]["categorical"]
+    )
+    unclear = [
+        name
+        for name in names
+        if name != "amul.schema_version"
+        # A family like pc_<step> is checked by its fixed part.
+        and (not _SNAKE_CASE.fullmatch(re.sub(r"<[a-z_]+>", "step", name)) or name in _GENERIC_NAMES)
+    ]
+
+    assert not unclear, f"Unclear names {unclear}."
 
 
 def test_forward_telemetry_metadata_reads_a_packed_branch_ref(monkeypatch, tmp_path):

@@ -154,7 +154,7 @@ The adapter doesn't wait for this: a stamped trace is read by its stamp, and its
 | `Outcomes no longer emitted: [...]` | Release a new version without them, and note it in `eras.yaml` once it ships. |
 | `telemetry/contracts/<version>.json is released and can't change` | Undo the edit to the old file and put the change in a new version. |
 | `chat.py's metadata keys don't match the contract` | A chat key was added, renamed or removed: release a new version (see "Every change is a new version"). |
-| `Unclear key names [...]` | Rename the key to say what it holds, e.g. `error_type`, not `type`. |
+| `Unclear names [...]` | Rename the key to say what it holds, e.g. `error_type`, not `type`. |
 | `No contract for voice.turn.vN` | Add the contract file for the version you bumped to. |
 | `chat.turn.vN reads ... but the contract doesn't send it` | `chat.yaml` reads a key the chat contract no longer lists: point the field at a key that is sent. |
 | `chat.turn.vN has no entry in telemetry/mappings/chat.yaml` | Add the version to `chat.yaml` in the same change as the contract. |
