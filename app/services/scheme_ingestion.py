@@ -149,6 +149,7 @@ SUMUL_SITE_ORIGIN = _url_origin(settings.sumul_scheme_source_url, "https://www.s
 SURSAGAR_SITE_ORIGIN = _url_origin(settings.sursagar_scheme_source_url, "https://sursagardairy.com")
 SABAR_SITE_ORIGIN = _url_origin(settings.sabar_scheme_source_url, "https://sabardairy.org")
 DUDHDHARA_SITE_ORIGIN = _url_origin(settings.dudhdhara_scheme_source_url, "https://www.dudhdharadairy.in")
+MADHUR_SITE_ORIGIN = _url_origin(settings.madhur_scheme_source_url, "http://www.madhurdairy.org")
 
 BANAS_SOURCE = SchemeSource(
     source_name="banas",
@@ -205,6 +206,17 @@ DUDHDHARA_SOURCE = SchemeSource(
     content_type="pdf",
 )
 
+MADHUR_SOURCE = SchemeSource(
+    source_name="madhur",
+    union_name=UnionName.GANDHINAGAR.value,
+    source_url=(
+        str(settings.madhur_scheme_source_url or "").strip()
+        or "http://www.madhurdairy.org/forourmilkproducers?name=for-our-milk-producers"
+    ),
+    cache_key="madhurdairy.org/forourmilkproducers",
+    content_type="pdf",
+)
+
 SCHEME_SOURCES: tuple[SchemeSource, ...] = (
     BANAS_SOURCE,
     SARHAD_SOURCE,
@@ -212,6 +224,7 @@ SCHEME_SOURCES: tuple[SchemeSource, ...] = (
     SURSAGAR_SOURCE,
     SABAR_SOURCE,
     DUDHDHARA_SOURCE,
+    MADHUR_SOURCE,
 )
 SUPPORTED_UNION_SOURCE_MAP = {
     UnionName.BANAS.value: (BANAS_SOURCE,),
@@ -220,6 +233,7 @@ SUPPORTED_UNION_SOURCE_MAP = {
     UnionName.SURENDRANAGAR.value: (SURSAGAR_SOURCE,),
     UnionName.SABAR.value: (SABAR_SOURCE,),
     UnionName.BHARUCH.value: (DUDHDHARA_SOURCE,),
+    UnionName.GANDHINAGAR.value: (MADHUR_SOURCE,),
 }
 
 _WHITESPACE_RE = re.compile(r"\s+")
@@ -1061,6 +1075,61 @@ def parse_dudhdhara_scheme_links(html: str) -> list[dict[str, str]]:
     return records
 
 
+def parse_madhur_scheme_links(html: str) -> list[dict[str, str]]:
+    """Extract PDF links and titles from Madhur Dairy producer cards.
+
+    Only ``producer-card`` blocks are scanned because the page includes other
+    navigation links that are not milk-producer schemes. A layout change
+    therefore fails closed and leaves the previous cache intact.
+    """
+    logger.info("Parsing Madhur scheme links from HTML content_length=%s", len(html))
+
+    card_chunks = re.split(
+        r'(?=<div[^>]*class="[^"]*\bproducer-card\b)',
+        html,
+        flags=re.IGNORECASE,
+    )
+    cards = [
+        chunk
+        for chunk in card_chunks
+        if re.match(r'<div[^>]*class="[^"]*\bproducer-card\b', chunk, flags=re.IGNORECASE)
+    ]
+
+    seen: set[tuple[str, str]] = set()
+    records: list[dict[str, str]] = []
+    for card_html in cards:
+        headings = re.findall(r"<h4\b[^>]*>(.*?)</h4>", card_html, flags=re.IGNORECASE | re.DOTALL)
+        scheme_title = next(
+            (
+                normalized
+                for heading in headings
+                if (normalized := _normalize_title(_strip_html(heading)))
+            ),
+            "",
+        )
+        if not scheme_title:
+            continue
+
+        download_links = re.findall(
+            r'<a[^>]*href="([^"]*/ForOurMilkProducers/DownloadPdf\?[^"]*fileName=[^"]+\.pdf[^"]*)"[^>]*>',
+            card_html,
+            flags=re.IGNORECASE,
+        )
+        for href in download_links:
+            scheme_url = urljoin(f"{MADHUR_SITE_ORIGIN}/", _normalize_text(href))
+            dedupe_key = (scheme_url, scheme_title.casefold())
+            if dedupe_key in seen:
+                continue
+            seen.add(dedupe_key)
+            records.append({"scheme_title": scheme_title, "scheme_url": scheme_url})
+
+    if not records:
+        logger.warning("No Madhur producer cards with PDF links found cards=%s", len(cards))
+
+    logger.info("Parsed Madhur scheme links deduplicated_count=%s", len(records))
+    return records
+
+
 def parse_sarhad_scheme_sections(html: str) -> list[dict[str, str]]:
     logger.info("Parsing Sarhad scheme sections from HTML content_length=%s", len(html))
     content_match = re.search(
@@ -1756,6 +1825,18 @@ async def _ingest_dudhdhara_source(
     return await _ingest_pdf_source(source, link_records, client, lock_token=lock_token, redis_client=redis_client)
 
 
+async def _ingest_madhur_source(
+    source: SchemeSource,
+    client: httpx.AsyncClient,
+    lock_token: str | None = None,
+    redis_client=None,
+) -> list[dict[str, Any]]:
+    logger.info("Starting Madhur scheme ingestion source=%s url=%s", source.cache_key, source.source_url)
+    html = await fetch_html(client, source.source_url)
+    link_records = parse_madhur_scheme_links(html)
+    return await _ingest_pdf_source(source, link_records, client, lock_token=lock_token, redis_client=redis_client)
+
+
 async def _ingest_sarhad_source(source: SchemeSource, client: httpx.AsyncClient) -> list[dict[str, Any]]:
     logger.info("Starting Sarhad scheme ingestion source=%s url=%s", source.cache_key, source.source_url)
     html = await fetch_html(client, source.source_url)
@@ -1806,6 +1887,7 @@ async def refresh_scheme_source(source: SchemeSource, redis_client=None, client:
             SURSAGAR_SOURCE.source_name: _ingest_sursagar_source,
             SABAR_SOURCE.source_name: _ingest_sabar_source,
             DUDHDHARA_SOURCE.source_name: _ingest_dudhdhara_source,
+            MADHUR_SOURCE.source_name: _ingest_madhur_source,
         }
         if source.source_name == SARHAD_SOURCE.source_name:
             records = await _ingest_sarhad_source(source, client)

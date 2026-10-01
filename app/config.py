@@ -549,6 +549,10 @@ class Settings(BaseSettings):
         default="https://www.dudhdharadairy.in/for_our_milk_producers",
         validation_alias="DUDHDHARA_SCHEME_SOURCE_URL",
     )
+    madhur_scheme_source_url: str = Field(
+        default="http://www.madhurdairy.org/forourmilkproducers?name=for-our-milk-producers",
+        validation_alias="MADHUR_SCHEME_SOURCE_URL",
+    )
     # PDF pages are rendered locally and sent one page per request to a stock
     # Chandra OpenAI-compatible endpoint.
     scheme_ocr_endpoint_url: Optional[str] = os.getenv("SCHEME_OCR_ENDPOINT_URL")

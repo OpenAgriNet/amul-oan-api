@@ -16,6 +16,7 @@ SUPPORTED_SCHEME_UNIONS = {
     UnionName.SURENDRANAGAR.value,
     UnionName.SABAR.value,
     UnionName.BHARUCH.value,
+    UnionName.GANDHINAGAR.value,
 }
 
 logger = get_logger(__name__)
