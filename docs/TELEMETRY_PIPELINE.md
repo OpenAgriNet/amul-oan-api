@@ -72,6 +72,62 @@ WHERE environment = 'voice-development' AND day = '2026-09-20';
 A trace written to Langfuse after its day was imported is picked up the next
 time that day is imported.
 
+## Several rows per trace in Langfuse
+
+Langfuse's `traces` and `observations` tables are
+`ReplacingMergeTree(event_ts, is_deleted)`, and Langfuse never updates a row.
+Each time its worker handles new events for a trace, it reads the newest row,
+merges the events into it and inserts a new row. ClickHouse drops the older rows
+when it merges parts in the background, at a time of its choosing. Until then a
+trace has several rows, and Langfuse reads its own tables with
+`ORDER BY event_ts DESC LIMIT 1 BY id`, the same as the importer.
+
+How many rows a trace gets depends on our code:
+
+- The SDK sends spans in batches, every 5 seconds by default
+  (`LANGFUSE_FLUSH_INTERVAL`, not set in either repo). Each batch that carries an
+  update to a trace is one more worker job for it, so one more row.
+- Chat (`propagate_attributes` in `app/services/chat.py`) and voice
+  (`VoiceTrace`) put the trace's user, session, tags and metadata on every span
+  of a turn. Langfuse takes any span carrying those as a trace update, so even a
+  batch with only child spans writes a new trace row. Without them it would write
+  one for the root span and for the first span it sees of a trace, and none for
+  the rest.
+
+Each span is sent once, when it ends, so observations and scores rarely have more
+than one row. Checked against Langfuse's source (main, 2026-10-01):
+`packages/shared/src/server/otel/OtelIngestionProcessor.ts` and
+`worker/src/services/IngestionService/index.ts`.
+
+To see it on our data, as `telemetry_reader`, for a recent day (older days are
+mostly merged already):
+
+```sql
+SELECT name, count() AS rows, uniqExact(id) AS traces, round(rows / traces, 1) AS rows_per_trace
+FROM default.traces
+WHERE environment = 'voice-production'
+  AND timestamp >= toDateTime64('2026-09-30 00:00:00', 3, 'UTC')
+  AND timestamp <  toDateTime64('2026-10-01 00:00:00', 3, 'UTC')
+GROUP BY name
+ORDER BY rows DESC
+```
+
+What can be done about it:
+
+- The import needs nothing. It reads the newest row of each trace, and only for
+  the day it imports.
+- A longer `LANGFUSE_FLUSH_INTERVAL` (say 15 seconds) on the chat and voice
+  deployments means fewer batches per turn, so fewer rows and fewer
+  read-and-merge jobs for the Langfuse worker. Traces show up in Langfuse a few
+  seconds later, and a pod killed without a normal shutdown loses more unsent
+  spans. It's a setting, not a code change.
+- Setting the trace attributes on the root span only would bring most turns down
+  to one or two rows. But Langfuse's per-user and per-session numbers on
+  observations rely on them, and it changes what every turn sends, so a new
+  schema version in both repos. Not worth it.
+- Forcing merges with `OPTIMIZE TABLE ... FINAL` on Langfuse's tables: no. They
+  are Langfuse's, and it is a heavy operation.
+
 ## Setup, once per ClickHouse
 
 1. Run `telemetry/clickhouse/voice.sql`, `chat.sql` and `ledger.sql` as the
