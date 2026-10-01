@@ -38,6 +38,12 @@ chat.c5.v1:
   extends: chat.c3.v1
   fields:
     pipeline_profile: [metadata.pipeline_profile]
+  attributes:
+    pc_pre_translation: [metadata.pc_pre_translation]
+    pc_moderation: [metadata.pc_moderation]
+    pc_agent: [metadata.pc_agent]
+    pc_suggestions: [metadata.pc_suggestions]
+    pc_post_translation: [metadata.pc_post_translation]
 
 chat.c6.v1:
   root: chat.translation
@@ -52,6 +58,14 @@ chat.c6.v1:
     original_question: [input.query]
     answer: [output]
     persona: [input.persona, metadata.persona]
+    service: [metadata.service]
+    release: [metadata.release]
+  attributes:
+    pc_pre_translation: [metadata.pc_pre_translation]
+    pc_moderation: [metadata.pc_moderation]
+    pc_agent: [metadata.pc_agent]
+    pc_suggestions: [metadata.pc_suggestions]
+    pc_post_translation: [metadata.pc_post_translation]
 
 chat.c8.v1:
   extends: chat.c6.v1
@@ -70,3 +84,11 @@ chat.turn.v1:
     original_question: [input.query]
     answer: [output]
     persona: [input.persona, metadata.persona]
+    service: [metadata.service]
+    release: [metadata.release]
+  attributes:
+    pc_pre_translation: [metadata.pc_pre_translation]
+    pc_moderation: [metadata.pc_moderation]
+    pc_agent: [metadata.pc_agent]
+    pc_suggestions: [metadata.pc_suggestions]
+    pc_post_translation: [metadata.pc_post_translation]

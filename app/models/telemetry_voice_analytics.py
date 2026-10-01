@@ -58,6 +58,9 @@ class CanonicalVoiceTurn(BaseModel):
     field_availability: dict[str, FieldAvailability] = Field(default_factory=dict)
     # Extra values named under `attributes` in telemetry/mappings/voice.yaml, as text.
     attributes: dict[str, str] = Field(default_factory=dict)
+    # Deployment provenance from the forward telemetry stamp.
+    service: str | None = None
+    release: str | None = None
 
 
 class VoiceV0MetadataSchema(BaseModel):

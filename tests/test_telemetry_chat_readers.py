@@ -35,9 +35,23 @@ def _sent(path, contract):
         return True
     head, _, key = path.partition(".")
     if head == "input":
-        return key in contract["trace_input"]["required"]
+        return _contract_key_matches(key, contract["trace_input"]["required"])
     if head == "metadata":
-        return key in contract["metadata"]["required"] + contract["metadata"].get("optional", [])
+        return _contract_key_matches(
+            key,
+            contract["metadata"]["required"] + contract["metadata"].get("optional", []),
+        )
+    return False
+
+
+def _contract_key_matches(key, declared_keys):
+    """Match an exact key or a documented family such as ``pc_<step>``."""
+    for declared in declared_keys:
+        prefix, marker, suffix = declared.partition("<step>")
+        if not marker and key == declared:
+            return True
+        if marker and key.startswith(prefix) and key.endswith(suffix) and len(key) > len(prefix) + len(suffix):
+            return True
     return False
 
 
@@ -69,6 +83,7 @@ def test_a_path_is_read_from_the_right_part_of_the_trace():
     contract = _contracts()["chat.turn.v1"]
 
     assert _sent("metadata.user_id", contract)
+    assert _sent("metadata.pc_agent", contract)
     assert _sent("input.query", contract)
     assert _sent("output", contract)
     assert not _sent("metadata.variant", contract)
@@ -76,11 +91,17 @@ def test_a_path_is_read_from_the_right_part_of_the_trace():
     assert not _sent("no_such_field", contract)
 
 
-def test_attributes_are_only_mapped_on_stamped_versions():
-    # Historical chat eras are read by the era adapters, which don't fill attributes.
-    ignored = sorted(version for version, mapping in load_chat_mappings().items() if mapping.attributes and not version.startswith("chat.turn."))
+def test_historical_attributes_are_limited_to_eras_that_emitted_them():
+    # c5 introduced compact pc_<step> metadata. The historical adapters retain
+    # those safe deployment values, so dashboards can compare old and new turns.
+    # Earlier eras never emitted them and must not gain invented attributes.
+    historical = sorted(
+        version
+        for version, mapping in load_chat_mappings().items()
+        if mapping.attributes and not version.startswith("chat.turn.")
+    )
 
-    assert not ignored, f"{ignored} list attributes, but only stamped chat.turn.vN versions fill them. Move them there."
+    assert historical == ["chat.c5.v1", "chat.c6.v1", "chat.c8.v1"]
 
 
 def _score_names_in_chat_py():

@@ -563,4 +563,6 @@ _MAPPED_FIELDS = {
     "full_turn_latency_ms": _float_or_none,
     "stage_totals_ms": _float_mapping_or_none,
     "timings_ms": _float_mapping_or_none,
+    "service": _string_or_none,
+    "release": _string_or_none,
 }
