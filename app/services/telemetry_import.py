@@ -67,6 +67,8 @@ VOICE_TURN_COLUMNS = (
     "field_availability",
     "imported_at",
     "attributes",
+    "service",
+    "release",
 )
 # CanonicalVoiceTurn fields voice_turns leaves out on purpose. Every other field
 # needs a column, or tests fail, so a new field can't quietly miss the table.
@@ -112,6 +114,9 @@ CHAT_TURN_COLUMNS = (
     "field_availability",
     "imported_at",
     "attributes",
+    "service",
+    "release",
+    "stage_totals_ms",
 )
 # CanonicalChatTurn fields chat_turns leaves out on purpose.
 CHAT_NOT_STORED = {
@@ -133,6 +138,8 @@ LEDGER_COLUMNS = (
     "reason",
     "schema_version",
     "imported_at",
+    "duration_ms",
+    "outcome",
 )
 
 
@@ -302,8 +309,23 @@ def _import_days(
         imported_at = datetime.now(timezone.utc)
         rows, rejected, traces, ledger = [], Counter(), 0, []
 
-        def account(trace_id, name, timestamp, schema_version, disposition, reason=""):
-            ledger.append([environment, table, day, trace_id, timestamp, name, disposition, reason, schema_version, imported_at])
+        def account(trace_id, name, timestamp, schema_version, disposition, reason="", duration_ms=None, outcome=None):
+            ledger.append(
+                [
+                    environment,
+                    table,
+                    day,
+                    trace_id,
+                    timestamp,
+                    name,
+                    disposition,
+                    reason,
+                    schema_version,
+                    imported_at,
+                    duration_ms,
+                    outcome,
+                ]
+            )
             report.ledger[disposition] += 1
             if disposition in ("activity", "unrecognised"):
                 report.not_turns[(disposition, name)] += 1
@@ -321,12 +343,21 @@ def _import_days(
                 continue
             report.add(turn)
             rows.append(row(turn, environment=environment, imported_at=imported_at))
-            account(trace["id"], trace["name"], trace["timestamp"], stamp, "turn")
+            account(
+                trace["id"],
+                trace["name"],
+                trace["timestamp"],
+                stamp,
+                "turn",
+                duration_ms=turn.full_turn_latency_ms,
+                outcome=turn.outcome,
+            )
 
         # Every other root trace of the day: known activities, and anything nobody
         # has looked at yet, so a new kind of trace shows up instead of vanishing.
+        identities = fetch_trace_identities(reader, environment=environment, start=start, end=end)
         seen = {entry[3] for entry in ledger}
-        for identity in fetch_trace_identities(reader, environment=environment, start=start, end=end):
+        for identity in identities:
             if identity.trace_id in seen:
                 continue
             fields = (identity.trace_id, identity.name, identity.timestamp, identity.schema_version)
@@ -336,11 +367,34 @@ def _import_days(
                 reason = "arrived during the import; re-import the day"
                 traces += 1
                 rejected[(identity.name, reason)] += 1
-                account(*fields, "rejected", reason)
+                account(*fields, "rejected", reason, identity.duration_ms, identity.outcome)
             elif identity.name in non_turn:
-                account(*fields, "activity")
+                account(*fields, "activity", duration_ms=identity.duration_ms, outcome=identity.outcome)
             else:
-                account(*fields, "unrecognised", "no importer reads this trace name")
+                account(
+                    *fields,
+                    "unrecognised",
+                    "no importer reads this trace name",
+                    identity.duration_ms,
+                    identity.outcome,
+                )
+
+        # The identity pass includes every root, including roots already
+        # adapted above. It supplies source duration for chat and historical
+        # turns that have no canonical total, and source outcome where a score
+        # or adapter did not provide one.
+        identities_by_id = {
+            identity.trace_id: identity
+            for identity in identities
+        }
+        for row in ledger:
+            identity = identities_by_id.get(row[3])
+            if identity is None:
+                continue
+            if row[10] is None:
+                row[10] = identity.duration_ms
+            if row[11] is None:
+                row[11] = identity.outcome
 
         report.traces += traces
         report.rejected.update(rejected)
@@ -384,6 +438,8 @@ def voice_turn_row(turn: CanonicalVoiceTurn, *, environment: str, imported_at: d
         "field_availability": dict(turn.field_availability),
         "imported_at": imported_at,
         "attributes": dict(turn.attributes),
+        "service": turn.service,
+        "release": turn.release,
     }
 
 
@@ -416,6 +472,7 @@ def chat_turn_row(turn: CanonicalChatTurn, *, environment: str, imported_at: dat
         "outcome_class": turn.outcome_class,
         "served_tier": turn.served_tier,
         "full_turn_latency_ms": turn.full_turn_latency_ms,
+        "stage_totals_ms": turn.stage_totals_ms or {},
         "tool_names": [name for call in tool_calls or [] if (name := _tool_name(call))],
         "tool_call_count": len(tool_calls) if tool_calls is not None else None,
         "observation_names": list(turn.observation_names),
@@ -423,6 +480,8 @@ def chat_turn_row(turn: CanonicalChatTurn, *, environment: str, imported_at: dat
         "field_availability": dict(turn.field_availability),
         "imported_at": imported_at,
         "attributes": dict(turn.attributes),
+        "service": turn.service,
+        "release": turn.release,
     }
 
 

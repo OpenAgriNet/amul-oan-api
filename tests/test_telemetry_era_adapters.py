@@ -509,12 +509,31 @@ def test_resolver_adapts_c6_root_input_and_categorical_scores(era_registry):
             "metadata": {
                 "pipeline": "translation",
                 "pipeline_profile": "oss",
+                "pc_pre_translation": "vllm:pretranslate-model",
+                "pc_agent": "vllm:agent-model",
             },
         },
         scores=[
             {"name": "turn_outcome", "value": "success"},
             {"name": "served_tier", "value": "agent=vllm:gemma"},
             {"name": "pipeline_profile", "value": "oss"},
+        ],
+        observations=[
+            {"type": "SPAN", "name": "Moderation", "start_ms": 1000, "end_ms": 1250},
+            # These are nested pydantic-ai spans, not additional elapsed time.
+            {"type": "SPAN", "name": "Moderation Agent run", "start_ms": 1050, "end_ms": 1240},
+            {"type": "SPAN", "name": "Amul AI Agent", "start_ms": 1300, "end_ms": 2100},
+            {"type": "SPAN", "name": "Amul AI Agent run", "start_ms": 1400, "end_ms": 2000},
+            {"type": "SPAN", "name": "Amul Doctor Agent", "start_ms": 2450, "end_ms": 2750},
+            {
+                "type": "GENERATION",
+                "name": "stream_translation",
+                "metadata": {"pipeline_stage": "stream_translation"},
+                "start_ms": 2150,
+                "end_ms": 2400,
+            },
+            # An incomplete observation is deliberately not inferred as zero.
+            {"type": "SPAN", "name": "suggestions", "start_ms": 2500, "end_ms": None},
         ],
         era_registry=era_registry,
     )
@@ -530,6 +549,16 @@ def test_resolver_adapts_c6_root_input_and_categorical_scores(era_registry):
     assert turn.outcome == "success"
     assert turn.outcome_class == "delivered"
     assert turn.served_tier == "agent=vllm:gemma"
+    assert turn.stage_totals_ms == {
+        "moderation": 250.0,
+        "agent": 1100.0,
+        "post_translation": 250.0,
+    }
+    assert turn.field_availability["stage_totals_ms"] == "derived"
+    assert turn.attributes == {
+        "pc_pre_translation": "vllm:pretranslate-model",
+        "pc_agent": "vllm:agent-model",
+    }
     assert turn.field_availability["outcome"] == "recorded"
 
 
@@ -599,6 +628,7 @@ def _stamped_chat_trace(stamp="chat.turn.v1"):
             "user_id": "redacted-user",
             "pipeline": "translation",
             "pipeline_profile": "oss",
+            "pc_agent": "vllm:agent-model",
         },
     }
 
@@ -614,6 +644,9 @@ def test_stamped_chat_trace_uses_the_shared_mapping_engine_without_an_era_regist
     assert turn.question_sanitized.model_dump() == _text("<redacted question>")
     assert turn.answer_sanitized.model_dump() == _text("<redacted answer>")
     assert turn.pipeline_profile == "oss"
+    assert turn.service == "amul-oan-api"
+    assert turn.release == "test-release-sha"
+    assert turn.attributes == {"pc_agent": "vllm:agent-model"}
     assert turn.turn_outcome == "success"
     assert turn.field_availability["pipeline_profile"] == "recorded"
 

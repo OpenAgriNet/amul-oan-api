@@ -26,3 +26,5 @@ voice.turn.v1:
     full_turn_latency_ms: [metadata.total_ms]
     stage_totals_ms: [metadata.stage_totals_ms]
     timings_ms: [metadata.timings_ms]
+    service: [metadata.service]
+    release: [metadata.release]
