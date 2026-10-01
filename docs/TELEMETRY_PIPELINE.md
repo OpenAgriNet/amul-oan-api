@@ -218,12 +218,13 @@ endpoints, for a server rather than a browser, with the key in `X-API-Key`:
 - `GET /api/telemetry/breakdown?from=...&to=...&by=pipeline_profile`: the same
   numbers per value of `by`, with each value's share of the turns. `by` is one of
   `environment`, `schema_version`, `source_era`, `pipeline_profile`,
-  `source_lang`, `target_lang`, `outcome`, `outcome_class`; for voice also
-  `route`, `call_type`, `provider`, `signed_in`; for chat also `chat_channel`
-  (web or WhatsApp), `pipeline`, `persona`, `served_tier`.
+  `source_lang`, `target_lang`, `outcome`, `outcome_class`, `service`,
+  `release`; for voice also `route`, `call_type`, `provider`, `signed_in`; for
+  chat also `chat_channel` (web or WhatsApp), `pipeline`, `persona`,
+  `served_tier`.
 - `GET /api/telemetry/latency?from=...&to=...`: p50/p95/p99 full-turn latency,
-  per value of an optional `by`, and voice's per stage (chat doesn't time its
-  stages).
+  per value of an optional `by`, and per stage. Chat's stage times are worked
+  out at import from the trace's spans.
 - `GET /api/telemetry/tools?from=...&to=...`: turns that used each tool and
   turns by number of tool calls, with their share. Chat only: voice keeps no
   tool names yet.
@@ -241,8 +242,8 @@ endpoints, for a server rather than a browser, with the key in `X-API-Key`:
 The last five also filter: `environment` (one, or `all`; each channel's
 production one by default), and an exact match on any of the `by` values, e.g.
 `&pipeline_profile=oss&source_lang=gu`. A channel that doesn't record what is
-matched or grouped by answers `null`. The release and service stamps aren't in
-the tables yet, so nothing groups by them.
+matched or grouped by answers `null`. `service` and `release` are only on turns
+sent after the stamps; older turns have them as `null`.
 
 - A question is a turn, except voice's `non_question` ones (a stale re-dispatch,
   non-speech, a greeting...). Voice before v3 recorded no outcome, so all of its

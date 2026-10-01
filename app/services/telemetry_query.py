@@ -207,6 +207,9 @@ _COMMON_DIMENSIONS = {
     "target_lang": "target_lang",
     "outcome": "outcome",
     "outcome_class": "outcome_class",
+    # Null on turns sent before the service and release stamps.
+    "service": "service",
+    "release": "release",
 }
 DIMENSIONS = {
     "voice": {
@@ -274,10 +277,11 @@ GROUP BY value
 ORDER BY value
 """
 
-# Only voice times its stages.
+# Voice records its stage times; chat's are worked out at import from the
+# trace's spans.
 _STAGES_SQL = """
 SELECT stage, count() AS turns, quantiles(0.5, 0.95, 0.99)(ms)
-FROM telemetry.voice_turns FINAL
+FROM {table} FINAL
 ARRAY JOIN mapKeys(stage_totals_ms) AS stage, mapValues(stage_totals_ms) AS ms
 WHERE {where}
 GROUP BY stage
@@ -348,16 +352,16 @@ ORDER BY schema_version, source_era
 # or the caller's hashed id.
 TURN_COLUMNS = {
     "voice": (
-        "source_trace_id", "timestamp", "environment", "schema_version", "source_era", "session_id",
-        "toBool(user_id_hash IS NOT NULL) AS known_user", "signed_in", "provider", "call_type", "route",
-        "pipeline_profile", "source_lang", "target_lang", "outcome", "outcome_class",
+        "source_trace_id", "timestamp", "environment", "schema_version", "source_era", "service", "release",
+        "session_id", "toBool(user_id_hash IS NOT NULL) AS known_user", "signed_in", "provider", "call_type",
+        "route", "pipeline_profile", "source_lang", "target_lang", "outcome", "outcome_class",
         "full_turn_latency_ms", "question_chars", "answer_chars",
     ),
     "chat": (
-        "source_trace_id", "timestamp", "environment", "schema_version", "source_era", "session_id",
-        "toBool(user_id_hash IS NOT NULL) AS known_user", "channel", "pipeline", "persona", "pipeline_profile",
-        "source_lang", "target_lang", "outcome", "outcome_class", "served_tier", "full_turn_latency_ms",
-        "tool_names", "tool_call_count", "question_chars", "answer_chars",
+        "source_trace_id", "timestamp", "environment", "schema_version", "source_era", "service", "release",
+        "session_id", "toBool(user_id_hash IS NOT NULL) AS known_user", "channel", "pipeline", "persona",
+        "pipeline_profile", "source_lang", "target_lang", "outcome", "outcome_class", "served_tier",
+        "full_turn_latency_ms", "tool_names", "tool_call_count", "question_chars", "answer_chars",
     ),
 }
 
@@ -509,7 +513,7 @@ def latency(
     match: Mapping[str, str] | None = None,
 ) -> dict[str, dict[str, Any] | None]:
     """Full-turn latency quantiles per channel, per value of ``by`` if given,
-    and voice's per-stage quantiles. Chat records no stages."""
+    and per stage."""
     out: dict[str, dict[str, Any] | None] = {}
     for channel, table in TABLES.items():
         clause = _where(channel, first_day=first_day, last_day=last_day, environment=environment, match=match)
@@ -522,11 +526,8 @@ def latency(
         if by is not None:
             sql = _LATENCY_BY_SQL.format(column=DIMENSIONS[channel][by], latency=_LATENCY, table=table, where=where)
             result["by"] = [{"value": value, **_latency(timed, values)} for value, timed, values in client.query(sql, parameters=parameters).result_rows]
-        if channel == "voice":
-            rows = client.query(_STAGES_SQL.format(where=where), parameters=parameters).result_rows
-            result["stages"] = [{"stage": stage, "turns": int(turns), **_quantiles(values, _LATENCY_NAMES)} for stage, turns, values in rows]
-        else:
-            result["stages"] = None
+        rows = client.query(_STAGES_SQL.format(table=table, where=where), parameters=parameters).result_rows
+        result["stages"] = [{"stage": stage, "turns": int(turns), **_quantiles(values, _LATENCY_NAMES)} for stage, turns, values in rows]
         out[channel] = result
     return out
 

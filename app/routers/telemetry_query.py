@@ -115,8 +115,8 @@ def get_outcomes(
 
 Dimension = Literal[
     "environment", "schema_version", "source_era", "pipeline_profile", "source_lang", "target_lang",
-    "outcome", "outcome_class", "route", "call_type", "provider", "signed_in", "chat_channel",
-    "pipeline", "persona", "served_tier",
+    "outcome", "outcome_class", "service", "release", "route", "call_type", "provider", "signed_in",
+    "chat_channel", "pipeline", "persona", "served_tier",
 ]
 
 
@@ -134,6 +134,8 @@ class TurnFilters(BaseModel):
     target_lang: Optional[str] = None
     outcome: Optional[str] = None
     outcome_class: Optional[str] = None
+    service: Optional[str] = Field(None, description="amul-oan-api or voice-oan-api.")
+    release: Optional[str] = Field(None, description="The git commit that served the turn.")
     route: Optional[str] = Field(None, description="Voice only.")
     call_type: Optional[str] = Field(None, description="Voice only: inbound or outbound.")
     provider: Optional[str] = Field(None, description="Voice only.")
@@ -188,8 +190,7 @@ def get_latency(
     filters: TurnFilters = Depends(),
 ):
     """p50/p95/p99 full-turn latency in ms per channel, also per value of
-    ``by`` when given, and voice's per stage. Chat doesn't time its stages, so
-    its stages are null."""
+    ``by`` when given, and per stage."""
     body, result = _answer(
         first, last, telemetry_query.latency, by=by, environment=filters.environment, match=filters.match()
     )

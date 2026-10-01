@@ -240,6 +240,21 @@ def test_signed_in_and_chats_delivery_channel_read_their_columns(monkeypatch, ap
     assert _get(api, "/api/telemetry/overview", signed_in="yes").status_code == 422
 
 
+def test_service_and_release_filter_and_group_both_channels(monkeypatch, api, configured):
+    clickhouse = _use(monkeypatch, _ClickHouse())
+
+    body = _get(api, "/api/telemetry/overview", release="0f4cda4", service="amul-oan-api").json()
+    by_release = _get(api, "/api/telemetry/breakdown", by="release").json()
+
+    assert body["voice"] is not None and body["chat"] is not None
+    assert by_release["voice"] == [] and by_release["chat"] == []
+    for sql, params in clickhouse.of("overview"):
+        assert "release = {match_0:String}" in sql and "service = {match_1:String}" in sql
+        assert (params["match_0"], params["match_1"]) == ("0f4cda4", "amul-oan-api")
+    assert {_channel(sql, params) for sql, params in clickhouse.of("breakdown")} == {"voice", "chat"}
+    assert all("SELECT release AS value" in sql for sql, _ in clickhouse.of("breakdown"))
+
+
 def test_the_filters_and_dimensions_cover_what_each_channel_records():
     recorded = set(telemetry_query.DIMENSIONS["voice"]) | set(telemetry_query.DIMENSIONS["chat"])
 
@@ -332,19 +347,23 @@ def test_breakdown_only_by_a_known_dimension(monkeypatch, api, configured, by):
 # ── /latency ────────────────────────────────────────────────────────────────
 
 
-def test_latency_gives_quantiles_and_voices_stages(monkeypatch, api, configured):
-    _use(monkeypatch, _ClickHouse(
+def test_latency_gives_quantiles_and_each_channels_stages(monkeypatch, api, configured):
+    clickhouse = _use(monkeypatch, _ClickHouse(
         latency_voice=[(4, [750.0, 2700.0, 2940.0])],
         stages_voice=[("agent", 2, [1650.0, 2415.0, 2483.0])],
         latency_chat=[(2, [5000.0, 5900.0, 5980.0])],
+        stages_chat=[("moderation", 2, [250.0, 290.0, 298.0])],
     ))
 
     body = _get(api, "/api/telemetry/latency").json()
 
     assert body["voice"]["total"] == {"timed_turns": 4, "p50_ms": 750.0, "p95_ms": 2700.0, "p99_ms": 2940.0}
     assert body["voice"]["stages"] == [{"stage": "agent", "turns": 2, "p50_ms": 1650.0, "p95_ms": 2415.0, "p99_ms": 2483.0}]
-    assert body["chat"]["stages"] is None
+    assert body["chat"]["stages"] == [{"stage": "moderation", "turns": 2, "p50_ms": 250.0, "p95_ms": 290.0, "p99_ms": 298.0}]
     assert "by" not in body["voice"]
+    stages = {_channel(sql, params): sql for sql, params in clickhouse.of("stages")}
+    assert "FROM telemetry.voice_turns FINAL" in stages["voice"]
+    assert "FROM telemetry.chat_turns FINAL" in stages["chat"]
 
 
 def test_latency_by_a_dimension(monkeypatch, api, configured):
@@ -429,7 +448,8 @@ def test_turns_are_a_page_of_metadata_newest_first(monkeypatch, api, configured)
     columns = telemetry_query.TURN_COLUMNS["voice"]
     row = {
         "source_trace_id": "v3", "timestamp": datetime(2026, 9, 1, 10, 5), "environment": "voice-production",
-        "schema_version": "voice.turn.v1", "source_era": "voice.v4", "session_id": "s1", "known_user": True,
+        "schema_version": "voice.turn.v1", "source_era": "voice.v4", "service": "voice-oan-api",
+        "release": "3b19835", "session_id": "s1", "known_user": True,
         "signed_in": True, "provider": "RAYA", "call_type": "inbound", "route": None, "pipeline_profile": "oss",
         "source_lang": "gu", "target_lang": "gu", "outcome": "error", "outcome_class": "failed",
         "full_turn_latency_ms": 3000.0, "question_chars": 12, "answer_chars": 0,
