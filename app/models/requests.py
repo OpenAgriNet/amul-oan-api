@@ -30,6 +30,10 @@ class VoiceRequest(BaseChatRequest):
     source_lang: Literal['gu', 'en'] = Field('gu', description="Source language code (gu=Gujarati, en=English)")
     provider: Optional[Literal['RAYA']] = Field(None, description="Provider for the voice service - can be RAYA or None")
     process_id: Optional[str] = Field(None, description="Process ID for tracking and hold messages")
+    call_type: Literal['inbound', 'outbound'] = Field(
+        'inbound',
+        description="Direction of the call as reported by the provider (inbound=farmer called us, outbound=we called the farmer). Optional; defaults to inbound.",
+    )
 
 
 class TranscribeRequest(BaseModel):

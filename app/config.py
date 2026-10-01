@@ -375,6 +375,9 @@ class Settings(BaseSettings):
     voice_outbound_consent_timeout_seconds: float = float(
         os.getenv("VOICE_OUTBOUND_CONSENT_TIMEOUT_SECONDS", "0.60")
     )
+    # Serves voice at /voice/ from this repo (app/routers/voice.py). Off until the
+    # cutover: voice-oan-api serves the calls until then.
+    voice_route_enabled: bool = _get_bool_env("VOICE_ROUTE_ENABLED", default=False)
     # Voice's trace (app/voice/trace.py). Same names and defaults as voice-oan-api.
     enable_voice_tracing: bool = _get_bool_env("ENABLE_VOICE_TRACING", default=True)
     voice_trace_text_mode: str = os.getenv("VOICE_TRACE_TEXT_MODE", "preview_hash")
