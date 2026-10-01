@@ -77,7 +77,8 @@ def _use(monkeypatch, clickhouse):
 
 
 def _get(api, path, **params):
-    return api.get(path, params=params, headers={"X-API-Key": KEY})
+    """A request for September unless it says otherwise."""
+    return api.get(path, params={**SEPTEMBER, **params}, headers={"X-API-Key": KEY})
 
 
 # ── access ──────────────────────────────────────────────────────────────────
@@ -149,14 +150,13 @@ def test_other_environments_can_be_read(monkeypatch, api, configured):
     assert [params["environment"] for _, params in clickhouse.queries] == ["voice-development", "chat-development"]
 
 
-def test_with_no_range_it_counts_everything_up_to_today(monkeypatch, api, configured):
+@pytest.mark.parametrize("params", [{}, {"from": "2026-09-01"}, {"to": "2026-09-30"}])
+def test_every_query_needs_a_range(monkeypatch, api, configured, params):
     clickhouse = _use(monkeypatch, _ClickHouse())
 
-    body = _get(api, "/api/telemetry/sessions").json()
-
-    today = datetime.now(timezone.utc).date()
-    assert (body["from"], body["to"]) == ("1970-01-01", today.isoformat())
-    assert clickhouse.queries[0][1]["last_day"] == today
+    for path in PATHS:
+        assert api.get(path, params=params, headers={"X-API-Key": KEY}).status_code == 422
+    assert clickhouse.queries == []
 
 
 @pytest.mark.parametrize("path, params, status", [
