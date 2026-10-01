@@ -3,7 +3,7 @@
 How a voice turn moves onto the `run_turn` seam, piece by piece, and which pieces are shared
 with chat versus populated separately.
 
-Status: decided, in progress (PRs 1–11 done). Read against `voice-oan-api@amul-dev` (`3b19835`, 2026-09-29) and
+Status: decided, in progress (PRs 1–12 done). Read against `voice-oan-api@amul-dev` (`3b19835`, 2026-09-29) and
 `amul-oan-api@main` (`c08a5f1`, after #327). Line numbers below are `app/services/voice.py` at
 that voice commit unless a path says otherwise. Background is in `docs/channel-seam-design.md`;
 this is step 4 of its landing order.
@@ -310,11 +310,24 @@ reads it. So a slot lands in the same PR as the code that reads it, never ahead 
    aren't recorded because `llm_core` runs the attempts. The ownership release timing comes with
    the adapter.
 5. Voice adapter and route behind a flag, off by default, emitting `voice.turn.v1`.
+
+   **Done** on `feat/voice-route` (PR 12), stacked on voice's telemetry. `GET /api/voice/` is
+   voice-oan-api's endpoint (same request, JWT, ownership claim and history load), registered
+   only when `VOICE_ROUTE_ENABLED` is on; with it off the voice code is never imported.
+   `stream_voice_message` (`app/services/voice.py`) works out the outbound consent turn from
+   the stage in Redis as voice did, wires in `CallStaleness` and `RayaNudgeSender`, runs
+   `VOICE_SURFACE`, sends each emission through voice's output normalizer unless it is raw, and
+   releases the session however the turn ends. The route's ownership claim and history load are
+   timed on the trace, from when the request came in. `Turn.channel` is `None` on voice. A
+   caller hanging up closes the turn at once, as on chat's route; the ownership release isn't
+   timed on the trace, since it runs after the trace has closed.
 6. Parity: voice's own tests against the new path, `check_pipeline_parity.py`,
    `measure_voice_ttft.py`, then shadow traffic in dev, comparing `voice_turns` old against new:
    `outcome_class` mix, `route`, `full_turn_latency_ms`.
 7. Cutover: the amul-oan-api image deployed as the voice service with
-   `PIPELINE_CHANNEL=voice` and `LANGFUSE_TRACING_ENVIRONMENT=voice-production`, the telephony
+   `PIPELINE_CHANNEL=voice`, `LANGFUSE_TRACING_ENVIRONMENT=voice-production`,
+   `VOICE_ROUTE_ENABLED=true` and `HISTORY_CACHE_TTL_SECONDS=86400` (voice keeps history for 24
+   hours, this repo's default is 2), the telephony
    provider pointed at it, voice-oan-api kept deployable for rollback, and a new era in
    `telemetry/eras.yaml`. The voice deployment takes its LLM config from `PIPELINE_CONFIG_PATH`
    or the live `llm_pipeline_config:voice` key: this repo's env synthesis builds chat's steps,
