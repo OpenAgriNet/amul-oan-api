@@ -49,7 +49,8 @@ LIMIT 1 BY id
 """
 
 _OBSERVATIONS_SQL = """
-SELECT id, trace_id, name, toUnixTimestamp64Milli(start_time) AS start_ms, is_deleted
+SELECT id, trace_id, name, toUnixTimestamp64Milli(start_time) AS start_ms,
+       if(end_time IS NULL, NULL, toUnixTimestamp64Milli(end_time)) AS end_ms, is_deleted
 FROM observations
 WHERE trace_id IN {trace_ids:Array(String)}
   AND start_time >= toDateTime64({start:String}, 3, 'UTC')
@@ -91,11 +92,23 @@ LIMIT 1 BY id
 # output, user id or metadata beyond the schema stamp.
 _TRACE_IDENTITIES_SQL = """
 SELECT id, ifNull(name, '') AS name, toUnixTimestamp64Milli(timestamp) AS timestamp_ms,
-       metadata['amul.schema_version'] AS schema_version, is_deleted
+       metadata['amul.schema_version'] AS schema_version, metadata['outcome'] AS outcome, is_deleted
 FROM traces
 WHERE environment = {environment:String}
   AND timestamp >= toDateTime64({start:String}, 3, 'UTC')
   AND timestamp < toDateTime64({end:String}, 3, 'UTC')
+ORDER BY event_ts DESC
+LIMIT 1 BY id
+"""
+
+# A trace has no durable end-time field in Langfuse's trace table. The latest
+# end time among its observations gives the privacy-safe root duration needed
+# by the ledger, without selecting any observation input or output.
+_TRACE_DURATION_OBSERVATIONS_SQL = """
+SELECT id, trace_id, toUnixTimestamp64Milli(end_time) AS end_ms, is_deleted
+FROM observations
+WHERE trace_id IN {trace_ids:Array(String)}
+  AND end_time IS NOT NULL
 ORDER BY event_ts DESC
 LIMIT 1 BY id
 """
@@ -119,18 +132,47 @@ class TraceIdentity:
     name: str
     timestamp: datetime
     schema_version: str
+    duration_ms: float | None = None
+    outcome: str | None = None
 
 
 def fetch_trace_identities(
     client: ClickHouseReader, *, environment: str, start: datetime, end: datetime
 ) -> list[TraceIdentity]:
     """Every live root trace with timestamp in [start, end), any name, newest version only."""
-    identities = []
     parameters = {"environment": environment, "start": _sql_time(start), "end": _sql_time(end)}
-    for row in _live_rows(client, _TRACE_IDENTITIES_SQL, parameters):
+    rows = _live_rows(client, _TRACE_IDENTITIES_SQL, parameters)
+    end_ms_by_trace: dict[str, int] = {}
+    for batch in _batches(rows, _BATCH_SIZE):
+        for observation in _live_rows(
+            client,
+            _TRACE_DURATION_OBSERVATIONS_SQL,
+            {"trace_ids": [row["id"] for row in batch]},
+        ):
+            end_ms = observation.get("end_ms")
+            if isinstance(end_ms, int):
+                trace_id = observation["trace_id"]
+                end_ms_by_trace[trace_id] = max(end_ms_by_trace.get(trace_id, end_ms), end_ms)
+    identities = []
+    for row in rows:
         timestamp = _EPOCH + timedelta(milliseconds=row["timestamp_ms"])
         if start <= timestamp < end:
-            identities.append(TraceIdentity(row["id"], row.get("name") or "", timestamp, row.get("schema_version") or ""))
+            duration_ms = end_ms_by_trace.get(row["id"])
+            if duration_ms is not None and duration_ms >= row["timestamp_ms"]:
+                duration_ms -= row["timestamp_ms"]
+            else:
+                duration_ms = None
+            outcome = row.get("outcome")
+            identities.append(
+                TraceIdentity(
+                    row["id"],
+                    row.get("name") or "",
+                    timestamp,
+                    row.get("schema_version") or "",
+                    float(duration_ms) if duration_ms is not None else None,
+                    outcome if isinstance(outcome, str) and outcome else None,
+                )
+            )
     return identities
 
 
@@ -208,7 +250,10 @@ def fetch_chat_bundles(
             ordered = sorted(names.get(trace["id"], []), key=lambda obs: obs.get("start_ms") or 0)
             yield TraceBundle(
                 trace=trace,
-                observations=[_chat_observation(details.get(obs["id"]) or obs) for obs in ordered],
+                observations=[
+                    _chat_observation({**obs, **details.get(obs["id"], {})})
+                    for obs in ordered
+                ],
                 scores=[_score(score) for score in scores.get(trace["id"], [])],
                 related_traces=by_session.get(trace["session_id"], []) if trace["session_id"] else [],
             )
@@ -230,6 +275,8 @@ def _chat_observation(row: Mapping[str, Any]) -> dict[str, Any]:
         "metadata": metadata,
         "input": _decoded(row.get("input")),
         "output": _decoded(row.get("output")),
+        "start_ms": row.get("start_ms"),
+        "end_ms": row.get("end_ms"),
     }
 
 

@@ -77,3 +77,6 @@ ORDER BY (environment, day, imported_at, trace_name, reason);
 -- Don't edit or remove the columns above. Dashboards read them, and a table
 -- that already exists won't pick up a change there.
 ALTER TABLE telemetry.chat_turns ADD COLUMN IF NOT EXISTS attributes Map(String, String);
+ALTER TABLE telemetry.chat_turns ADD COLUMN IF NOT EXISTS service LowCardinality(Nullable(String));
+ALTER TABLE telemetry.chat_turns ADD COLUMN IF NOT EXISTS release LowCardinality(Nullable(String));
+ALTER TABLE telemetry.chat_turns ADD COLUMN IF NOT EXISTS stage_totals_ms Map(String, Float64);

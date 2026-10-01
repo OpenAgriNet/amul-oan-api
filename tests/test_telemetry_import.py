@@ -65,7 +65,14 @@ class FakeClickHouse:
             start, end = (_sql_moment(parameters[key]) for key in ("start", "end"))
             rows = [row for row in rows if start <= row["timestamp_ms"] < end]
             if "AS schema_version" in query:
-                rows = [{**row, "schema_version": row["metadata"].get("amul.schema_version", "")} for row in rows]
+                rows = [
+                    {
+                        **row,
+                        "schema_version": row["metadata"].get("amul.schema_version", ""),
+                        "outcome": row["metadata"].get("outcome", ""),
+                    }
+                    for row in rows
+                ]
         return FakeResult(rows)
 
     def insert(self, table, data, column_names, database):
@@ -203,6 +210,8 @@ def test_turns_are_written_without_the_phone_number_or_caller_text():
 
     rows = {row["source_trace_id"]: row for row in client.inserts["voice_turns"]}
     assert rows["stamped"]["source_era"] == "voice.turn.v1"
+    assert rows["stamped"]["service"] == "voice-oan-api"
+    assert rows["stamped"]["release"] == "unknown"
     assert rows["unstamped"]["source_era"] == "voice.v4"
     for row in rows.values():
         assert "user_id" not in row
@@ -324,6 +333,26 @@ def test_every_root_trace_of_the_day_is_accounted_for():
     assert report.not_turns[("unrecognised", "nightly_mystery_job")] == 1
     # The day is only marked imported once its turns and its ledger are in.
     assert list(client.inserts)[-2:] == ["trace_ledger", "voice_import_days"]
+
+
+def test_ledger_keeps_safe_root_duration_and_raw_outcome_for_activities():
+    started = datetime(2026, 9, 24, 10, tzinfo=timezone.utc)
+    client = FakeClickHouse(
+        traces=[trace_row("suggestion", name="suggestions", metadata={"outcome": "completed"})],
+        observations=[
+            {
+                "id": "suggestion-end",
+                "trace_id": "suggestion",
+                "end_ms": int(started.timestamp() * 1000) + 2_500,
+                "is_deleted": 0,
+            }
+        ],
+    )
+
+    _import(client)
+
+    [row] = client.inserts["trace_ledger"]
+    assert (row["disposition"], row["duration_ms"], row["outcome"]) == ("activity", 2500.0, "completed")
 
 
 class _LateTraceClickHouse(FakeClickHouse):
@@ -773,10 +802,21 @@ def test_chat_attributes_are_stored_too():
             schema_version="chat.turn.v1",
             root="chat.translation",
             fields=base["chat.turn.v1"].fields,
-            attributes={"entry_surface": ("metadata.entry_surface",)},
+            attributes={
+                **base["chat.turn.v1"].attributes,
+                "entry_surface": ("metadata.entry_surface",),
+            },
         ),
     }
-    stamped = {"amul.schema_version": "chat.turn.v1", "pipeline": "translation", "user_id": "9990001112", "entry_surface": "whatsapp"}
+    stamped = {
+        "amul.schema_version": "chat.turn.v1",
+        "pipeline": "translation",
+        "user_id": "9990001112",
+        "entry_surface": "whatsapp",
+        "service": "amul-oan-api",
+        "release": "test-release-sha",
+        "pc_agent": "vllm:agent-model",
+    }
     client = FakeClickHouse(traces=[chat_row("s1", metadata=stamped, input={"query": "<redacted question>"}, output="<redacted answer>")])
 
     import_chat_days(
@@ -791,7 +831,11 @@ def test_chat_attributes_are_stored_too():
 
     [row] = client.inserts["chat_turns"]
     assert row["source_era"] == "chat.turn.v1"
-    assert row["attributes"] == {"entry_surface": "whatsapp"}
+    assert row["attributes"] == {
+        "entry_surface": "whatsapp",
+        "pc_agent": "vllm:agent-model",
+    }
+    assert (row["service"], row["release"]) == ("amul-oan-api", "test-release-sha")
     assert "9990001112" not in repr(row) and "<redacted" not in repr(row)
     [ledger] = client.inserts["trace_ledger"]
     assert (ledger["disposition"], ledger["channel"], ledger["schema_version"]) == ("turn", "chat", "chat.turn.v1")

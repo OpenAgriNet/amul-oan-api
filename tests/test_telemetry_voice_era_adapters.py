@@ -472,6 +472,8 @@ def test_stamped_trace_is_routed_by_its_stamp_not_its_date(adapt_with_stamped_er
     assert turn.source_schema_version == "voice.turn.v1"
     assert turn.source_era_extensions == []
     assert turn.pipeline_profile == "managed"
+    assert turn.service == "voice-oan-api"
+    assert turn.release == "test-release-sha"
     assert turn.outcome_class == "delivered"
 
 
