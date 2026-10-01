@@ -109,6 +109,8 @@ SELECT id, trace_id, toUnixTimestamp64Milli(end_time) AS end_ms, is_deleted
 FROM observations
 WHERE trace_id IN {trace_ids:Array(String)}
   AND end_time IS NOT NULL
+  AND start_time >= toDateTime64({start:String}, 3, 'UTC')
+  AND start_time < toDateTime64({end:String}, 3, 'UTC')
 ORDER BY event_ts DESC
 LIMIT 1 BY id
 """
@@ -143,11 +145,15 @@ def fetch_trace_identities(
     parameters = {"environment": environment, "start": _sql_time(start), "end": _sql_time(end)}
     rows = _live_rows(client, _TRACE_IDENTITIES_SQL, parameters)
     end_ms_by_trace: dict[str, int] = {}
+    child_window = {
+        "start": _sql_time(start - _CHILD_WINDOW),
+        "end": _sql_time(end + _CHILD_WINDOW),
+    }
     for batch in _batches(rows, _BATCH_SIZE):
         for observation in _live_rows(
             client,
             _TRACE_DURATION_OBSERVATIONS_SQL,
-            {"trace_ids": [row["id"] for row in batch]},
+            {"trace_ids": [row["id"] for row in batch], **child_window},
         ):
             end_ms = observation.get("end_ms")
             if isinstance(end_ms, int):

@@ -595,7 +595,7 @@ _OBSERVATION_STAGE_NAMES = {
 def _with_observation_stage_timings(
     turn: CanonicalChatTurn, observations: Sequence[Mapping[str, Any]]
 ) -> CanonicalChatTurn:
-    """Sum completed child-observation durations into stable chat stages.
+    """Union completed child-observation intervals into stable chat stages.
 
     This is intentionally derived at import, not emitted by the running chat
     service, so it also fills the canonical shape for historical trace eras.
@@ -603,12 +603,17 @@ def _with_observation_stage_timings(
     stage, are not guessed.
     """
 
-    totals: dict[str, float] = {}
+    intervals_by_stage: dict[str, list[tuple[float, float]]] = {}
     for observation in observations:
         stage = _observation_stage(observation)
-        duration_ms = _observation_duration_ms(observation)
-        if stage is not None and duration_ms is not None:
-            totals[stage] = totals.get(stage, 0.0) + duration_ms
+        interval = _observation_interval_ms(observation)
+        if stage is not None and interval is not None:
+            intervals_by_stage.setdefault(stage, []).append(interval)
+
+    totals = {
+        stage: _merged_interval_duration_ms(intervals)
+        for stage, intervals in intervals_by_stage.items()
+    }
 
     availability = dict(turn.field_availability)
     availability["stage_totals_ms"] = "derived" if totals else "unavailable"
@@ -631,20 +636,35 @@ def _observation_stage(observation: Mapping[str, Any]) -> str | None:
         return "tool"
     if "moderation" in normalized:
         return "moderation"
-    if "amul ai agent" in normalized:
+    if "amul ai agent" in normalized or "amul doctor agent" in normalized:
         return "agent"
     if "suggestion" in normalized:
         return "suggestions"
     return None
 
 
-def _observation_duration_ms(observation: Mapping[str, Any]) -> float | None:
+def _observation_interval_ms(observation: Mapping[str, Any]) -> tuple[float, float] | None:
     start, end = observation.get("start_ms"), observation.get("end_ms")
     if isinstance(start, bool) or isinstance(end, bool):
         return None
     if not isinstance(start, (int, float)) or not isinstance(end, (int, float)):
         return None
-    return float(end - start) if end >= start else None
+    return (float(start), float(end)) if end >= start else None
+
+
+def _merged_interval_duration_ms(intervals: Sequence[tuple[float, float]]) -> float:
+    """Return the duration covered by intervals, counting overlap only once."""
+
+    ordered = sorted(intervals)
+    start, end = ordered[0]
+    total = 0.0
+    for next_start, next_end in ordered[1:]:
+        if next_start <= end:
+            end = max(end, next_end)
+            continue
+        total += end - start
+        start, end = next_start, next_end
+    return total + end - start
 
 
 def _adapt_stamped_chat_trace(

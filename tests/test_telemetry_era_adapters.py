@@ -520,7 +520,11 @@ def test_resolver_adapts_c6_root_input_and_categorical_scores(era_registry):
         ],
         observations=[
             {"type": "SPAN", "name": "Moderation", "start_ms": 1000, "end_ms": 1250},
-            {"type": "SPAN", "name": "Amul AI Agent run", "start_ms": 1300, "end_ms": 2100},
+            # These are nested pydantic-ai spans, not additional elapsed time.
+            {"type": "SPAN", "name": "Moderation Agent run", "start_ms": 1050, "end_ms": 1240},
+            {"type": "SPAN", "name": "Amul AI Agent", "start_ms": 1300, "end_ms": 2100},
+            {"type": "SPAN", "name": "Amul AI Agent run", "start_ms": 1400, "end_ms": 2000},
+            {"type": "SPAN", "name": "Amul Doctor Agent", "start_ms": 2450, "end_ms": 2750},
             {
                 "type": "GENERATION",
                 "name": "stream_translation",
@@ -547,7 +551,7 @@ def test_resolver_adapts_c6_root_input_and_categorical_scores(era_registry):
     assert turn.served_tier == "agent=vllm:gemma"
     assert turn.stage_totals_ms == {
         "moderation": 250.0,
-        "agent": 800.0,
+        "agent": 1100.0,
         "post_translation": 250.0,
     }
     assert turn.field_availability["stage_totals_ms"] == "derived"

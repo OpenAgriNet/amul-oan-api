@@ -353,6 +353,15 @@ def test_ledger_keeps_safe_root_duration_and_raw_outcome_for_activities():
 
     [row] = client.inserts["trace_ledger"]
     assert (row["disposition"], row["duration_ms"], row["outcome"]) == ("activity", 2500.0, "completed")
+    duration_query, duration_parameters = next(
+        (query, parameters)
+        for query, parameters in client.queries
+        if "end_time IS NOT NULL" in query
+    )
+    assert "start_time >= toDateTime64({start:String}, 3, 'UTC')" in duration_query
+    assert "start_time < toDateTime64({end:String}, 3, 'UTC')" in duration_query
+    assert duration_parameters["start"] == "2026-09-23 00:00:00.000"
+    assert duration_parameters["end"] == "2026-09-26 00:00:00.000"
 
 
 class _LateTraceClickHouse(FakeClickHouse):
