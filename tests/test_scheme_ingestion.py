@@ -31,6 +31,7 @@ def test_scheme_sources_read_urls_from_settings():
     assert si.SUMUL_SOURCE.source_url == si.settings.sumul_scheme_source_url
     assert si.SURSAGAR_SOURCE.source_url == si.settings.sursagar_scheme_source_url
     assert si.SABAR_SOURCE.source_url == si.settings.sabar_scheme_source_url
+    assert si.MADHUR_SOURCE.source_url == si.settings.madhur_scheme_source_url
 
 
 def test_scheme_site_origins_derive_from_configured_source_urls(monkeypatch):
@@ -38,6 +39,7 @@ def test_scheme_site_origins_derive_from_configured_source_urls(monkeypatch):
     monkeypatch.setattr(si, "SURSAGAR_SITE_ORIGIN", "https://sursagar-custom.test")
     monkeypatch.setattr(si, "SABAR_SITE_ORIGIN", "https://sabar-custom.test")
     monkeypatch.setattr(si, "DUDHDHARA_SITE_ORIGIN", "https://dudhdhara-custom.test")
+    monkeypatch.setattr(si, "MADHUR_SITE_ORIGIN", "http://madhur-custom.test")
 
     sumul_records = si.parse_sumul_scheme_links('<a href="files/a.pdf">Download</a>')
     sursagar_records = si.parse_sursagar_scheme_links(
@@ -50,11 +52,17 @@ def test_scheme_site_origins_derive_from_configured_source_urls(monkeypatch):
     dudhdhara_records = si.parse_dudhdhara_scheme_links(
         '<table><tr><td>Scheme</td><td><a href="assets/image/custom.pdf">Download</a></td></tr></table>'
     )
+    madhur_records = si.parse_madhur_scheme_links(
+        '<div class="producer-card"><h4>Scheme</h4>'
+        '<a href="/ForOurMilkProducers/DownloadPdf?fileName=files/custom.pdf">Download</a>'
+        '</div>'
+    )
 
     assert sumul_records[0]["scheme_url"] == "https://sumul-custom.test/files/a.pdf"
     assert sursagar_records[0]["scheme_url"] == "https://sursagar-custom.test/Farmer/DownloadMilkProducerFile?file=test.pdf"
     assert sabar_records[0]["scheme_url"] == "https://sabar-custom.test/wp-content/uploads/2026/09/custom.pdf"
     assert dudhdhara_records[0]["scheme_url"] == "https://dudhdhara-custom.test/assets/image/custom.pdf"
+    assert madhur_records[0]["scheme_url"] == "http://madhur-custom.test/ForOurMilkProducers/DownloadPdf?fileName=files/custom.pdf"
 
 
 class _FakePixmap:
@@ -1742,3 +1750,126 @@ def test_refresh_dudhdhara_source_caches_parsed_links_under_bharuch(monkeypatch)
             }
         ]
     }
+
+
+# ---------------------------------------------------------------------------
+# Madhur (Gandhinagar) tests
+# ---------------------------------------------------------------------------
+
+_MADHUR_UNRELATED_HTML = """
+<nav><a href="/ForOurMilkProducers/DownloadPdf?fileName=files/unrelated.pdf">Other PDF</a></nav>
+"""
+
+_MADHUR_HTML = _MADHUR_UNRELATED_HTML + """
+<div class="producer-card">
+  <div class="producer-header"><div class="producer-title">
+    <div><h4>Cattle Group Insurance for Milk Producers</h4><h4></h4></div>
+  </div></div>
+  <div class="producer-body">
+    <a href="/ForOurMilkProducers/DownloadPdf?fileName=Uplode%2FForOurMilkProducersPdf%2F7dae520c-57d3-4cd1-9885-720bd0b9ca07.pdf">DOWNLOAD</a>
+  </div>
+</div>
+<div class="producer-card">
+  <div class="producer-header"><div class="producer-title">
+    <div><h4>CATTLE INSURANCE PARIPATRA</h4></div>
+  </div></div>
+  <div class="producer-body">
+    <a href="/ForOurMilkProducers/DownloadPdf?fileName=Uplode%2FForOurMilkProducersPdf%2F89edd807-c56a-4a56-99b4-8f9dedd16102.pdf">DOWNLOAD</a>
+    <a href="/ForOurMilkProducers/DownloadPdf?fileName=Uplode%2FForOurMilkProducersPdf%2F89edd807-c56a-4a56-99b4-8f9dedd16102.pdf">DOWNLOAD AGAIN</a>
+  </div>
+</div>
+"""
+
+
+def test_madhur_source_url_is_configurable_via_env():
+    env = {**os.environ, "MADHUR_SCHEME_SOURCE_URL": "http://madhur-env.test/schemes?page=milk"}
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import app.services.scheme_ingestion as si;"
+            "print(si.MADHUR_SOURCE.source_url);"
+            "print(si.MADHUR_SITE_ORIGIN)",
+        ],
+        cwd=Path(__file__).resolve().parents[1],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert result.stdout.splitlines()[-2:] == [
+        "http://madhur-env.test/schemes?page=milk",
+        "http://madhur-env.test",
+    ]
+
+
+def test_parse_madhur_scheme_links_reads_cards_and_deduplicates():
+    assert si.parse_madhur_scheme_links(_MADHUR_HTML) == [
+        {
+            "scheme_title": "Cattle Group Insurance for Milk Producers",
+            "scheme_url": "http://www.madhurdairy.org/ForOurMilkProducers/DownloadPdf?fileName=Uplode%2FForOurMilkProducersPdf%2F7dae520c-57d3-4cd1-9885-720bd0b9ca07.pdf",
+        },
+        {
+            "scheme_title": "CATTLE INSURANCE PARIPATRA",
+            "scheme_url": "http://www.madhurdairy.org/ForOurMilkProducers/DownloadPdf?fileName=Uplode%2FForOurMilkProducersPdf%2F89edd807-c56a-4a56-99b4-8f9dedd16102.pdf",
+        },
+    ]
+
+
+def test_parse_madhur_scheme_links_has_no_page_wide_fallback():
+    assert si.parse_madhur_scheme_links(_MADHUR_UNRELATED_HTML) == []
+
+
+def test_ingest_madhur_source_rejects_layout_without_cards(monkeypatch):
+    async def fake_fetch_html(_client, _url):
+        return _MADHUR_UNRELATED_HTML
+
+    monkeypatch.setattr(si, "fetch_html", fake_fetch_html)
+    with pytest.raises(si.SchemeParseError, match="no madhur scheme links parsed"):
+        asyncio.run(si._ingest_madhur_source(si.MADHUR_SOURCE, SimpleNamespace()))
+
+
+def test_refresh_madhur_source_caches_parsed_links_under_gandhinagar(monkeypatch):
+    async def fake_acquire(_cache_key, redis_client=None):
+        return "token"
+
+    async def fake_lock_noop(_cache_key, _token, redis_client=None):
+        return None
+
+    async def fake_fetch_html(_client, url):
+        assert url == si.MADHUR_SOURCE.source_url
+        return _MADHUR_HTML
+
+    async def fake_build(**kwargs):
+        return {
+            "union_name": kwargs["source"].union_name,
+            "scheme_title": kwargs["scheme_title"],
+            "scheme_url": kwargs["scheme_url"],
+        }
+
+    cached = {}
+
+    async def fake_cache(cache_key, records, redis_client=None):
+        cached[cache_key] = records
+
+    _stub_empty_prior_pdf_cache(monkeypatch)
+    monkeypatch.setattr(si, "acquire_refresh_lock", fake_acquire)
+    monkeypatch.setattr(si, "extend_refresh_lock", fake_lock_noop)
+    monkeypatch.setattr(si, "release_refresh_lock", fake_lock_noop)
+    monkeypatch.setattr(si, "fetch_html", fake_fetch_html)
+    monkeypatch.setattr(si, "_build_pdf_record", fake_build)
+    monkeypatch.setattr(si, "cache_source_records", fake_cache)
+
+    assert asyncio.run(si.refresh_scheme_source(si.MADHUR_SOURCE, client=SimpleNamespace())) is True
+    assert cached[si.MADHUR_SOURCE.cache_key] == [
+        {
+            "union_name": "gandhinagar",
+            "scheme_title": "Cattle Group Insurance for Milk Producers",
+            "scheme_url": "http://www.madhurdairy.org/ForOurMilkProducers/DownloadPdf?fileName=Uplode%2FForOurMilkProducersPdf%2F7dae520c-57d3-4cd1-9885-720bd0b9ca07.pdf",
+        },
+        {
+            "union_name": "gandhinagar",
+            "scheme_title": "CATTLE INSURANCE PARIPATRA",
+            "scheme_url": "http://www.madhurdairy.org/ForOurMilkProducers/DownloadPdf?fileName=Uplode%2FForOurMilkProducersPdf%2F89edd807-c56a-4a56-99b4-8f9dedd16102.pdf",
+        },
+    ]
