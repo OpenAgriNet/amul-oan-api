@@ -35,13 +35,15 @@ class AdmissionPolicy(str, Enum):
 
 
 class Step(str, Enum):
-    """LLM steps the config must cover. Chat has 5 (no non_meaningful)."""
+    """LLM steps a config can cover. Chat configures the first five;
+    ``non_meaningful`` is voice's, and a chat config simply leaves it out."""
 
     PRE_TRANSLATION = "pre_translation"
     MODERATION = "moderation"
     AGENT = "agent"
     SUGGESTIONS = "suggestions"
     POST_TRANSLATION = "post_translation"
+    NON_MEANINGFUL = "non_meaningful"
 
 
 class StepClientKind(str, Enum):
@@ -50,6 +52,7 @@ class StepClientKind(str, Enum):
     AGENT = "agent"            # pydantic-ai Model (agent loop, chat moderation, suggestions)
     PRE_TRANSLATION = "pre_translation"  # provider-native raw client
     TRANSLATEGEMMA = "translategemma"  # aiohttp text-completion descriptor (post-translation)
+    RAW_OPENAI = "raw_openai"  # bare OpenAI-compatible client (voice's moderation / classifier calls)
 
 
 class Tier(BaseModel):

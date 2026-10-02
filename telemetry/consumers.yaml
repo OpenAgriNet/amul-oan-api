@@ -1,0 +1,92 @@
+# What reads our Langfuse telemetry, and exactly what each reader depends on.
+#
+# eras.yaml records what we emit in each era; this file records what gets read,
+# so a change can be checked against its readers before it ships. CI checks the
+# format (tests/test_telemetry_consumers.py). If you build something that reads
+# telemetry, add it here.
+#
+# verified_from: code       checked against the reader's source, path is file:line
+# verified_from: eras.yaml  copied from eras.yaml broken_consumers, source not read yet
+# status: working | broken | retired
+
+version: 1
+generated: 2026-09-24
+
+consumers:
+
+  - consumer: oan-telemetry-dashboard-service
+    location:
+      repo: OpenAgriNet/oan-telemetry-dashboard-service
+      branch: amul-dev
+      paths: [langfuse/questions.js, langfuse/sessions.js, langfuse/users.js]
+    interface: langfuse public metrics api, view=traces
+    environment_filter: none          # every environment in the project is counted
+    verified_from: code
+    verified_on: 2026-09-24
+    reads:
+      - kind: trace_name
+        values: ["Voice Agent run", "Voice Agent Signed In run", "Amul AI Agent"]
+        used_for: voice question count
+        path: langfuse/questions.js:32-34
+        written_for_eras: [voice.v0, chat.c3]
+        dead_since_era: [voice.v4, chat.c6]
+        note: The "Amul AI Agent" name is a chat root, so chat turns land in the voice count.
+      - kind: metadata_contains
+        key: attributes
+        value: "Amul AI Agent"
+        used_for: chat question count
+        path: langfuse/questions.js:48-56
+        dead_since_era: unknown
+        note: Not in eras.yaml, so when it stopped matching isn't known yet.
+      - kind: trace_field
+        values: [sessionId]
+        used_for: session count
+        path: langfuse/sessions.js:12
+      - kind: trace_field
+        values: [userId]
+        used_for: user count
+        path: langfuse/users.js:12
+    defects:
+      - Every fetch ends in .catch(e => console.log(e)), so a failed call returns undefined and the total shows NaN.
+    status: broken
+
+  - consumer: langfuse-analytics
+    location:
+      server: vm4 (dashboard server)
+      path: langfuse-analytics
+      feeds: [amul-metabase, amul-analytics-pg]
+      repo: unknown
+    verified_from: eras.yaml
+    reads:
+      - kind: trace_name
+        environment: chat-production
+        values: ["Amul AI Agent", chat.default]
+        used_for: chat turn counts in Metabase
+        path: langfuse-analytics/langfuse_source.py:27-31
+        dead_since_era: chat.c6
+        note: Misses chat.translation, which is nearly every chat turn from c6 on.
+      - kind: trace_name
+        environment: voice-production
+        values: [voice_request]
+        used_for: voice turn counts in Metabase
+        path: langfuse-analytics/langfuse_source.py:27-31
+        dead_since_era: voice.v4
+    status: broken
+    note: The dev Metabase (24 cards) stays pinned to 07-01..07-13 until this is fixed.
+
+  - consumer: chat-export-service
+    location:
+      server: prod vm6
+      path: chat-export-service
+      repo: unknown
+    verified_from: eras.yaml
+    reads:
+      - kind: metadata_key
+        values: [variant]
+        used_for: variant column in the daily chat CSV
+        path: chat-export-service/dump_chat.py:893
+        written_for_eras: [chat.c3b]
+        dead_since_era: chat.c5
+        fix: read pipeline_profile, fall back to variant
+    status: broken
+    note: Produces the daily chat CSVs. Once fixed, the missing variant column can be backfilled.
