@@ -499,6 +499,44 @@ async def _stream_to_client(
             yield out
 
 
+class _ChatSink:
+    """Chat's sink: English passed through or stream-translated in sentence batches.
+
+    The Doctor persona is sanitised on both sides of translation: provenance
+    labels in the English answer, and any that post-translation invents.
+    Everything the caller receives is kept for the trace.
+    """
+
+    def __init__(self, turn: Turn, *, execution, deps, translate_to: str | None) -> None:
+        self._persona = turn.persona
+        self._translate_to = translate_to
+        self._execution = execution
+        self._max_output_chars = deps.response_max_chars
+        self._chunks: list[str] = []
+
+    def stream(self, english):
+        if self._persona == "doctor":
+            english = _sanitize_doctor_stream(english)
+        out = _stream_to_client(
+            english,
+            translate_to=self._translate_to,
+            max_output_chars=self._max_output_chars,
+            execution=self._execution,
+            output_chunks=self._chunks,
+        )
+        if self._persona == "doctor":
+            # Defence in depth: also remove a provenance label invented by
+            # post-translation rather than present in the English answer.
+            out = _sanitize_doctor_stream(out)
+        return out
+
+    def final_text(self) -> str | None:
+        text = "".join(self._chunks) or None
+        if text and self._translate_to and self._persona == "doctor":
+            text = sanitize_doctor_answer(text)
+        return text
+
+
 async def _identity_classifier(turn: Turn) -> ClassifierResult | None:
     """"Who are you?" — answered from a template, without moderation or the agent.
 
@@ -529,10 +567,11 @@ async def _identity_classifier(turn: Turn) -> ClassifierResult | None:
 
 
 #: The chat surface's population of the seam. Chat is the degenerate case: one
-#: classifier where voice has six.
+#: classifier where voice has five.
 CHAT_SURFACE = SurfaceProfile(
     surface=Surface.CHAT,
     classifiers=(_identity_classifier,),
+    sink=_ChatSink,
 )
 
 
@@ -971,8 +1010,14 @@ async def run_turn(
 
             logger.info(f"Trimmed history length: {len(trimmed_history)} messages")
 
-            # Buffer streamed output for Langfuse trace output
-            output_chunks: list[str] = []
+            if surface.sink is None:
+                raise TypeError(f"surface {surface.surface.value!r} reached the agent without a sink")
+            sink = surface.sink(
+                turn,
+                execution=execution,
+                deps=deps,
+                translate_to=target_lang if needs_output_translation else None,
+            )
 
             _lf_ag = get_langfuse_client() if get_langfuse_client else None
             agent_observation_name = "Amul Doctor Agent" if persona == "doctor" else "Amul AI Agent"
@@ -1014,29 +1059,12 @@ async def run_turn(
                     new_messages=new_messages,
                 )
 
-                if persona == "doctor":
-                    english_src = _sanitize_doctor_stream(english_src)
-
-                client_src = _stream_to_client(
-                    english_src,
-                    translate_to=target_lang if needs_output_translation else None,
-                    max_output_chars=deps.response_max_chars,
-                    execution=execution,
-                    output_chunks=output_chunks,
-                )
-                if persona == "doctor":
-                    # Defence in depth: also remove a provenance label invented by
-                    # post-translation rather than present in the English answer.
-                    client_src = _sanitize_doctor_stream(client_src)
-
-                async for _out in client_src:
+                async for _out in sink.stream(english_src):
                     yield TextEmission(_out)
                 logger.info(f"Streaming complete for session {session_id}")
 
-                # Record trace output: translated response for translation pipeline, raw agent output otherwise.
-                trace_output = "".join(output_chunks) or None
-                if trace_output and needs_output_translation and persona == "doctor":
-                    trace_output = sanitize_doctor_answer(trace_output)
+                # Record trace output: what the caller received, as the sink saw it.
+                trace_output = sink.final_text()
                 if trace_output:
                     _record_trace_output(trace_output, "final")
                 if get_langfuse_client:
