@@ -359,6 +359,41 @@ class Settings(BaseSettings):
     # it folds in (voice is served by voice-oan-api today).
     nudge_api_url: str = os.getenv("NUDGE_API_URL", "https://vistaar.getraya.app/api/nudge-user")
     nudge_timeout_seconds: float = float(os.getenv("NUDGE_TIMEOUT_SECONDS", "3.0"))
+    enable_voice_nudges: bool = _get_bool_env("ENABLE_VOICE_NUDGES", default=True)
+    # Voice's pre-turn classifiers (app/voice/classifiers.py) — also inert on the
+    # chat path. Same names and defaults as voice-oan-api.
+    stt_signal_retry_ceiling: int = int(os.getenv("STT_SIGNAL_RETRY_CEILING", "3"))
+    voice_profile_creation_date_words: str = os.getenv(
+        "VOICE_PROFILE_CREATION_DATE_WORDS",
+        "eleventh February two thousand twenty six",
+    )
+    # Voice's non-meaningful and outbound consent checks (app/voice/), inert on the
+    # chat path too. Same names and defaults as voice-oan-api.
+    voice_non_meaningful_timeout_seconds: float = float(os.getenv("VOICE_NON_MEANINGFUL_TIMEOUT_SECONDS", "0.60"))
+    # How long voice's gate waits on the non-meaningful check before letting the turn through.
+    voice_non_meaningful_gate_timeout_seconds: float = float(os.getenv("VOICE_NON_MEANINGFUL_GATE_TIMEOUT_SECONDS", "0.50"))
+    voice_outbound_consent_timeout_seconds: float = float(
+        os.getenv("VOICE_OUTBOUND_CONSENT_TIMEOUT_SECONDS", "0.60")
+    )
+    # Voice's agent and its farmer data (agents/voice/), inert on the chat path.
+    # Same names and defaults as voice-oan-api.
+    voice_profile_service_channels: str = os.getenv(
+        "VOICE_PROFILE_SERVICE_CHANNELS",
+        "chat, voice call, and WhatsApp",
+    )
+    voice_profile_helpline_number_words: str = os.getenv(
+        "VOICE_PROFILE_HELPLINE_NUMBER_WORDS",
+        "zero eight zero three five four five three five four five",
+    )
+    # How long a turn waits on a cold farmer fetch before going on without it.
+    farmer_cold_fetch_timeout: float = float(os.getenv("FARMER_COLD_FETCH_TIMEOUT", "4.0"))
+    # After a cancelled cold fetch, skip the blocking retry for this long — a
+    # worker is already on it.
+    farmer_inflight_marker_ttl: int = int(os.getenv("FARMER_INFLIGHT_MARKER_TTL", "60"))
+    # Farmer API traces carry a PII-safe summary; the raw body only when this is
+    # on, capped at FARMER_API_TRACE_BODY_CHARS.
+    farmer_api_trace_body: bool = _get_bool_env("FARMER_API_TRACE_BODY", default=False)
+    farmer_api_trace_body_chars: int = int(os.getenv("FARMER_API_TRACE_BODY_CHARS", "8000"))
     # Kill switch for Hindi chat. Default ON: hi/hindi requests use the full
     # src->en->agent->hi translation pipeline. Set HINDI_CHAT_ENABLED=false to
     # disable Hindi independently (hi/hindi then bypass the pipeline and are

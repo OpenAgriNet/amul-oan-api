@@ -42,9 +42,27 @@ def _load_from_yaml(path: str) -> PipelineConfig:
 # Providers with a concrete pretranslation protocol adapter.
 _AGENT_OK = {"vllm", "openai", "azure-openai", "anthropic", "gemini"}
 _PRETRANSLATION_OK = {"vllm", "openai", "azure-openai", "anthropic"}
+# Voice's classifier calls are bare ``chat.completions`` requests.
+_RAW_OPENAI_OK = {"vllm", "openai", "azure-openai"}
 _POST_TRANSLATION_OK = {
     "vllm", "openai", "azure-openai", "anthropic", "gemini", "translategemma"
 }
+
+
+def _built_as_raw_openai(step: Step) -> bool:
+    """Whether this deployment builds the step's tiers as bare OpenAI clients.
+
+    ``non_meaningful`` always is. Moderation and pretranslation are on the voice
+    channel, where they are voice's own ``chat.completions`` calls rather than
+    chat's moderation agent and provider-native pretranslation.
+    """
+    from app.llm_core import config_source
+    from app.llm_core.config_model import StepClientKind
+    from app.llm_core.factory import STEP_CLIENT_KIND
+
+    if step in (Step.MODERATION, Step.PRE_TRANSLATION) and config_source.channel() == "voice":
+        return True
+    return STEP_CLIENT_KIND[step] is StepClientKind.RAW_OPENAI
 
 
 def validate_config(pipeline: PipelineConfig) -> None:
@@ -58,7 +76,9 @@ def validate_config(pipeline: PipelineConfig) -> None:
             if plan is None:
                 continue
             allowed = (
-                _PRETRANSLATION_OK
+                _RAW_OPENAI_OK
+                if _built_as_raw_openai(step)
+                else _PRETRANSLATION_OK
                 if step is Step.PRE_TRANSLATION
                 else _POST_TRANSLATION_OK
                 if step is Step.POST_TRANSLATION
