@@ -1,0 +1,111 @@
+{
+  "schema_version": "voice.turn.v1",
+  "note": "What a voice turn sends to Langfuse: root name, trace fields, metadata keys, keys inside metadata blocks, scores and outcomes. pipeline_flags and pc_<step> come from llm_core compact_metadata and are not listed here.",
+  "root": "agent_journey",
+  "trace_fields": [
+    "input",
+    "level",
+    "output",
+    "session_id",
+    "status_message",
+    "tags",
+    "user_id"
+  ],
+  "metadata_keys": [
+    "agent",
+    "amul.schema_version",
+    "call_type",
+    "counters",
+    "error",
+    "farmer_context",
+    "moderation",
+    "non_meaningful",
+    "nudge",
+    "outbound_consent_intent",
+    "outcome",
+    "pipeline_profile",
+    "pretranslation",
+    "process_id",
+    "provider",
+    "query",
+    "release",
+    "request_model",
+    "request_provider",
+    "response",
+    "route",
+    "service",
+    "session_id",
+    "source_lang",
+    "stage_totals_ms",
+    "stages",
+    "target_lang",
+    "timings_ms",
+    "total_ms",
+    "trace_id",
+    "user_id_hash"
+  ],
+  "nested_keys": {
+    "agent": [
+      "new_message_count",
+      "output_chars",
+      "signed_in",
+      "tool_call_count"
+    ],
+    "error": [
+      "message",
+      "type"
+    ],
+    "farmer_context": [
+      "farmer_info_chars",
+      "source",
+      "stale",
+      "technician_info_chars",
+      "unions"
+    ],
+    "moderation": [
+      "actual_model",
+      "actual_provider",
+      "actual_tier",
+      "attempts",
+      "available",
+      "fallback_used",
+      "requested_model",
+      "requested_provider",
+      "requested_tier"
+    ],
+    "pretranslation": [
+      "fallback_used",
+      "provider",
+      "text"
+    ],
+    "query": [
+      "chars",
+      "preview",
+      "sha256"
+    ],
+    "response": [
+      "chars",
+      "preview",
+      "sha256"
+    ]
+  },
+  "scores": [
+    "pipeline_profile"
+  ],
+  "outcomes": [
+    "client_disconnected",
+    "error",
+    "fragment_fast_path",
+    "greeting_fast_path",
+    "hold_message",
+    "identity_fast_path",
+    "moderation_rejected",
+    "non_meaningful_hangup",
+    "outbound_declined",
+    "outbound_no_data",
+    "pretranslation_empty",
+    "stale_request",
+    "stt_signal",
+    "success"
+  ]
+}

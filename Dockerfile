@@ -4,6 +4,11 @@ FROM python:3.10-slim
 # Set work directory
 WORKDIR /app
 
+# Commit being built, for the release stamp on chat traces:
+# --build-arg GIT_SHA=$(git rev-parse HEAD). A mounted checkout's .git wins over it.
+ARG GIT_SHA
+ENV GIT_SHA=${GIT_SHA}
+
 # Install system dependencies (ffmpeg for pydub WebM/Opus -> WAV conversion in transcribe)
 RUN apt-get update && apt-get install -y \
     supervisor \

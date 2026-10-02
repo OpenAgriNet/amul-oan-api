@@ -135,9 +135,10 @@ def test_disabled_is_identity_noop(monkeypatch):
 
 
 def test_channel_default_self_identifies_and_key_format(monkeypatch):
-    # The default channel is derived from the repo's Step enum (voice has
-    # non_meaningful; chat has suggestions) — identical assertion in both repos.
-    expected = "voice" if hasattr(Step, "NON_MEANINGFUL") else "chat"
+    # The default channel is stated, not derived from the Step enum: with voice's
+    # non_meaningful in this repo's enum, the old inference would point every
+    # deployment without PIPELINE_CHANNEL at the voice config.
+    expected = "chat"
     assert config_source.channel() == expected
     assert config_source.key() == f"llm_pipeline_config:{expected}"
     # explicit override + explicit-channel key

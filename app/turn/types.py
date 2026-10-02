@@ -2,27 +2,44 @@
 
 ``app/channels`` models the *delivery medium* (web | whatsapp) — how rendered
 text is delivered. This module models the orthogonal axis ``app/channels/base``
-reserved: which *pipeline shape* a turn runs (chat today, voice when it is
-ported). The two compose rather than nest; see docs/channel-seam-design.md.
+reserved: which *pipeline shape* a turn runs (chat or voice). The two compose
+rather than nest; see docs/channel-seam-design.md.
 
 Transport-free by construction: nothing here imports FastAPI, Redis, or a
-telemetry client, and nothing here may. The transport adapter (the chat router's
-``stream_chat_messages`` today) builds a ``Turn``, consumes ``Emission`` values,
-and decides what each one means on its wire.
+telemetry client, and nothing here may. The transport adapter (``stream_chat_messages``
+for chat, ``stream_voice_message`` for voice) builds a ``Turn``, consumes
+``Emission`` values, and decides what each one means on its wire.
 
 Following the rule in ``app/channels/base``, a field appears only when something
-reads it. The background set, the liveness channel and the sink are not stubbed
-on ``SurfaceProfile``: they land with the second surface that populates them.
+reads it. The sink and the telemetry are on ``SurfaceProfile`` because ``run_turn``
+reads them and chat populates them with its real ones; so are pretranslation
+and the agent input.
+``Turn.call`` is there because voice's classifiers read it, and the background set
+and liveness because ``run_turn`` runs voice's.
 """
 from __future__ import annotations
 
+from contextlib import nullcontext
 from dataclasses import dataclass
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Awaitable, Callable, Mapping, Optional, Protocol, Union
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    AsyncIterator,
+    Awaitable,
+    Callable,
+    Mapping,
+    Optional,
+    Protocol,
+    Sequence,
+    Union,
+)
 
 from app.channels.base import ChannelProfile
 
 if TYPE_CHECKING:
+    from contextlib import AbstractContextManager
+
     from pydantic_ai.messages import ModelMessage
 
     from app.personas import ChatPersona
@@ -31,7 +48,27 @@ if TYPE_CHECKING:
 class Surface(str, Enum):
     #: The text pipeline served from this repo.
     CHAT = "chat"
-    # VOICE lands when voice is ported off voice-oan-api, not before.
+    #: The telephony pipeline, brought over from voice-oan-api.
+    VOICE = "voice"
+
+
+@dataclass(frozen=True)
+class TelephonyCall:
+    """The phone call a voice turn belongs to, as the voice adapter found it.
+
+    Established before the turn starts, like the rest of ``Turn``.
+    """
+
+    process_id: Optional[str]
+    #: This turn is the farmer's reply to the telephony provider's opening
+    #: question on an outbound call. The outbound consent gate owns that turn,
+    #: so the greeting, identity and fragment short-circuits leave it alone.
+    #: The adapter works it out from the outbound stage in Redis.
+    outbound_consent_turn: bool = False
+    #: The telephony provider the request came from, as it named itself. For the trace.
+    provider: Optional[str] = None
+    #: ``outbound`` for a call we placed, else ``inbound``. For the trace.
+    call_type: str = "inbound"
 
 
 @dataclass(frozen=True)
@@ -64,8 +101,12 @@ class Turn:
     #: Where this turn's history is persisted. Resolved by the transport; differs
     #: from ``session_id`` when a persona keeps its own conversation.
     history_session_id: str
-    channel: ChannelProfile
     persona: ChatPersona
+    #: The chat channel's profile. None on voice: a call is not a chat channel,
+    #: and nothing voice runs reads one.
+    channel: Optional[ChannelProfile] = None
+    #: The call a voice turn belongs to. None on chat.
+    call: Optional[TelephonyCall] = None
 
 
 # ── what a turn emits ───────────────────────────────────────────────────────
@@ -101,6 +142,10 @@ class SideChannelEmission:
     Voice's telephony nudge is an HTTP POST to a separate endpoint; typed apart
     so it can neither be dropped by a text-only signature nor spoken in-band by
     the TTS batcher. Chat has none.
+
+    It is due while the turn is waiting inside an ``await`` (on the model), where
+    a generator cannot hand anything out, so it goes through the
+    ``SideChannelSender`` ``run_turn`` is given rather than being yielded.
     """
 
     text: str
@@ -136,15 +181,40 @@ class DeferredScheduler(Protocol):
     def schedule(self, fn: Callable[..., Any], /, *args: Any) -> None: ...
 
 
+class SideChannelSender(Protocol):
+    """Delivers a ``SideChannelEmission`` now, outside the response stream.
+
+    Voice's sends the telephony nudge. Chat has none.
+    """
+
+    async def send(self, emission: SideChannelEmission) -> None: ...
+
+
+class StalenessCheck(Protocol):
+    """Whether this request should still speak.
+
+    A call turn goes stale when the caller hangs up or a newer request takes
+    over the session; one that keeps talking can speak over the newer one.
+    Returns None while the turn should carry on, otherwise the outcome to
+    record (voice's are ``client_disconnected`` and ``stale_request``), and the
+    turn stops without emitting or writing anything more. ``reason`` names the
+    point that asked, for the logs. Chat has none.
+    """
+
+    async def __call__(self, reason: str) -> Optional[str]: ...
+
+
 # ── the pre-turn classifier chain ───────────────────────────────────────────
 
 
 @dataclass(frozen=True)
 class ClassifierResult:
-    """A pre-turn classifier's decision to answer the turn without the agent.
+    """A decision to answer the turn with fixed text instead of the agent's.
 
-    Returned by a classifier that MATCHED. A classifier that does not apply
-    returns ``None`` and the chain moves on.
+    Returned by a pre-turn classifier that MATCHED (one that does not apply
+    returns ``None`` and the chain moves on), by the gate before the first
+    emission when a background check says the agent's answer must not be sent,
+    and by pretranslation or the agent input when they answer instead.
     """
 
     #: The text to emit to the caller.
@@ -154,12 +224,21 @@ class ClassifierResult:
     label: str
 
     #: Messages to append to the session history, or None to persist nothing.
-    #: Chat's identity path persists a (user, assistant) pair; several of voice's
-    #: classifiers (hold-message, STT signal) deliberately persist nothing.
+    #: Chat's identity path persists a (user, assistant) pair; voice's
+    #: hold-message path deliberately persists nothing.
     history_pair: Optional[tuple[ModelMessage, ...]] = None
 
     #: Carried onto the ``TextEmission``; see ``TextEmission.raw``.
     raw: bool = False
+
+    #: How the turn is recorded as having ended. An answer given because a
+    #: check failed (chat's fail-closed moderation line) is not a success, and
+    #: voice names its own (``outbound_declined``, ``outbound_no_data``).
+    outcome: str = "success"
+
+    #: Emitted after ``canned_text`` on its own, raw: voice's hang-up token
+    #: after the outbound farewell, which must reach the provider exactly.
+    raw_tail: Optional[str] = None
 
 
 #: Decides, before any background task is spawned or any model is called,
@@ -168,10 +247,246 @@ class ClassifierResult:
 Classifier = Callable[[Turn], Awaitable[Optional[ClassifierResult]]]
 
 
+# ── the background set and the gate ─────────────────────────────────────────
+
+
+class TurnBackground(Protocol):
+    """One turn's background work, and the gate that consults it.
+
+    Built by ``run_turn`` right after the classifier chain, and building it
+    starts the work, so it runs alongside everything up to the agent's first
+    chunk. ``run_turn`` pulls that chunk, then asks ``gate``; nothing reaches
+    the caller before the answer. ``close`` runs on every exit.
+    """
+
+    async def gate(self) -> Optional[ClassifierResult]:
+        """None to let the agent's answer through, else what to answer instead."""
+        ...
+
+    async def close(self) -> None:
+        """Cancel and reap whatever is still running. Never raises."""
+        ...
+
+
+class BackgroundFactory(Protocol):
+    """Builds, and so starts, a turn's background work."""
+
+    def __call__(self, turn: Turn, *, execution: Any) -> TurnBackground: ...
+
+
+# ── liveness ────────────────────────────────────────────────────────────────
+
+
+class TurnLiveness(Protocol):
+    """Keeps a caller who is waiting on the model from hearing only silence.
+
+    Started by ``run_turn`` right after the classifier chain, and stopped just
+    before the first thing the caller hears, or when the turn ends without that.
+    """
+
+    async def stop(self) -> None:
+        """Stop, and reap anything still running. Idempotent; never raises."""
+        ...
+
+
+class LivenessFactory(Protocol):
+    """Builds, and so starts, a turn's liveness."""
+
+    def __call__(
+        self,
+        turn: Turn,
+        *,
+        started_at: float,
+        send: SideChannelSender,
+        is_stale: Optional[StalenessCheck],
+    ) -> TurnLiveness: ...
+
+
+# ── pretranslation ──────────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class Pretranslated:
+    """The caller's query as the agent will read it."""
+
+    query: str
+    #: The language the agent answers in, before any output translation.
+    lang: str
+
+
+class Pretranslation(Protocol):
+    """Puts the caller's query into the language the agent reads.
+
+    Returns what the agent is asked, or an answer that ends the turn instead
+    (voice asks the caller to repeat when nothing usable came through). It is
+    given the turn's background set: voice's must decline a rejected query
+    rather than ask for a repeat, and hands the background the English words
+    history keeps for the turn. Chat's ignores it.
+    """
+
+    async def __call__(
+        self,
+        turn: Turn,
+        *,
+        execution: Any,
+        background: Optional[TurnBackground],
+    ) -> Union[Pretranslated, ClassifierResult]: ...
+
+
+# ── agent input ─────────────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class AgentInput:
+    """What the agent is run with for one turn."""
+
+    agent: Any
+    #: The caller's message as the agent reads it.
+    prompt: str
+    #: What the model sees before ``prompt``.
+    message_history: list[ModelMessage]
+    #: The turn's ``FarmerContext``, handed to pydantic-ai as ``deps`` and to the sink.
+    deps: Any
+    #: The history the agent's new messages are appended to when the turn is saved.
+    history: Sequence[ModelMessage]
+    #: Opens the surface's observation around the agent's run. What it yields,
+    #: if not None, is given the answer with ``update(output=...)``.
+    observe: Callable[[], AbstractContextManager[Any]] = nullcontext
+    #: pydantic-ai ``UsageLimits`` for the run, or None for the agent's own.
+    usage_limits: Any = None
+    #: Given the agent's new messages, a raw line to say after its answer, or
+    #: None. Voice's hangs up when the agent said the conversation is closing.
+    closing_line: Optional[Callable[[Sequence[ModelMessage]], Optional[str]]] = None
+    #: Called with the agent's new messages once its answer has been streamed.
+    #: Chat's records which tier served the turn; voice's records the agent's run.
+    after_run: Optional[Callable[[Sequence[ModelMessage]], None]] = None
+
+
+class AgentInputStep(Protocol):
+    """Builds the agent's input from the pretranslated query.
+
+    Returns what the agent is run with, or an answer that ends the turn
+    instead: chat's moderation decides here, before the agent starts, and
+    declines a query it rejects; voice's outbound consent gate declines or
+    reads out milk details. ``translate_to`` is set when the answer will be
+    translated for the caller, so the agent answers in English. Voice reads the
+    farmer data and the consent verdict off the background set, and asks
+    ``is_stale`` before it rewrites history. Chat ignores both.
+    """
+
+    async def __call__(
+        self,
+        turn: Turn,
+        pretranslated: Pretranslated,
+        *,
+        execution: Any,
+        scheduler: DeferredScheduler,
+        translate_to: Optional[str],
+        background: Optional[TurnBackground],
+        is_stale: Optional[StalenessCheck],
+    ) -> Union[AgentInput, ClassifierResult]: ...
+
+
+# ── the sink ────────────────────────────────────────────────────────────────
+
+
+class TurnSink(Protocol):
+    """One turn's sink: the agent's English token stream in, the caller's text out.
+
+    Chat and voice need different objects here, not two settings of one. Chat
+    passes English through or stream-translates it in sentence batches; voice is
+    a streaming batcher with its own normalizer and cross-chunk state.
+    """
+
+    def stream(self, english: AsyncIterator[str]) -> AsyncIterator[str]:
+        """What the caller receives, chunk by chunk."""
+        ...
+
+    def final_text(self) -> Optional[str]:
+        """The turn's complete output for the trace, or None if nothing was produced."""
+        ...
+
+
+class SinkFactory(Protocol):
+    """Builds a turn's sink from what ``run_turn`` knows at that point.
+
+    ``is_stale`` is the turn's staleness check, for a sink that must stop
+    speaking mid-answer when the request goes stale (voice's). Chat has none.
+    """
+
+    def __call__(
+        self,
+        turn: Turn,
+        *,
+        execution: Any,
+        deps: Any,
+        translate_to: Optional[str],
+        is_stale: Optional[StalenessCheck],
+    ) -> TurnSink: ...
+
+
+# ── telemetry ───────────────────────────────────────────────────────────────
+
+
+class TurnTelemetry(Protocol):
+    """One turn's telemetry: the single root span and how the turn went.
+
+    ``run_turn`` owns the lifecycle (one root, opened and closed once, the
+    outcome recorded on every exit); the surface owns the contract written
+    inside it. Chat writes ``chat.turn.v1``; voice's root, stamps and outcome
+    vocabulary are its own.
+    """
+
+    def root(self) -> AbstractContextManager[None]:
+        """Open the turn's root span for the whole turn, and close it after."""
+        ...
+
+    def record_output(self, text: str, label: str) -> None:
+        """Record what the caller received. ``label`` names the path: an answer's
+        own label, ``"final"`` for the agent's answer, or ``"closing"`` for the
+        closing line said after it."""
+        ...
+
+    def record_outcome(self, outcome: str) -> None:
+        """Record how the turn ended: ``success``, ``cancelled``, ``error``, the
+        outcome a ``StalenessCheck`` stopped it with, or one an answer carried."""
+        ...
+
+
+class TelemetryFactory(Protocol):
+    """Builds a turn's telemetry from what ``run_turn`` knows before the root opens."""
+
+    def __call__(
+        self,
+        turn: Turn,
+        *,
+        pipeline_profile: str,
+        pipeline_trace: Any,
+    ) -> TurnTelemetry: ...
+
+
 @dataclass(frozen=True)
 class SurfaceProfile:
     """What a surface populates. One field per structure that is built."""
 
     surface: Surface
-    #: Ordered. First match wins and ends the turn. Chat has one; voice has six.
+    #: Ordered. First match wins and ends the turn. Chat has one; voice has five.
     classifiers: tuple[Classifier, ...] = ()
+    #: Turns the agent's English stream into caller text. A surface that always
+    #: answers from its classifiers never reaches it, so it may be left unset.
+    sink: Optional[SinkFactory] = None
+    #: The turn's root span and what is recorded in it. Left unset (as in tests
+    #: that build a bare surface), the turn runs without writing a trace.
+    telemetry: Optional[TelemetryFactory] = None
+    #: Checks that run alongside the turn and gate its first emission. Chat has
+    #: none: its moderation decides before the agent starts.
+    background: Optional[BackgroundFactory] = None
+    #: What the caller hears while the model works. It needs a side channel, so a
+    #: turn run without a ``SideChannelSender`` has none. Chat has none.
+    liveness: Optional[LivenessFactory] = None
+    #: Puts the query into the language the agent reads. Like the sink, a surface
+    #: that always answers from its classifiers may leave it unset.
+    pretranslation: Optional[Pretranslation] = None
+    #: What the agent is run with. Chat's also runs its moderation. Like the
+    #: sink, a surface that always answers from its classifiers may leave it unset.
+    agent_input: Optional[AgentInputStep] = None
