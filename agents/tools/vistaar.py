@@ -12,6 +12,7 @@ The BAP runs in sync mode, so `/search` returns the on_search catalog inline.
 Endpoint is overridable via VISTAAR_BAP_URL (default: the Vistaar sandbox).
 Advisory (ICAR/NPSS) is NOT here — on BV that's document search, not Beckn.
 """
+import re
 import uuid
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
@@ -189,6 +190,88 @@ async def _vistaar_search(intent: dict) -> list[dict]:
 
 # ── Location resolution ──────────────────────────────────────────────────────
 
+# Yard markers that mean the farmer named a *specific market*, not just a
+# district/town. Checked BEFORE `resolve_place` / `normalize_place`. Those strip
+# "apmc"/"mandi" for GPS lookup and would otherwise erase the distinction
+# between "Anand" and "Anand APMC". "yard" is also treated as yard intent here
+# even though the district normaliser does not strip it.
+_YARD_WORD = re.compile(r"(?i)\b(apmc|mandi|yard)\b")
+_YARD_SUFFIXES = ("apmc", "mandi", "yard")
+_NON_ALNUM = re.compile(r"[^a-z0-9]+")
+# BPP / farmer parentheticals and filler tokens shared by place canonicalization
+# (resolve fallback) and market-row matching. Whole-word filler first so
+# "APMC Halvad" / "Deesa Veg Yard" become the town, not "apmchalvad" / "deesaveg".
+_PAREN_RE = re.compile(r"\(.*?\)")
+_MARKET_FILLER = re.compile(
+    r"(?i)\b(apmc|mandi|yard|veg|vegetable|market)\b"
+)
+# Glued tokens after non-alnum collapse ("AnandAPMC", "APMCHALVAD").
+_GLUED_YARD_TOKENS = _YARD_SUFFIXES + ("veg", "vegetable", "market")
+
+
+def _extract_requested_market_name(location: Optional[str]) -> Optional[str]:
+    """Return the farmer's explicit yard phrase, or None for a plain place name.
+
+    "Anand APMC" / "Nadiad mandi" → the cleaned phrase (intent to pin a yard).
+    "Anand" / "Junagadh" → None (district/town search; nearby markets OK).
+    Must run on the raw argument: normalization strips these suffixes for the
+    district table lookup and would make every APMC ask look like a town ask.
+    """
+    asked = " ".join((location or "").split())
+    if not asked:
+        return None
+    squeezed = _NON_ALNUM.sub("", asked.casefold())
+    has_marker = bool(_YARD_WORD.search(asked)) or any(
+        squeezed.endswith(suffix) and len(squeezed) > len(suffix)
+        for suffix in _YARD_SUFFIXES
+    )
+    if not has_marker:
+        return None
+    return asked
+
+
+def _canonicalize_explicit_yard_place(location: Optional[str]) -> Optional[str]:
+    """Strip yard markers to a town/district core for `resolve_place`.
+
+    `normalize_place` only strips *suffix* apmc/mandi and never strips yard/veg,
+    so prefix forms ("APMC Halvad") and Veg Yard ("Deesa Veg Yard") fail GPS
+    resolve before `_markets_match` can run. This returns the place core for a
+    one-shot fallback; the original phrase stays on `requested_market_name`.
+
+    Returns None when stripping leaves nothing usable.
+    """
+    text = (location or "").strip()
+    if not text:
+        return None
+
+    no_paren = _PAREN_RE.sub(" ", text)
+    word_stripped = _MARKET_FILLER.sub(" ", no_paren)
+    core_words = " ".join(word_stripped.split())
+
+    # Always run the glued-token loop too: word-boundary filler misses
+    # "APMCHALVAD" / "AnandAPMC", and a non-empty word residue must not skip
+    # that path (returning the unstripped string would still fail resolve).
+    base = core_words if core_words else text
+    squeezed = _NON_ALNUM.sub("", base.casefold())
+    changed = True
+    while changed and squeezed:
+        changed = False
+        for token in _GLUED_YARD_TOKENS:
+            if squeezed.startswith(token) and len(squeezed) > len(token):
+                squeezed = squeezed[len(token) :]
+                changed = True
+            if squeezed.endswith(token) and len(squeezed) > len(token):
+                squeezed = squeezed[: -len(token)]
+                changed = True
+    if not squeezed:
+        return None
+
+    # Prefer the readable word core when it is already just the town
+    # ("Halvad", "Deesa"); otherwise return the squeezed core for resolve.
+    if core_words and _NON_ALNUM.sub("", core_words.casefold()) == squeezed:
+        return core_words
+    return squeezed
+
 
 @dataclass(frozen=True)
 class SearchLocation:
@@ -197,14 +280,24 @@ class SearchLocation:
     `source` is not decoration — it decides whether the farmer is told the
     location was assumed. Telling someone in Bhuj that Anand's onion price is
     "your local mandi" is the failure this field exists to prevent.
+
+    `requested_market_name` is set only when the farmer named a yard (e.g.
+    "Anand APMC"). GPS still resolves via the district table; this field is the
+    preserved yard intent for later row filtering. None for district/town asks,
+    session reuse, profile district, and the Anand default.
     """
 
     location: DistrictLocation
     source: str  # "explicit" | "session" | "farmer" | "default"
+    requested_market_name: Optional[str] = None
 
     @property
     def assumed(self) -> bool:
         return self.source == "default"
+
+    @property
+    def explicit_yard(self) -> bool:
+        return self.requested_market_name is not None
 
 
 def _deps(ctx: Optional[RunContext[FarmerContext]]) -> Optional[FarmerContext]:
@@ -212,14 +305,65 @@ def _deps(ctx: Optional[RunContext[FarmerContext]]) -> Optional[FarmerContext]:
     return getattr(ctx, "deps", None)
 
 
+# Phrases that mean "use my home/profile district", not the sticky place from an
+# earlier turn. Matched as substrings on the raw user query (casefold). Keep this
+# list tight: "near Anand" must NOT trip it — only first-person / nearest intent.
+_NEAREST_LOCAL_PHRASES = (
+    "nearest to me",
+    "closest to me",
+    "near me",
+    "my nearest",
+    "nearest apmc",
+    "nearest mandi",
+    "nearest yard",
+    "nearest market",
+    "closest apmc",
+    "closest mandi",
+    "closest yard",
+    "local apmc",
+    "local mandi",
+    "my local",
+)
+
+
+def _is_nearest_local_intent(query: Optional[str]) -> bool:
+    """True when the farmer is asking for nearest/local markets relative to them."""
+    text = (query or "").casefold()
+    if not text:
+        return False
+    return any(phrase in text for phrase in _NEAREST_LOCAL_PHRASES)
+
+
+async def _resolve_farmer_or_default(
+    deps: Optional[FarmerContext],
+) -> SearchLocation:
+    """Profile district if mapped; otherwise the Anand default."""
+    district = deps.get_farmer_district() if deps is not None else None
+    if district:
+        resolved = resolve_place(district)
+        if resolved is not None:
+            return SearchLocation(resolved, "farmer")
+        logger.warning("vistaar: unmapped farmer district=%r, using default", district)
+    return SearchLocation(DEFAULT_LOCATION, "default")
+
+
 async def _resolve_search_location(
-    ctx: Optional[RunContext[FarmerContext]], location: Optional[str]
+    ctx: Optional[RunContext[FarmerContext]],
+    location: Optional[str],
+    *,
+    prefer_farmer_profile: bool = False,
 ) -> tuple[Optional[SearchLocation], Optional[str]]:
     """Resolve where to search, most specific first.
 
-    Order: explicit argument → sticky session override → the farmer's own
-    district → the Anand default. Returns `(resolved, refusal)`; exactly one is
-    non-None.
+    Default order: explicit argument → sticky session override → the farmer's
+    own district → the Anand default.
+
+    When `prefer_farmer_profile` is True (nearest/local-to-me mandi asks with no
+    explicit location): explicit → farmer profile → sticky session → default.
+    Sticky is skipped only when a profile district is available, so "nearest to
+    me" after "prices in Anand" returns the farmer's district, not Anand.
+
+    Returns `(resolved, refusal)`; exactly one is non-None.
 
     Two rules that look like details and are not:
 
@@ -231,34 +375,55 @@ async def _resolve_search_location(
       resolved here against the static table. A hallucinated lat/lon fails
       silently as zero rows — indistinguishable from a genuinely empty market —
       so there is no parameter through which one can arrive.
+
+    Explicit yard phrases ("Anand APMC") still resolve GPS via the district
+    table (suffixes stripped), but `requested_market_name` keeps the yard
+    phrase for mandi row matching. Forms that `normalize_place` cannot strip
+    (prefix APMC, Veg Yard) get one canonicalize retry before refusal.
+    Session stickiness stores only the district key, so a follow-up without a
+    new location does not keep yard intent.
     """
     deps = _deps(ctx)
     session_id = getattr(deps, "session_id", None)
 
     asked = (location or "").strip()
     if asked:
+        # Capture yard intent before resolve_place strips apmc/mandi suffixes.
+        requested_market = _extract_requested_market_name(asked)
         resolved = resolve_place(asked)
+        if resolved is None and requested_market:
+            # Prefix / Veg Yard forms fail normalize_place; strip markers once
+            # and retry. Keep the original phrase on requested_market_name.
+            core = _canonicalize_explicit_yard_place(asked)
+            if core and core.casefold() != asked.casefold():
+                resolved = resolve_place(core)
+                if resolved is not None:
+                    logger.info(
+                        "vistaar location resolved via yard canonicalize "
+                        "asked=%r core=%r key=%s",
+                        asked,
+                        core,
+                        resolved.key,
+                    )
         if resolved is None:
             logger.info("vistaar location unresolved asked=%r", asked)
             return None, unknown_place_message(asked)
         # Sticky: the next turn is usually about the same place ("and cotton?").
         await set_session_district_key(session_id, resolved.key)
-        return SearchLocation(resolved, "explicit"), None
+        return SearchLocation(resolved, "explicit", requested_market), None
+
+    if prefer_farmer_profile:
+        farmer_where = await _resolve_farmer_or_default(deps)
+        if farmer_where.source == "farmer":
+            return farmer_where, None
+        # No usable profile district — fall through to sticky, then default
+        # (farmer_where is already the default; sticky may still be better).
 
     session_key = await get_session_district_key(session_id)
     if session_key:
         return SearchLocation(DISTRICTS[session_key], "session"), None
 
-    district = deps.get_farmer_district() if deps is not None else None
-    if district:
-        resolved = resolve_place(district)
-        if resolved is not None:
-            return SearchLocation(resolved, "farmer"), None
-        # A district string we cannot map is a table gap worth seeing in logs —
-        # it is the silent-fallthrough failure mode the normaliser exists for.
-        logger.warning("vistaar: unmapped farmer district=%r, using default", district)
-
-    return SearchLocation(DEFAULT_LOCATION, "default"), None
+    return await _resolve_farmer_or_default(deps), None
 
 
 def _location_phrase(where: SearchLocation, candidate: Candidate) -> str:
@@ -310,6 +475,43 @@ async def _search_candidates(
                 candidate.town, where.location.display,
             )
     return [], tried
+
+
+async def _search_candidates_for_yard(
+    build_intent: Callable[[Candidate], dict],
+    where: SearchLocation,
+    requested_market_name: str,
+) -> tuple[list[dict], list[dict], Candidate]:
+    """Walk candidates until one returns rows matching the requested yard.
+
+    Like _search_candidates but yard-aware: a candidate that returns rows from
+    *nearby* markets but not the farmer's named yard is not "good enough" — the
+    walk continues.  Nearby items are accumulated across all candidates so the
+    miss message can list every market that *did* have data.
+
+    Returns (matched_items, all_nearby_items, last_tried_candidate).
+    """
+    candidates = where.location.candidates[:MANDI_MAX_CANDIDATES] or (
+        DEFAULT_LOCATION.primary,
+    )
+    all_nearby: list[dict] = []
+    tried = candidates[0]
+    for candidate in candidates:
+        tried = candidate
+        items = await _vistaar_search(build_intent(candidate))
+        if items:
+            matched, nearby = _partition_items_by_requested_market(
+                items, requested_market_name
+            )
+            all_nearby.extend(nearby)
+            if matched:
+                return matched, all_nearby, candidate
+        if candidate is not candidates[-1]:
+            logger.info(
+                "vistaar: yard %r not in %s (%s) rows, trying next candidate",
+                requested_market_name, candidate.town, where.location.display,
+            )
+    return [], all_nearby, tried
 
 
 def _fmt_tag_group(tag: dict) -> str:
@@ -424,6 +626,119 @@ def _market_label(t: dict[str, str]) -> str:
     return ", ".join(parts)
 
 
+# BPP market names often carry a parenthetical qualifier after the town:
+#   "Anand(Veg,Yard,Anand) APMC", "Khambhat(Veg Yard Khambhat) APMC".
+# Parenthetical / filler / glued-token stripping lives with the yard constants
+# above (_PAREN_RE, _MARKET_FILLER, _GLUED_YARD_TOKENS) and is shared with
+# `_canonicalize_explicit_yard_place`.
+
+# Same-yard spelling / transliteration variants only. NEVER map a district name
+# onto a yard town (e.g. sabarkantha↛himatnagar, kheda↛nadiad) — that would
+# reintroduce nearby-price substitution for explicit yard asks.
+_MARKET_SPELLING_ALIASES: dict[str, str] = {
+    "nadiyad": "nadiad",
+    "bodeliu": "bodeli",
+    "dhragradhra": "dhrangadhra",
+    "khambalia": "khambhalia",
+    "jamkhambalia": "khambhalia",
+    "jamkhambhalia": "khambhalia",
+    "sanad": "sanand",
+    "vadhvan": "wadhwan",
+    "vankaner": "wankaner",
+}
+
+
+def _market_match_key(text: str) -> str:
+    """Collapse a market/yard phrase for equality checks.
+
+    Handles both farmer phrasing and live BPP label quirks:
+      "Anand APMC" / "AnandAPMC" / "Anand(Veg,Yard,Anand) APMC" → "anand"
+      "APMC HALVAD" / "Halvad APMC" → "halvad"
+      "Deesa Veg Yard" → "deesa"
+      "Nadiyad(Piplag) APMC" → "nadiad" (via spelling alias)
+    """
+    no_paren = _PAREN_RE.sub(" ", text or "")
+    cleaned = _MARKET_FILLER.sub(" ", no_paren)
+    squeezed = _NON_ALNUM.sub("", cleaned.casefold())
+    changed = True
+    while changed and squeezed:
+        changed = False
+        for token in _GLUED_YARD_TOKENS:
+            if squeezed.startswith(token) and len(squeezed) > len(token):
+                squeezed = squeezed[len(token) :]
+                changed = True
+            if squeezed.endswith(token) and len(squeezed) > len(token):
+                squeezed = squeezed[: -len(token)]
+                changed = True
+    return _MARKET_SPELLING_ALIASES.get(squeezed, squeezed)
+
+
+def _markets_match(requested: str, market_tag: str) -> bool:
+    """True when a BPP Market tag is the yard the farmer named.
+
+    Compares canonical match keys after parenthetical / filler stripping and
+    same-yard spelling aliases. Does not map district names onto yard towns.
+    """
+    req = _market_match_key(requested)
+    got = _market_match_key(market_tag)
+    return bool(req) and bool(got) and req == got
+
+
+def _partition_items_by_requested_market(
+    items: list[dict], requested_market_name: str
+) -> tuple[list[dict], list[dict]]:
+    """Split catalog rows into matching yard vs other in-range markets."""
+    matched: list[dict] = []
+    nearby: list[dict] = []
+    for item in items:
+        market = (_tag_values(item).get("Market") or "").strip()
+        if market and _markets_match(requested_market_name, market):
+            matched.append(item)
+        else:
+            nearby.append(item)
+    return matched, nearby
+
+
+def _unique_nearby_market_labels(items: list[dict]) -> list[str]:
+    """Distinct market/district/state labels — names only, never prices."""
+    labels: list[str] = []
+    seen: set[str] = set()
+    for item in items:
+        label = _market_label(_tag_values(item))
+        key = label.casefold()
+        if label and key not in seen and label.casefold() != "market n/a":
+            seen.add(key)
+            labels.append(label)
+    return labels
+
+
+def _explicit_yard_miss_message(
+    *,
+    commodity_name: str,
+    requested_market_name: str,
+    from_date: str,
+    to_date: str,
+    nearby_items: list[dict],
+) -> str:
+    """Strict no-substitute reply when the named yard has no rows.
+
+    Nearby markets may be named so the farmer knows data exists elsewhere, but
+    their prices are never quoted as a stand-in for the requested APMC.
+    """
+    lines = [
+        f"No rates were reported for {requested_market_name} for '{commodity_name}' "
+        f"between {from_date} and {to_date}."
+    ]
+    nearby_names = _unique_nearby_market_labels(nearby_items)
+    if nearby_names:
+        lines.append(
+            "Nearby markets with data (not a substitute for the requested yard): "
+            + "; ".join(nearby_names)
+            + "."
+        )
+    return "\n".join(lines)
+
+
 def _format_mandi_items(items: list[dict], max_rows: int = 40) -> str:
     """One line per arrival date, newest first — a 30-day window is ~25 rows, and
     the generic _format_items would both truncate at 20 and bury the series in
@@ -520,20 +835,30 @@ async def get_vistaar_mandi_prices(
     for the last 10 days") as well as "what is the price today". Markets do not
     trade every commodity every day, so gaps between dates are normal. Each row
     names the market, district and state it came from: nearby markets in another
-    district — or another state — are normal, so report the market as given
-    rather than describing it as the farmer's own.
+    district — or another state — are normal for a district/town ask, so report
+    the market as given rather than describing it as the farmer's own.
+
+    If the farmer names a specific yard ("Anand APMC", "Nadiad mandi"), only
+    rows from that yard are returned. Nearby markets are never quoted as that
+    yard's price; if the yard has no arrivals, say so and optionally name
+    nearby markets without their prices. Pass that back; do not retry with a
+    different location.
 
     If the named place is not covered, the reply says so and names places that
     are. Pass that back to the farmer; do not retry with a different location.
+
+    When the farmer asks for nearest/local markets without naming a place, the
+    tool prefers their profile district over any sticky place from earlier turns.
 
     Args:
         ctx: authenticated farmer context used to resolve the default district.
         commodity_name: the commodity to price, e.g. "Tomato", "Onion", "Wheat".
             Use the English Agmarknet name; invented variants ("Onion Big")
             return nothing.
-        location: optional district or town in Gujarat the farmer explicitly
-            named, e.g. "Junagadh", "Bhuj", "Banaskantha". Omit it to use the
-            farmer's own district. Pass a place NAME only — never coordinates.
+        location: optional district, town, or yard in Gujarat the farmer
+            explicitly named, e.g. "Junagadh", "Anand APMC", "Nadiad APMC".
+            Omit it to use the farmer's own district. Pass a place NAME only —
+            never coordinates.
         price_date: optional START of the date window, DD-MM-YYYY. Omit for the
             latest available prices.
         price_date_to: optional END of the date window, DD-MM-YYYY. Pass BOTH
@@ -541,7 +866,14 @@ async def get_vistaar_mandi_prices(
             wider than 30 days are trimmed to the most recent 30.
     Returns market prices per date (min / max / modal, market, arrival date).
     """
-    where, refusal = await _resolve_search_location(ctx, location)
+    prefer_farmer_profile = False
+    if not (location or "").strip():
+        deps = _deps(ctx)
+        query = getattr(deps, "query", None) if deps is not None else None
+        prefer_farmer_profile = _is_nearest_local_intent(query)
+    where, refusal = await _resolve_search_location(
+        ctx, location, prefer_farmer_profile=prefer_farmer_profile
+    )
     if refusal is not None:
         return refusal
     assert where is not None
@@ -567,7 +899,14 @@ async def get_vistaar_mandi_prices(
         }
 
     try:
-        items, used = await _search_candidates(build, where)
+        if where.explicit_yard:
+            assert where.requested_market_name is not None
+            items, nearby, used = await _search_candidates_for_yard(
+                build, where, where.requested_market_name
+            )
+        else:
+            items, used = await _search_candidates(build, where)
+            nearby = []
     except VistaarLegUnavailable:
         # A failed leg is NOT an empty market. Never fall through to the
         # "No mandi prices were found…" line below on infrastructure failure.
@@ -579,9 +918,39 @@ async def get_vistaar_mandi_prices(
         )
         return "Mandi prices are temporarily unavailable from Bharat Vistaar."
     place = _location_phrase(where, used)
+
+    matched_count = len(items)
+    nearby_count = len(nearby)
+    if where.explicit_yard and not items:
+        logger.info(
+            "vistaar mandi yard miss commodity=%s requested_market=%s "
+            "nearby_markets=%d from=%s to=%s",
+            commodity_name,
+            where.requested_market_name,
+            nearby_count,
+            from_date,
+            to_date,
+        )
+        return _explicit_yard_miss_message(
+            commodity_name=commodity_name,
+            requested_market_name=where.requested_market_name,
+            from_date=from_date,
+            to_date=to_date,
+            nearby_items=nearby,
+        )
+
     logger.info(
-        "vistaar mandi commodity=%s place=%s source=%s from=%s to=%s items=%d",
-        commodity_name, place, where.source, from_date, to_date, len(items),
+        "vistaar mandi commodity=%s place=%s source=%s requested_market=%s "
+        "from=%s to=%s items=%d matched=%d nearby=%d",
+        commodity_name,
+        place,
+        where.source,
+        where.requested_market_name,
+        from_date,
+        to_date,
+        len(items),
+        matched_count,
+        nearby_count,
     )
     if not items:
         return (
@@ -589,11 +958,19 @@ async def get_vistaar_mandi_prices(
             f"between {from_date} and {to_date}."
             + (_assumed_location_note(where) if where.assumed else "")
         )
-    body = (
-        f"Mandi prices for {commodity_name} near {place} ({from_date} to {to_date}):\n"
-        + _format_mandi_items(items)
+    if where.explicit_yard and where.requested_market_name:
+        header = (
+            f"Mandi prices for {commodity_name} at {where.requested_market_name} "
+            f"({from_date} to {to_date}):\n"
+        )
+    else:
+        header = (
+            f"Mandi prices for {commodity_name} near {place} "
+            f"({from_date} to {to_date}):\n"
+        )
+    return header + _format_mandi_items(items) + (
+        _assumed_location_note(where) if where.assumed else ""
     )
-    return body + (_assumed_location_note(where) if where.assumed else "")
 
 
 async def get_vistaar_scheme_info(scheme_code: SchemeCode) -> str:
