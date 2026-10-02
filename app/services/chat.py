@@ -1,9 +1,10 @@
-from contextlib import aclosing, nullcontext
+from contextlib import aclosing, contextmanager, nullcontext
 from types import MappingProxyType
-from typing import Any, AsyncGenerator, Mapping
+from typing import Any, AsyncGenerator, Mapping, Optional
 from functools import lru_cache
 import regex
 import re
+import time
 from fastapi import BackgroundTasks
 from agents.agrinet import agrinet_agent
 from agents.doctor import doctor_agent
@@ -38,6 +39,7 @@ from app.services.identity_profile import (
 )
 from app.personas import ChatPersona
 from app.chat_artifacts import encode_chat_artifacts
+from app.services.telemetry_stamps import CHAT_TURN_V1_ROOT, chat_turn_v1_input, chat_turn_v1_metadata
 from app.channels.base import ChannelProfile
 from app.turn.types import (
     AgentActivityEmission,
@@ -45,7 +47,10 @@ from app.turn.types import (
     ClassifierResult,
     DeferredScheduler,
     Emission,
+    Pretranslated,
     SideChannelEmission,
+    SideChannelSender,
+    StalenessCheck,
     Surface,
     SurfaceProfile,
     TextEmission,
@@ -373,6 +378,20 @@ async def _pretranslate_query(
     return translated, "en"
 
 
+async def _chat_pretranslation(turn: Turn, *, execution, background) -> Pretranslated:
+    """Chat's pretranslation, for ``SurfaceProfile.pretranslation``. It has no
+    answer of its own to give, so the background set is not needed."""
+    processing_query, processing_lang = await _pretranslate_query(
+        turn.query,
+        source_lang=turn.source_lang,
+        target_lang=turn.target_lang,
+        disabled_langs=_disabled_chat_langs(),
+        execution=execution,
+        request_id=turn.session_id,
+    )
+    return Pretranslated(query=processing_query, lang=processing_lang)
+
+
 async def _load_farmer_context(
     persona: ChatPersona, user_info: Mapping[str, Any], request_id: str
 ) -> tuple[FarmerContextBundle, str]:
@@ -438,6 +457,71 @@ def _build_deps(
     )
 
 
+async def _write_short_circuit_history(history, decision, key: str, request_id: str) -> None:
+    """Persist what a classifier or the gate answered, when it asks for that."""
+    if decision.history_pair is None:
+        return
+    messages = [*history, *decision.history_pair]
+    logger.info(
+        "request_id=%s updating_history_%s_path=True total_messages=%s",
+        request_id,
+        decision.label,
+        len(messages),
+    )
+    await update_message_history(key, messages)
+
+
+async def _stale_outcome(is_stale: Optional[StalenessCheck], reason: str) -> Optional[str]:
+    """The outcome to stop with if this request should no longer speak, else None."""
+    if is_stale is None:
+        return None
+    return await is_stale(reason)
+
+
+_NO_CHUNK = object()
+
+
+async def _gate_first_chunk(english_src, background):
+    """Pull the agent's first chunk, then ask the gate before anything is emitted.
+
+    The background checks keep running while the agent starts, so their latency
+    stays off the turn unless one of them says no. Returns the gate's answer
+    and ``None`` when it says no (the agent's stream is closed), else ``None``
+    and a stream that replays the first chunk. A failure before the first chunk
+    comes out of that stream, as it does without a gate: a turn the checks
+    refuse is refused, and the sink sees the failure like any later one.
+    """
+    first = _NO_CHUNK
+    error = None
+    try:
+        try:
+            first = await english_src.__anext__()
+        except StopAsyncIteration:
+            pass
+        except Exception as exc:
+            error = exc
+        decision = await background.gate()
+    except BaseException:
+        # A hang-up while the gate waits, or a gate that fails: the agent's
+        # stream must not be left open behind the turn.
+        await english_src.aclose()
+        raise
+    if decision is not None:
+        await english_src.aclose()
+        return decision, None
+
+    async def _replayed():
+        async with aclosing(english_src):
+            if error is not None:
+                raise error
+            if first is not _NO_CHUNK:
+                yield first
+            async for chunk in english_src:
+                yield chunk
+
+    return None, _replayed()
+
+
 async def _stream_to_client(
     english_src,
     *,
@@ -499,6 +583,191 @@ async def _stream_to_client(
             yield out
 
 
+class _ChatSink:
+    """Chat's sink: English passed through or stream-translated in sentence batches.
+
+    The Doctor persona is sanitised on both sides of translation: provenance
+    labels in the English answer, and any that post-translation invents.
+    Everything the caller receives is kept for the trace.
+    """
+
+    def __init__(
+        self,
+        turn: Turn,
+        *,
+        execution,
+        deps,
+        translate_to: str | None,
+        is_stale: Optional[StalenessCheck] = None,
+    ) -> None:
+        # ``is_stale`` is unused: chat has no staleness check.
+        self._persona = turn.persona
+        self._translate_to = translate_to
+        self._execution = execution
+        self._max_output_chars = deps.response_max_chars
+        self._chunks: list[str] = []
+
+    def stream(self, english):
+        if self._persona == "doctor":
+            english = _sanitize_doctor_stream(english)
+        out = _stream_to_client(
+            english,
+            translate_to=self._translate_to,
+            max_output_chars=self._max_output_chars,
+            execution=self._execution,
+            output_chunks=self._chunks,
+        )
+        if self._persona == "doctor":
+            # Defence in depth: also remove a provenance label invented by
+            # post-translation rather than present in the English answer.
+            out = _sanitize_doctor_stream(out)
+        return out
+
+    def final_text(self) -> str | None:
+        text = "".join(self._chunks) or None
+        if text and self._translate_to and self._persona == "doctor":
+            text = sanitize_doctor_answer(text)
+        return text
+
+
+class _ChatTelemetry:
+    """Chat's turn telemetry: one chat.turn.v1 root, its input, and how the turn ended.
+
+    The metadata and input shapes are built in this module on purpose: the
+    chat.turn.v1 contract test reads them from these calls in chat.py.
+    """
+
+    def __init__(self, turn: Turn, *, pipeline_profile: str, pipeline_trace) -> None:
+        self._turn = turn
+        self._pipeline_profile = pipeline_profile
+        self._pipeline_trace = pipeline_trace
+        self._session_id_safe = (turn.session_id or "")[:200]
+
+    @contextmanager
+    def root(self):
+        turn = self._turn
+        user_info = turn.authenticated_user
+        channel = turn.channel.channel.value
+        pipeline_profile = self._pipeline_profile
+        persona = turn.persona
+        # Langfuse: propagate session_id, metadata, and tags for dashboard filtering (max 200 chars per value)
+        # Prefer phone from JWT (weburl-minted tokens) over the query-param user_id
+        effective_user_id = (
+            (user_info.get("phone") or user_info.get("sub")) if user_info else None
+        ) or turn.user_id or "anonymous"
+        effective_user_id = effective_user_id[:200]
+        langfuse_metadata = chat_turn_v1_metadata(
+            pipeline=_PIPELINE_NAME,
+            channel=(channel or "web")[:200],
+            source_lang=(turn.source_lang or "unknown").lower()[:200],
+            target_lang=(turn.target_lang or "unknown").lower()[:200],
+            user_id=effective_user_id,
+            pipeline_profile=pipeline_profile,
+            persona=persona,
+        )
+        langfuse_tags = [
+            f"pipeline:{_PIPELINE_NAME}",
+            f"pipeline_profile:{pipeline_profile}",
+            f"persona:{persona}",
+        ]
+        # Serialize the resolved pipeline config into COMPACT flat keys and merge them
+        # into the same langfuse_metadata dict propagate_attributes lands on OTEL span
+        # attributes (a big nested blob is size-capped/dropped; this SDK has no
+        # update_current_trace). Adds `pipeline_profile`, `pipeline_flags`, and one
+        # `pc_<step>` per step (~50 chars each). Full static config is in the
+        # `llm_core.full_config` boot log. Best-effort — never breaks the turn.
+        _pipeline_trace.add_compact_metadata(self._pipeline_trace, langfuse_metadata)
+        session_ctx = (
+            propagate_attributes(
+                session_id=self._session_id_safe,
+                user_id=effective_user_id,
+                metadata=langfuse_metadata,
+                tags=langfuse_tags,
+            )
+            if propagate_attributes
+            else nullcontext()
+        )
+
+        # THE TURN ROOT SPAN. Without it, propagate_attributes leaves no active span,
+        # so every observation opened during the turn (Moderation, query_pretranslation,
+        # Amul AI Agent, suggestions, each tool call) becomes its OWN top-level trace —
+        # measured at 6 traces for one turn — and every trace-level write made outside
+        # an observation is silently dropped by the SDK ("no active span ... skipped").
+        # That is why trace input/output was missing on many turns, why the chat export
+        # has gaps, and why turn-level scores never landed.
+        root_ctx = (
+            get_langfuse_client().start_as_current_observation(
+                name=CHAT_TURN_V1_ROOT, as_type="span"
+            )
+            if get_langfuse_client
+            else nullcontext()
+        )
+
+        with session_ctx, root_ctx:
+            self._record_input(channel)
+            yield
+
+    def _record_input(self, channel: str) -> None:
+        if not get_langfuse_client:
+            return
+        turn = self._turn
+        try:
+            langfuse = get_langfuse_client()
+            langfuse.set_current_trace_io(
+                input=chat_turn_v1_input(
+                    query=turn.query,
+                    channel=channel,
+                    source_lang=turn.source_lang,
+                    target_lang=turn.target_lang,
+                    persona=turn.persona,
+                )
+            )
+            #this is the same as the update_current_trace method,
+            #but it is more explicit about the type of the output
+            # and is supported by the latest version of the langfuse SDK.
+            # Emit a categorical pipeline_profile score attached to the
+            # *current trace*. Langfuse rolls this up to the session view,
+            # so a Sessions filter "pipeline_profile = oss" works directly.
+            # `score_id` is deterministic per session so subsequent traces
+            # in the same session upsert the same score (no duplicates).
+            try:
+                langfuse.score_current_trace(
+                    name="pipeline_profile",
+                    value=self._pipeline_profile,
+                    data_type="CATEGORICAL",
+                    score_id=f"variant-{self._session_id_safe}",
+                    comment="Sticky pipeline variant for this session",
+                )
+            except Exception as e:
+                logger.warning("Langfuse: pipeline_profile score failed: %s", e)
+        except Exception as e:
+            logger.warning("Langfuse: failed to set trace input: %s", e)
+
+    def record_output(self, text: str, label: str) -> None:
+        _record_trace_output(text, label)
+
+    def record_outcome(self, outcome: str) -> None:
+        _record_turn_outcome(outcome, self._session_id_safe)
+
+
+class _NoTelemetry:
+    """For a surface that sets no telemetry, such as a test surface: no root span
+    is opened and nothing is recorded."""
+
+    @contextmanager
+    def root(self):
+        yield
+
+    def record_output(self, text: str, label: str) -> None:
+        pass
+
+    def record_outcome(self, outcome: str) -> None:
+        pass
+
+
+_NO_TELEMETRY = _NoTelemetry()
+
+
 async def _identity_classifier(turn: Turn) -> ClassifierResult | None:
     """"Who are you?" — answered from a template, without moderation or the agent.
 
@@ -529,10 +798,13 @@ async def _identity_classifier(turn: Turn) -> ClassifierResult | None:
 
 
 #: The chat surface's population of the seam. Chat is the degenerate case: one
-#: classifier where voice has six.
+#: classifier where voice has five.
 CHAT_SURFACE = SurfaceProfile(
     surface=Surface.CHAT,
     classifiers=(_identity_classifier,),
+    sink=_ChatSink,
+    telemetry=_ChatTelemetry,
+    pretranslation=_chat_pretranslation,
 )
 
 
@@ -634,6 +906,8 @@ async def run_turn(
     surface: SurfaceProfile,
     *,
     scheduler: DeferredScheduler,
+    side_channel: Optional[SideChannelSender] = None,
+    is_stale: Optional[StalenessCheck] = None,
 ) -> AsyncGenerator[Emission, None]:
     """One turn, transport-free.
 
@@ -642,17 +916,20 @@ async def run_turn(
     spawned, and yields ``Emission`` values for the transport adapter to render.
     Deferred work goes through ``scheduler``; private documents leave only as an
     ``ArtifactEmission``.
+
+    ``side_channel`` and ``is_stale`` are wired where the turn is composed, like
+    the scheduler. A surface's liveness speaks through the first. The second is
+    asked before the turn commits anything (a classifier's answer, the gate's,
+    the history write), and a stale turn stops there; the sink is given it too,
+    to stop mid-answer. Chat passes neither.
     """
-    query = turn.query
+    started_at = time.monotonic()
     session_id = turn.session_id
-    source_lang = turn.source_lang
     target_lang = turn.target_lang
-    user_id = turn.user_id
     user_info = turn.authenticated_user
     history = turn.history
     persona = turn.persona
     profile = turn.channel
-    channel = profile.channel.value
     message_history_session_id = turn.history_session_id
 
     execution = await llm_core.context(session_id)
@@ -674,100 +951,24 @@ async def run_turn(
     # resolved above). For the current env this is the same provider/base_url/model
     # the removed get_model_for_variant returned, generalized to the weighted split.
     request_model_name = agent_info.model_name
-    # Langfuse: propagate session_id, metadata, and tags for dashboard filtering (max 200 chars per value)
     session_id_safe = (session_id or "")[:200]
-    # Prefer phone from JWT (weburl-minted tokens) over the query-param user_id
-    effective_user_id = (
-        (user_info.get("phone") or user_info.get("sub")) if user_info else None
-    ) or user_id or "anonymous"
-    effective_user_id = effective_user_id[:200]
-    langfuse_metadata = {
-        "pipeline": _PIPELINE_NAME,
-        "channel": (channel or "web")[:200],
-        "source_lang": (source_lang or "unknown").lower()[:200],
-        "target_lang": (target_lang or "unknown").lower()[:200],
-        "user_id": effective_user_id,
-        "pipeline_profile": pipeline_profile,
-        "persona": persona,
-    }
-    langfuse_tags = [
-        f"pipeline:{_PIPELINE_NAME}",
-        f"pipeline_profile:{pipeline_profile}",
-        f"persona:{persona}",
-    ]
-    # Serialize the resolved pipeline config into COMPACT flat keys and merge them
-    # into the same langfuse_metadata dict propagate_attributes lands on OTEL span
-    # attributes (a big nested blob is size-capped/dropped; this SDK has no
-    # update_current_trace). Adds `pipeline_profile`, `pipeline_flags`, and one
-    # `pc_<step>` per step (~50 chars each). Full static config is in the
-    # `llm_core.full_config` boot log. Best-effort — never breaks the turn.
-    _pipeline_trace.add_compact_metadata(pt, langfuse_metadata)
-    session_ctx = (
-        propagate_attributes(
-            session_id=session_id_safe,
-            user_id=effective_user_id,
-            metadata=langfuse_metadata,
-            tags=langfuse_tags,
-        )
-        if propagate_attributes
-        else nullcontext()
+    # The turn's one root span, its stamps and how the turn ended come from the
+    # surface: chat's is chat.turn.v1, voice's will be voice.turn.v1.
+    telemetry = (
+        surface.telemetry(turn, pipeline_profile=pipeline_profile, pipeline_trace=pt)
+        if surface.telemetry is not None
+        else _NO_TELEMETRY
     )
 
-    # THE TURN ROOT SPAN. Without it, propagate_attributes leaves no active span,
-    # so every observation opened during the turn (Moderation, query_pretranslation,
-    # Amul AI Agent, suggestions, each tool call) becomes its OWN top-level trace —
-    # measured at 6 traces for one turn — and every trace-level write made outside
-    # an observation is silently dropped by the SDK ("no active span ... skipped").
-    # That is why trace input/output was missing on many turns, why the chat export
-    # has gaps, and why turn-level scores never landed.
-    _root_ctx = (
-        get_langfuse_client().start_as_current_observation(
-            name=f"chat.{_PIPELINE_NAME}", as_type="span"
-        )
-        if get_langfuse_client
-        else nullcontext()
-    )
-
-    with session_ctx, _root_ctx:
+    with telemetry.root():
         # ONE exit point for the turn. Without this, an outcome is recorded only
         # on normal completion: a client disconnect or an exception leaves the
         # trace with no output and no signal at all, which is #179's B2. It lives
         # in run_turn, not the adapter, so every surface's turn carries it.
         _turn_outcome = "error"
+        background = None
+        liveness = None
         try:
-            if get_langfuse_client:
-                try:
-                    langfuse = get_langfuse_client()
-                    langfuse.set_current_trace_io(
-                        input={
-                            "query": query,
-                            "channel": channel,
-                            "source_lang": source_lang,
-                            "target_lang": target_lang,
-                            "persona": persona,
-                        }
-                    )
-                    #this is the same as the update_current_trace method,
-                    #but it is more explicit about the type of the output
-                    # and is supported by the latest version of the langfuse SDK.
-                    # Emit a categorical pipeline_profile score attached to the
-                    # *current trace*. Langfuse rolls this up to the session view,
-                    # so a Sessions filter "pipeline_profile = oss" works directly.
-                    # `score_id` is deterministic per session so subsequent traces
-                    # in the same session upsert the same score (no duplicates).
-                    try:
-                        langfuse.score_current_trace(
-                            name="pipeline_profile",
-                            value=pipeline_profile,
-                            data_type="CATEGORICAL",
-                            score_id=f"variant-{session_id_safe}",
-                            comment="Sticky pipeline variant for this session",
-                        )
-                    except Exception as e:
-                        logger.warning("Langfuse: pipeline_profile score failed: %s", e)
-                except Exception as e:
-                    logger.warning("Langfuse: failed to set trace input: %s", e)
-
             # Resolve per-language kill switches before any response path. This
             # keeps deterministic short-circuits and tool language selection in
             # the same English-passthrough mode as the translation pipeline.
@@ -792,16 +993,14 @@ async def run_turn(
                 short_circuit = await classify(turn)
                 if short_circuit is None:
                     continue
-                _record_trace_output(short_circuit.canned_text, short_circuit.label)
-                if short_circuit.history_pair is not None:
-                    messages = [*history, *short_circuit.history_pair]
-                    logger.info(
-                        "request_id=%s updating_history_%s_path=True total_messages=%s",
-                        request_id,
-                        short_circuit.label,
-                        len(messages),
-                    )
-                    await update_message_history(message_history_session_id, messages)
+                stale = await _stale_outcome(is_stale, f"before_{short_circuit.label}_response")
+                if stale is not None:
+                    _turn_outcome = stale
+                    return
+                telemetry.record_output(short_circuit.canned_text, short_circuit.label)
+                await _write_short_circuit_history(
+                    history, short_circuit, message_history_session_id, request_id
+                )
                 # A short-circuit that answered the farmer is a completed turn, not
                 # an error. `_turn_outcome` defaults to "error" so that an exit we
                 # did not anticipate is loud; every exit that DID answer has to say
@@ -810,15 +1009,46 @@ async def run_turn(
                 yield TextEmission(short_circuit.canned_text, raw=short_circuit.raw)
                 return
 
+            # What the caller hears while the model works starts here, for the
+            # same reason, and stops before the first thing they hear.
+            if surface.liveness is not None and side_channel is not None:
+                liveness = surface.liveness(
+                    turn, started_at=started_at, send=side_channel, is_stale=is_stale
+                )
+
+            # A surface's background checks start here: after the classifiers, so
+            # a match has nothing to cancel, and before everything else, so they
+            # run alongside it. Chat has none.
+            if surface.background is not None:
+                background = surface.background(turn, execution=execution)
+
             farmer_context = await _load_farmer_context(persona, user_info, request_id)
-            processing_query, processing_lang = await _pretranslate_query(
-                query,
-                source_lang=source_lang,
-                target_lang=target_lang,
-                disabled_langs=disabled_langs,
-                execution=execution,
-                request_id=request_id,
+            if surface.pretranslation is None:
+                raise TypeError(f"surface {surface.surface.value!r} reached pretranslation without one")
+            stale = await _stale_outcome(is_stale, "before_query_pretranslation")
+            if stale is not None:
+                _turn_outcome = stale
+                return
+            pretranslated = await surface.pretranslation(
+                turn, execution=execution, background=background
             )
+            if isinstance(pretranslated, ClassifierResult):
+                # An answer instead of a query for the agent: said like the gate's.
+                stale = await _stale_outcome(is_stale, f"before_{pretranslated.label}_response")
+                if stale is not None:
+                    _turn_outcome = stale
+                    return
+                if liveness is not None:
+                    await liveness.stop()
+                    liveness = None
+                telemetry.record_output(pretranslated.canned_text, pretranslated.label)
+                await _write_short_circuit_history(
+                    history, pretranslated, message_history_session_id, request_id
+                )
+                _turn_outcome = "success"
+                yield TextEmission(pretranslated.canned_text, raw=pretranslated.raw)
+                return
+            processing_query, processing_lang = pretranslated.query, pretranslated.lang
             needs_output_translation = (
                 target_lang.lower() in INDIAN_LANGUAGES
                 and target_lang.lower() not in disabled_langs
@@ -918,7 +1148,7 @@ async def run_turn(
                         # carries no output and the chat export records the turn as
                         # a blank answer (~470 rows on 2026-08-06). Same best-effort
                         # shape as the identity path: telemetry never breaks a turn.
-                        _record_trace_output(decline_text, "moderation decline")
+                        telemetry.record_output(decline_text, "moderation decline")
                         # Moderation ran and decided: the turn ended the way it was
                         # supposed to. Recording "error" here inflated the error rate
                         # by one row per moderated query.
@@ -939,7 +1169,7 @@ async def run_turn(
                 # error rate. `_turn_outcome` is left at "error". The trace output
                 # is still recorded so the export shows what the farmer actually
                 # saw rather than a blank row.
-                _record_trace_output(fail_closed_message, "fail-closed")
+                telemetry.record_output(fail_closed_message, "fail-closed")
                 yield TextEmission(fail_closed_message)
                 return
 
@@ -971,8 +1201,15 @@ async def run_turn(
 
             logger.info(f"Trimmed history length: {len(trimmed_history)} messages")
 
-            # Buffer streamed output for Langfuse trace output
-            output_chunks: list[str] = []
+            if surface.sink is None:
+                raise TypeError(f"surface {surface.surface.value!r} reached the agent without a sink")
+            sink = surface.sink(
+                turn,
+                execution=execution,
+                deps=deps,
+                translate_to=target_lang if needs_output_translation else None,
+                is_stale=is_stale,
+            )
 
             _lf_ag = get_langfuse_client() if get_langfuse_client else None
             agent_observation_name = "Amul Doctor Agent" if persona == "doctor" else "Amul AI Agent"
@@ -1014,31 +1251,36 @@ async def run_turn(
                     new_messages=new_messages,
                 )
 
-                if persona == "doctor":
-                    english_src = _sanitize_doctor_stream(english_src)
+                if background is not None:
+                    gated, english_src = await _gate_first_chunk(english_src, background)
+                    if gated is not None:
+                        stale = await _stale_outcome(is_stale, f"before_{gated.label}_response")
+                        if stale is not None:
+                            _turn_outcome = stale
+                            return
+                        if liveness is not None:
+                            await liveness.stop()
+                            liveness = None
+                        telemetry.record_output(gated.canned_text, gated.label)
+                        await _write_short_circuit_history(
+                            history, gated, message_history_session_id, request_id
+                        )
+                        _turn_outcome = "success"
+                        yield TextEmission(gated.canned_text, raw=gated.raw)
+                        return
 
-                client_src = _stream_to_client(
-                    english_src,
-                    translate_to=target_lang if needs_output_translation else None,
-                    max_output_chars=deps.response_max_chars,
-                    execution=execution,
-                    output_chunks=output_chunks,
-                )
-                if persona == "doctor":
-                    # Defence in depth: also remove a provenance label invented by
-                    # post-translation rather than present in the English answer.
-                    client_src = _sanitize_doctor_stream(client_src)
-
-                async for _out in client_src:
+                async for _out in sink.stream(english_src):
+                    # A blank chunk is not heard, so the caller is still waiting.
+                    if liveness is not None and _out.strip():
+                        await liveness.stop()
+                        liveness = None
                     yield TextEmission(_out)
                 logger.info(f"Streaming complete for session {session_id}")
 
-                # Record trace output: translated response for translation pipeline, raw agent output otherwise.
-                trace_output = "".join(output_chunks) or None
-                if trace_output and needs_output_translation and persona == "doctor":
-                    trace_output = sanitize_doctor_answer(trace_output)
+                # Record trace output: what the caller received, as the sink saw it.
+                trace_output = sink.final_text()
                 if trace_output:
-                    _record_trace_output(trace_output, "final")
+                    telemetry.record_output(trace_output, "final")
                 if get_langfuse_client:
                     try:
                         # Match moderation: structured output so Langfuse shows JSON in the observation panel.
@@ -1077,6 +1319,10 @@ async def run_turn(
                 *new_messages
             ]
 
+            stale = await _stale_outcome(is_stale, "before_history_write")
+            if stale is not None:
+                _turn_outcome = stale
+                return
             logger.info(f"Updating message history for session {session_id} with {len(messages)} messages")
             await update_message_history(message_history_session_id, messages)
             _turn_outcome = "success"
@@ -1088,4 +1334,8 @@ async def run_turn(
             _turn_outcome = "error"
             raise
         finally:
-            _record_turn_outcome(_turn_outcome, session_id_safe)
+            telemetry.record_outcome(_turn_outcome)
+            if liveness is not None:
+                await liveness.stop()
+            if background is not None:
+                await background.close()
