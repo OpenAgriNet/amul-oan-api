@@ -14,10 +14,9 @@ Design
   ``PipelineConfig`` (``model_dump(mode="json")``). Secrets are NEVER in it — a
   tier only names its ``api_key_env``; the VALUE is read from the centralized
   Vault/environment secret provider when a handle is built.
-* **channel** — ``PIPELINE_CHANNEL`` env, defaulting to the repo's identity
-  (``voice`` if the ``Step`` enum has the voice-only ``non_meaningful`` step,
-  else ``chat``) so each deployment self-identifies without any per-repo code
-  edit. Chat and voice therefore read DISTINCT keys off a shared Redis.
+* **channel** — ``PIPELINE_CHANNEL`` env, defaulting to ``chat``. A voice
+  deployment of this image sets it to ``voice``. Chat and voice therefore read
+  DISTINCT keys off a shared Redis.
 * **TTL** — ``maybe_refresh`` is gated by ``time.monotonic()``: it touches Redis
   at most once per ``PIPELINE_CONFIG_REFRESH_S`` (default 10s; a non-positive value
   degrades to the default so it can never GET-per-request) window. Inside the
@@ -65,14 +64,14 @@ import time
 from typing import Optional
 
 from helpers.utils import get_logger
-from app.llm_core.config_model import PipelineConfig, Step
+from app.llm_core.config_model import PipelineConfig
 from app.config import get_config_value
 
 logger = get_logger(__name__)
 
 # ── env knobs ────────────────────────────────────────────────────────────────
 ENABLED_ENV = "PIPELINE_CONFIG_REDIS_ENABLED"   # default off
-CHANNEL_ENV = "PIPELINE_CHANNEL"                # default self-identifies (chat/voice)
+CHANNEL_ENV = "PIPELINE_CHANNEL"                # default "chat"; voice deployments set "voice"
 REFRESH_ENV = "PIPELINE_CONFIG_REFRESH_S"       # TTL seconds, default 10
 TIMEOUT_ENV = "PIPELINE_CONFIG_REDIS_TIMEOUT_S" # dedicated short socket timeout, default 0.5s
 
@@ -84,10 +83,13 @@ _KEY_PREFIX = "llm_pipeline_config:"
 # valid config and a transient read error (None). Signals a revert to BOOT.
 _KEY_ABSENT = object()
 
-# Repo self-identification: the voice Step enum has the voice-only NON_MEANINGFUL
-# step, chat has SUGGESTIONS instead — so this one expression yields "voice" in
-# the voice repo and "chat" in the chat repo with ZERO per-repo code difference.
-_DEFAULT_CHANNEL = "voice" if hasattr(Step, "NON_MEANINGFUL") else "chat"
+# This repo's own surface, stated rather than inferred. It used to be inferred
+# from the Step enum (voice had NON_MEANINGFUL, chat SUGGESTIONS) so one file
+# could be copied unchanged between the two repos. With voice moving into this
+# repo both steps end up in one enum, and that inference would silently point
+# every deployment without PIPELINE_CHANNEL at the voice config. A voice
+# deployment of this image sets PIPELINE_CHANNEL=voice.
+_DEFAULT_CHANNEL = "chat"
 
 # Rate-limit the fail-safe WARNING so a persistent redis/config fault (hit once
 # per TTL window) cannot spam the logs.
