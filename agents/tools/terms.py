@@ -561,7 +561,12 @@ def _ambiguity_fuzzy_score(term: str, query: str) -> float:
     return best
 
 
-def get_ambiguity_hints_for_query(query: str, threshold: float | None = None, include_ask: bool = True) -> str:
+def get_ambiguity_hints_for_query(
+    query: str,
+    threshold: float | None = None,
+    include_ask: bool = True,
+    terms: list | None = None,
+) -> str:
     """
     Fuzzy-match incoming query (any language) against ambiguity_terms.json.
     Returns a formatted string of matching rules to inject into the system prompt,
@@ -577,13 +582,16 @@ def get_ambiguity_hints_for_query(query: str, threshold: float | None = None, in
                      NOT leak into the pretranslation prompt — otherwise the
                      translator dutifully appends the clarifying question to
                      its English output).
+        terms: The rules to match. ``assets/ambiguity_terms.json`` when None;
+               voice's pretranslation passes its own.
 
     Returns:
         Formatted rules string, e.g.:
           "- 'ઉથલા' always means repeat breeder, NOT vomiting."
         or "" if no terms matched.
     """
-    if not query or not _AMBIGUITY_TERMS:
+    rules = _AMBIGUITY_TERMS if terms is None else terms
+    if not query or not rules:
         return ""
 
     # Allow callers to override; fall back to env setting, then hard-coded default
@@ -600,7 +608,7 @@ def get_ambiguity_hints_for_query(query: str, threshold: float | None = None, in
 
     query_lower = query.lower().strip()
 
-    for entry in _AMBIGUITY_TERMS:
+    for entry in rules:
         gu_terms = entry.get("gu_terms", [])
         rule = entry.get("rule", "").strip()
         if not rule or not gu_terms:

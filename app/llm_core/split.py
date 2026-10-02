@@ -30,7 +30,7 @@ from typing import Optional
 
 from helpers.utils import get_logger
 from app.llm_core import runtime
-from app.llm_core.config_model import PipelineConfig, Step
+from app.llm_core.config_model import PipelineConfig, Step, StepClientKind
 from app.llm_core.factory import STEP_CLIENT_KIND, tier_client_kind
 
 logger = get_logger(__name__)
@@ -92,6 +92,7 @@ async def resolve_chain(
     pipeline: Optional[PipelineConfig] = None,
     *,
     profile_name: Optional[str] = None,
+    client_kind: Optional[StepClientKind] = None,
 ) -> list:
     """Resolve an ordered chain without constructing any provider clients.
 
@@ -134,7 +135,7 @@ async def resolve_chain(
     from app.llm_core.execution import ExecutionTarget
 
     chain = [
-        ExecutionTarget(tier, tier_client_kind(STEP_CLIENT_KIND[step], tier))
+        ExecutionTarget(tier, tier_client_kind(client_kind or STEP_CLIENT_KIND[step], tier))
         for tier in tiers
     ]
     return chain
