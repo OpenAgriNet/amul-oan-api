@@ -5,7 +5,8 @@ How chat and voice become one orchestrator, and why the two obvious designs are 
 Research date 2026-08-01, against `amul-oan-api@main` and `voice-oan-api@origin/amul-dev`
 (`09df156`, where dev and prod are the same commit). Progress and corrections to the original
 plan are on issue #171. The seam interface was refreshed on 2026-09-18 (#307) and task 15 —
-`run_turn` on chat — is built against it; see [The seam interface](#the-seam-interface).
+`run_turn` on chat — is built against it; see [The seam interface](#the-seam-interface). Voice
+runs on it too, behind `VOICE_ROUTE_ENABLED`; how is in `docs/voice-run-turn-mapping.md`.
 
 ---
 
@@ -190,7 +191,7 @@ caller, and now resolves like everything else about it: to the web profile.
 This contract was refreshed on 2026-09-18 (#307) to include the authenticated tool-dependency and
 rich-artifact paths that were added after the original design. **Built for chat (task 15)**: the
 types are in `app/turn/types.py`, and `run_turn` plus the chat surface's population of it are in
-`app/services/chat.py`.
+`app/services/chat.py`. Voice's population is in `app/voice/`.
 
 ```python
 async def run_turn(
@@ -198,6 +199,8 @@ async def run_turn(
     surface: SurfaceProfile,
     *,
     scheduler: DeferredScheduler,
+    side_channel: Optional[SideChannelSender] = None,
+    is_stale: Optional[StalenessCheck] = None,
 ) -> AsyncGenerator[Emission, None]:
     ...
 ```
@@ -219,9 +222,16 @@ class Turn:
     authenticated_user: Mapping[str, Any]
     history: tuple[ModelMessage, ...]
     history_session_id: str
-    channel: ChannelProfile
     persona: ChatPersona
+    channel: Optional[ChannelProfile] = None
+    call: Optional[TelephonyCall] = None
 ```
+
+`channel` is chat's `ChannelProfile` and is `None` on voice: a call is not a chat channel, and
+nothing voice runs reads one. `call` is the other way round: what a voice turn knows about its
+call (process ID, outbound consent turn, provider, call type), `None` on chat. Telephony went
+onto `Turn.call` rather than becoming a `ChannelProfile` (decision 2 in
+`docs/voice-run-turn-mapping.md`).
 
 The request's `stream` flag is not part of `Turn`: streaming SSE versus accumulated JSON is a
 transport decision over the same emission stream. Nor are a model, resolved pipeline profile,
@@ -241,25 +251,32 @@ for suggestion generation. As built:
 - **The scheduler is an explicit argument** (`DeferredScheduler`). Its contract is "runs after
   the response", because suggestions read the history this turn writes. Chat backs it with
   `BackgroundTasks`, which Starlette runs once the response has finished.
-- **History/cache and telemetry are still resolved from `app.services.chat` module scope.**
-  That module is the chat composition root, and it is where the test suite substitutes them;
-  moving `run_turn` elsewhere with fresh imports would silently bypass those doubles (the sink
-  prototype hit exactly this). They move behind an explicit services record when a second
-  surface needs a different implementation, not before.
+- **So are the side channel and the staleness check** (`SideChannelSender`, `StalenessCheck`).
+  Voice's route wires in the nudge sender and `CallStaleness` (the caller hung up, or a newer
+  request owns the session); chat passes neither.
+- **History/cache is still resolved from `app.services.chat` module scope.** That module is the
+  chat composition root, and it is where the test suite substitutes it; moving `run_turn`
+  elsewhere with fresh imports would silently bypass those doubles (the sink prototype hit
+  exactly this). It moves behind an explicit services record when a surface needs a different
+  implementation, not before. Telemetry already did: each surface brings its own root span and
+  stamps through `SurfaceProfile.telemetry`.
 
 ### `SurfaceProfile`
 
-The design has four structures (above). As built, `SurfaceProfile` carries only the one
-something reads — following the rule in `app/channels/base.py`:
+The design has four structures (above). As built, each field landed with its first reader,
+following the rule in `app/channels/base.py`, and the voice port added three more:
 
 ```python
 @dataclass(frozen=True)
 class SurfaceProfile:
     surface: Surface
-    classifiers: tuple[Classifier, ...] = ()   # 1. pre-turn chain; chat has 1, voice 6
-    # 2. background: tuple[BackgroundSpec, ...] — lands with voice's four specs
-    # 3. liveness: LivenessSpec | None           — lands with the telephony nudge
-    # 4. sink: Sink                              — lands with voice's streaming batcher
+    classifiers: tuple[Classifier, ...] = ()         # pre-turn chain; chat has 1, voice 5
+    sink: Optional[SinkFactory] = None               # the agent's English stream -> caller text
+    telemetry: Optional[TelemetryFactory] = None     # the turn's root span and what it records
+    background: Optional[BackgroundFactory] = None   # checks that gate the first emission; voice only
+    liveness: Optional[LivenessFactory] = None       # what a waiting caller hears; voice only
+    pretranslation: Optional[Pretranslation] = None  # the query in the language the agent reads
+    agent_input: Optional[AgentInputStep] = None     # what the agent runs with
 ```
 
 Chat's single classifier is identity. It is persona-aware (the Doctor identity response) and
@@ -416,7 +433,9 @@ chat.** Otherwise a behaviour change and a port land together and neither can be
    taxonomy merge.
 4. **Voice port** — re-derived from deployed `voice-oan-api@origin/amul-dev`, never from the
    fork deleted in #189/#190/#192. Populate the four structures; delete the legacy
-   gate-before-model branch per the decision above.
+   gate-before-model branch per the decision above. The piece-by-piece mapping, its
+   prerequisites and PR plan are in `docs/voice-run-turn-mapping.md`. **Built, behind
+   `VOICE_ROUTE_ENABLED` (off by default)**; parity and cutover are next.
 5. **`translation.py`** last (weeks), rewritten around channels.
 
 Steps 1–3 are independently shippable and none of them requires voice to move.
