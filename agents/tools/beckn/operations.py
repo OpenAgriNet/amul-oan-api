@@ -298,7 +298,10 @@ class BecknOperationStore:
                 key = indexed_key
                 row = await self._redis.hgetall(key)
         if not row:
-            is_private_shc = context.get("domain") == "schemes:vistaar" and action == "on_init"
+            is_private_vistaar = (
+                context.get("domain") == "schemes:vistaar"
+                and action in {"on_init", "on_status"}
+            )
             orphan = (
                 {
                     "received_at": _now(),
@@ -310,10 +313,12 @@ class BecknOperationStore:
                         "message_id": message_id,
                     },
                 }
-                if is_private_shc
+                if is_private_vistaar
                 else {"received_at": _now(), "payload": payload}
             )
-            orphan_ttl = settings.shc_artifact_ttl_seconds if is_private_shc else self._ttl
+            orphan_ttl = (
+                settings.shc_artifact_ttl_seconds if is_private_vistaar else self._ttl
+            )
             await self._redis.set(
                 self._orphan_key(transaction_id, message_id),
                 _json(orphan),
@@ -900,6 +905,122 @@ class BecknOperationClient:
             await self._send(created.operation, payload)
         return await self._finish(created.operation)
 
+    async def init_pm_kisan_status(
+        self,
+        *,
+        identifier: str,
+        transaction_id: str,
+        message_id: str,
+        session_id: str,
+        tool_call_id: Optional[str],
+    ) -> BecknActionResult:
+        """Request a PM-KISAN OTP through directed BV init/on_init."""
+        self._validate_pmkisan_configuration()
+        order = {
+            "provider": {"id": ""},
+            "items": [{"id": ""}],
+            "fulfillments": [{
+                "customer": {
+                    "person": {
+                        "name": "Customer Name",
+                        "tags": [{
+                            "display": True,
+                            "descriptor": {
+                                "code": "reg-details",
+                                "name": "Registration Details",
+                            },
+                            "list": [{
+                                "display": True,
+                                "descriptor": {
+                                    "code": "reg-number",
+                                    "name": "Registration Number",
+                                },
+                                "value": identifier,
+                            }],
+                        }],
+                    },
+                    "contact": {"phone": ""},
+                }
+            }],
+        }
+        payload = {
+            "context": self._context(
+                action="init",
+                transaction_id=transaction_id,
+                message_id=message_id,
+                domain="schemes:vistaar",
+                bpp_id=settings.vistaar_bpp_id,
+                bpp_uri=settings.vistaar_bpp_uri,
+                ttl="PT10M",
+            ),
+            "message": {"order": order},
+        }
+        created = await self.store.create(
+            operation_id=str(uuid.uuid4()),
+            transaction_id=transaction_id,
+            message_id=message_id,
+            action="init",
+            expected_callback="on_init",
+            domain="schemes:vistaar",
+            bap_id=settings.beckn_bap_id,
+            bpp_id=settings.vistaar_bpp_id,
+            request_payload=payload,
+            idempotency_key=f"{session_id}:{tool_call_id or message_id}:pmkisan:init",
+            session_id=session_id,
+            tool_call_id=tool_call_id,
+            retention_seconds=settings.vistaar_pmkisan_session_ttl_seconds,
+        )
+        if created.created:
+            await self._send(created.operation, payload)
+        return await self._finish(created.operation)
+
+    async def submit_pm_kisan_otp(
+        self,
+        *,
+        identifier: str,
+        otp: str,
+        transaction_id: str,
+        message_id: str,
+        session_id: str,
+        tool_call_id: Optional[str],
+    ) -> BecknActionResult:
+        """Verify a PM-KISAN OTP through directed BV status/on_status."""
+        self._validate_pmkisan_configuration()
+        payload = {
+            "context": self._context(
+                action="status",
+                transaction_id=transaction_id,
+                message_id=message_id,
+                domain="schemes:vistaar",
+                bpp_id=settings.vistaar_bpp_id,
+                bpp_uri=settings.vistaar_bpp_uri,
+                ttl="PT10M",
+            ),
+            "message": {
+                "order_id": otp,
+                "registration_number": identifier,
+                "phone_number": "",
+            },
+        }
+        created = await self.store.create(
+            operation_id=str(uuid.uuid4()),
+            transaction_id=transaction_id,
+            message_id=message_id,
+            action="status",
+            expected_callback="on_status",
+            domain="schemes:vistaar",
+            bap_id=settings.beckn_bap_id,
+            bpp_id=settings.vistaar_bpp_id,
+            request_payload=payload,
+            idempotency_key=f"{session_id}:{tool_call_id or message_id}:pmkisan:status",
+            session_id=session_id,
+            tool_call_id=tool_call_id,
+            retention_seconds=settings.vistaar_pmkisan_session_ttl_seconds,
+        )
+        if created.created:
+            await self._send(created.operation, payload)
+        return await self._finish(created.operation)
+
     def _context(
         self,
         *,
@@ -909,6 +1030,7 @@ class BecknOperationClient:
         domain: Optional[str] = None,
         bpp_id: Optional[str] = None,
         bpp_uri: Optional[str] = None,
+        ttl: Optional[str] = None,
     ) -> dict[str, Any]:
         return {
             "domain": domain or settings.beckn_booking_domain,
@@ -925,7 +1047,7 @@ class BecknOperationClient:
             "transaction_id": transaction_id,
             "message_id": message_id,
             "timestamp": _now(),
-            "ttl": settings.beckn_message_ttl,
+            "ttl": ttl or settings.beckn_message_ttl,
         }
 
     async def _send(self, operation: BecknOperation, payload: Mapping[str, Any]) -> None:
@@ -1023,6 +1145,31 @@ class BecknOperationClient:
         if missing:
             raise RuntimeError("Soil Health Card callbacks are missing configuration: " + ", ".join(missing))
 
+    @staticmethod
+    def _validate_pmkisan_configuration() -> None:
+        required = {
+            "BECKN_BAP_CALLER_URL": settings.beckn_bap_caller_url,
+            "BECKN_TRANSACTION_BRIDGE_TOKEN": settings.beckn_transaction_bridge_token,
+            "BECKN_BAP_ID": settings.beckn_bap_id,
+            "BECKN_BAP_URI": settings.beckn_bap_uri,
+            "BECKN_CALLBACK_TOKEN": settings.beckn_callback_token,
+            "VISTAAR_BPP_ID": settings.vistaar_bpp_id,
+            "VISTAAR_BPP_URI": settings.vistaar_bpp_uri,
+        }
+        missing = [name for name, value in required.items() if not value]
+        if missing:
+            raise RuntimeError(
+                "PM-KISAN callbacks are missing configuration: " + ", ".join(missing)
+            )
+        if (
+            settings.vistaar_bpp_id != "provider-network-vistaar.da.gov.in"
+            or settings.vistaar_bpp_uri
+            != "https://provider-network-vistaar.da.gov.in"
+        ):
+            raise RuntimeError("PM-KISAN requires the production Bharat Vistaar BPP")
+        if settings.beckn_city_code != "std:080":
+            raise RuntimeError("PM-KISAN requires BECKN_CITY_CODE=std:080")
+
 
 def validate_beckn_startup_configuration() -> None:
     """Fail startup when the mandatory Amul Beckn transport is unusable."""
@@ -1031,6 +1178,8 @@ def validate_beckn_startup_configuration() -> None:
         raise RuntimeError(
             "Beckn callback transactions are missing configuration: BECKN_CALLBACK_TOKEN"
         )
+    if settings.vistaar_pmkisan_enabled:
+        BecknOperationClient._validate_pmkisan_configuration()
 
 
 _operation_store = BecknOperationStore()

@@ -66,6 +66,7 @@ def get_agrinet_instructions(ctx: RunContext):
         # its prompt contract aligned with the per-turn tool prepare hook so the
         # model never sees instructions for a hidden private-report tool.
         'vistaar_shc_enabled': settings.vistaar_shc_enabled,
+        'vistaar_pmkisan_enabled': settings.vistaar_pmkisan_enabled,
     }
 
     # The translation pipeline is the only supported chat path, so the farmer

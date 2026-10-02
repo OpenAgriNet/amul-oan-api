@@ -21,6 +21,17 @@ from app.config import settings
 PROMPT_TEMPLATES_CACHE: Dict[str, str] = {}
 
 
+def to_ascii_digits(value) -> str:
+    """Convert Unicode decimal digits to ASCII while preserving other text."""
+    converted = []
+    for char in str(value or ""):
+        try:
+            converted.append(str(ud.decimal(char)))
+        except (TypeError, ValueError):
+            converted.append(char)
+    return "".join(converted)
+
+
 def get_s3_client():
     """Get S3 client."""
     return boto3.client(
