@@ -4,8 +4,11 @@
 
 CREATE DATABASE IF NOT EXISTS telemetry;
 
--- One row per voice turn. A re-import of the same trace replaces its row
--- (read with FINAL for exact counts). No phone numbers, no caller text.
+-- One row per voice turn. A re-import of the same trace replaces its row, and a
+-- turn the re-import no longer finds (deleted in Langfuse, now rejected, or moved
+-- to another day) gets a row with is_deleted = 1. Read with FINAL: it keeps the
+-- newest row of each turn and leaves out the deleted ones. No phone numbers, no
+-- caller text.
 CREATE TABLE IF NOT EXISTS telemetry.voice_turns
 (
     source_trace_id String,
@@ -38,9 +41,10 @@ CREATE TABLE IF NOT EXISTS telemetry.voice_turns
     observation_names Array(String),
     score_names Array(String),
     field_availability Map(String, LowCardinality(String)),
-    imported_at DateTime64(3, 'UTC')
+    imported_at DateTime64(3, 'UTC'),
+    is_deleted UInt8
 )
-ENGINE = ReplacingMergeTree(imported_at)
+ENGINE = ReplacingMergeTree(imported_at, is_deleted)
 PARTITION BY toYYYYMM(timestamp)
 ORDER BY (environment, toDate(timestamp), source_trace_id);
 

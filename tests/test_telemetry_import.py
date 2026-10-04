@@ -54,8 +54,9 @@ class FakeClickHouse:
 
     def query(self, query, parameters=None):
         self.queries.append((query, parameters))
-        table = re.search(r"FROM (\w+)", query).group(1)
-        rows = self.tables[table]
+        table = re.search(r"FROM ([\w.]+)", query).group(1)
+        # The telemetry tables start empty here; test_telemetry_reimport.py runs them on ClickHouse.
+        rows = [] if table.startswith("telemetry.") else self.tables[table]
         if "trace_ids" in parameters:
             rows = [row for row in rows if row["trace_id"] in parameters["trace_ids"]]
         if table == "traces":
@@ -273,6 +274,20 @@ def test_each_utc_day_is_read_once():
     assert [day["turns"] for day in client.inserts["voice_import_days"]] == [0, 0]
 
 
+def test_a_range_of_days_imports_the_turns_of_every_day():
+    client = FakeClickHouse(
+        traces=[
+            trace_row("first", when="2026-09-24T10:00:00Z", metadata=turn_metadata()),
+            trace_row("second", when="2026-09-25T10:00:00Z", metadata=turn_metadata()),
+        ]
+    )
+
+    report = _import(client, first_day=date(2026, 9, 24), last_day=date(2026, 9, 25))
+
+    assert [row["source_trace_id"] for row in client.inserts["voice_turns"]] == ["first", "second"]
+    assert report.turns == 2
+
+
 def test_every_voice_root_name_is_fetched():
     client = FakeClickHouse()
 
@@ -465,6 +480,7 @@ RELEASED_VOICE_TURN_COLUMNS = {
     "score_names": "Array(String)",
     "field_availability": "Map(String, LowCardinality(String))",
     "imported_at": "DateTime64(3, 'UTC')",
+    "is_deleted": "UInt8",
     "attributes": "Map(String, String)",
 }
 
@@ -536,6 +552,7 @@ RELEASED_CHAT_TURN_COLUMNS = {
     "score_names": "Array(String)",
     "field_availability": "Map(String, LowCardinality(String))",
     "imported_at": "DateTime64(3, 'UTC')",
+    "is_deleted": "UInt8",
     "attributes": "Map(String, String)",
 }
 RELEASED_LEDGER_COLUMNS = {
@@ -549,6 +566,7 @@ RELEASED_LEDGER_COLUMNS = {
     "reason": "String",
     "schema_version": "LowCardinality(String)",
     "imported_at": "DateTime64(3, 'UTC')",
+    "is_deleted": "UInt8",
 }
 
 
