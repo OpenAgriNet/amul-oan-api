@@ -14,21 +14,31 @@ REDACTED_USER_ID = "redacted"
 
 # Child spans and scores can be written a while after the root.
 _CHILD_WINDOW = timedelta(days=1)
+# How far a trace's timestamp can move between versions and still be read on its new day.
+_MOVE_WINDOW = timedelta(days=1)
 _BATCH_SIZE = 1000
 _EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
 
 # Langfuse tables keep several versions of a row; the newest event_ts wins.
+# A trace's timestamp can change between versions, so the newest version is
+# picked from a day either side before the day itself is kept: otherwise an
+# older version would put the trace in a day it has left.
 _TRACES_SQL = """
-SELECT id, name, toUnixTimestamp64Milli(timestamp) AS timestamp_ms, session_id,
-       if(ifNull(user_id, '') = '', NULL, {redacted:String}) AS user_id,
-       metadata, is_deleted
-FROM traces
-WHERE environment = {environment:String}
-  AND name IN {names:Array(String)}
-  AND timestamp >= toDateTime64({start:String}, 3, 'UTC')
+SELECT id, name, timestamp_ms, session_id, user_id, metadata, is_deleted
+FROM (
+    SELECT id, name, timestamp, toUnixTimestamp64Milli(timestamp) AS timestamp_ms, session_id,
+           if(ifNull(user_id, '') = '', NULL, {redacted:String}) AS user_id,
+           metadata, is_deleted
+    FROM traces
+    WHERE environment = {environment:String}
+      AND name IN {names:Array(String)}
+      AND timestamp >= toDateTime64({window_start:String}, 3, 'UTC')
+      AND timestamp < toDateTime64({window_end:String}, 3, 'UTC')
+    ORDER BY event_ts DESC
+    LIMIT 1 BY id
+)
+WHERE timestamp >= toDateTime64({start:String}, 3, 'UTC')
   AND timestamp < toDateTime64({end:String}, 3, 'UTC')
-ORDER BY event_ts DESC
-LIMIT 1 BY id
 """
 
 _OBSERVATIONS_SQL = """
@@ -81,6 +91,8 @@ def fetch_voice_bundles(
             "names": sorted(root_names),
             "start": _sql_time(start),
             "end": _sql_time(end),
+            "window_start": _sql_time(start - _MOVE_WINDOW),
+            "window_end": _sql_time(end + _MOVE_WINDOW),
         },
     )
     child_window = {"start": _sql_time(start - _CHILD_WINDOW), "end": _sql_time(end + _CHILD_WINDOW)}

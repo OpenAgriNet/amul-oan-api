@@ -16,8 +16,9 @@ Langfuse tables (traces, observations, scores)
 
 - `telemetry.voice_turns`: one row per turn. The caller's `user_id` (a phone
   number) is never stored, only `user_id_hash`. Question and answer keep only
-  their length and sha256, never the text. Count with `FINAL`, since a
-  re-imported day replaces its rows in the background.
+  their length and sha256, never the text. Count with `FINAL`: a re-imported
+  day replaces its rows in the background, and `FINAL` also leaves out the
+  turns a re-import removed (`is_deleted = 1`).
 - `telemetry.voice_import_days`: per day, how many traces were read, turned into
   turns, or rejected.
 - `telemetry.voice_rejections`: per day, why traces were rejected.
@@ -50,7 +51,12 @@ python scripts/telemetry_import.py --env voice-development --from 2026-09-20 --t
 python scripts/telemetry_import.py --env voice-production
 ```
 
-Days are UTC. Re-running a day is safe: its rows are replaced, not doubled.
+Days are UTC. Re-running a day is safe: it ends with the same turns a first
+import of the day would write. Its rows are replaced, not doubled, and a turn
+the re-import no longer finds gets a row with `is_deleted = 1`: a trace deleted
+in Langfuse, one that is now rejected, or one whose timestamp moved to another
+day (up to a day away). So re-importing a day after Langfuse has dropped its
+traces empties it.
 
 ## Adding a column
 

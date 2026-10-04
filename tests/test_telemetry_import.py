@@ -45,7 +45,9 @@ class FakeClickHouse:
 
     def query(self, query, parameters=None):
         self.queries.append((query, parameters))
-        rows = self.tables[re.search(r"FROM (\w+)", query).group(1)]
+        table = re.search(r"FROM ([\w.]+)", query).group(1)
+        # The telemetry tables start empty here; test_telemetry_reimport.py runs them on ClickHouse.
+        rows = [] if table.startswith("telemetry.") else self.tables[table]
         if "trace_ids" in parameters:
             rows = [row for row in rows if row["trace_id"] in parameters["trace_ids"]]
         return FakeResult(rows)
@@ -303,6 +305,7 @@ RELEASED_VOICE_TURN_COLUMNS = {
     "score_names": "Array(String)",
     "field_availability": "Map(String, LowCardinality(String))",
     "imported_at": "DateTime64(3, 'UTC')",
+    "is_deleted": "UInt8",
 }
 
 

@@ -54,6 +54,7 @@ VOICE_TURN_COLUMNS = (
     "score_names",
     "field_availability",
     "imported_at",
+    "is_deleted",
 )
 # CanonicalVoiceTurn fields voice_turns leaves out on purpose. Every other field
 # needs a column, or tests fail, so a new field can't quietly miss the table.
@@ -66,10 +67,25 @@ NOT_STORED = {
 }
 IMPORT_DAY_COLUMNS = ("environment", "day", "traces", "turns", "rejected", "imported_at")
 REJECTION_COLUMNS = ("environment", "day", "imported_at", "trace_name", "reason", "count")
+# A removed turn: its sorting key, so it replaces the turn's row, and is_deleted.
+REMOVED_TURN_COLUMNS = ("source_trace_id", "timestamp", "environment", "imported_at", "is_deleted")
+
+# Turns a day's import has to remove. On that day: every turn it didn't accept
+# (deleted in Langfuse, now rejected, or moved to another day). On other days:
+# older rows of the turns it did accept, left there when a timestamp moved.
+_TURNS_TO_REMOVE_SQL = """
+SELECT source_trace_id, timestamp
+FROM {database}.{table} FINAL
+WHERE environment = {{environment:String}}
+  AND ((toDate(timestamp) = {{day:Date}} AND source_trace_id NOT IN {{accepted:Array(String)}})
+       OR (toDate(timestamp) != {{day:Date}} AND source_trace_id IN {{accepted:Array(String)}}))
+"""
 
 
 class ClickHouseWriter(Protocol):
     def insert(self, table: str, data: Sequence[Sequence[Any]], column_names: Sequence[str], database: str) -> Any: ...
+
+    def query(self, query: str, parameters: Mapping[str, Any] | None = None) -> Any: ...
 
 
 @dataclass
@@ -85,6 +101,8 @@ class ImportReport:
     rejected: Counter = field(default_factory=Counter)
     # Turns where each field was recorded or derived, not unavailable.
     available: Counter = field(default_factory=Counter)
+    # Turns from an earlier import that this one removed.
+    removed: int = 0
 
     def add(self, turn: CanonicalVoiceTurn) -> None:
         self.turns += 1
@@ -101,6 +119,8 @@ class ImportReport:
             f"rejected     {sum(self.rejected.values())}",
         ]
         lines += [f"  {count}  {name}: {reason}" for (name, reason), count in self.rejected.most_common()]
+        if self.written:
+            lines.append(f"removed      {self.removed}")
         lines += ["by era"] + [f"  {count}  {era}" for era, count in self.by_era.most_common()]
         lines += ["outcome class"] + [f"  {count}  {name}" for name, count in self.by_outcome_class.most_common()]
         if self.turns:
@@ -151,7 +171,7 @@ def import_voice_days(
         report.traces += traces
         report.rejected.update(rejected)
         if writer is not None:
-            _write_day(writer, environment, day, imported_at, rows, rejected, traces)
+            report.removed += _write_day(writer, environment, day, imported_at, rows, rejected, traces)
     return report
 
 
@@ -189,6 +209,7 @@ def voice_turn_row(turn: CanonicalVoiceTurn, *, environment: str, imported_at: d
         "score_names": list(turn.score_names),
         "field_availability": dict(turn.field_availability),
         "imported_at": imported_at,
+        "is_deleted": 0,
     }
 
 
@@ -208,12 +229,34 @@ def _write_day(
     rows: list[dict[str, Any]],
     rejected: Counter,
     traces: int,
-) -> None:
+) -> int:
+    """Write one day's import and return how many earlier turns it removed.
+
+    A re-import ends with the same rows as a first import: turns it no longer
+    finds are marked is_deleted, which FINAL leaves out."""
+    removed = [
+        (found["source_trace_id"], found["timestamp"])
+        for found in writer.query(
+            _TURNS_TO_REMOVE_SQL.format(database=DATABASE, table="voice_turns"),
+            parameters={
+                "environment": environment,
+                "day": day,
+                "accepted": [row["source_trace_id"] for row in rows],
+            },
+        ).named_results()
+    ]
     if rows:
         writer.insert(
             "voice_turns",
             [[row[column] for column in VOICE_TURN_COLUMNS] for row in rows],
             column_names=VOICE_TURN_COLUMNS,
+            database=DATABASE,
+        )
+    if removed:
+        writer.insert(
+            "voice_turns",
+            [[trace_id, timestamp, environment, imported_at, 1] for trace_id, timestamp in removed],
+            column_names=REMOVED_TURN_COLUMNS,
             database=DATABASE,
         )
     if rejected:
@@ -230,6 +273,7 @@ def _write_day(
         column_names=IMPORT_DAY_COLUMNS,
         database=DATABASE,
     )
+    return len(removed)
 
 
 def _days(first: date, last: date) -> Iterator[date]:
