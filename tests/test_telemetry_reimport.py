@@ -310,6 +310,7 @@ def test_a_ledger_row_goes_with_its_deleted_trace_and_follows_a_moved_one(clickh
     clickhouse.langfuse_trace("S", "2026-09-20 10:01:00", name="suggestions", is_deleted=1)
     clickhouse.langfuse_trace("M", "2026-09-21 00:01:00", name="suggestions")
     clickhouse.import_day(date(2026, 9, 21))
+    assert ("M", "2026-09-20", "activity") not in clickhouse.ledger()
     clickhouse.import_day(SEP_20)
 
     assert clickhouse.ledger() == [("A", "2026-09-20", "turn"), ("M", "2026-09-21", "activity")]
@@ -326,3 +327,15 @@ def test_each_channel_keeps_its_own_ledger_rows(clickhouse):
 
     assert clickhouse.ledger("voice") == [("C", "2026-09-20", "unrecognised"), ("V", "2026-09-20", "turn")]
     assert clickhouse.ledger("chat") == [("C", "2026-09-20", "turn"), ("V", "2026-09-20", "unrecognised")]
+
+
+def test_a_chat_turn_moved_to_the_next_day_is_kept_once(clickhouse):
+    clickhouse.chat_trace("A", "2026-09-20 23:59:00")
+    clickhouse.import_chat_day(SEP_20)
+
+    clickhouse.chat_trace("A", "2026-09-21 00:01:00")
+    clickhouse.import_chat_day(date(2026, 9, 21))
+    clickhouse.import_chat_day(SEP_20)
+
+    assert clickhouse.turns(table="chat_turns") == [("A", "2026-09-21")]
+    assert clickhouse.ledger("chat") == [("A", "2026-09-21", "turn")]
