@@ -422,14 +422,14 @@ def _import_days(
             identity.trace_id: identity
             for identity in identities
         }
-        for row in ledger:
-            identity = identities_by_id.get(row[3])
+        for entry in ledger:
+            identity = identities_by_id.get(entry[3])
             if identity is None:
                 continue
-            if row[11] is None:
-                row[11] = identity.duration_ms
-            if row[12] is None:
-                row[12] = identity.outcome
+            if entry[11] is None:
+                entry[11] = identity.duration_ms
+            if entry[12] is None:
+                entry[12] = identity.outcome
 
         report.traces += traces
         report.rejected.update(rejected)
