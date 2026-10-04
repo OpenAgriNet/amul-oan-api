@@ -66,6 +66,7 @@ VOICE_TURN_COLUMNS = (
     "score_names",
     "field_availability",
     "imported_at",
+    "is_deleted",
     "attributes",
     "service",
     "release",
@@ -113,6 +114,7 @@ CHAT_TURN_COLUMNS = (
     "score_names",
     "field_availability",
     "imported_at",
+    "is_deleted",
     "attributes",
     "service",
     "release",
@@ -138,9 +140,35 @@ LEDGER_COLUMNS = (
     "reason",
     "schema_version",
     "imported_at",
+    "is_deleted",
     "duration_ms",
     "outcome",
 )
+# A removed row: the table's sorting key, so it replaces that row, and is_deleted.
+REMOVED_TURN_COLUMNS = ("source_trace_id", "timestamp", "environment", "imported_at", "is_deleted")
+REMOVED_LEDGER_COLUMNS = ("environment", "channel", "day", "source_trace_id", "imported_at", "is_deleted")
+
+# Turns a day's import has to remove. On that day: every turn it didn't accept
+# (deleted in Langfuse, now rejected, or moved to another day). On other days:
+# older rows of the turns it did accept, left there when a timestamp moved.
+_TURNS_TO_REMOVE_SQL = """
+SELECT source_trace_id, timestamp
+FROM {database}.{table} FINAL
+WHERE environment = {{environment:String}}
+  AND ((toDate(timestamp) = {{day:Date}} AND source_trace_id NOT IN {{kept:Array(String)}})
+       OR (toDate(timestamp) != {{day:Date}} AND source_trace_id IN {{kept:Array(String)}}))
+"""
+
+# The same for the channel's ledger rows: root traces the day no longer has, and
+# older rows of the ones it has under another day.
+_LEDGER_TO_REMOVE_SQL = """
+SELECT day, source_trace_id
+FROM {database}.trace_ledger FINAL
+WHERE environment = {{environment:String}}
+  AND channel = {{channel:String}}
+  AND ((day = {{day:Date}} AND source_trace_id NOT IN {{kept:Array(String)}})
+       OR (day != {{day:Date}} AND source_trace_id IN {{kept:Array(String)}}))
+"""
 
 
 def default_non_turn_traces_path() -> Path:
@@ -166,6 +194,8 @@ class NonTurnTraces:
 class ClickHouseWriter(Protocol):
     def insert(self, table: str, data: Sequence[Sequence[Any]], column_names: Sequence[str], database: str) -> Any: ...
 
+    def query(self, query: str, parameters: Mapping[str, Any] | None = None) -> Any: ...
+
 
 @dataclass
 class ImportReport:
@@ -184,6 +214,8 @@ class ImportReport:
     ledger: Counter = field(default_factory=Counter)
     # Activities and unrecognised roots by name, to spot a new family of traces.
     not_turns: Counter = field(default_factory=Counter)
+    # Turns from an earlier import that this one removed.
+    removed: int = 0
 
     def add(self, turn: CanonicalVoiceTurn) -> None:
         self.turns += 1
@@ -200,6 +232,8 @@ class ImportReport:
             f"rejected     {sum(self.rejected.values())}",
         ]
         lines += [f"  {count}  {name}: {reason}" for (name, reason), count in self.rejected.most_common()]
+        if self.written:
+            lines.append(f"removed      {self.removed}")
         lines += ["every root trace, by what became of it"]
         lines += [f"  {count}  {disposition}" for disposition, count in self.ledger.most_common()]
         if self.not_turns:
@@ -322,6 +356,7 @@ def _import_days(
                     reason,
                     schema_version,
                     imported_at,
+                    0,
                     duration_ms,
                     outcome,
                 ]
@@ -387,19 +422,21 @@ def _import_days(
             identity.trace_id: identity
             for identity in identities
         }
-        for row in ledger:
-            identity = identities_by_id.get(row[3])
+        for entry in ledger:
+            identity = identities_by_id.get(entry[3])
             if identity is None:
                 continue
-            if row[10] is None:
-                row[10] = identity.duration_ms
-            if row[11] is None:
-                row[11] = identity.outcome
+            if entry[11] is None:
+                entry[11] = identity.duration_ms
+            if entry[12] is None:
+                entry[12] = identity.outcome
 
         report.traces += traces
         report.rejected.update(rejected)
         if writer is not None:
-            _write_day(writer, table, columns, environment, day, imported_at, rows, rejected, traces, ledger)
+            report.removed += _write_day(
+                writer, table, columns, environment, day, imported_at, rows, rejected, traces, ledger
+            )
     return report
 
 
@@ -437,6 +474,7 @@ def voice_turn_row(turn: CanonicalVoiceTurn, *, environment: str, imported_at: d
         "score_names": list(turn.score_names),
         "field_availability": dict(turn.field_availability),
         "imported_at": imported_at,
+        "is_deleted": 0,
         "attributes": dict(turn.attributes),
         "service": turn.service,
         "release": turn.release,
@@ -479,6 +517,7 @@ def chat_turn_row(turn: CanonicalChatTurn, *, environment: str, imported_at: dat
         "score_names": list(turn.score_names),
         "field_availability": dict(turn.field_availability),
         "imported_at": imported_at,
+        "is_deleted": 0,
         "attributes": dict(turn.attributes),
         "service": turn.service,
         "release": turn.release,
@@ -513,12 +552,44 @@ def _write_day(
     rejected: Counter,
     traces: int,
     ledger: list[list[Any]],
-) -> None:
+) -> int:
+    """Write one day's import and return how many earlier turns it removed.
+
+    A re-import ends with the same rows as a first import: turns and ledger rows
+    it no longer finds are marked is_deleted, which FINAL leaves out."""
+    removed = [
+        (found["source_trace_id"], found["timestamp"])
+        for found in _query(
+            writer,
+            _TURNS_TO_REMOVE_SQL.format(database=DATABASE, table=f"{table}_turns"),
+            environment=environment,
+            day=day,
+            kept=[row["source_trace_id"] for row in rows],
+        )
+    ]
+    removed_ledger = [
+        (found["day"], found["source_trace_id"])
+        for found in _query(
+            writer,
+            _LEDGER_TO_REMOVE_SQL.format(database=DATABASE),
+            environment=environment,
+            channel=table,
+            day=day,
+            kept=[entry[3] for entry in ledger],
+        )
+    ]
     if rows:
         writer.insert(
             f"{table}_turns",
             [[row[column] for column in columns] for row in rows],
             column_names=columns,
+            database=DATABASE,
+        )
+    if removed:
+        writer.insert(
+            f"{table}_turns",
+            [[trace_id, timestamp, environment, imported_at, 1] for trace_id, timestamp in removed],
+            column_names=REMOVED_TURN_COLUMNS,
             database=DATABASE,
         )
     if rejected:
@@ -530,6 +601,13 @@ def _write_day(
         )
     if ledger:
         writer.insert("trace_ledger", ledger, column_names=LEDGER_COLUMNS, database=DATABASE)
+    if removed_ledger:
+        writer.insert(
+            "trace_ledger",
+            [[environment, table, ledger_day, trace_id, imported_at, 1] for ledger_day, trace_id in removed_ledger],
+            column_names=REMOVED_LEDGER_COLUMNS,
+            database=DATABASE,
+        )
     # Written last, so a day only shows as imported once its turns are in.
     writer.insert(
         f"{table}_import_days",
@@ -537,6 +615,11 @@ def _write_day(
         column_names=IMPORT_DAY_COLUMNS,
         database=DATABASE,
     )
+    return len(removed)
+
+
+def _query(writer: ClickHouseWriter, sql: str, **parameters: Any) -> list[dict[str, Any]]:
+    return list(writer.query(sql, parameters=parameters).named_results())
 
 
 def _days(first: date, last: date) -> Iterator[date]:

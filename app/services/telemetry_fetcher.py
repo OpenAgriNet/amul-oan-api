@@ -18,34 +18,49 @@ REDACTED_USER_ID = "redacted"
 _CHILD_WINDOW = timedelta(days=1)
 # A c2 turn's question sits in a pretranslation trace up to 2 minutes away.
 _RELATED_WINDOW = timedelta(minutes=2)
+# How far a trace's timestamp can move between versions and still be read on its new day.
+_MOVE_WINDOW = timedelta(days=1)
 _BATCH_SIZE = 1000
 _EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
 
 # Langfuse tables keep several versions of a row; the newest event_ts wins.
+# A trace's timestamp can change between versions, so the trace queries pick the
+# newest version from a day either side before keeping the day: otherwise an
+# older version would put the trace in a day it has left.
 _TRACES_SQL = """
-SELECT id, name, toUnixTimestamp64Milli(timestamp) AS timestamp_ms, session_id,
-       if(ifNull(user_id, '') = '', NULL, {redacted:String}) AS user_id,
-       metadata, is_deleted
-FROM traces
-WHERE environment = {environment:String}
-  AND name IN {names:Array(String)}
-  AND timestamp >= toDateTime64({start:String}, 3, 'UTC')
+SELECT id, name, timestamp_ms, session_id, user_id, metadata, is_deleted
+FROM (
+    SELECT id, name, timestamp, toUnixTimestamp64Milli(timestamp) AS timestamp_ms, session_id,
+           if(ifNull(user_id, '') = '', NULL, {redacted:String}) AS user_id,
+           metadata, is_deleted
+    FROM traces
+    WHERE environment = {environment:String}
+      AND name IN {names:Array(String)}
+      AND timestamp >= toDateTime64({window_start:String}, 3, 'UTC')
+      AND timestamp < toDateTime64({window_end:String}, 3, 'UTC')
+    ORDER BY event_ts DESC
+    LIMIT 1 BY id
+)
+WHERE timestamp >= toDateTime64({start:String}, 3, 'UTC')
   AND timestamp < toDateTime64({end:String}, 3, 'UTC')
-ORDER BY event_ts DESC
-LIMIT 1 BY id
 """
 
 _CHAT_TRACES_SQL = """
-SELECT id, name, toUnixTimestamp64Milli(timestamp) AS timestamp_ms, session_id,
-       if(ifNull(user_id, '') = '', NULL, {redacted:String}) AS user_id,
-       metadata, input, output, is_deleted
-FROM traces
-WHERE environment = {environment:String}
-  AND name IN {names:Array(String)}
-  AND timestamp >= toDateTime64({start:String}, 3, 'UTC')
+SELECT id, name, timestamp_ms, session_id, user_id, metadata, input, output, is_deleted
+FROM (
+    SELECT id, name, timestamp, toUnixTimestamp64Milli(timestamp) AS timestamp_ms, session_id,
+           if(ifNull(user_id, '') = '', NULL, {redacted:String}) AS user_id,
+           metadata, input, output, is_deleted
+    FROM traces
+    WHERE environment = {environment:String}
+      AND name IN {names:Array(String)}
+      AND timestamp >= toDateTime64({window_start:String}, 3, 'UTC')
+      AND timestamp < toDateTime64({window_end:String}, 3, 'UTC')
+    ORDER BY event_ts DESC
+    LIMIT 1 BY id
+)
+WHERE timestamp >= toDateTime64({start:String}, 3, 'UTC')
   AND timestamp < toDateTime64({end:String}, 3, 'UTC')
-ORDER BY event_ts DESC
-LIMIT 1 BY id
 """
 
 _OBSERVATIONS_SQL = """
@@ -91,14 +106,19 @@ LIMIT 1 BY id
 # each one in telemetry.trace_ledger. Only what identifies a trace: no input,
 # output, user id or metadata beyond the schema stamp.
 _TRACE_IDENTITIES_SQL = """
-SELECT id, ifNull(name, '') AS name, toUnixTimestamp64Milli(timestamp) AS timestamp_ms,
-       metadata['amul.schema_version'] AS schema_version, metadata['outcome'] AS outcome, is_deleted
-FROM traces
-WHERE environment = {environment:String}
-  AND timestamp >= toDateTime64({start:String}, 3, 'UTC')
+SELECT id, name, timestamp_ms, schema_version, outcome, is_deleted
+FROM (
+    SELECT id, ifNull(name, '') AS name, timestamp, toUnixTimestamp64Milli(timestamp) AS timestamp_ms,
+           metadata['amul.schema_version'] AS schema_version, metadata['outcome'] AS outcome, is_deleted
+    FROM traces
+    WHERE environment = {environment:String}
+      AND timestamp >= toDateTime64({window_start:String}, 3, 'UTC')
+      AND timestamp < toDateTime64({window_end:String}, 3, 'UTC')
+    ORDER BY event_ts DESC
+    LIMIT 1 BY id
+)
+WHERE timestamp >= toDateTime64({start:String}, 3, 'UTC')
   AND timestamp < toDateTime64({end:String}, 3, 'UTC')
-ORDER BY event_ts DESC
-LIMIT 1 BY id
 """
 
 # A trace has no durable end-time field in Langfuse's trace table. The latest
@@ -142,7 +162,12 @@ def fetch_trace_identities(
     client: ClickHouseReader, *, environment: str, start: datetime, end: datetime
 ) -> list[TraceIdentity]:
     """Every live root trace with timestamp in [start, end), any name, newest version only."""
-    parameters = {"environment": environment, "start": _sql_time(start), "end": _sql_time(end)}
+    parameters = {
+        "environment": environment,
+        "start": _sql_time(start),
+        "end": _sql_time(end),
+        **_move_window(start, end),
+    }
     rows = _live_rows(client, _TRACE_IDENTITIES_SQL, parameters)
     end_ms_by_trace: dict[str, int] = {}
     child_window = {
@@ -200,6 +225,7 @@ def fetch_voice_bundles(
             "names": sorted(root_names),
             "start": _sql_time(start),
             "end": _sql_time(end),
+            **_move_window(start, end),
         },
     )
     child_window = {"start": _sql_time(start - _CHILD_WINDOW), "end": _sql_time(end + _CHILD_WINDOW)}
@@ -237,6 +263,7 @@ def fetch_chat_bundles(
             "names": sorted(root_names),
             "start": _sql_time(start - _RELATED_WINDOW),
             "end": _sql_time(end),
+            **_move_window(start - _RELATED_WINDOW, end),
         },
     )
     traces = [_chat_trace(row) for row in rows]
@@ -325,6 +352,10 @@ def _by_trace(rows: Iterable[Mapping[str, Any]]) -> dict[str, list[Mapping[str, 
 def _batches(rows: Sequence[Any], size: int) -> Iterator[Sequence[Any]]:
     for index in range(0, len(rows), size):
         yield rows[index : index + size]
+
+
+def _move_window(start: datetime, end: datetime) -> dict[str, str]:
+    return {"window_start": _sql_time(start - _MOVE_WINDOW), "window_end": _sql_time(end + _MOVE_WINDOW)}
 
 
 def _sql_time(value: datetime) -> str:
