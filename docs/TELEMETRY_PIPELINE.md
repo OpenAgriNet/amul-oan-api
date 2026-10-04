@@ -17,16 +17,17 @@ Langfuse tables (traces, observations, scores)
 
 - `telemetry.voice_turns`: one row per turn. The caller's `user_id` (a phone
   number) is never stored, only `user_id_hash`. Question and answer keep only
-  their length and sha256, never the text. Count with `FINAL`, since a
-  re-imported day replaces its rows in the background.
+  their length and sha256, never the text. Count with `FINAL`: a re-imported
+  day replaces its rows in the background, and `FINAL` also leaves out the
+  turns a re-import removed (`is_deleted = 1`).
 - `telemetry.voice_import_days`: per day, how many traces were read, turned into
   turns, or rejected.
 - `telemetry.voice_rejections`: per day, why traces were rejected.
 - `telemetry.chat_turns`, `chat_import_days`, `chat_rejections`: the same for
   chat. The user id is only kept hashed, and tools keep only their names and a
   count, since their inputs and outputs carry farmer data.
-- `telemetry.trace_ledger`: one row for **every** root trace of a day, both
-  channels, saying what became of it. See "No trace goes missing".
+- `telemetry.trace_ledger`: one row for **every** root trace of a day, per
+  channel, saying what became of it. See "No trace goes missing".
 - `attributes` on `voice_turns` and `chat_turns`: extra values a mapping names
   under `attributes`, as text. See "A new field".
 
@@ -55,18 +56,21 @@ which traces to process again once an adapter exists. To check a day, the two
 numbers below must match:
 
 ```sql
--- Live root traces in Langfuse (as telemetry_reader)
+-- Live root traces in Langfuse (as telemetry_reader): the newest version of
+-- each, from a day either side, since a trace's timestamp can move
 SELECT count() FROM (
-    SELECT id, is_deleted FROM default.traces
+    SELECT id, timestamp, is_deleted FROM default.traces
     WHERE environment = 'voice-development'
-      AND timestamp >= toDateTime64('2026-09-20 00:00:00', 3, 'UTC')
-      AND timestamp <  toDateTime64('2026-09-21 00:00:00', 3, 'UTC')
+      AND timestamp >= toDateTime64('2026-09-19 00:00:00', 3, 'UTC')
+      AND timestamp <  toDateTime64('2026-09-22 00:00:00', 3, 'UTC')
     ORDER BY event_ts DESC LIMIT 1 BY id
-) WHERE is_deleted = 0;
+) WHERE is_deleted = 0
+  AND timestamp >= toDateTime64('2026-09-20 00:00:00', 3, 'UTC')
+  AND timestamp <  toDateTime64('2026-09-21 00:00:00', 3, 'UTC');
 
 -- Ledger rows for the same day (as telemetry_writer or telemetry_dashboard)
 SELECT count() FROM telemetry.trace_ledger FINAL
-WHERE environment = 'voice-development' AND day = '2026-09-20';
+WHERE environment = 'voice-development' AND channel = 'voice' AND day = '2026-09-20';
 ```
 
 A trace written to Langfuse after its day was imported is picked up the next
@@ -159,14 +163,20 @@ python scripts/telemetry_import.py --env voice-production
 python scripts/telemetry_import.py --channel chat --env chat-production
 ```
 
-Days are UTC. Re-running a day is safe: its rows are replaced, not doubled.
+Days are UTC. Re-running a day is safe: it ends with the same turns a first
+import of the day would write. Its rows are replaced, not doubled, and a turn
+the re-import no longer finds gets a row with `is_deleted = 1`: a trace deleted
+in Langfuse, one that is now rejected, or one whose timestamp moved to another
+day (up to a day away). The channel's `trace_ledger` rows are kept the same way.
+So re-importing a day after Langfuse has dropped its traces empties it.
 
 ## Querying, for dashboards
 
 Log in as `telemetry_dashboard` and read only the `telemetry` tables, never
 Langfuse's own.
 
-- Always `FINAL`, or a re-imported day can count twice until ClickHouse merges it.
+- Always `FINAL`, or a re-imported day can count twice until ClickHouse merges
+  it, and the turns a re-import removed still show.
 - Always filter `environment` (`voice-production`, `chat-production`), so dev
   traffic stays out.
 - Work per day with a date range: `toDate(timestamp) AS day`, then
