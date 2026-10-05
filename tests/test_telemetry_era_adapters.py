@@ -636,6 +636,18 @@ def _stamped_chat_trace(stamp="chat.turn.v1"):
 def test_stamped_chat_trace_uses_the_shared_mapping_engine_without_an_era_registry():
     turn = adapt_chat_trace(
         _stamped_chat_trace(),
+        observations=[
+            {
+                "type": "TOOL",
+                "name": "get_farmer_bonus_amount",
+                "input": {"farmer_code": "<private tool input>"},
+                "output": "<private tool output>",
+                "metadata": {"attributes": {
+                    "gen_ai.tool.name": "get_farmer_bonus_amount",
+                    "gen_ai.tool.call.id": "test-call-id",
+                }},
+            }
+        ],
         scores=[{"name": "turn_outcome", "value": "success"}],
     )
 
@@ -649,11 +661,17 @@ def test_stamped_chat_trace_uses_the_shared_mapping_engine_without_an_era_regist
     assert turn.attributes == {"pc_agent": "vllm:agent-model"}
     assert turn.turn_outcome == "success"
     assert turn.field_availability["pipeline_profile"] == "recorded"
+    assert turn.field_availability["tool_calls"] == "derived"
+    assert [call.model_dump() for call in turn.tool_calls] == [
+        {"tool_name": "get_farmer_bonus_amount", "call_id": "test-call-id"}
+    ]
 
     imported = turn.model_dump_json()
     assert "redacted-user" not in imported
     assert "redacted question" not in imported
     assert "redacted answer" not in imported
+    assert "private tool input" not in imported
+    assert "private tool output" not in imported
 
 
 def test_unknown_stamped_chat_schema_is_rejected():

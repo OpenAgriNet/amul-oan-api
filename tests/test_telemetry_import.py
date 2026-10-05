@@ -731,6 +731,34 @@ def test_chat_rows_keep_no_phone_number_text_or_tool_data():
         assert row["user_id_hash"] and "user_id" not in row
 
 
+def test_stamped_chat_tool_observation_is_imported_as_safe_tool_identity():
+    client = FakeClickHouse(
+        traces=[chat_row(
+            "stamped",
+            metadata={"amul.schema_version": "chat.turn.v1", "pipeline": "translation"},
+            input={"query": "<redacted question>"},
+            output="<redacted answer>",
+        )],
+        observations=[chat_observation(
+            "tool", "stamped", name="get_farmer_bonus_amount", type="TOOL",
+            metadata={"attributes": {
+                "gen_ai.tool.name": "get_farmer_bonus_amount",
+                "gen_ai.tool.call.id": "test-call-id",
+            }},
+            output="<private tool output>",
+        )],
+    )
+
+    _import_chat(client)
+
+    [row] = client.inserts["chat_turns"]
+    assert row["tool_names"] == ["get_farmer_bonus_amount"]
+    assert row["tool_call_count"] == 1
+    assert row["field_availability"]["tool_calls"] == "derived"
+    assert "private tool output" not in repr(row)
+    assert "farmer_code" not in repr(row)
+
+
 def test_a_c2_turn_finds_its_question_in_a_pretranslation_just_before_midnight():
     client = FakeClickHouse(
         traces=[
