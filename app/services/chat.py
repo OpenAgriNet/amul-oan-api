@@ -439,6 +439,63 @@ def _build_deps(
     )
 
 
+async def _write_short_circuit_history(history, decision, key: str, request_id: str) -> None:
+    """Persist what a classifier or the gate answered, when it asks for that."""
+    if decision.history_pair is None:
+        return
+    messages = [*history, *decision.history_pair]
+    logger.info(
+        "request_id=%s updating_history_%s_path=True total_messages=%s",
+        request_id,
+        decision.label,
+        len(messages),
+    )
+    await update_message_history(key, messages)
+
+
+_NO_CHUNK = object()
+
+
+async def _gate_first_chunk(english_src, background):
+    """Pull the agent's first chunk, then ask the gate before anything is emitted.
+
+    The background checks keep running while the agent starts, so their latency
+    stays off the turn unless one of them says no. Returns the gate's answer
+    and ``None`` when it says no (the agent's stream is closed), else ``None``
+    and a stream that replays the first chunk. A failure before the first chunk
+    is raised only after the gate, so a turn the checks refuse is refused.
+    """
+    first = _NO_CHUNK
+    error = None
+    try:
+        try:
+            first = await english_src.__anext__()
+        except StopAsyncIteration:
+            pass
+        except Exception as exc:
+            error = exc
+        decision = await background.gate()
+    except BaseException:
+        # A hang-up while the gate waits, or a gate that fails: the agent's
+        # stream must not be left open behind the turn.
+        await english_src.aclose()
+        raise
+    if decision is not None:
+        await english_src.aclose()
+        return decision, None
+    if error is not None:
+        raise error
+
+    async def _replayed():
+        async with aclosing(english_src):
+            if first is not _NO_CHUNK:
+                yield first
+            async for chunk in english_src:
+                yield chunk
+
+    return None, _replayed()
+
+
 async def _stream_to_client(
     english_src,
     *,
@@ -866,6 +923,7 @@ async def run_turn(
         # trace with no output and no signal at all, which is #179's B2. It lives
         # in run_turn, not the adapter, so every surface's turn carries it.
         _turn_outcome = "error"
+        background = None
         try:
             # Resolve per-language kill switches before any response path. This
             # keeps deterministic short-circuits and tool language selection in
@@ -892,15 +950,9 @@ async def run_turn(
                 if short_circuit is None:
                     continue
                 telemetry.record_output(short_circuit.canned_text, short_circuit.label)
-                if short_circuit.history_pair is not None:
-                    messages = [*history, *short_circuit.history_pair]
-                    logger.info(
-                        "request_id=%s updating_history_%s_path=True total_messages=%s",
-                        request_id,
-                        short_circuit.label,
-                        len(messages),
-                    )
-                    await update_message_history(message_history_session_id, messages)
+                await _write_short_circuit_history(
+                    history, short_circuit, message_history_session_id, request_id
+                )
                 # A short-circuit that answered the farmer is a completed turn, not
                 # an error. `_turn_outcome` defaults to "error" so that an exit we
                 # did not anticipate is loud; every exit that DID answer has to say
@@ -908,6 +960,12 @@ async def run_turn(
                 _turn_outcome = "success"
                 yield TextEmission(short_circuit.canned_text, raw=short_circuit.raw)
                 return
+
+            # A surface's background checks start here: after the classifiers, so
+            # a match has nothing to cancel, and before everything else, so they
+            # run alongside it. Chat has none.
+            if surface.background is not None:
+                background = surface.background(turn, execution=execution)
 
             farmer_context = await _load_farmer_context(persona, user_info, request_id)
             processing_query, processing_lang = await _pretranslate_query(
@@ -1119,6 +1177,17 @@ async def run_turn(
                     new_messages=new_messages,
                 )
 
+                if background is not None:
+                    gated, english_src = await _gate_first_chunk(english_src, background)
+                    if gated is not None:
+                        telemetry.record_output(gated.canned_text, gated.label)
+                        await _write_short_circuit_history(
+                            history, gated, message_history_session_id, request_id
+                        )
+                        _turn_outcome = "success"
+                        yield TextEmission(gated.canned_text, raw=gated.raw)
+                        return
+
                 async for _out in sink.stream(english_src):
                     yield TextEmission(_out)
                 logger.info(f"Streaming complete for session {session_id}")
@@ -1177,3 +1246,5 @@ async def run_turn(
             raise
         finally:
             telemetry.record_outcome(_turn_outcome)
+            if background is not None:
+                await background.close()

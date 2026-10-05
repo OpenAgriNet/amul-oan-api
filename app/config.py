@@ -379,6 +379,8 @@ class Settings(BaseSettings):
     # Voice's non-meaningful and outbound consent checks (app/voice/), inert on the
     # chat path too. Same names and defaults as voice-oan-api.
     voice_non_meaningful_timeout_seconds: float = float(os.getenv("VOICE_NON_MEANINGFUL_TIMEOUT_SECONDS", "0.60"))
+    # How long voice's gate waits on the non-meaningful check before letting the turn through.
+    voice_non_meaningful_gate_timeout_seconds: float = float(os.getenv("VOICE_NON_MEANINGFUL_GATE_TIMEOUT_SECONDS", "0.50"))
     voice_outbound_consent_timeout_seconds: float = float(
         os.getenv("VOICE_OUTBOUND_CONSENT_TIMEOUT_SECONDS", "0.60")
     )
