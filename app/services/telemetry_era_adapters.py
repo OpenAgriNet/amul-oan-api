@@ -41,6 +41,12 @@ _C2_PRETRANSLATION_MATCH_WINDOW = timedelta(minutes=2)
 SCHEMA_VERSION_KEY = "amul.schema_version"
 
 
+def _chat_has_full_turn_root(turn: CanonicalChatTurn) -> bool:
+    """Only these chat eras root a full farmer turn rather than an agent step."""
+
+    return turn.source_era in {"chat.c6", "chat.c8"} or turn.source_schema_version.startswith("chat.turn.")
+
+
 def _string(value: Any) -> str | None:
     return value if isinstance(value, str) and value else None
 
@@ -683,13 +689,14 @@ def _adapt_stamped_chat_trace(
 
     values = mapped_values(mapping, raw, _MAPPED_FIELDS)
     score_values = {score.name: _string_or_none(score.value) for score in scores}
+    tool_calls = _tool_calls(observations)
     availability = {field: _availability(value) for field, value in values.items()}
     availability.update(
         {
             "turn_outcome": _availability(score_values.get("turn_outcome")),
             "served_tier": _availability(score_values.get("served_tier")),
             "full_turn_latency_ms": "unavailable",
-            "tool_calls": "unavailable",
+            "tool_calls": "derived" if tool_calls else "unavailable",
             "root_input": _availability(raw.get("input")),
             "root_output": _availability(raw.get("output")),
         }
@@ -703,6 +710,7 @@ def _adapt_stamped_chat_trace(
         user_id_semantics="jwt_phone_then_query_param_then_anonymous",
         turn_outcome=score_values.get("turn_outcome"),
         served_tier=score_values.get("served_tier"),
+        tool_calls=tool_calls,
         root_input=raw.get("input") if isinstance(raw.get("input"), Mapping) else None,
         root_output=raw.get("output"),
         observation_names=_names(observations),
