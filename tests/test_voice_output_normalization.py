@@ -3,8 +3,9 @@
 Two voice-only behaviors that voice-prod had inside _post_normalize_gu_translation
 but were dropped when the function was split during the merge:
 
-  G2 — deterministic gendered caller-address stripping (a safety net beyond the
-       prompt rule), voice-channel-gated.
+  G2 — deterministic gendered caller-address stripping, voice-channel-gated.
+       Voice has since removed it (AMUL-93): streamed chunk by chunk, it cut the
+       ભાઈ/બેન off names ("મયુરભાઈ" reached the caller as "મયુર").
   G3 — TranslateGemma ૫↔પ glyph-confusion repair, restored in the shared TTS
        number normalizer (normalize_numbers_for_tts).
 """
@@ -21,13 +22,16 @@ def _norm(text: str, channel: str) -> str:
         return _post_normalize_gu_translation(text, target_lang="gu", strip_outer=True)
 
 
-# ── G2: gendered caller-address stripping (voice only) ───────────────────────
+# ── G2: names keep their honorific (voice removed the address stripping) ─────
 
-def test_voice_strips_gendered_caller_address():
-    # "ભાઈ," as a caller address is stripped before TTS on the voice channel.
-    out = _norm("ભાઈ, તમારી ગાય ને તાવ છે.", "voice")
-    assert "ભાઈ" not in out
-    assert "તાવ" in out  # the rest of the message is preserved
+def test_voice_names_keep_their_honorific_in_every_streamed_chunk():
+    chunks = ["મયુર", "ભાઈ નરન", "ભાઈ પટેલ, કલ્પના ", "બેન, આપ"]
+    with translation_channel("voice"):
+        out = "".join(
+            _post_normalize_gu_translation(c, target_lang="gu", strip_outer=False)
+            for c in chunks
+        )
+    assert out == "".join(chunks)
 
 
 def test_chat_keeps_gendered_address_unchanged():

@@ -473,7 +473,8 @@ async def _gate_first_chunk(english_src, background):
     stays off the turn unless one of them says no. Returns the gate's answer
     and ``None`` when it says no (the agent's stream is closed), else ``None``
     and a stream that replays the first chunk. A failure before the first chunk
-    is raised only after the gate, so a turn the checks refuse is refused.
+    comes out of that stream, as it does without a gate: a turn the checks
+    refuse is refused, and the sink sees the failure like any later one.
     """
     first = _NO_CHUNK
     error = None
@@ -493,11 +494,11 @@ async def _gate_first_chunk(english_src, background):
     if decision is not None:
         await english_src.aclose()
         return decision, None
-    if error is not None:
-        raise error
 
     async def _replayed():
         async with aclosing(english_src):
+            if error is not None:
+                raise error
             if first is not _NO_CHUNK:
                 yield first
             async for chunk in english_src:
@@ -575,7 +576,16 @@ class _ChatSink:
     Everything the caller receives is kept for the trace.
     """
 
-    def __init__(self, turn: Turn, *, execution, deps, translate_to: str | None) -> None:
+    def __init__(
+        self,
+        turn: Turn,
+        *,
+        execution,
+        deps,
+        translate_to: str | None,
+        is_stale: Optional[StalenessCheck] = None,
+    ) -> None:
+        # ``is_stale`` is unused: chat has no staleness check.
         self._persona = turn.persona
         self._translate_to = translate_to
         self._execution = execution
@@ -603,6 +613,10 @@ class _ChatSink:
         if text and self._translate_to and self._persona == "doctor":
             text = sanitize_doctor_answer(text)
         return text
+
+    def outcome(self) -> str | None:
+        # Chat's sink lets a failure propagate; run_turn records it as an error.
+        return None
 
 
 class _ChatTelemetry:
@@ -779,6 +793,7 @@ CHAT_SURFACE = SurfaceProfile(
     classifiers=(_identity_classifier,),
     sink=_ChatSink,
     telemetry=_ChatTelemetry,
+    disabled_languages=_disabled_chat_langs,
 )
 
 
@@ -894,7 +909,8 @@ async def run_turn(
     ``side_channel`` and ``is_stale`` are wired where the turn is composed, like
     the scheduler. A surface's liveness speaks through the first. The second is
     asked before the turn commits anything (a classifier's answer, the gate's,
-    the history write), and a stale turn stops there. Chat passes neither.
+    the history write), and a stale turn stops there; the sink is given it too,
+    to stop mid-answer. Chat passes neither.
     """
     started_at = time.monotonic()
     query = turn.query
@@ -944,10 +960,11 @@ async def run_turn(
         background = None
         liveness = None
         try:
-            # Resolve per-language kill switches before any response path. This
-            # keeps deterministic short-circuits and tool language selection in
-            # the same English-passthrough mode as the translation pipeline.
-            disabled_langs = _disabled_chat_langs()
+            # Resolve the surface's per-language kill switches before any response
+            # path. This keeps deterministic short-circuits and tool language
+            # selection in the same English-passthrough mode as the translation
+            # pipeline. They are chat's settings: a voice call isn't switched off.
+            disabled_langs = surface.disabled_languages() if surface.disabled_languages else set()
             request_id = session_id
 
             def localize_system_text(text_en: str):
@@ -1165,6 +1182,7 @@ async def run_turn(
                 execution=execution,
                 deps=deps,
                 translate_to=target_lang if needs_output_translation else None,
+                is_stale=is_stale,
             )
 
             _lf_ag = get_langfuse_client() if get_langfuse_client else None
@@ -1226,7 +1244,8 @@ async def run_turn(
                         return
 
                 async for _out in sink.stream(english_src):
-                    if liveness is not None:
+                    # A blank chunk is not heard, so the caller is still waiting.
+                    if liveness is not None and _out.strip():
                         await liveness.stop()
                         liveness = None
                     yield TextEmission(_out)
@@ -1236,6 +1255,7 @@ async def run_turn(
                 trace_output = sink.final_text()
                 if trace_output:
                     telemetry.record_output(trace_output, "final")
+                sink_outcome = sink.outcome()
                 if get_langfuse_client:
                     try:
                         # Match moderation: structured output so Langfuse shows JSON in the observation panel.
@@ -1267,6 +1287,12 @@ async def run_turn(
             chat_artifacts = deps.take_chat_artifacts()
             if chat_artifacts:
                 yield ArtifactEmission(artifacts=tuple(chat_artifacts))
+
+            if sink_outcome is not None:
+                # The sink caught a failure and told the caller. The turn ends
+                # there: recorded as it is, and nothing half-done goes into history.
+                _turn_outcome = sink_outcome
+                return
 
             # Post-processing happens AFTER streaming is complete
             messages = [

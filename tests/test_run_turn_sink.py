@@ -64,7 +64,7 @@ class _RecordingSink:
 
     built = []
 
-    def __init__(self, turn, *, execution, deps, translate_to):
+    def __init__(self, turn, *, execution, deps, translate_to, is_stale=None):
         self.kwargs = dict(turn=turn, execution=execution, deps=deps, translate_to=translate_to)
         _RecordingSink.built.append(self)
 
@@ -74,6 +74,9 @@ class _RecordingSink:
 
     def final_text(self):
         return "FINAL FROM SINK"
+
+    def outcome(self):
+        return None
 
 
 def _recording_surface():
@@ -118,6 +121,19 @@ def test_english_turn_asks_the_sink_not_to_translate(monkeypatch):
     )))
 
     assert _RecordingSink.built[0].kwargs["translate_to"] is None
+
+
+def test_a_chat_language_switched_off_answers_in_english_on_chat_only(monkeypatch):
+    patch_turn(monkeypatch)
+    monkeypatch.setattr(chat_service.settings, "hindi_chat_enabled", False)
+    chat = _recording_surface()
+    no_switches = dataclasses.replace(chat, disabled_languages=None)
+    hindi = _turn(source_lang="hi", target_lang="hi")
+
+    for surface in (chat, no_switches):
+        asyncio.run(_collect(chat_service.run_turn(hindi, surface, scheduler=_Scheduler())))
+
+    assert [sink.kwargs["translate_to"] for sink in _RecordingSink.built] == [None, "hi"]
 
 
 def test_a_surface_without_a_sink_fails_before_the_agent_streams(monkeypatch):

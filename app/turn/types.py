@@ -301,9 +301,19 @@ class TurnSink(Protocol):
         """The turn's complete output for the trace, or None if nothing was produced."""
         ...
 
+    def outcome(self) -> Optional[str]:
+        """How the turn ended, when the sink caught a failure itself and told the
+        caller so; None when the answer went through. ``run_turn`` then records
+        it and keeps the turn out of history."""
+        ...
+
 
 class SinkFactory(Protocol):
-    """Builds a turn's sink from what ``run_turn`` knows at that point."""
+    """Builds a turn's sink from what ``run_turn`` knows at that point.
+
+    ``is_stale`` is the turn's staleness check, for a sink that must stop
+    speaking mid-answer when the request goes stale (voice's). Chat has none.
+    """
 
     def __call__(
         self,
@@ -312,6 +322,7 @@ class SinkFactory(Protocol):
         execution: Any,
         deps: Any,
         translate_to: Optional[str],
+        is_stale: Optional[StalenessCheck],
     ) -> TurnSink: ...
 
 
@@ -372,3 +383,6 @@ class SurfaceProfile:
     #: What the caller hears while the model works. It needs a side channel, so a
     #: turn run without a ``SideChannelSender`` has none. Chat has none.
     liveness: Optional[LivenessFactory] = None
+    #: Languages switched off for this surface, whose turns are answered in
+    #: English. Chat's come from its ``*_CHAT_ENABLED`` settings; voice has none.
+    disabled_languages: Optional[Callable[[], set[str]]] = None
