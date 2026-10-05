@@ -274,8 +274,8 @@ def test_an_answered_turn_sends_only_what_the_contract_lists(lf, call, monkeypat
     sent = {key for key in summary if key != "pipeline_flags" and not key.startswith("pc_")}
     assert sent <= set(contract["metadata_keys"])
     for block, keys in contract["nested_keys"].items():
-        if block != "error":
-            assert set(keys) <= set(summary[block]), block
+        if block in summary:
+            assert set(summary[block]) <= set(keys), block
 
 
 def _everything_sent(client):

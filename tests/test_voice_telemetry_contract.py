@@ -11,6 +11,7 @@ and at what ``run_turn`` records for it.
 
 import ast
 import hashlib
+import inspect
 import json
 import re
 from contextlib import contextmanager
@@ -21,7 +22,8 @@ import langfuse
 from app.config import settings
 from app.services.telemetry_stamps import VOICE_TELEMETRY_SCHEMA_VERSION
 from app.voice.telemetry import _OUTCOMES
-from app.voice.trace import VoiceTrace
+from app.voice.moderation import ModerationVerdict
+from app.voice.trace import _VALID_TEXT_MODES, VoiceTrace
 
 REPO = Path(__file__).resolve().parents[1]
 CONTRACTS = REPO / "telemetry" / "contracts"
@@ -37,7 +39,7 @@ NEW_VERSION = (
 # The same fingerprints as voice-oan-api's. Key order, spacing and the "note"
 # text don't count.
 RELEASED_CONTRACTS = {
-    "voice.turn.v1": "50f59606c3d34709182c97d172ed172355aaad4058028b0984bd8840288570f0",
+    "voice.turn.v1": "26b264334db6e50d83b3f0d541cd774f9742daaa72af77473250aba50395ca0e",
 }
 
 _GENERIC_NAMES = {"data", "id", "result", "score", "status", "time", "type", "value"}
@@ -130,10 +132,55 @@ class _FakeLangfuse:
         pass
 
 
-def _send_a_turn(monkeypatch):
+# A value for every argument a trace block is built from, so a turn can be sent
+# with every optional key in it.
+_ARGUMENTS = {
+    "text": "<redacted question>",
+    "provider": "<redacted-provider>",
+    "fallback_used": True,
+    "requested_tier": "oss",
+    "requested_provider": "<redacted-provider>",
+    "requested_model": "<redacted-model>",
+    "actual_tier": "managed",
+    "actual_provider": "<redacted-provider>",
+    "actual_model": "<redacted-model>",
+    "first_token_committed_tier": "managed",
+    "first_token_committed_provider": "<redacted-provider>",
+    "first_token_committed_model": "<redacted-model>",
+    "attempts": [{"tier": "oss", "status": "error"}, {"tier": "managed", "status": "ok"}],
+    "signed_in": True,
+    "output": "<redacted answer>",
+    "new_messages": [],
+    "source": "api",
+    "stale": False,
+    "unions": ["<redacted union>"],
+    "farmer_info_chars": 1,
+    "technician_info_chars": 1,
+    "category": "irrelevant",
+    "reason": "<redacted reason>",
+    "raw_output": "<redacted>",
+    "failed_open": True,
+    "failed_closed": True,
+}
+
+# What the turn with every optional key is built from.
+_BUILT_FROM = (ModerationVerdict, VoiceTrace.set_pretranslation, VoiceTrace.set_farmer_context, VoiceTrace.set_agent)
+
+
+def _every_argument(function):
+    """Every argument ``function`` takes, each with a value."""
+    names = [name for name in inspect.signature(function).parameters if name != "self"]
+    missing = [name for name in names if name not in _ARGUMENTS]
+    assert not missing, f"Give {missing} a value in _ARGUMENTS, so what they send is checked against the contract."
+    return {name: _ARGUMENTS[name] for name in names}
+
+
+def _send_a_turn(monkeypatch, *, every_optional=False, text_mode="preview_hash"):
+    """What VoiceTrace hands Langfuse for one turn, with the optional arguments
+    left out or with every one of them given."""
     client = _FakeLangfuse()
     monkeypatch.setattr(langfuse, "propagate_attributes", client.propagate_attributes)
-    monkeypatch.setattr(settings, "voice_trace_text_mode", "preview_hash")
+    monkeypatch.setattr(settings, "voice_trace_text_mode", text_mode)
     trace = VoiceTrace(
         session_id="session-redacted",
         user_id="<redacted-user-id>",
@@ -145,17 +192,61 @@ def _send_a_turn(monkeypatch):
     trace.enabled, trace.langfuse_client = True, client
     with trace.request_context():
         trace.set_route("agent")
-        trace.set_moderation(None)
-        trace.set_pretranslation(text="<redacted question>", provider="<redacted-provider>", fallback_used=False)
-        trace.set_farmer_context()
-        trace.set_agent(signed_in=True, output="<redacted answer>")
+        if every_optional:
+            trace.set_moderation(ModerationVerdict(**_every_argument(ModerationVerdict)))
+            trace.set_pretranslation(**_every_argument(trace.set_pretranslation))
+            trace.set_farmer_context(**_every_argument(trace.set_farmer_context))
+            trace.set_agent(**_every_argument(trace.set_agent))
+        else:
+            trace.set_moderation(None)
+            trace.set_pretranslation(text="<redacted question>", provider="<redacted-provider>", fallback_used=False)
+            trace.set_farmer_context()
+            trace.set_agent(signed_in=True, output="<redacted answer>")
         trace.record_emit("<redacted answer>")
         trace.finish(error=RuntimeError("<redacted>"))
     return client.sent
 
 
+def _every_turn(monkeypatch):
+    """A turn with the optionals left out, and one with all of them in each text mode."""
+    return [_send_a_turn(monkeypatch)] + [
+        _send_a_turn(monkeypatch, every_optional=True, text_mode=mode) for mode in sorted(_VALID_TEXT_MODES)
+    ]
+
+
 def _emitted_keys(monkeypatch):
-    return set(_send_a_turn(monkeypatch)["update"]["metadata"]) | _keys_written_in_voice()
+    sent = set().union(*(turn["update"]["metadata"] for turn in _every_turn(monkeypatch)))
+    return sent | _keys_written_in_voice()
+
+
+# Blocks keyed by name (a counter, a mark, a stage), which the contract doesn't list.
+_KEYED_BY_NAME = {"counters", "timings_ms", "stage_totals_ms"}
+
+
+def _block_keys_written_in_code():
+    """Keys of the blocks the code fills in itself: `.metadata["block"] = {...}`
+    and `.set_nudge(key=...)`."""
+    blocks = {}
+    for node in _voice_nodes():
+        if isinstance(node, ast.Assign) and isinstance(node.value, ast.Dict):
+            for target in node.targets:
+                if block := _metadata_key(target):
+                    blocks.setdefault(block, set()).update(
+                        key.value for key in node.value.keys if isinstance(key, ast.Constant)
+                    )
+        elif isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "set_nudge":
+            blocks.setdefault("nudge", set()).update(keyword.arg for keyword in node.keywords if keyword.arg)
+    return blocks
+
+
+def _block_keys_sent(monkeypatch):
+    """Every key each metadata block can be sent with, from every turn and the code."""
+    blocks = _block_keys_written_in_code()
+    for turn in _every_turn(monkeypatch):
+        for block, value in turn["update"]["metadata"].items():
+            if isinstance(value, dict) and block not in _KEYED_BY_NAME:
+                blocks.setdefault(block, set()).update(value)
+    return blocks
 
 
 def _outcomes_in(nodes):
@@ -303,25 +394,32 @@ def test_no_new_trace_field(monkeypatch):
 
 
 def test_no_key_inside_a_block_was_renamed_or_removed(monkeypatch):
-    metadata = _send_a_turn(monkeypatch)["update"]["metadata"]
-    changed = {}
-    for block, keys in _contract()["nested_keys"].items():
-        sent = set(metadata[block]) if isinstance(metadata.get(block), dict) else set()
-        if missing := set(keys) - sent:
-            changed[block] = sorted(missing)
+    sent = _block_keys_sent(monkeypatch)
+    changed = {
+        block: sorted(missing)
+        for block, keys in _contract()["nested_keys"].items()
+        if (missing := set(keys) - sent.get(block, set()))
+    }
 
     assert not changed, f"Voice traces no longer send these keys inside metadata blocks: {changed}. {NEW_VERSION}"
 
 
 def test_no_new_key_inside_a_block(monkeypatch):
-    metadata = _send_a_turn(monkeypatch)["update"]["metadata"]
-    added = {}
-    for block, keys in _contract()["nested_keys"].items():
-        sent = set(metadata[block]) if isinstance(metadata.get(block), dict) else set()
-        if extra := sent - set(keys):
-            added[block] = sorted(extra)
+    listed = _contract()["nested_keys"]
+    added = {
+        block: sorted(extra)
+        for block, keys in _block_keys_sent(monkeypatch).items()
+        if (extra := keys - set(listed.get(block, ())))
+    }
 
     assert not added, f"New keys inside metadata blocks: {added}. {NEW_VERSION}"
+
+
+def test_every_argument_a_block_is_built_from_is_sent():
+    """A key sent only when its argument is given is still checked: the turn with
+    every optional key passes every argument there is."""
+    for function in _BUILT_FROM:
+        _every_argument(function)
 
 
 def test_scores_match_the_contract():
