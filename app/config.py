@@ -369,6 +369,13 @@ class Settings(BaseSettings):
     # it folds in (voice is served by voice-oan-api today).
     nudge_api_url: str = os.getenv("NUDGE_API_URL", "https://vistaar.getraya.app/api/nudge-user")
     nudge_timeout_seconds: float = float(os.getenv("NUDGE_TIMEOUT_SECONDS", "3.0"))
+    # Voice's pre-turn classifiers (app/voice/classifiers.py) — also inert on the
+    # chat path. Same names and defaults as voice-oan-api.
+    stt_signal_retry_ceiling: int = int(os.getenv("STT_SIGNAL_RETRY_CEILING", "3"))
+    voice_profile_creation_date_words: str = os.getenv(
+        "VOICE_PROFILE_CREATION_DATE_WORDS",
+        "eleventh February two thousand twenty six",
+    )
     # Kill switch for Hindi chat. Default ON: hi/hindi requests use the full
     # src->en->agent->hi translation pipeline. Set HINDI_CHAT_ENABLED=false to
     # disable Hindi independently (hi/hindi then bypass the pipeline and are

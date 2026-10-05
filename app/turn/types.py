@@ -12,9 +12,9 @@ and decides what each one means on its wire.
 
 Following the rule in ``app/channels/base``, a field appears only when something
 reads it. The sink and the telemetry are on ``SurfaceProfile`` because ``run_turn``
-reads them and chat populates them with its real ones. The background set and the
-liveness channel are not stubbed: they land with the voice surface that
-populates them.
+reads them and chat populates them with its real ones. ``Turn.call`` is there
+because voice's classifiers read it. The background set and the liveness channel
+are not stubbed: they land with the voice surface that populates them.
 """
 from __future__ import annotations
 
@@ -49,6 +49,21 @@ class Surface(str, Enum):
 
 
 @dataclass(frozen=True)
+class TelephonyCall:
+    """The phone call a voice turn belongs to, as the voice adapter found it.
+
+    Established before the turn starts, like the rest of ``Turn``.
+    """
+
+    process_id: Optional[str]
+    #: This turn is the farmer's reply to the telephony provider's opening
+    #: question on an outbound call. The outbound consent gate owns that turn,
+    #: so the greeting, identity and fragment short-circuits leave it alone.
+    #: The adapter works it out from the outbound stage in Redis.
+    outbound_consent_turn: bool = False
+
+
+@dataclass(frozen=True)
 class Turn:
     """Request-invariant input: what the transport established before orchestration.
 
@@ -80,6 +95,8 @@ class Turn:
     history_session_id: str
     channel: ChannelProfile
     persona: ChatPersona
+    #: The call a voice turn belongs to. None on chat.
+    call: Optional[TelephonyCall] = None
 
 
 # ── what a turn emits ───────────────────────────────────────────────────────
