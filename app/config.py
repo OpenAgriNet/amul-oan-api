@@ -376,6 +376,12 @@ class Settings(BaseSettings):
         "VOICE_PROFILE_CREATION_DATE_WORDS",
         "eleventh February two thousand twenty six",
     )
+    # Voice's non-meaningful and outbound consent checks (app/voice/), inert on the
+    # chat path too. Same names and defaults as voice-oan-api.
+    voice_non_meaningful_timeout_seconds: float = float(os.getenv("VOICE_NON_MEANINGFUL_TIMEOUT_SECONDS", "0.60"))
+    voice_outbound_consent_timeout_seconds: float = float(
+        os.getenv("VOICE_OUTBOUND_CONSENT_TIMEOUT_SECONDS", "0.60")
+    )
     # Kill switch for Hindi chat. Default ON: hi/hindi requests use the full
     # src->en->agent->hi translation pipeline. Set HINDI_CHAT_ENABLED=false to
     # disable Hindi independently (hi/hindi then bypass the pipeline and are
