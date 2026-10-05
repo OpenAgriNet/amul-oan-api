@@ -4,7 +4,7 @@ ONE place that knows the 15 codes the Bharat Vistaar BPP answers to, and how a
 farmer's actual words map onto them. Both consumers import from here:
 
   - `agents/tools/vistaar.py`   — the direct `get_vistaar_scheme_info` tool
-  - `agents/tools/beckn_network.py` — the merged union+central scheme discovery
+  - `agents/tools/beckn/network.py` — the merged union+central scheme discovery
 
 Why an alias map at all: the BV BPP matches `item.descriptor.name` against the
 scheme CODE and nothing else. It answers "kcc" and returns an empty catalogue

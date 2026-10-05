@@ -17,7 +17,7 @@ from sqlalchemy.ext.asyncio import (
 )
 
 from app.config import settings
-from app.models.loan import Base
+from agents.tools.models.loan import Base
 from helpers.utils import get_logger
 
 logger = get_logger(__name__)

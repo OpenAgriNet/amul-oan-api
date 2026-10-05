@@ -56,7 +56,6 @@ apscheduler==3.10.4
 pymupdf==1.28.0
 
 # Search and Data
-marqo==3.18.0
 rapidfuzz==3.14.3
 regex
 

@@ -21,7 +21,7 @@ if str(ROOT) not in sys.path:
 
 from agents.deps import FarmerContext  # noqa: E402
 from agents.farmer_context import _collect_farmer_location  # noqa: E402
-from app.models.farmer import FarmerModel  # noqa: E402
+from agents.tools.models.farmer import FarmerModel  # noqa: E402
 from helpers.utils import get_prompt  # noqa: E402
 
 
@@ -55,29 +55,31 @@ class TestFarmerLocationCollection:
         assert FarmerContext(query="q", farmer_district="").get_farmer_district() is None
 
     @pytest.mark.asyncio
-    async def test_the_bundle_returns_the_location_as_its_third_element(self, monkeypatch):
+    async def test_the_bundle_returns_the_location(self, monkeypatch):
         import agents.farmer_context as fc
 
-        async def _fake_get(mobile):
+        async def _fake_get(mobile, **kwargs):
             return [FarmerModel(district="Banas Kantha", village="Dama", state="Gujarat")]
 
-        monkeypatch.setattr(fc, "get_farmer_data_by_mobile", _fake_get)
-        _, _, location = await fc.get_farmer_context_bundle_by_mobile("9876543210")
-        assert location["district"] == "banas kantha"
+        monkeypatch.setattr(fc, "fetch_authenticated_farmers", _fake_get)
+        bundle = await fc.get_farmer_context_bundle_by_mobile("9876543210")
+        assert bundle.location["district"] == "banas kantha"
+        assert bundle.found is True
 
     @pytest.mark.asyncio
-    async def test_an_unknown_mobile_still_returns_three_elements(self, monkeypatch):
+    async def test_an_unknown_mobile_returns_an_empty_not_found_bundle(self, monkeypatch):
         # The no-farmer early return is a separate code path and has silently
         # skipped new fields before.
         import agents.farmer_context as fc
 
-        async def _fake_get(mobile):
+        async def _fake_get(mobile, **kwargs):
             return None
 
-        monkeypatch.setattr(fc, "get_farmer_data_by_mobile", _fake_get)
-        markdown, unions, location = await fc.get_farmer_context_bundle_by_mobile("1")
-        assert unions == [] and location == {}
-        assert "No farmer information found" in markdown
+        monkeypatch.setattr(fc, "fetch_authenticated_farmers", _fake_get)
+        bundle = await fc.get_farmer_context_bundle_by_mobile("1")
+        assert bundle.unions == [] and bundle.location == {}
+        assert bundle.found is False
+        assert "No farmer information found" in bundle.markdown
 
 
 class TestPromptGuidance:
@@ -133,8 +135,8 @@ class TestPromptGuidance:
         # Without this line the block renders as absent regardless of the flag,
         # and the whole guidance silently does nothing.
         source = (ROOT / "agents" / "agrinet.py").read_text()
-        assert "'network_tools_enabled': settings.enable_network" in source
-        assert "'vistaar_shc_enabled': settings.enable_network and settings.vistaar_shc_enabled" in source
+        assert "'network_tools_enabled': True" in source
+        assert "'vistaar_shc_enabled': settings.vistaar_shc_enabled" in source
 
     @pytest.mark.parametrize("name", PROMPTS)
     def test_shc_guidance_matches_the_narrower_feature_gate(self, name):

@@ -6,9 +6,9 @@ import httpx
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from app.models.bonus import FarmerBonusAmountRequestModel
-from agents.tools import farmer_animal_backends
-from agents.tools.farmer_animal_backends import get_farmer_bonus_amount_api
+from agents.tools.models.bonus import FarmerBonusAmountRequestModel
+from agents.tools import bonus_backend
+from agents.tools.bonus_backend import get_farmer_bonus_amount_api
 
 
 class _FakeAsyncClient:
@@ -58,7 +58,7 @@ class TestFarmerAnimalBackendsBonus:
         )
 
     def test_sends_expected_endpoint_query_params_and_auth_header(self, monkeypatch):
-        monkeypatch.setattr(farmer_animal_backends.httpx, "AsyncClient", _FakeAsyncClient)
+        monkeypatch.setattr(bonus_backend.httpx, "AsyncClient", _FakeAsyncClient)
 
         result = asyncio.run(get_farmer_bonus_amount_api(self._request(), "test-token"))
 
@@ -68,14 +68,14 @@ class TestFarmerAnimalBackendsBonus:
         assert result[0].from_date == "2026-04-01T00:00:00"
         assert _FakeAsyncClient.calls == [
             {
-                "url": f"{farmer_animal_backends.BASE_AMULPASHUDHAN}/GetFarmerBonusAmount",
+                "url": f"{bonus_backend.settings.amulpashudhan_base_url}/GetFarmerBonusAmount",
                 "params": {
                     "unionCode": "0001",
                     "societyCode": "2004",
                     "farmerCode": "0001",
                 },
                 "headers": {"Authorization": "Bearer test-token"},
-                "timeout": farmer_animal_backends.FARMER_BACKEND_HTTP_TIMEOUT_SECONDS,
+                "timeout": bonus_backend.settings.farmer_backend_http_timeout_seconds,
             }
         ]
 
@@ -85,7 +85,7 @@ class TestFarmerAnimalBackendsBonus:
             json=[],
             request=httpx.Request("GET", "https://example.test"),
         )
-        monkeypatch.setattr(farmer_animal_backends.httpx, "AsyncClient", _FakeAsyncClient)
+        monkeypatch.setattr(bonus_backend.httpx, "AsyncClient", _FakeAsyncClient)
 
         result = asyncio.run(get_farmer_bonus_amount_api(self._request(), "test-token"))
 
@@ -97,7 +97,7 @@ class TestFarmerAnimalBackendsBonus:
             json={"APIStatusCode": 0, "Data": []},
             request=httpx.Request("GET", "https://example.test"),
         )
-        monkeypatch.setattr(farmer_animal_backends.httpx, "AsyncClient", _FakeAsyncClient)
+        monkeypatch.setattr(bonus_backend.httpx, "AsyncClient", _FakeAsyncClient)
 
         result = asyncio.run(get_farmer_bonus_amount_api(self._request(), "test-token"))
 
@@ -109,7 +109,7 @@ class TestFarmerAnimalBackendsBonus:
             text="server error",
             request=httpx.Request("GET", "https://example.test"),
         )
-        monkeypatch.setattr(farmer_animal_backends.httpx, "AsyncClient", _FakeAsyncClient)
+        monkeypatch.setattr(bonus_backend.httpx, "AsyncClient", _FakeAsyncClient)
 
         result = asyncio.run(get_farmer_bonus_amount_api(self._request(), "test-token"))
 
@@ -121,7 +121,7 @@ class TestFarmerAnimalBackendsBonus:
             text="Bonus amount not supported for this union’s data source.",
             request=httpx.Request("GET", "https://example.test"),
         )
-        monkeypatch.setattr(farmer_animal_backends.httpx, "AsyncClient", _FakeAsyncClient)
+        monkeypatch.setattr(bonus_backend.httpx, "AsyncClient", _FakeAsyncClient)
 
         result = asyncio.run(get_farmer_bonus_amount_api(self._request(), "test-token"))
 
@@ -133,7 +133,7 @@ class TestFarmerAnimalBackendsBonus:
             text="Farmer bonus data not found.",
             request=httpx.Request("GET", "https://example.test"),
         )
-        monkeypatch.setattr(farmer_animal_backends.httpx, "AsyncClient", _FakeAsyncClient)
+        monkeypatch.setattr(bonus_backend.httpx, "AsyncClient", _FakeAsyncClient)
 
         result = asyncio.run(get_farmer_bonus_amount_api(self._request(), "test-token"))
 
@@ -145,7 +145,7 @@ class TestFarmerAnimalBackendsBonus:
             json=["not-a-dict"],
             request=httpx.Request("GET", "https://example.test"),
         )
-        monkeypatch.setattr(farmer_animal_backends.httpx, "AsyncClient", _FakeAsyncClient)
+        monkeypatch.setattr(bonus_backend.httpx, "AsyncClient", _FakeAsyncClient)
 
         result = asyncio.run(get_farmer_bonus_amount_api(self._request(), "test-token"))
 
@@ -157,7 +157,7 @@ class TestFarmerAnimalBackendsBonus:
             json=[{"Message": "unexpected shape"}],
             request=httpx.Request("GET", "https://example.test"),
         )
-        monkeypatch.setattr(farmer_animal_backends.httpx, "AsyncClient", _FakeAsyncClient)
+        monkeypatch.setattr(bonus_backend.httpx, "AsyncClient", _FakeAsyncClient)
 
         result = asyncio.run(get_farmer_bonus_amount_api(self._request(), "test-token"))
 

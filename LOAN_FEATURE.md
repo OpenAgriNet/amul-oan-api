@@ -28,12 +28,12 @@ issued + stored (never actually sent).
 
 ## Files (mirrored in both `amul-oan-api` and `voice-oan-api`)
 
-- `app/models/loan.py` — ORM: `loan_eligibility_list`, `loan_codes`
+- `agents/tools/models/loan.py` — ORM: `loan_eligibility_list`, `loan_codes`
 - `app/core/loan_db.py` — lazy async engine/session (only built when `LOAN_DB_URL` set)
 - `migrations/loan/001_init.sql` — idempotent DDL
 - `migrations/loan/002_max_loan_amount.sql` — per-farmer `max_loan_amount` (AMUL-51)
 - `agents/tools/onex_sms.py` — Onex-Aura SMS client (DLT template)
-- `agents/services/loan_eligibility.py` — `evaluate_and_issue(...)` (the state machine)
+- `agents/tools/loan_eligibility.py` — `evaluate_and_issue(...)` (the state machine)
 - `agents/tools/loan.py` — `check_loan_eligibility` tool (`LOAN_CHANNEL` = chat/voice)
 - Registered: chat `TOOLS`, voice `BASE_TOOLS` (hidden unless feature on + phone resolved)
 - `../scripts/load_sabhsad.py` — one-off SABHSAD xlsx → `loan_eligibility_list` loader

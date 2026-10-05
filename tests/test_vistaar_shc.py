@@ -8,7 +8,7 @@ from pydantic_ai import Tool
 from agents.deps import FarmerContext
 from agents.tools import vistaar_shc as shc
 from app.chat_artifacts import CHAT_ARTIFACTS_END, CHAT_ARTIFACTS_START, encode_chat_artifacts
-from app.services.beckn_operations import (
+from agents.tools.beckn.operations import (
     BecknActionResult,
     BecknOperation,
     OperationState,
@@ -102,7 +102,6 @@ def _report_html() -> str:
 @pytest.mark.asyncio
 async def test_tool_uses_independent_shc_feature_gate(monkeypatch):
     tool_def = SimpleNamespace(name="get_vistaar_soil_health_card")
-    monkeypatch.setattr(shc.settings, "beckn_callback_transactions_enabled", False)
     monkeypatch.setattr(shc.settings, "vistaar_shc_enabled", True)
     assert await shc.prepare_get_vistaar_soil_health_card(_ctx(), tool_def) is tool_def
 

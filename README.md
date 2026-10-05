@@ -39,12 +39,3 @@ docker compose down --remove-orphans
 docker compose down --remove-orphans
 docker compose up --build --force-recreate --detach
 docker logs -f container name
-
-# Marqo Setup
-
-```
-docker run --name marqo -p 8882:8882 \
-    -e MARQO_MAX_CONCURRENT_SEARCH=50 \
-    -e VESPA_POOL_SIZE=50 \
-    marqoai/marqo:latest
-```

@@ -6,7 +6,7 @@ from typing import Any
 from fastapi import APIRouter, Depends
 
 from app.auth.jwt_auth import get_current_user
-from agents.services.farmer_cache import get_or_fetch_farmer_data
+from agents.tools.farmer_cache import get_or_fetch_farmer_data
 from helpers.utils import get_logger
 
 logger = get_logger(__name__)

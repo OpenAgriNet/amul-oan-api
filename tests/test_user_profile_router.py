@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock
 
 os.environ.setdefault("OPENAI_API_KEY", "test-key")
 
-from app.models.farmer_transport import FarmerDataEnvelope, FarmerRecord
+from agents.tools.models.farmer_transport import FarmerDataEnvelope, FarmerRecord
 from app.routers import user as user_router
 
 

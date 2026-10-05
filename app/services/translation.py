@@ -13,7 +13,7 @@ from contextvars import ContextVar
 from pathlib import Path
 from typing import Literal, Optional
 from helpers.utils import get_logger, normalize_voice_output
-from app.models.union import UNION_BANNED_MESSAGE_VARIANTS, union_banned_message
+from agents.tools.models.union import UNION_BANNED_MESSAGE_VARIANTS, union_banned_message
 from agents.tools.terms import get_mini_glossary_for_text, get_ambiguity_hints_for_query
 
 from app import llm_core
@@ -162,6 +162,13 @@ GU_POST_REPLACEMENTS_BASE = [
 GU_TERM_POLICY = _load_gu_term_policy()
 GU_POLICY_REPLACEMENTS = _build_gu_policy_replacements(GU_TERM_POLICY)
 GU_POST_REPLACEMENTS = GU_POST_REPLACEMENTS_BASE + GU_POLICY_REPLACEMENTS
+CHAT_ONLY_GU_POST_REPLACEMENTS = [
+    # Canonicalize organic wording in chat output.
+    (r"(?i)\borganic\b", "જૈવિક"),
+    (r"ઓર્ગેનિક", "જૈવિક"),
+    (r"જવિૈ\s*ક", "જૈવિક"),
+    (r"ઓર્ગેનિર્ગે\s*ક", "જૈવિક"),
+]
 
 
 # ── Protected proper nouns: pin a fixed Gujarati rendering ──────────────────────
@@ -425,6 +432,9 @@ def _post_normalize_gu_translation(
     # policy runs; chat keeps the uniform gu_term_policy.json mapping (-> શરીર).
     if _is_voice_channel():
         out = _normalize_gu_body_terms(out)
+    else:
+        for pat, repl in CHAT_ONLY_GU_POST_REPLACEMENTS:
+            out = re.sub(pat, repl, out)
     for pat, repl in GU_POST_REPLACEMENTS:
         out = re.sub(pat, repl, out)
     # Keep assistant first-person Gujarati conjugation feminine on all channels.
@@ -595,7 +605,7 @@ def _canned_union_ban_translation(text: str, target_lang: str) -> str | None:
     """If ``text`` is the AI-call ban line, return the canned line for ``target_lang``.
 
     The agent (and create_ai_call on lang_code=en) emit the English policy sentence.
-    Post-translation must not paraphrase it — Gujarati, Hindi, Bengali and
+    Post-translation must not paraphrase it — Gujarati, Hindi, Bengali,
     Marathi and Punjabi copy is fixed.
     Already-localized GU/HI/BN/MR/PA canned lines pass through as the target-lang variant.
     """

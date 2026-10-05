@@ -5,7 +5,8 @@ Surface-agnostic: used by the chat loan tool and by the voice turn builder.
 from typing import Optional
 
 from agents.deps import FarmerAccount
-from app.models.farmer_transport import FarmerDataEnvelope
+from agents.tools.models.farmer_transport import FarmerDataEnvelope
+from agents.tools.models.local_names import prefer_local_name
 
 
 def collect_farmer_accounts(envelope: Optional[FarmerDataEnvelope]) -> list[FarmerAccount]:
@@ -37,8 +38,14 @@ def collect_farmer_accounts(envelope: Optional[FarmerDataEnvelope]) -> list[Farm
                 union_code=str(union_code),
                 society_code=str(society_code),
                 farmer_code=str(farmer_code),
-                farmer_name=record.get("farmerName") or record.get("farmer_name"),
-                society_name=record.get("societyName") or record.get("society_name"),
+                farmer_name=prefer_local_name(
+                    record.get("farmerGujaratiName") or record.get("farmer_gujarati_name"),
+                    record.get("farmerName") or record.get("farmer_name"),
+                ),
+                society_name=prefer_local_name(
+                    record.get("societyGujaratiName") or record.get("society_gujarati_name"),
+                    record.get("societyName") or record.get("society_name"),
+                ),
             )
         )
     return accounts

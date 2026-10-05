@@ -14,8 +14,8 @@ from pydantic_ai import RunContext
 from pydantic_ai.tools import ToolDefinition
 
 from agents.deps import FarmerContext
-from agents.services import loan_eligibility as le
-from agents.services.farmer_envelope import collect_farmer_accounts
+from agents.tools import loan_eligibility as le
+from agents.tools.farmer_envelope import collect_farmer_accounts
 from app.config import settings
 from helpers.utils import get_logger
 
@@ -102,7 +102,7 @@ async def _resolve_accounts(ctx: RunContext[FarmerContext]):
     if accounts or not ctx.deps.mobile or not settings.loan_check_milk_enabled:
         return accounts
     try:
-        from agents.services.farmer_cache import get_or_fetch_farmer_data
+        from agents.tools.farmer_cache import get_or_fetch_farmer_data
         envelope = await get_or_fetch_farmer_data(ctx.deps.mobile)
         return collect_farmer_accounts(envelope)
     except Exception as e:  # non-fatal: milk check will simply report couldn't-check

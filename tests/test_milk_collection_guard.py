@@ -35,15 +35,12 @@ def test_model_facing_signature_has_no_identity_parameters():
 
 
 def test_partial_rows_are_none_safe(monkeypatch):
-    from app.models.farmer import FarmerModel
-    from app.models.milk_collection import (
+    from agents.tools.models.farmer import FarmerModel
+    from agents.tools.models.milk_collection import (
         FarmerMilkCollectionResponseModel,
         MilkCollectionRecordModel,
         DeductionRecordModel,
     )
-
-    monkeypatch.setattr(milk.settings, "enable_network", True)
-    monkeypatch.setattr(milk.settings, "beckn_callback_transactions_enabled", True)
 
     async def farmers(mobile, **kwargs):
         return [FarmerModel.model_validate({

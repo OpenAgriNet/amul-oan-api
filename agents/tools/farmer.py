@@ -1,21 +1,12 @@
-"""
-Tool for fetching farmer details by mobile number from PashuGPT-style APIs.
-Uses amulpashudhan.com and returns a cohesive, deduplicated set of records.
-"""
-import json
+"""Authenticated farmer profile access through the Amul Beckn BPP."""
 import re
 import uuid
 from enum import Enum
 
-from agents.tools.farmer_animal_backends import (
-    fetch_farmer_amulpashudhan,
-    _fetch_farmer_amulpashudhan_raw,
-    normalize_phone, merge_farmer_data, merge_farmer_records,
-)
-from app.models.farmer import FarmerModel
-from app.models.farmer_transport import FarmerRecord
+from agents.tools.beckn.amul import fetch_authenticated_farmers
+from agents.tools.models.farmer import FarmerModel
+from agents.tools.models.farmer_transport import FarmerRecord
 from helpers.utils import get_logger
-from app.config import get_config_value
 
 logger = get_logger(__name__)
 
@@ -24,6 +15,7 @@ class FarmerFetchOutcome(str, Enum):
     """Fetch outcome for the SWR cache ingestion path."""
 
     FOUND = "found"
+    NOT_FOUND = "not_found"
     ERROR = "error"
 
 
@@ -53,88 +45,33 @@ def normalize_phone_to_mobile(user_id: str) -> str | None:
 
 
 async def get_farmer_data_by_mobile(mobile_number: str) -> list[FarmerModel] | None:
-    """
-    Fetch farmer records by mobile number (same backends as get_farmer_by_mobile).
-    Returns structured list of farmer records for use by chat/service layer.
-
-    Args:
-        mobile_number: The mobile number of the farmer. Can include +91 or spaces.
-
-    Returns:
-        List of farmer record dicts, or None if invalid mobile, no tokens, or no data.
-    """
-    mobile = normalize_phone(mobile_number)
+    """Fetch normalized farmer accounts through Beckn init/on_init."""
+    mobile = normalize_phone_to_mobile(mobile_number)
     if not mobile:
         return None
-
-    token1 = get_config_value("PASHUGPT_TOKEN")
-    if not token1:
-        logger.error("PASHUGPT_TOKEN is not set")
-        return None
-
-    records: list[FarmerModel] = []
-
     try:
-        data = await fetch_farmer_amulpashudhan(mobile, token1)
-        if data is not None:
-            records.extend(data)
-            logger.info(f"Farmer data for {mobile}: got {len(data)} record(s) from amulpashudhan")
+        records = await fetch_authenticated_farmers(mobile)
     except Exception as e:
-        logger.warning(f"amulpashudhan farmer API error for {mobile}: {e}")
-
-    if len(records) == 0:
-        logger.info(f"No farmer data found for mobile {mobile}")
+        logger.warning("Beckn farmer profile lookup failed for %s: %s", mobile, e)
         return None
-
-    return merge_farmer_data(records)
-
-
-def _record_has_content(rec: dict) -> bool:
-    """A farmer row is worth keeping if it carries animal tags, a non-zero
-    animal count, or at least an identity (farmer/society name). Mirrors voice's
-    has_content gate so empty placeholder rows don't pollute the SWR cache."""
-    if rec.get("tagNo") or rec.get("tagNumbers"):
-        return True
-    total = rec.get("totalAnimals")
-    if total not in (None, 0, "0"):
-        return True
-    return bool(rec.get("farmerName") or rec.get("societyName"))
+    return records or None
 
 
 async def fetch_farmer_info_with_outcome(
     mobile_number: str,
 ) -> tuple[list[FarmerRecord] | None, FarmerFetchOutcome]:
-    """Raw farmer fetch with an explicit provider outcome for the SWR cache.
-
-    Returns RAW camelCase ``FarmerRecord`` objects when ``outcome`` is ``FOUND``.
-    Empty payloads are treated as non-authoritative and map to ``ERROR`` until
-    upstream exposes a reliable explicit miss/error split.
-    """
-    mobile = normalize_phone(mobile_number)
+    """Fetch cache records with an explicit provider outcome."""
+    mobile = normalize_phone_to_mobile(mobile_number)
     if not mobile:
         return None, FarmerFetchOutcome.ERROR
-
-    token1 = get_config_value("PASHUGPT_TOKEN")
-    if not token1:
-        logger.error("PASHUGPT_TOKEN is not set")
+    try:
+        farmers = await fetch_authenticated_farmers(mobile, force_refresh=True)
+    except Exception as exc:
+        logger.warning("Beckn farmer profile lookup failed for %s: %s", mobile, exc)
         return None, FarmerFetchOutcome.ERROR
-
-    rows: list[dict] = []
-    raw = await _fetch_farmer_amulpashudhan_raw(mobile, token1)
-    if raw is not None:
-        if len(raw) > 0:
-            rows.extend(r for r in raw if isinstance(r, dict))
-
-    if not rows:
-        return None, FarmerFetchOutcome.ERROR
-
-    kept = [r for r in rows if _record_has_content(r)] or rows
-    deduped = merge_farmer_records(kept)
-    if not deduped:
-        return None, FarmerFetchOutcome.ERROR
-
-    records = [FarmerRecord.model_validate(r) for r in deduped]
-    logger.info(f"Raw farmer info for {mobile}: {len(records)} record(s) merged")
+    if not farmers:
+        return None, FarmerFetchOutcome.NOT_FOUND
+    records = [FarmerRecord.model_validate(farmer.model_dump()) for farmer in farmers]
     return records, FarmerFetchOutcome.FOUND
 
 
@@ -147,24 +84,3 @@ async def fetch_farmer_info_raw(mobile_number: str) -> list[FarmerRecord] | None
     if outcome == FarmerFetchOutcome.FOUND:
         return records
     return None
-
-
-async def get_farmer_by_mobile(mobile_number: str) -> str:
-    """
-    Fetch farmer information by mobile number. Returns farmer details including
-    farmer ID, name, location, society, and associated animal tag numbers.
-
-    Args:
-        mobile_number: The mobile number of the farmer (required). Can include +91 or spaces.
-
-    Returns:
-        str: Formatted JSON string with farmer details and associated tag numbers,
-             or a clear message if no data found. Handles API failures and empty responses.
-    """
-    records = await get_farmer_data_by_mobile(mobile_number)
-    if records is None:
-        mobile = normalize_phone(mobile_number) or mobile_number
-        return "Please provide a valid mobile number." if not mobile else f"Farmer details for mobile {mobile}:\n\nNo farmer data found for this mobile number."
-    mobile = normalize_phone(mobile_number)
-    formatted = json.dumps([record.model_dump() for record in records], indent=2, ensure_ascii=False)
-    return f"Farmer details for mobile {mobile}:\n\n{formatted}"

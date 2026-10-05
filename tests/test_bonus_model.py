@@ -6,7 +6,7 @@ from pydantic import ValidationError
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from app.models.bonus import (
+from agents.tools.models.bonus import (
     FarmerBonusAmountRecordModel,
     FarmerBonusAmountRequestModel,
 )

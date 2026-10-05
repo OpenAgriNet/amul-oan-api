@@ -1,7 +1,7 @@
 """Background worker that drains the farmer-data refresh queue.
 
 Stale-while-revalidate: the request path serves cached farmer data immediately
-and enqueues stale phones (see agents.services.farmer_cache.
+and enqueues stale phones (see agents.tools.farmer_cache.
 enqueue_farmer_refresh). This worker drains that Redis-backed queue off the
 request path and refreshes each record, so slow/unreliable upstream PashuGPT
 APIs never block a call. refresh_farmer_data self-dedupes via its NX lock, so
@@ -29,7 +29,7 @@ async def _run_loop() -> None:
     # Imported here (not at module scope) so importing this worker module is
     # side-effect-free and never triggers the farmer_cache <-> tools import
     # cycle at app startup (main.py imports the worker before the routers).
-    from agents.services.farmer_cache import drain_farmer_refresh_queue_once
+    from agents.tools.farmer_cache import drain_farmer_refresh_queue_once
 
     logger.info("Farmer refresh worker started")
     while True:

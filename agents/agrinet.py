@@ -1,10 +1,11 @@
 from pydantic_ai import Agent, RunContext
 from helpers.utils import get_prompt, get_today_date_str
 from app.config import get_config_value, settings
-from agents.tools import TOOLS
+from agents.tools.registry import TOOLS
 from agents.tools.terms import get_ambiguity_hints_for_query
 from pydantic_ai.settings import ModelSettings
 from agents.deps import FarmerContext
+from agents.tools.ai_call import NO_FARMER_PROFILE_MESSAGE
 
 
 def _agrinet_max_output_tokens() -> int:
@@ -46,23 +47,25 @@ def get_agrinet_instructions(ctx: RunContext):
 
     context = {
         'today_date': get_today_date_str(),
-        'farmer_context': farmer_context if farmer_context else None,
+        # Only a resolved record renders as a profile; the not-found markdown
+        # is replaced by the "what is not available" block below.
+        'farmer_context': (
+            farmer_context
+            if farmer_context and ctx.deps.farmer_profile_status == 'found'
+            else None
+        ),
+        'ai_call_available': ctx.deps.has_farmer_profile(),
+        'farmer_profile_status': ctx.deps.farmer_profile_status,
+        'no_farmer_profile_message': NO_FARMER_PROFILE_MESSAGE,
         'ambiguity_hints': ambiguity_hints if ambiguity_hints else None,
         'response_max_chars': ctx.deps.get_response_max_chars(),
         'loan_max_amount': f"{int(settings.loan_max_amount):,}",
         'loan_interest_rate_pct': f"{int(settings.loan_interest_rate_pct)}",
-        # Gates the Bharat Vistaar (mandi / weather / central scheme) prompt block
-        # on the SAME flag that decides whether those tools are registered at all
-        # (agents/tools/__init__.py). Advertising a tool the runtime has hidden is
-        # not free: the model calls it, gets `Unknown tool name`, retries, and the
-        # error enumerates the whole tool list back into context — two wasted LLM
-        # round-trips on every turn, which is already pushing turns to 10-19 s
-        # where it happens today.
-        'network_tools_enabled': settings.enable_network,
+        'network_tools_enabled': True,
         # SHC has a narrower rollout gate than the other Vistaar tools. Keep
         # its prompt contract aligned with the per-turn tool prepare hook so the
         # model never sees instructions for a hidden private-report tool.
-        'vistaar_shc_enabled': settings.enable_network and settings.vistaar_shc_enabled,
+        'vistaar_shc_enabled': settings.vistaar_shc_enabled,
     }
 
     # The translation pipeline is the only supported chat path, so the farmer
