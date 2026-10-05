@@ -500,7 +500,7 @@ def test_a_call_turn_that_goes_stale_mid_answer_stops_and_saves_nothing(monkeypa
 
 
 def test_an_agent_that_fails_before_its_first_chunk_is_answered_after_the_gate(monkeypatch):
-    patch_turn(monkeypatch)
+    seen = patch_turn(monkeypatch)
     _Translation(monkeypatch)
     log = []
 
@@ -526,7 +526,21 @@ def test_an_agent_that_fails_before_its_first_chunk_is_answered_after_the_gate(m
 
     assert log == ["agent", "gate"]
     assert emissions == [TextEmission(_TROUBLE_GU)]
-    assert _Outcomes.seen[-1] == ("outcome", "success")
+    # The caller heard the trouble line, but the turn failed: no success, no history.
+    assert _Outcomes.seen[-1] == ("outcome", "error")
+    assert seen["history_writes"] == []
+
+
+def test_a_translation_that_fails_mid_answer_ends_the_turn_as_an_error(monkeypatch):
+    seen = patch_turn(monkeypatch, agent_text="Give clean water daily. Keep the cow in shade.")
+    _Translation(monkeypatch, replies=[["ગાયને રોજ પાણી આપો."]], fail_on={2})
+
+    emissions = _run(_turn(), _surface())
+
+    assert emissions[0] == TextEmission("ગાયને રોજ પાણી આપો.")
+    assert emissions[-1].text.strip() == _TROUBLE_GU
+    assert _Outcomes.seen[-1] == ("outcome", "error")
+    assert seen["history_writes"] == []
 
 
 def test_a_blank_first_chunk_does_not_stop_the_nudge(monkeypatch):

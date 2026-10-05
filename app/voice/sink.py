@@ -341,12 +341,17 @@ class VoiceSink:
         self._first_text_chunk_received = False
         self._last_emitted_sig_char: str | None = None
         self._spoken: list[str] = []
+        self._failed = False
 
     def stream(self, english: AsyncIterator[str]) -> AsyncIterator[str]:
         return self._stream(english)
 
     def final_text(self) -> Optional[str]:
         return "".join(self._spoken) or None
+
+    def outcome(self) -> Optional[str]:
+        # The agent or a translation failed and the caller heard the trouble line.
+        return "error" if self._failed else None
 
     async def _stale(self, reason: str) -> bool:
         return self._is_stale is not None and await self._is_stale(reason) is not None
@@ -381,6 +386,7 @@ class VoiceSink:
                 async for text in spoken:
                     yield text
         except Exception as error:
+            self._failed = True
             logger.error(
                 "Voice agent stream failed %s first token; session_id=%s process_id=%s error=%s",
                 "after" if self._agent_started else "before",
@@ -477,6 +483,7 @@ class VoiceSink:
                         return
                     yield _prepare_voice_output(chunk, self._target_lang) if chunk else chunk
         except Exception as e:
+            self._failed = True
             logger.error(
                 "Translation pipeline output translation failed for session_id=%s error=%s",
                 self._session_id,

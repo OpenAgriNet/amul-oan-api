@@ -75,6 +75,9 @@ class _RecordingSink:
     def final_text(self):
         return "FINAL FROM SINK"
 
+    def outcome(self):
+        return None
+
 
 def _recording_surface():
     # Everything else stays chat's own, so only the sink differs from production.

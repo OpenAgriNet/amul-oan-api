@@ -301,6 +301,12 @@ class TurnSink(Protocol):
         """The turn's complete output for the trace, or None if nothing was produced."""
         ...
 
+    def outcome(self) -> Optional[str]:
+        """How the turn ended, when the sink caught a failure itself and told the
+        caller so; None when the answer went through. ``run_turn`` then records
+        it and keeps the turn out of history."""
+        ...
+
 
 class SinkFactory(Protocol):
     """Builds a turn's sink from what ``run_turn`` knows at that point.
