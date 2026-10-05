@@ -1,0 +1,321 @@
+"""Import voice turns into the telemetry database (telemetry/clickhouse/voice.sql).
+
+Rows never carry the caller's phone number or any of their words: user_id is
+dropped, the caller's hash is kept only as an HMAC under a secret key, and
+question/answer keep only their length and sha256.
+"""
+
+import hashlib
+import hmac
+import re
+from collections import Counter
+from dataclasses import dataclass, field
+from datetime import date, datetime, time, timedelta, timezone
+from typing import Any, Iterator, Mapping, Protocol, Sequence
+
+from pydantic import ValidationError
+
+from app.models.telemetry_voice_analytics import CanonicalVoiceTurn
+from app.services.telemetry_era_adapters import UnsupportedTelemetryEra
+from app.services.telemetry_era_registry import TelemetryEraRegistry
+from app.services.telemetry_fetcher import ClickHouseReader, fetch_voice_bundles
+from app.services.telemetry_mappings import ContractMapping
+from app.services.telemetry_voice_era_adapters import VoiceOutcomeVocabulary, adapt_voice_trace
+
+DATABASE = "telemetry"
+
+# Must match the tables in telemetry/clickhouse/voice.sql.
+VOICE_TURN_COLUMNS = (
+    "source_trace_id",
+    "timestamp",
+    "environment",
+    "schema_version",
+    "source_era",
+    "source_schema_version",
+    "source_era_extensions",
+    "source_trace_name",
+    "session_id",
+    "process_id",
+    "user_id_hash",
+    "signed_in",
+    "provider",
+    "call_type",
+    "route",
+    "pipeline_profile",
+    "source_lang",
+    "target_lang",
+    "question_chars",
+    "question_sha256",
+    "answer_chars",
+    "answer_sha256",
+    "outcome",
+    "outcome_class",
+    "full_turn_latency_ms",
+    "stage_totals_ms",
+    "timings_ms",
+    "observation_names",
+    "score_names",
+    "field_availability",
+    "imported_at",
+    "is_deleted",
+    "user_id_hash_key",
+)
+# CanonicalVoiceTurn fields voice_turns leaves out on purpose. Every other field
+# needs a column, or tests fail, so a new field can't quietly miss the table.
+NOT_STORED = {
+    "user_id": "the caller's phone number; user_id_hash is kept",
+    "user_id_semantics": "the same for every voice turn",
+    "channel": "always voice",
+    "question_sanitized": "kept as question_chars and question_sha256",
+    "answer_sanitized": "kept as answer_chars and answer_sha256",
+}
+IMPORT_DAY_COLUMNS = ("environment", "day", "traces", "turns", "rejected", "imported_at")
+REJECTION_COLUMNS = ("environment", "day", "imported_at", "trace_name", "reason", "count")
+# A removed turn: its sorting key, so it replaces the turn's row, and is_deleted.
+REMOVED_TURN_COLUMNS = ("source_trace_id", "timestamp", "environment", "imported_at", "is_deleted")
+
+# Turns a day's import has to remove. On that day: every turn it didn't accept
+# (deleted in Langfuse, now rejected, or moved to another day). On other days:
+# older rows of the turns it did accept, left there when a timestamp moved.
+_TURNS_TO_REMOVE_SQL = """
+SELECT source_trace_id, timestamp
+FROM {database}.{table} FINAL
+WHERE environment = {{environment:String}}
+  AND ((toDate(timestamp) = {{day:Date}} AND source_trace_id NOT IN {{accepted:Array(String)}})
+       OR (toDate(timestamp) != {{day:Date}} AND source_trace_id IN {{accepted:Array(String)}}))
+"""
+
+
+@dataclass(frozen=True)
+class CallerKey:
+    """The secret that turns a caller's hash into the one stored.
+
+    Traces carry a SHA-256 of the caller id under a public prefix, which a list
+    of phone numbers reverses. Rows keep an HMAC of it under this key instead,
+    with the key's id, so rows written under an older key can be found and
+    re-imported after a rotation."""
+
+    secret: bytes = field(repr=False)
+
+    def __post_init__(self) -> None:
+        if len(self.secret) < 32:
+            raise ValueError("The caller key must be at least 32 bytes, e.g. from `openssl rand -hex 32`.")
+
+    @property
+    def key_id(self) -> str:
+        """Names the key without giving it away."""
+        return hashlib.sha256(b"telemetry caller key id:" + self.secret).hexdigest()[:12]
+
+    def pseudonym(self, caller_hash: str | None) -> str | None:
+        if caller_hash is None:
+            return None
+        return hmac.new(self.secret, caller_hash.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+class ClickHouseWriter(Protocol):
+    def insert(self, table: str, data: Sequence[Sequence[Any]], column_names: Sequence[str], database: str) -> Any: ...
+
+    def query(self, query: str, parameters: Mapping[str, Any] | None = None) -> Any: ...
+
+
+@dataclass
+class ImportReport:
+    environment: str
+    first_day: date
+    last_day: date
+    written: bool
+    traces: int = 0
+    turns: int = 0
+    by_era: Counter = field(default_factory=Counter)
+    by_outcome_class: Counter = field(default_factory=Counter)
+    rejected: Counter = field(default_factory=Counter)
+    # Turns where each field was recorded or derived, not unavailable.
+    available: Counter = field(default_factory=Counter)
+    # Turns from an earlier import that this one removed.
+    removed: int = 0
+
+    def add(self, turn: CanonicalVoiceTurn) -> None:
+        self.turns += 1
+        self.by_era[turn.source_era] += 1
+        self.by_outcome_class[turn.outcome_class or "none"] += 1
+        self.available.update(name for name, status in turn.field_availability.items() if status != "unavailable")
+
+    def lines(self) -> list[str]:
+        mode = "written" if self.written else "dry run, nothing written"
+        lines = [
+            f"{self.environment}, {self.first_day} to {self.last_day} ({mode})",
+            f"traces read  {self.traces}",
+            f"turns        {self.turns}",
+            f"rejected     {sum(self.rejected.values())}",
+        ]
+        lines += [f"  {count}  {name}: {reason}" for (name, reason), count in self.rejected.most_common()]
+        if self.written:
+            lines.append(f"removed      {self.removed}")
+        lines += ["by era"] + [f"  {count}  {era}" for era, count in self.by_era.most_common()]
+        lines += ["outcome class"] + [f"  {count}  {name}" for name, count in self.by_outcome_class.most_common()]
+        if self.turns:
+            lines.append("fields present")
+            lines += [
+                f"  {100 * count / self.turns:5.1f}%  {name}" for name, count in sorted(self.available.items())
+            ]
+        return lines
+
+
+def import_voice_days(
+    reader: ClickHouseReader,
+    writer: ClickHouseWriter | None,
+    *,
+    environment: str,
+    first_day: date,
+    last_day: date,
+    registry: TelemetryEraRegistry,
+    vocabulary: VoiceOutcomeVocabulary,
+    mappings: Mapping[str, ContractMapping],
+    caller_key: CallerKey | None = None,
+) -> ImportReport:
+    """Adapt every voice turn from first_day to last_day (UTC, inclusive). Without a writer nothing is written;
+    with one, caller_key is required."""
+    if writer is not None and caller_key is None:
+        raise ValueError("Writing turns needs the caller key, so no caller hash is stored without it.")
+    report = ImportReport(environment, first_day, last_day, written=writer is not None)
+    root_names = registry.root_trace_names() | {mapping.root for mapping in mappings.values()}
+    for day in _days(first_day, last_day):
+        start = datetime.combine(day, time.min, tzinfo=timezone.utc)
+        imported_at = datetime.now(timezone.utc)
+        rows, rejected, traces = [], Counter(), 0
+        for bundle in fetch_voice_bundles(
+            reader, environment=environment, start=start, end=start + timedelta(days=1), root_names=root_names
+        ):
+            traces += 1
+            try:
+                turn = adapt_voice_trace(
+                    bundle.trace,
+                    observations=bundle.observations,
+                    scores=bundle.scores,
+                    era_registry=registry,
+                    outcome_vocabulary=vocabulary,
+                    voice_mappings=mappings,
+                )
+            except (UnsupportedTelemetryEra, ValidationError) as exc:
+                rejected[(bundle.trace["name"], rejection_reason(exc))] += 1
+                continue
+            report.add(turn)
+            rows.append(voice_turn_row(turn, environment=environment, imported_at=imported_at, caller_key=caller_key))
+
+        report.traces += traces
+        report.rejected.update(rejected)
+        if writer is not None:
+            report.removed += _write_day(writer, environment, day, imported_at, rows, rejected, traces)
+    return report
+
+
+def voice_turn_row(
+    turn: CanonicalVoiceTurn, *, environment: str, imported_at: datetime, caller_key: CallerKey | None = None
+) -> dict[str, Any]:
+    question, answer = turn.question_sanitized, turn.answer_sanitized
+    user_id_hash = caller_key.pseudonym(turn.user_id_hash) if caller_key else None
+    return {
+        "source_trace_id": turn.source_trace_id,
+        "timestamp": turn.timestamp,
+        "environment": environment,
+        "schema_version": turn.schema_version,
+        "source_era": turn.source_era,
+        "source_schema_version": turn.source_schema_version,
+        "source_era_extensions": list(turn.source_era_extensions),
+        "source_trace_name": turn.source_trace_name,
+        "session_id": turn.session_id,
+        "process_id": turn.process_id,
+        "user_id_hash": user_id_hash,
+        "signed_in": turn.signed_in,
+        "provider": turn.provider,
+        "call_type": turn.call_type,
+        "route": turn.route,
+        "pipeline_profile": turn.pipeline_profile,
+        "source_lang": turn.source_lang,
+        "target_lang": turn.target_lang,
+        "question_chars": question.chars if question else None,
+        "question_sha256": question.sha256 if question else None,
+        "answer_chars": answer.chars if answer else None,
+        "answer_sha256": answer.sha256 if answer else None,
+        "outcome": turn.outcome,
+        "outcome_class": turn.outcome_class,
+        "full_turn_latency_ms": turn.full_turn_latency_ms,
+        "stage_totals_ms": turn.stage_totals_ms or {},
+        "timings_ms": turn.timings_ms or {},
+        "observation_names": list(turn.observation_names),
+        "score_names": list(turn.score_names),
+        "field_availability": dict(turn.field_availability),
+        "imported_at": imported_at,
+        "is_deleted": 0,
+        "user_id_hash_key": caller_key.key_id if user_id_hash else None,
+    }
+
+
+def rejection_reason(exc: Exception) -> str:
+    """One stable line per kind of rejection, so a day's rejections group together."""
+    if isinstance(exc, ValidationError):
+        error = exc.errors()[0]
+        return f"invalid trace: {'.'.join(str(part) for part in error['loc'])} {error['type']}"
+    return re.sub(r" timestamp=\S+", "", str(exc))
+
+
+def _write_day(
+    writer: ClickHouseWriter,
+    environment: str,
+    day: date,
+    imported_at: datetime,
+    rows: list[dict[str, Any]],
+    rejected: Counter,
+    traces: int,
+) -> int:
+    """Write one day's import and return how many earlier turns it removed.
+
+    A re-import ends with the same rows as a first import: turns it no longer
+    finds are marked is_deleted, which FINAL leaves out."""
+    removed = [
+        (found["source_trace_id"], found["timestamp"])
+        for found in writer.query(
+            _TURNS_TO_REMOVE_SQL.format(database=DATABASE, table="voice_turns"),
+            parameters={
+                "environment": environment,
+                "day": day,
+                "accepted": [row["source_trace_id"] for row in rows],
+            },
+        ).named_results()
+    ]
+    if rows:
+        writer.insert(
+            "voice_turns",
+            [[row[column] for column in VOICE_TURN_COLUMNS] for row in rows],
+            column_names=VOICE_TURN_COLUMNS,
+            database=DATABASE,
+        )
+    if removed:
+        writer.insert(
+            "voice_turns",
+            [[trace_id, timestamp, environment, imported_at, 1] for trace_id, timestamp in removed],
+            column_names=REMOVED_TURN_COLUMNS,
+            database=DATABASE,
+        )
+    if rejected:
+        writer.insert(
+            "voice_rejections",
+            [[environment, day, imported_at, name, reason, count] for (name, reason), count in rejected.items()],
+            column_names=REJECTION_COLUMNS,
+            database=DATABASE,
+        )
+    # Written last, so a day only shows as imported once its turns are in.
+    writer.insert(
+        "voice_import_days",
+        [[environment, day, traces, len(rows), sum(rejected.values()), imported_at]],
+        column_names=IMPORT_DAY_COLUMNS,
+        database=DATABASE,
+    )
+    return len(removed)
+
+
+def _days(first: date, last: date) -> Iterator[date]:
+    day = first
+    while day <= last:
+        yield day
+        day += timedelta(days=1)

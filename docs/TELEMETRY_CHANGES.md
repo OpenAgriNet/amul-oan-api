@@ -36,6 +36,14 @@ into the canonical output that dashboards read, also:
    works too: `[metadata.farmer_context.source]`.
 6. Add a test with a stamped trace that carries the field, next to the other
    stamped tests in `tests/test_telemetry_voice_era_adapters.py`.
+7. amul-oan-api: give it a column in the telemetry database. Add
+   `ALTER TABLE telemetry.voice_turns ADD COLUMN IF NOT EXISTS farmer_type LowCardinality(Nullable(String));`
+   at the bottom of `telemetry/clickhouse/voice.sql`, then put the name at the end
+   of `VOICE_TURN_COLUMNS` and the value in `voice_turn_row`, both in
+   `app/services/telemetry_import.py`. More in "Adding a column" in
+   `TELEMETRY_PIPELINE.md`.
+8. Once it's merged, re-run `voice.sql` on the ClickHouse, then re-import the days
+   you want the field filled for.
 
 Traces from before the change don't have the field, so it reads as
 `unavailable` for them. That's expected.
@@ -95,3 +103,6 @@ The adapter doesn't wait for this: a stamped trace is read by its stamp, and its
 | `...: 'x' is not a canonical field` | Typo in `voice.yaml`, or step 4 of "Add a new field" is missing. |
 | `Unknown voice schema version` | The new version isn't in `voice.yaml` yet. |
 | `... ends at ... but no ... root era starts then` | An `eras.yaml` boundary leaves a gap: start the next era at the same instant. |
+| `CanonicalVoiceTurn has [...], but telemetry.voice_turns doesn't store it` | Step 7 of "Add a new field" is missing, or list the field in `NOT_STORED` with the reason. |
+| `telemetry.voice_turns and the importer disagree` | A column is in `voice.sql` but not in `VOICE_TURN_COLUMNS`, or the other way round. |
+| `telemetry.voice_turns changed the released columns [...]` | A released column was renamed, retyped or removed. Put it back and add a new column instead. |

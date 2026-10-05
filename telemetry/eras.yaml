@@ -1,0 +1,637 @@
+# Telemetry schema eras — the machine-readable spine
+#
+# Ticket: OpenAgriNet/amul-oan-api#179 (telemetry: versioned contract, full path
+# coverage, resilient delivery). Design rationale:
+#   docs/plans/TELEMETRY_RESILIENCE_PLAN.md  — what we emit next
+#   docs/telemetry-strategy/claude-historical-synthesis.md §1, §4.2 — the history
+#
+# WHY THIS FILE EXISTS
+# --------------------
+# There is no single telemetry schema in this system. There is a sequence of
+# emission regimes, each created by an ordinary product commit that nobody
+# classified as a schema change, and each one silently invalidating at least one
+# downstream consumer. Three consumers are broken right now because of it. Every
+# break was a string literal naming a trace, held in a repo with no link to the
+# repo that emits it. This file is the machine-readable version of knowledge that
+# until now existed only as scar tissue.
+#
+# RULES FOR EDITING
+# -----------------
+# 1. `valid_from` is the PROD-OBSERVED boundary, not the merge date. This history
+#    has three independently confirmed multi-week gaps between merge and the step
+#    change visible in the data (see commit_vs_deploy_lag below). Where the two
+#    disagree the data wins; `merge_date` records who caused it.
+# 2. Root trace names are NOT unique across time. `chat.default`/`chat.translation`
+#    were used by chat.c2 AND again, for a structurally different object, by
+#    chat.c6. Resolve on (name, date) — never on name alone.
+# 3. Append eras; never rewrite one. A corrected boundary gets an updated
+#    `valid_from` plus a note saying what the old value was and why it moved.
+# 4. Keys are append-only going forward. Three names for one concept
+#    (pipeline -> variant -> pipeline_profile) is what this file exists to stop.
+
+version: 1
+generated: 2026-09-20
+# Every claim below is [git] read from history, [code] read at path:line on the
+# stated branch, [data] measured against prod ClickHouse, or [memory] carried from
+# a prior verified investigation. Unverified deploy dates are marked explicitly.
+
+commit_vs_deploy_lag:
+  # Three independent confirmations that a merge date is not a deploy date.
+  confirmations:
+    - change: chat root -> "Amul AI Agent"
+      merged: 2026-05-02
+      observed: 2026-05-13
+      lag_days: 11
+    - change: voice root -> agent_journey
+      merged: 2026-06-26
+      observed: 2026-07-22
+      lag_days: 26
+    - change: chat tool observations
+      merged: 2026-06-08
+      observed: 2026-07-22
+      lag_days: 44
+  note: >
+    The 2026-07-22 clustering is not a coincidence: 0f6c8f4 / ca270d1
+    "promote: full dev->prod parity" landed that day in both repos.
+    A mass promotion is a mass era boundary.
+
+langfuse_object_kinds_in_use:
+  # What this platform actually writes into Langfuse. Anything not listed is not
+  # produced by us in any era.
+  in_use:
+    - sessions
+    - traces
+    - observations   # types SPAN, TOOL and GENERATION are all in use
+    - scores
+  not_in_use: [datasets, prompt_management, media]
+  note: >
+    Prompts are local files loaded via helpers.utils.get_prompt, not Langfuse
+    prompt objects. Never filter observations on type='SPAN': chat booking is
+    GENERATION, voice booking is SPAN, and the agent-facing tool layer is TOOL.
+
+# ---------------------------------------------------------------------------
+# CHAT — repo amul-oan-api, Langfuse environment chat-production
+# ---------------------------------------------------------------------------
+chat_eras:
+
+  - era_id: chat.c0
+    channel: chat
+    environment: chat-production
+    valid_from: 2026-02-02
+    valid_from_confidence: medium     # = first row in ClickHouse, not a deploy
+    valid_to: 2026-02-24
+    root_trace_names: []              # pydantic-ai default span name
+    merge_date: 2026-01-31
+    defining_commits: ["85162ff"]
+    summary: propagate_attributes(session_id) only. No filterable metadata.
+    keys: {}
+    availability:
+      user_source: null               # chat user_id is empty for EVERY Feb row
+    notes: >
+      Identity floor for chat is 2026-03-10. Any lifetime unique-user figure that
+      includes February is counting zero users for that month, by construction.
+
+  - era_id: chat.c1
+    valid_from: 2026-02-24
+    valid_from_confidence: medium
+    valid_to: 2026-03-10
+    root_trace_names: []
+    merge_date: 2026-02-24
+    defining_commits: ["c2c20e4"]     # "metadata for filtering in langfuse"
+    summary: First filterable metadata.
+    keys:
+      variant_concept: metadata.pipeline
+      user_source: metadata.user_id   # semantics: query param, else "anonymous"
+    tags: ["pipeline:<name>"]
+
+  - era_id: chat.c2
+    valid_from: 2026-03-10
+    valid_from_confidence: high       # [memory] chat agent data starts ~Mar 10
+    valid_to: 2026-05-13
+    root_trace_names: [chat.default, chat.translation]
+    merge_date: 2026-03-10
+    defining_commits: ["0b840e5"]     # prod merge e538b2e, same day
+    summary: Named turn root; GU original in a separate top-level trace.
+    keys:
+      question_source: "trace:query_pretranslation"   # its own top-level trace
+      answer_source: null                             # trace.output is NULL here
+      variant_concept: metadata.pipeline
+    nests_children: false
+    notes: >
+      ⚠️ The chat.translation NAME is reused in this era for non-agent traces
+      (~40% noise): post-translation pipeline_stage=text_translation,
+      pretranslation pipeline_stage=query_pretranslation, moderation with no
+      pipeline_stage. The reliable agent-turn discriminator is "the trace's
+      observations contain SPAN 'Amul AI Agent run'". Expect a few-percent
+      boundary error on any pre-c6 turn reconstruction — measure it, don't assume.
+      Answers live only in observations (concat stream_translation for target
+      language; the chat <model> stop output for English).
+
+  - era_id: chat.c2b
+    valid_from: 2026-03-25
+    valid_from_confidence: medium
+    valid_to: null
+    root_trace_names: [chat.default, chat.translation]
+    merge_date: 2026-03-25
+    defining_commits: ["be35bd7", "06fb8d2"]
+    summary: ⚠️ SAME KEY, NEW MEANING — no rename, no signal in the data.
+    keys:
+      user_source: metadata.user_id   # semantics: phone from JWT, then query param, then anonymous
+    breaks_silently: true
+    notes: >
+      This is the era class that a name-keyed registry cannot catch and the reason
+      `keys` records semantics, not just paths. Any unique-user series crossing
+      2026-03-25 must be stamped "identity semantics change".
+
+  - era_id: chat.c2c
+    valid_from: 2026-04-24
+    valid_from_confidence: high       # [memory] April coverage measured partial
+    valid_to: null
+    merge_date: 2026-04-24
+    defining_commits: ["d7614f4"]
+    summary: metadata.channel introduced.
+    keys:
+      channel_source: metadata.channel   # {web, whatsapp}
+    coverage:
+      "2026-04": partial               # whatsapp+web = 14,681 of 72,402 turns
+      "2026-05_onward": ~100%
+    notes: >
+      Report April channel splits as "partial coverage ~20%", never as a share of
+      100%. This is a coverage artifact, not a channel mix change.
+
+  - era_id: chat.c3
+    valid_from: 2026-05-13
+    valid_from_confidence: high       # data-observed; two schemas coexist in May
+    valid_to: 2026-08-05T06:30:00Z    # was 2026-08-05; now ends where chat.c6 starts
+    root_trace_names: ["Amul AI Agent"]
+    merge_date: 2026-05-02
+    defining_commits: ["e220c3e"]     # "optimised for langfuse"
+    summary: ⚠️ The rename nobody logged. trace_name= was COMMENTED OUT.
+    keys:
+      answer_source: trace.output     # answer becomes free at trace level
+      question_source: "trace:query_pretranslation"
+    nests_children: false
+    notes: >
+      With trace_name commented out the root name falls through to the manually
+      opened "Amul AI Agent" observation. A window-spanning pull across May MUST
+      handle both c2 and c3 or it silently drops half the month.
+
+  - era_id: chat.c3b
+    valid_from: 2026-05-20            # mid-day
+    valid_from_confidence: high
+    valid_to: 2026-07-24
+    merge_date: 2026-05-19
+    defining_commits: ["2166aae", "44b0773"]   # prod aba9cd7
+    summary: OSS/managed split becomes visible.
+    keys:
+      variant_concept: metadata.variant        # {oss, legacy}
+    scores_emitted: [pipeline_variant]
+    notes: Before this date `variant` is blank and every turn is implicitly legacy.
+
+  - era_id: chat.c3c
+    valid_from: 2026-05-19
+    valid_from_confidence: medium
+    valid_to: null
+    root_trace_names: [frontend.telemetry]
+    merge_date: 2026-05-19
+    defining_commits: ["13093e5"]     # "added FE telemetry to Langfuse (#63)"
+    summary: A SECOND, structurally different stream — not a chat turn.
+    observation_names:
+      - frontend.question
+      - frontend.question_response
+      - frontend.error
+      - frontend.feedback
+      - frontend.anonymous_token_issued
+    scores_emitted: [user_feedback]
+    notes: >
+      Sunbird-style FE events -> CanonicalTelemetryEvent -> bounded worker queue.
+      This is the ONLY place a real user-satisfaction signal exists and it is
+      nearly empty (~8 user_feedback scores against 47k auto scores). Nothing
+      counts this stream. Do not fold it into turn counts.
+
+  - era_id: chat.c4
+    valid_from: 2026-07-22
+    valid_from_confidence: high       # [memory] 906 technician spans 07-02 vs 26,485 07-25
+    valid_to: null
+    merge_date: 2026-06-08
+    defining_commits: ["5aa5f8e", "4b65bba", "6b6ba11"]
+    summary: Chat tools begin emitting observations.
+    availability:
+      tool_calls: observations        # NOT the CH tool_calls columns — empty 100% of the time
+    notes: >
+      Chat tool-outcome history STARTS here. There is no tool history before it,
+      and the step at 07-22 is an instrumentation change, not a volume change.
+
+  - era_id: chat.c5
+    valid_from: 2026-07-24
+    valid_from_confidence: medium
+    valid_to: null
+    merge_date: 2026-07-20
+    defining_commits: ["9cfdb0e", "43f3101"]   # compact keys; N-way routing
+    summary: ⚠️ Key rename #3 for one concept.
+    keys:
+      variant_concept: metadata.pipeline_profile   # was metadata.variant (c3b), metadata.pipeline (c1)
+    adds_keys: [metadata.pipeline_flags, "metadata.pc_<step>"]
+    tags: ["pipeline_profile:<x>"]
+    breaks_consumers: [chat-export-service]
+    breaks_silently: true
+    notes: >
+      metadata.variant STOPS being emitted here. Retroactively backfillable —
+      pipeline_profile IS on the traces; the consumer simply reads the dead key.
+
+  - era_id: chat.c6
+    valid_from: 2026-08-05T06:30:00Z
+    valid_from_confidence: high       # clean per-hour step, 06:00-07:00 UTC
+    valid_to: null
+    root_trace_names: [chat.default, chat.translation]
+    merge_date: 2026-08-05
+    defining_commits: ["79e2665"]     # PR #200; prod merge c18c9f3
+    summary: The turn root span. The most consequential era boundary in the history.
+    keys:
+      question_source: trace.input.query      # ORIGINAL-language query
+      answer_source: trace.output
+      outcome_source: "score:turn_outcome"
+      user_source: metadata.user_id
+    trace_input_fields: [query, channel, source_lang, target_lang, use_translation_pipeline, persona]
+    nests_children: true
+    breaks_consumers: [chat-export-service, oan-telemetry-dashboard-service, langfuse-analytics]
+    notes: >
+      ⚠️ Returns to the chat.c2 NAME for a structurally different object. Name
+      alone is ambiguous with chat.c2 — always resolve with the date.
+      Child observations now nest instead of becoming their own top-level traces,
+      so raw trace counts drop sharply at this boundary for reasons that have
+      nothing to do with volume. Trace-level writes made outside an observation
+      now LAND, which is what surfaced the booking clobber (see data_corruption).
+      ⚠️ Three tool traces still do NOT nest in any era:
+      fetch_farmer_amulpashudhan, get_ai_technicians_by_society_api (no session)
+      and suggestions (DOES carry a sessionId). Together the first two are
+      ~40-60% of all chat-production traces. Anyone counting turns by top-level
+      trace gets 3-6x inflation.
+
+  - era_id: chat.c6b
+    valid_from: 2026-08-03
+    valid_from_confidence: medium
+    valid_to: null
+    merge_date: 2026-08-03
+    defining_commits: ["f0bc64c", "9ed8a9c"]   # #179 B2; short-circuit fix 08-08
+    summary: turn_outcome score on every exit path.
+    scores_emitted: [turn_outcome]             # CATEGORICAL {success, cancelled, error}
+    notes: >
+      Chat failure taxonomy starts here; before it, only the empty-output proxy.
+      ⚠️ "cancelled" is nearly unreachable: Starlette 0.50.0 never aclose()s the
+      iterator, so a disconnect at a yield finalises the generator in a different
+      context and score_current_trace silently no-ops. A disconnect mid-await
+      instead records "error", inflating the error rate. Not yet verified in prod.
+
+  - era_id: chat.c6c
+    valid_from: 2026-08-02
+    valid_from_confidence: medium
+    valid_to: null
+    merge_date: 2026-08-02
+    defining_commits: ["0aeffdb"]              # groundwork ba35a9d, 07-21
+    summary: served_tier score — which tier ACTUALLY answered, per step.
+    scores_emitted: [served_tier]              # CATEGORICAL
+    notes: >
+      compact_metadata reports the CONFIGURED primary and is snapshotted before
+      any step runs, so a health-prune or failover is invisible without this
+      score. Configured tier != served tier; do not read one for the other.
+
+  - era_id: chat.c7
+    valid_from: 2026-08-18
+    valid_from_confidence: medium
+    valid_to: null
+    merge_date: 2026-08-18
+    defining_commits: ["98ae2c7"]
+    summary: Persona.
+    keys:
+      persona_source: metadata.persona
+    tags: ["persona:<x>"]
+
+  - era_id: chat.c8
+    valid_from: 2026-09-16            # [data] field transition observed in chat-production
+    valid_from_confidence: high
+    valid_to: null
+    root_trace_names: [chat.translation]        # chat.default can no longer be emitted
+    merge_date: 2026-09-16
+    defining_commits: ["e0d8ba7"]     # "make the translation pipeline the only chat path"
+                                      # promoted in badd91b (PR #289)
+    summary: Translation-only. chat.default disappears from the vocabulary.
+    keys:
+      question_source: trace.input.query
+      answer_source: trace.output
+    removes_keys: [trace.input.use_translation_pipeline]
+    adds_values:
+      source_lang: [bn]               # Bengali, same promotion (0a0a0e7)
+      target_lang: [bn]
+    notes: >
+      _PIPELINE_NAME is now a module constant "translation" (app/services/chat.py:179)
+      and the root is f"chat.{_PIPELINE_NAME}", so chat.default is unreachable.
+      [data] corroborated 2026-09-20 against prod ClickHouse: September is
+      chat.translation only, zero "Amul AI Agent" (August was mixed: 57,598
+      "Amul AI Agent" + 311,537 chat.translation). [data] chat-production root
+      input contains use_translation_pipeline at 2026-09-15 23:59:08 and omits it
+      at 2026-09-16 11:52:36 (Langfuse display time). The date boundary is
+      confirmed; the exact intra-day cutover remains unbounded.
+
+# ---------------------------------------------------------------------------
+# VOICE — repo voice-oan-api, Langfuse environment voice-production
+# ---------------------------------------------------------------------------
+voice_eras:
+
+  - era_id: voice.v0
+    channel: voice
+    environment: voice-production
+    valid_from: 2026-02-02
+    valid_from_confidence: medium     # = first row in ClickHouse
+    valid_to: 2026-05-20
+    root_trace_names: ["Voice Agent run", "Voice Agent Signed In run"]   # pydantic-ai agent names
+    merge_date: 2026-01-31
+    defining_commits: ["a988dad", "8d82835", "bb3b1d5"]
+    summary: First voice tracing; explicit feedback flow written to Langfuse.
+
+  - era_id: voice.v1
+    valid_from: 2026-03-26
+    valid_from_confidence: low
+    valid_to: null
+    merge_date: 2026-03-26
+    defining_commits: ["baf1cb8", "c9253de", "713d4bc"]
+    summary: Observability module refactors. No contract change observed.
+
+  - era_id: voice.v2
+    valid_from: 2026-04-14
+    valid_from_confidence: low
+    valid_to: null
+    merge_date: 2026-04-14
+    defining_commits: ["deeea7a", "0d595cd"]
+    summary: External voice APIs traced; Logfire replaced by Langfuse.
+
+  - era_id: voice.v3
+    valid_from: 2026-05-20
+    valid_from_confidence: high       # [memory] outcome blank for every row before this
+    valid_to: 2026-07-22
+    root_trace_names: [voice_request]
+    merge_date: 2026-05-13
+    defining_commits: ["df9985f"]     # prod promotion 784fe64
+    summary: VoiceTrace contract object; stage timers; the outcome taxonomy begins.
+    keys:
+      outcome_source: metadata.outcome
+      question_source: metadata.query          # sanitize_text -> {chars, sha256, preview}
+      user_source: metadata.user_id_hash       # salted SHA-256, literal salt "voice-oan-api"
+      latency_source: [timings_ms, stage_totals_ms]
+    notes: >
+      ⚠️ A raw voice_request trace is ONE process_id, and process_id is a per-turn
+      counter that resets each call. Each spoken utterance emits SEVERAL, so raw
+      trace counts overcount real delivered queries by ~45%. Collapse before
+      counting. ⚠️ user_id_hash is NOT comparable to chat's raw-phone user_id, so
+      cross-channel user joins are impossible in every era to date.
+
+  - era_id: voice.v3b
+    valid_from: 2026-05-25
+    valid_from_confidence: medium
+    valid_to: null
+    merge_date: 2026-05-22
+    defining_commits: ["b19c3f2"]     # prod f0c0fc6
+    summary: Pipeline variant tag on voice traces.
+
+  - era_id: voice.v4
+    valid_from: 2026-07-22
+    valid_from_confidence: high       # data-observed, ~4 weeks after the merge
+    valid_to: null
+    root_trace_names: [agent_journey]
+    merge_date: 2026-06-26            # first-parent 240a9ee; code 06-23 6479428
+    defining_commits: ["6479428"]
+    summary: Root trace renamed. Nothing else changed.
+    breaks_consumers: [langfuse-analytics, oan-telemetry-dashboard-service]
+    breaks_silently: true
+
+  - era_id: voice.v5
+    valid_from: 2026-07-24
+    valid_from_confidence: low
+    valid_to: null
+    merge_date: 2026-07-20
+    summary: Compact keys mirrored from chat.c5 (llm_core/trace.py).
+    keys:
+      variant_concept: metadata.pipeline_profile
+    adds_keys: [metadata.pipeline_flags, "metadata.pc_<step>"]
+    tags: ["pipeline_profile:<x>"]
+
+  - era_id: voice.v5b
+    valid_from: 2026-08-01            # was 2026-08-05, see notes
+    valid_from_confidence: low        # prod merge date, not checked in data yet
+    valid_to: null
+    merge_date: 2026-08-01
+    defining_commits: ["83b79af"]     # prod merge 1b390ed (#234)
+    summary: Outbound call opener. New outcomes outbound_intro, outbound_declined, outbound_no_data.
+    adds_keys: [metadata.call_type, metadata.outbound_consent_intent]
+    notes: >
+      Corrected 2026-09-25. This era used to start 2026-08-05 on ae2b8f4, but
+      that commit removed outbound_intro (see voice.v5c); 83b79af added it.
+      outbound_intro only appears where OUTBOUND_INTRO_ENABLED was on.
+
+  - era_id: voice.v5c
+    valid_from: 2026-08-05
+    valid_from_confidence: low        # prod merge date, not checked in data yet
+    valid_to: null
+    merge_date: 2026-08-05
+    defining_commits: ["ae2b8f4"]     # prod cef039b, merge 9411906 (#242)
+    summary: outbound_intro outcome and route removed. outbound_declined and outbound_no_data stay.
+
+chat_outcome_vocabulary:
+  # Chat began recording turn_outcome on 2026-08-03 (chat.c6b). Missing values
+  # before that date remain null; unrecognised recorded values are unclassified.
+  delivered: [success]
+  failed: [error, cancelled]
+
+voice_outcome_vocabulary:
+  # [code] app/services/voice.py + voice_trace.py:293-295,492-499
+  # ⚠️ THESE ARE SEMANTICS, NOT STATUS CODES. Rendering "not success" as a failure
+  # rate is wrong by four orders of magnitude: literal outcome='error' totals
+  # FIVE rows across the entire lifetime of voice, while stale_request (159,298)
+  # and stt_signal (149,363) are same-call re-dispatch and non-speech events BY
+  # DESIGN. Any canonical model must carry a three-way
+  # success / error / non_question split, never a binary.
+  delivered: [success]
+  non_question:
+    - stale_request
+    - stt_signal
+    - hold_message
+    - greeting_fast_path
+    - identity_fast_path
+    - fragment_fast_path
+    - non_meaningful_hangup
+    - stt_signal_auto_hangup        # dev only: 7892cc3 on fix/voice-stt-hangup-threshold, never merged
+    - outbound_intro
+  refused_or_blocked: [moderation_rejected, outbound_declined, outbound_no_data]
+  failed: [error, pretranslation_empty, client_disconnected]
+  pre_v3_convention: success          # the field did not exist; state it on the chart
+
+# ---------------------------------------------------------------------------
+# FIELD AVAILABILITY — the floor under every historical series
+# ---------------------------------------------------------------------------
+field_availability:
+  # R = recorded on the trace, D = derivable from observations, M = missing.
+  # "starts" is the era boundary before which the series does not exist at all.
+  chat:
+    session:            {status: R, starts: 2026-02-02}
+    user_id:            {status: R, starts: 2026-02-24, semantics_change: 2026-03-25, empty_before: 2026-03-10}
+    channel:            {status: R, starts: 2026-04-24, full_coverage: 2026-05-01}
+    question_original:  {status: R, starts: 2026-03-10, source_by_era: true}
+    answer:             {status: D, starts: 2026-03-10, trace_level_from: 2026-05-13}
+    turn_root:          {status: R, starts: 2026-08-05}
+    full_turn_latency:  {status: M, starts: 2026-08-05}
+    turn_outcome:       {status: M, starts: 2026-08-03}
+    tool_calls:         {status: D, starts: 2026-07-22}
+    tokens_and_cost:    {status: D, starts: 2026-02-02}   # observations only, never trace level
+    persona:            {status: R, starts: 2026-08-18}
+  voice:
+    session:            {status: R, starts: 2026-02-02}
+    user_id_hash:       {status: R, starts: 2026-05-20}
+    outcome:            {status: R, starts: 2026-05-20}
+    stage_latency:      {status: R, starts: 2026-05-20}
+    question_text:      {status: D, note: "preview+hash only by default, ALL eras"}
+    answer_text:        {status: D, note: "preview+hash only by default, ALL eras"}
+
+not_backfillable:
+  # Do not promise these. Each is a structural absence, not a query problem.
+  - field: chat full-turn latency before 2026-08-05
+    why: there was no root span to measure against
+    consequence: any "chat p95 since February" chart is fabricated
+  - field: chat tool outcomes before 2026-07-22
+    why: tools emitted no observations
+  - field: chat turn_outcome before 2026-08-03
+    why: the score did not exist
+  - field: voice outcome before 2026-05-20
+    why: the field did not exist (count as success by convention, and SAY SO)
+  - field: voice full question/answer text, any era
+    why: sanitize_text stores preview+hash by default (voice_trace.py:39-61)
+    consequence: fixing it forward is a privacy decision, not a bug fix
+  - field: cache-hit farmer/animal lookups, any era
+    why: the span is only opened on a cache MISS (farmer_animal_backends.py:74-86)
+    consequence: >
+      span-derived chat farmer-identity success reads 25.6% where the
+      farmer-VISIBLE number is 89.2%. Model output.fetch_reason
+      (cold_fetch/request = farmer waiting; background_refresh = invisible SWR),
+      never span presence.
+  - field: the 60s-cut hung voice turns, as failures
+    why: >
+      voice.py CancelledError is a BaseException, skips `except Exception`, and
+      the finally finalises the turn as "success". Still unfixed.
+    consequence: historical voice success rates are overstated by that volume
+  - field: chat "answered" rate before ~2026-06
+    why: trace.output is largely absent from the schema before ~2026-05-13
+    consequence: Feb/Mar failure rates of 99.9% / 93.8% are a COVERAGE ARTIFACT
+
+data_corruption:
+  - what: booking turns export the tool's parameters and ticket JSON as the turn's answer
+    span: 2026-06-01 (earliest daily on disk; true start earlier) .. 2026-08-10
+    rows: 2604                       # across 70 local dailies
+    fixed_by: ["84f7dab", "8d475a6"]  # PR #213 -> main, #214 -> amul-prod
+    scope: answer column ONLY — question_original falls through to the correct source
+    recovery: >
+      Re-dumping CANNOT fix these. The true answer survives only in the
+      "Amul AI Agent" child observation, so recovery needs a compat rule
+      preferring that child over trace.output when trace_input has no `query` key.
+    note: >
+      ⚠️ NOT a #200 regression, despite an earlier claim in #212/#213. The tools
+      always ran inside an active span, so the write always landed; #200 only
+      changed which span is the root. Clobbered rows/day show no step at the
+      08-05 deploy. Verify a causal story before repeating a reviewer's mechanism.
+
+# ---------------------------------------------------------------------------
+# WHERE HISTORY ACTUALLY LIVES
+# ---------------------------------------------------------------------------
+sources:
+  - id: S1
+    name: prod ClickHouse default.{traces,observations,scores} on amul-prod-vm6-ai-vecdb-1
+    coverage: 2026-02-02 .. now
+    grain: trace + observation
+    fidelity: full
+    confidence: high
+    note: >
+      ⚠️ UPDATED 2026-09-20: pre-July data is BACK in live prod ClickHouse
+      (min(timestamp)=2026-02-02 22:40:04, 7,240,800 rows, every month Feb-Sep
+      present for both environments). The "restore the 41GB Lustre tarball first"
+      recipe is obsolete for ordinary queries. A flat era-spanning name filter
+      name IN ('Amul AI Agent run','Amul AI Agent','chat.default','chat.translation')
+      with timestamp < '2026-08-26' reproduces the blessed 885,884 chat figure to
+      the row. The equivalent voice filter OVERCOUNTS by +8,318 (1.6%) because
+      eras v0-v2 used stricter per-era definitions — subtract it, don't re-derive it.
+  - id: S2
+    name: Lustre cold archive /amulpfsdata/backups/prod-observability/pre-2026-07-01/2026-08-21/
+    coverage: 2026-02-02 .. 2026-06-30
+    grain: native MergeTree parts, 63 partitions, 41.3 GB zst, sha256-verified
+    fidelity: full
+    confidence: high
+    note: restore verified 5x in August; now a cold backup, not the working path
+  - id: S3
+    name: chat-export CSVs on prod vm6, chat-export-service/data/daily/
+    coverage: 2026-06-01 .. yesterday
+    grain: 1 row per chat turn, 30 columns
+    fidelity: derived, era-normalised, lossy
+    confidence: high
+  - id: S5
+    name: archive/data/prod_chat_sessions_2mo.csv
+    coverage: 2026-04-21 .. 2026-06-20
+    grain: turn
+  - id: S6
+    name: docs/analysis/question-analysis-2026-08/
+    coverage: 2026-07-01 .. 2026-08-19
+    grain: turn + intent labels
+  - id: S7
+    name: MinIO langfuse/events/ raw replay log
+    coverage: "⚠️ 2026-07-01 .. ~2026-08-17 is GONE"
+    note: >
+      Not covered by the Lustre archive (which stops at 07-01) and swept by the
+      15-day retroactive ILM added 2026-08-31. ClickHouse still holds the folded
+      rows so no metric is lost, but the replayable bronze for that window is
+      unrecoverable. RULE: never enable a deletion policy before its durable
+      counterpart is verified.
+  - id: S8
+    name: Loki VOICE_TRACE_SUMMARY JSON lines
+    coverage: rolling ~30 days (720h)
+    grain: voice turn summary incl. stage timings
+
+# ---------------------------------------------------------------------------
+# KNOWN-BROKEN CONSUMERS
+# ---------------------------------------------------------------------------
+# The companion telemetry/consumers.yaml (one entry per downstream reader, with
+# the keys it reads and the era it was written against) is NOT in this PR. These
+# three are recorded here so the information is not lost in the meantime. Each is
+# a SILENT failure: no error, no alert, just a column that became empty.
+broken_consumers:
+  - consumer: chat-export-service
+    path: chat-export-service/dump_chat.py:893
+    reads: metadata.variant
+    dead_since_era: chat.c5          # ~2026-07-24
+    measured: "variant non-blank 100% on 06-01 and 06-23; 0% on 08-14 and 08-27"
+    status: BROKEN                   # still unfixed as of 2026-09-20
+    fix: read pipeline_profile, fall back to variant; retroactively backfillable
+  - consumer: langfuse-analytics
+    path: langfuse-analytics/langfuse_source.py:27-31
+    reads: "AGENT_TURN_NAMES = {chat-production: {Amul AI Agent, chat.default}, voice-production: {voice_request}}"
+    dead_since_era: [chat.c6, voice.v4]
+    status: BROKEN
+    note: >
+      Missing chat.translation, which is ~100% of chat turns post-c6, so nearly
+      every chat turn is dropped; voice returns zero since the agent_journey
+      rename. The DEV Metabase (24 cards) is pinned to its loaded 07-01..07-13
+      window and cannot be widened without this fix.
+  - consumer: oan-telemetry-dashboard-service
+    path: telemetry/oan-telemetry-dashboard-service/langfuse/questions.js:33-35,54
+    reads: ["Voice Agent run", "Voice Agent Signed In run", "Amul AI Agent"]
+    dead_since_era: [voice.v4, chat.c6]
+    status: BROKEN
+    note: >
+      All three names are dead. Two further defects in the same 80 lines: the
+      VOICE counter also sums the chat name, and every fetch ends
+      .catch(e => console.log(e)), so an API failure yields undefined and the
+      total renders NaN rather than alerting.
+
+# ---------------------------------------------------------------------------
+# WHAT THIS FILE IS FOR NEXT (#179)
+# ---------------------------------------------------------------------------
+next:
+  - telemetry/consumers.yaml — one entry per downstream reader and the keys it reads
+  - a CI gate asserting every key a consumer reads is still emitted by the current era
+  - amul.schema_version + service + release=SHA on every trace, so an era boundary
+    is a value in the data rather than an archaeology exercise
