@@ -41,9 +41,11 @@ class _Render:
 
     def __init__(self):
         self.calls = []
+        self.executions = []
 
-    async def __call__(self, text_en, target_lang):
+    async def __call__(self, text_en, target_lang, *, execution):
         self.calls.append((text_en, target_lang))
+        self.executions.append(execution)
         return f"<{target_lang}> {text_en}"
 
 
@@ -372,6 +374,19 @@ def test_identity_renders_sarlabens_line_for_the_caller(query, target_lang):
     assert render.calls == [(vc._IDENTITY_RESPONSE_EN, target_lang)]
     assert result.canned_text == f"<{target_lang}> {vc._IDENTITY_RESPONSE_EN}"
     assert _pair_texts(result) == ["hello", vc._IDENTITY_RESPONSE_EN]
+
+
+def test_a_fixed_reply_is_rendered_on_the_sessions_own_profile():
+    from app.llm_core import runtime, split
+
+    render = _Render()
+    turn = _turn("What is your name?", target_lang="en")
+
+    _answer(turn, render)
+
+    (execution,) = render.executions
+    assert execution.session_id == turn.session_id, "not the constant '-' session"
+    assert execution.profile_name == split.deterministic_profile(turn.session_id, runtime.get_pipeline())
 
 
 def test_identity_line_carries_the_configured_creation_date():

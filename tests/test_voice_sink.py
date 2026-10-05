@@ -393,21 +393,21 @@ def test_render_speaks_english_as_is(monkeypatch):
 
     monkeypatch.setattr(voice_sink, "translate_text", _no_translation)
 
-    assert asyncio.run(voice_sink.render_for_caller("Give **5 kg** feed.", "en")) == "Give 5 kilograms feed."
+    assert asyncio.run(voice_sink.render_for_caller("Give **5 kg** feed.", "en", execution=_EXECUTION)) == "Give 5 kilograms feed."
 
 
 def test_render_translates_in_the_voice_channel(monkeypatch):
     seen = []
 
-    async def _translate(text, source_lang, target_lang, **_kw):
-        seen.append((text, target_lang, translation._is_voice_channel()))
+    async def _translate(text, source_lang, target_lang, **kw):
+        seen.append((text, target_lang, translation._is_voice_channel(), kw.get("execution")))
         return "**૫** કિ.ગ્રા. દાણ આપો."
 
     monkeypatch.setattr(voice_sink, "translate_text", _translate)
 
-    spoken = asyncio.run(voice_sink.render_for_caller("Give 5 kg feed.", "gu"))
+    spoken = asyncio.run(voice_sink.render_for_caller("Give 5 kg feed.", "gu", execution=_EXECUTION))
 
-    assert seen == [("Give 5 kg feed.", "gu", True)]
+    assert seen == [("Give 5 kg feed.", "gu", True, _EXECUTION)], "on the turn's ExecutionContext"
     assert spoken == voice_sink.clean_output_by_language("**૫** કિ.ગ્રા. દાણ આપો.", "gu")
     assert not translation._is_voice_channel()
 
@@ -418,7 +418,7 @@ def test_render_pins_the_union_ban_line(monkeypatch):
 
     monkeypatch.setattr(voice_sink, "translate_text", _no_translation)
 
-    assert asyncio.run(voice_sink.render_for_caller(UNION_BANNED_MESSAGE, "gu")) == union_banned_message("gu")
+    assert asyncio.run(voice_sink.render_for_caller(UNION_BANNED_MESSAGE, "gu", execution=_EXECUTION)) == union_banned_message("gu")
 
 
 def test_render_falls_back_to_the_trouble_line(monkeypatch):
@@ -427,7 +427,7 @@ def test_render_falls_back_to_the_trouble_line(monkeypatch):
 
     monkeypatch.setattr(voice_sink, "translate_text", _down)
 
-    assert asyncio.run(voice_sink.render_for_caller("Give feed.", "gu")) == _TROUBLE_GU
+    assert asyncio.run(voice_sink.render_for_caller("Give feed.", "gu", execution=_EXECUTION)) == _TROUBLE_GU
 
 
 # ── the sink on the seam ────────────────────────────────────────────────────

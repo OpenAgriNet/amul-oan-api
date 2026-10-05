@@ -250,8 +250,9 @@ def _trouble_message(target_lang: str) -> str:
     return TRANSLATION_TROUBLE_MESSAGE.get(target_lang, TRANSLATION_TROUBLE_MESSAGE["en"])
 
 
-async def render_for_caller(text_en: str, target_lang: str) -> str:
-    """Render English loop text for the caller's language outside the agent loop."""
+async def render_for_caller(text_en: str, target_lang: str, *, execution) -> str:
+    """Render English loop text for the caller's language outside the agent loop,
+    on the turn's ExecutionContext, so a fixed reply uses the turn's models."""
     normalized_target = (target_lang or "en").strip().lower()
     if normalized_target in {"en", "english"}:
         return _prepare_voice_output(text_en, "en")
@@ -266,6 +267,7 @@ async def render_for_caller(text_en: str, target_lang: str) -> str:
                 text=text_en,
                 source_lang="english",
                 target_lang=normalized_target,
+                execution=execution,
             )
         return _prepare_voice_output(translated, normalized_target)
     except Exception as e:
