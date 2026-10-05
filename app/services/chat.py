@@ -43,6 +43,7 @@ from app.services.telemetry_stamps import CHAT_TURN_V1_ROOT, chat_turn_v1_input,
 from app.channels.base import ChannelProfile
 from app.turn.types import (
     AgentActivityEmission,
+    AgentInput,
     ArtifactEmission,
     ClassifierResult,
     DeferredScheduler,
@@ -801,6 +802,222 @@ async def _identity_classifier(turn: Turn) -> ClassifierResult | None:
     )
 
 
+async def _chat_agent_input(
+    turn: Turn,
+    pretranslated: Pretranslated,
+    *,
+    execution,
+    scheduler: DeferredScheduler,
+    translate_to: Optional[str],
+) -> AgentInput | ClassifierResult:
+    """Chat's agent input, for ``SurfaceProfile.agent_input``.
+
+    Loads the farmer context and builds the turn's FarmerContext, then runs
+    moderation before the agent starts: a query it rejects is declined, and one
+    it cannot check gets the fail-closed line. A valid farmer query also
+    schedules its suggestions.
+    """
+    session_id = turn.session_id
+    target_lang = turn.target_lang
+    user_info = turn.authenticated_user
+    history = turn.history
+    persona = turn.persona
+    request_id = session_id
+    session_id_safe = (session_id or "")[:200]
+    active_agent = doctor_agent if persona == "doctor" else agrinet_agent
+    active_moderation_agent = doctor_moderation_agent if persona == "doctor" else moderation_agent
+    # Model selection is resolved by the unified pipeline (the only path): the
+    # agent + moderation handles, the provider, and the display model name all
+    # come from the resolved primary tier for this session's profile. For the
+    # current env this is the same provider/base_url/model the removed
+    # get_model_for_variant returned, generalized to the weighted split.
+    request_model_name = execution.info(_LlmStep.AGENT).model_name
+    disabled_langs = _disabled_chat_langs()
+
+    def localize_system_text(text_en: str):
+        return _localize_system_text(
+            text_en,
+            target_lang=target_lang,
+            disabled_langs=disabled_langs,
+            execution=execution,
+            max_output_chars=turn.channel.response_max_chars,
+            request_id=request_id,
+        )
+
+    farmer_context = await _load_farmer_context(persona, user_info, request_id)
+    deps = _build_deps(
+        query=pretranslated.query,
+        session_id=session_id,
+        # Agent responds in English when the answer is translated for the caller.
+        lang_code="en" if translate_to else pretranslated.lang,
+        persona=persona,
+        channel=turn.channel,
+        user_info=user_info,
+        farmer_context=farmer_context,
+    )
+
+    message_pairs = "\n\n".join(format_message_pairs(history, 3))
+    logger.info(f"Message pairs: {message_pairs}")
+    if message_pairs:
+        last_response = f"**Conversation**\n\n{message_pairs}\n\n---\n\n"
+    else:
+        last_response = ""
+
+    try:
+        user_message = f"{last_response}{deps.get_user_message()}"
+        _lf_mod = get_langfuse_client() if get_langfuse_client else None
+        _mod_obs_ctx = (
+            _lf_mod.start_as_current_observation(
+                # Distinct from Pydantic's "Moderation Agent run" OTEL span to avoid triple duplicate sidebar labels.
+                name="Moderation",
+                as_type="generation",
+                input={
+                    # Actual model the moderation_agent.run uses below
+                    # (gemma for OSS, legacy model otherwise) — not LLM_MODEL_NAME,
+                    # which mislabeled OSS gemma moderation as gpt in dashboards.
+                    "model_name": request_model_name,
+                    "query": user_message,
+                    "session_id": session_id_safe,
+                },
+                model=request_model_name,
+                metadata={"pipeline": _PIPELINE_NAME},
+            )
+            if _lf_mod
+            else nullcontext()
+        )
+        with _mod_obs_ctx as mod_obs:
+            moderation_run = await execution.run(
+                _LlmStep.MODERATION,
+                active_moderation_agent,
+                user_message,
+            )
+            moderation_data = moderation_run.output
+            logger.info(
+                "request_id=%s moderation_category=%s moderation_action=%s",
+                request_id,
+                moderation_data.category,
+                moderation_data.action,
+            )
+            if mod_obs is not None:
+                mod_obs.update(
+                    output={
+                        "category": moderation_data.category,
+                        "action": moderation_data.action,
+                    }
+                )
+            # Generate suggestions after moderation passes
+            if moderation_data.category == "valid_agricultural" and persona == "farmer":
+                logger.info(f"Triggering suggestions generation for session {session_id}")
+                try:
+                    suggestions_cache_key = f"suggestions_{session_id}_{target_lang}"
+                    status_key = f"{suggestions_cache_key}:pending"
+                    # Mark pending and clear stale suggestions so callers wait for fresh output.
+                    await set_cache(status_key, True, ttl=SUGGESTIONS_PENDING_TTL)
+                    await cache.delete(suggestions_cache_key)
+                    # Deferred, never inline: suggestions read the history
+                    # this turn has not written yet.
+                    scheduler.schedule(
+                        create_suggestions, session_id, target_lang, execution
+                    )
+                    logger.info("Successfully added suggestions task")
+                except Exception as e:
+                    logger.error(f"Error adding suggestions task: {str(e)}")
+            elif moderation_data.category != "valid_agricultural":
+                # Hard gate: do not run retrieval/answer agent for moderated non-agricultural requests.
+                decline_text = (moderation_data.action or "").strip() or (
+                    "I can only answer agriculture and livestock related questions."
+                )
+                decline_text = await localize_system_text(decline_text)
+                logger.info(
+                    "request_id=%s moderation_blocked=True response_preview=%s",
+                    request_id,
+                    decline_text[:160],
+                )
+                # The decline IS the turn's answer, and run_turn records it as the
+                # trace output. Without that the chat export records the turn as
+                # a blank answer (~470 rows on 2026-08-06).
+                # Moderation ran and decided: the turn ended the way it was
+                # supposed to, a success. Recording "error" here inflated the
+                # error rate by one row per moderated query.
+                return ClassifierResult(canned_text=decline_text, label="moderation decline")
+            deps.update_moderation_str(str(moderation_data))
+    except Exception as e:
+        logger.error("request_id=%s moderation_error=%s", request_id, str(e))
+        fail_closed_message = await localize_system_text(GENERIC_UNAVAILABLE_MESSAGE_EN)
+        logger.info(
+            "request_id=%s moderation_blocked=True reason=moderation_error response_preview=%s",
+            request_id,
+            fail_closed_message[:160],
+        )
+        # Deliberately NOT "success": moderation itself failed, the farmer
+        # got a placeholder instead of an answer, and that belongs in the
+        # error rate. The trace output is still recorded so the export shows
+        # what the farmer actually saw rather than a blank row.
+        return ClassifierResult(canned_text=fail_closed_message, label="fail-closed", outcome="error")
+
+    if persona == "farmer":
+        deps.soil_health_card_context = (
+            await get_session_shc_context(session_id, deps.mobile)
+        ) or ""
+    user_message = deps.get_user_message()
+    logger.info(
+        "request_id=%s running_agent=True user_query=%s private_shc_context=%s",
+        request_id,
+        deps.query,
+        bool(deps.soil_health_card_context),
+    )
+
+    # Run the main agent
+    # Strip prior-turn tool calls + their search_documents results from the
+    # replayed history. The agent re-searches fresh every turn, so the only
+    # effect of keeping them was dragging old RAG chunks forward and bloating
+    # prefill (the gemma 10k history budget was mostly stale doc text). The
+    # current turn's search is unaffected — it runs live inside the agent
+    # loop, not via message_history. Suggestions already runs this way.
+    trimmed_history = trim_history(
+        history,
+        max_tokens=execution.capabilities.history_max_tokens,
+        include_system_prompts=False,
+        include_tool_calls=False
+    )
+
+    logger.info(f"Trimmed history length: {len(trimmed_history)} messages")
+
+    agent_observation_name = "Amul Doctor Agent" if persona == "doctor" else "Amul AI Agent"
+
+    def observe():
+        _lf_ag = get_langfuse_client() if get_langfuse_client else None
+        return (
+            _lf_ag.start_as_current_observation(
+                # Distinct from Pydantic's "Amul AI Agent run" span; keeps gen_ai/tool children grouped under that name.
+                name=agent_observation_name,
+                as_type="generation",
+                input={
+                    "action": moderation_data.action,
+                    "model_name": request_model_name,
+                    "persona": persona,
+                },
+                model=request_model_name,
+                metadata={
+                    "pipeline": _PIPELINE_NAME,
+                    "pipeline_profile": execution.profile_name,
+                    "persona": persona,
+                },
+            )
+            if _lf_ag
+            else nullcontext()
+        )
+
+    return AgentInput(
+        agent=active_agent,
+        prompt=user_message,
+        message_history=trimmed_history,
+        deps=deps,
+        history=history,
+        observe=observe,
+    )
+
+
 #: The chat surface's population of the seam. Chat is the degenerate case: one
 #: classifier where voice has five.
 CHAT_SURFACE = SurfaceProfile(
@@ -809,6 +1026,7 @@ CHAT_SURFACE = SurfaceProfile(
     sink=_ChatSink,
     telemetry=_ChatTelemetry,
     pretranslation=_chat_pretranslation,
+    agent_input=_chat_agent_input,
     disabled_languages=_disabled_chat_langs,
 )
 
@@ -933,15 +1151,10 @@ async def run_turn(
     target_lang = turn.target_lang
     user_info = turn.authenticated_user
     history = turn.history
-    persona = turn.persona
-    profile = turn.channel
     message_history_session_id = turn.history_session_id
 
     execution = await llm_core.context(session_id)
     pipeline_profile = execution.profile_name
-    active_agent = doctor_agent if persona == "doctor" else agrinet_agent
-    active_moderation_agent = doctor_moderation_agent if persona == "doctor" else moderation_agent
-    agent_info = execution.info(_LlmStep.AGENT)
     # Open the per-turn pipeline-config tracer and hold the EXPLICIT instance.
     # Populate the static fields directly and pass the trace state explicitly
     # across Starlette's StreamingResponse async-generator boundary.
@@ -950,13 +1163,6 @@ async def run_turn(
     except Exception as _pt_exc:  # pragma: no cover - tracing must never break the turn
         logger.debug("pipeline_config populate skipped: %s", _pt_exc)
         pt = _pipeline_trace.begin(pipeline_profile)
-    # Model selection is resolved by the unified pipeline (the only path): the
-    # agent + moderation handles, the provider, and the display model name all
-    # come from the resolved primary tier for this session's profile (agent_tier
-    # resolved above). For the current env this is the same provider/base_url/model
-    # the removed get_model_for_variant returned, generalized to the weighted split.
-    request_model_name = agent_info.model_name
-    session_id_safe = (session_id or "")[:200]
     # The turn's one root span, its stamps and how the turn ended come from the
     # surface: chat's is chat.turn.v1, voice's will be voice.turn.v1.
     telemetry = (
@@ -981,16 +1187,6 @@ async def run_turn(
             disabled_langs = surface.disabled_languages() if surface.disabled_languages else set()
             request_id = session_id
 
-            def localize_system_text(text_en: str):
-                return _localize_system_text(
-                    text_en,
-                    target_lang=target_lang,
-                    disabled_langs=disabled_langs,
-                    execution=execution,
-                    max_output_chars=profile.response_max_chars,
-                    request_id=request_id,
-                )
-
             logger.info("request_id=%s user_info=%s", request_id, dict(user_info))
 
             # The pre-turn classifier chain: runs before anything is spawned, so a
@@ -1011,7 +1207,7 @@ async def run_turn(
                 # an error. `_turn_outcome` defaults to "error" so that an exit we
                 # did not anticipate is loud; every exit that DID answer has to say
                 # so on its way out.
-                _turn_outcome = "success"
+                _turn_outcome = short_circuit.outcome
                 yield TextEmission(short_circuit.canned_text, raw=short_circuit.raw)
                 return
 
@@ -1028,7 +1224,6 @@ async def run_turn(
             if surface.background is not None:
                 background = surface.background(turn, execution=execution)
 
-            farmer_context = await _load_farmer_context(persona, user_info, request_id)
             if surface.pretranslation is None:
                 raise TypeError(f"surface {surface.surface.value!r} reached pretranslation without one")
             stale = await _stale_outcome(is_stale, "before_query_pretranslation")
@@ -1051,196 +1246,49 @@ async def run_turn(
                 await _write_short_circuit_history(
                     history, pretranslated, message_history_session_id, request_id
                 )
-                _turn_outcome = "success"
+                _turn_outcome = pretranslated.outcome
                 yield TextEmission(pretranslated.canned_text, raw=pretranslated.raw)
                 return
-            processing_query, processing_lang = pretranslated.query, pretranslated.lang
             needs_output_translation = (
                 target_lang.lower() in INDIAN_LANGUAGES
                 and target_lang.lower() not in disabled_langs
             )
-            if needs_output_translation:
-                # Agent responds in English; response will be translated to target_lang downstream
-                processing_lang = "en"
-
-            deps = _build_deps(
-                query=processing_query,
-                session_id=session_id,
-                lang_code=processing_lang,
-                persona=persona,
-                channel=profile,
-                user_info=user_info,
-                farmer_context=farmer_context,
+            # Set when the agent answers in English and the sink translates.
+            translate_to = target_lang if needs_output_translation else None
+            if surface.agent_input is None:
+                raise TypeError(f"surface {surface.surface.value!r} reached the agent without an agent input")
+            agent_input = await surface.agent_input(
+                turn, pretranslated, execution=execution, scheduler=scheduler, translate_to=translate_to
             )
-
-            message_pairs = "\n\n".join(format_message_pairs(history, 3))
-            logger.info(f"Message pairs: {message_pairs}")
-            if message_pairs:
-                last_response = f"**Conversation**\n\n{message_pairs}\n\n---\n\n"
-            else:
-                last_response = ""
-
-            try:
-                user_message = f"{last_response}{deps.get_user_message()}"
-                _lf_mod = get_langfuse_client() if get_langfuse_client else None
-                _mod_obs_ctx = (
-                    _lf_mod.start_as_current_observation(
-                        # Distinct from Pydantic's "Moderation Agent run" OTEL span to avoid triple duplicate sidebar labels.
-                        name="Moderation",
-                        as_type="generation",
-                        input={
-                            # Actual model the moderation_agent.run uses below
-                            # (gemma for OSS, legacy model otherwise) — not LLM_MODEL_NAME,
-                            # which mislabeled OSS gemma moderation as gpt in dashboards.
-                            "model_name": request_model_name,
-                            "query": user_message,
-                            "session_id": session_id_safe,
-                        },
-                        model=request_model_name,
-                        metadata={"pipeline": _PIPELINE_NAME},
-                    )
-                    if _lf_mod
-                    else nullcontext()
+            if isinstance(agent_input, ClassifierResult):
+                # An answer instead of the agent's (chat's moderation decline):
+                # said like the gate's.
+                stale = await _stale_outcome(is_stale, f"before_{agent_input.label}_response")
+                if stale is not None:
+                    _turn_outcome = stale
+                    return
+                if liveness is not None:
+                    await liveness.stop()
+                    liveness = None
+                telemetry.record_output(agent_input.canned_text, agent_input.label)
+                await _write_short_circuit_history(
+                    history, agent_input, message_history_session_id, request_id
                 )
-                with _mod_obs_ctx as mod_obs:
-                    moderation_run = await execution.run(
-                        _LlmStep.MODERATION,
-                        active_moderation_agent,
-                        user_message,
-                    )
-                    moderation_data = moderation_run.output
-                    logger.info(
-                        "request_id=%s moderation_category=%s moderation_action=%s",
-                        request_id,
-                        moderation_data.category,
-                        moderation_data.action,
-                    )
-                    if mod_obs is not None:
-                        mod_obs.update(
-                            output={
-                                "category": moderation_data.category,
-                                "action": moderation_data.action,
-                            }
-                        )
-                    # Generate suggestions after moderation passes
-                    if moderation_data.category == "valid_agricultural" and persona == "farmer":
-                        logger.info(f"Triggering suggestions generation for session {session_id}")
-                        try:
-                            suggestions_cache_key = f"suggestions_{session_id}_{target_lang}"
-                            status_key = f"{suggestions_cache_key}:pending"
-                            # Mark pending and clear stale suggestions so callers wait for fresh output.
-                            await set_cache(status_key, True, ttl=SUGGESTIONS_PENDING_TTL)
-                            await cache.delete(suggestions_cache_key)
-                            # Deferred, never inline: suggestions read the history
-                            # this turn has not written yet.
-                            scheduler.schedule(
-                                create_suggestions, session_id, target_lang, execution
-                            )
-                            logger.info("Successfully added suggestions task")
-                        except Exception as e:
-                            logger.error(f"Error adding suggestions task: {str(e)}")
-                    elif moderation_data.category != "valid_agricultural":
-                        # Hard gate: do not run retrieval/answer agent for moderated non-agricultural requests.
-                        decline_text = (moderation_data.action or "").strip() or (
-                            "I can only answer agriculture and livestock related questions."
-                        )
-                        decline_text = await localize_system_text(decline_text)
-                        logger.info(
-                            "request_id=%s moderation_blocked=True response_preview=%s",
-                            request_id,
-                            decline_text[:160],
-                        )
-                        # The decline IS the turn's answer. Without this the trace
-                        # carries no output and the chat export records the turn as
-                        # a blank answer (~470 rows on 2026-08-06). Same best-effort
-                        # shape as the identity path: telemetry never breaks a turn.
-                        telemetry.record_output(decline_text, "moderation decline")
-                        # Moderation ran and decided: the turn ended the way it was
-                        # supposed to. Recording "error" here inflated the error rate
-                        # by one row per moderated query.
-                        _turn_outcome = "success"
-                        yield TextEmission(decline_text)
-                        return
-                    deps.update_moderation_str(str(moderation_data))
-            except Exception as e:
-                logger.error("request_id=%s moderation_error=%s", request_id, str(e))
-                fail_closed_message = await localize_system_text(GENERIC_UNAVAILABLE_MESSAGE_EN)
-                logger.info(
-                    "request_id=%s moderation_blocked=True reason=moderation_error response_preview=%s",
-                    request_id,
-                    fail_closed_message[:160],
-                )
-                # Deliberately NOT "success": moderation itself failed, the farmer
-                # got a placeholder instead of an answer, and that belongs in the
-                # error rate. `_turn_outcome` is left at "error". The trace output
-                # is still recorded so the export shows what the farmer actually
-                # saw rather than a blank row.
-                telemetry.record_output(fail_closed_message, "fail-closed")
-                yield TextEmission(fail_closed_message)
+                _turn_outcome = agent_input.outcome
+                yield TextEmission(agent_input.canned_text, raw=agent_input.raw)
                 return
-
-            if persona == "farmer":
-                deps.soil_health_card_context = (
-                    await get_session_shc_context(session_id, deps.mobile)
-                ) or ""
-            user_message = deps.get_user_message()
-            logger.info(
-                "request_id=%s running_agent=True user_query=%s private_shc_context=%s",
-                request_id,
-                deps.query,
-                bool(deps.soil_health_card_context),
-            )
-
-            # Run the main agent
-            # Strip prior-turn tool calls + their search_documents results from the
-            # replayed history. The agent re-searches fresh every turn, so the only
-            # effect of keeping them was dragging old RAG chunks forward and bloating
-            # prefill (the gemma 10k history budget was mostly stale doc text). The
-            # current turn's search is unaffected — it runs live inside the agent
-            # loop, not via message_history. Suggestions already runs this way.
-            trimmed_history = trim_history(
-                history,
-                max_tokens=execution.capabilities.history_max_tokens,
-                include_system_prompts=False,
-                include_tool_calls=False
-            )
-
-            logger.info(f"Trimmed history length: {len(trimmed_history)} messages")
 
             if surface.sink is None:
                 raise TypeError(f"surface {surface.surface.value!r} reached the agent without a sink")
             sink = surface.sink(
                 turn,
                 execution=execution,
-                deps=deps,
-                translate_to=target_lang if needs_output_translation else None,
+                deps=agent_input.deps,
+                translate_to=translate_to,
                 is_stale=is_stale,
             )
 
-            _lf_ag = get_langfuse_client() if get_langfuse_client else None
-            agent_observation_name = "Amul Doctor Agent" if persona == "doctor" else "Amul AI Agent"
-            _agrinet_obs_ctx = (
-                _lf_ag.start_as_current_observation(
-                    # Distinct from Pydantic's "Amul AI Agent run" span; keeps gen_ai/tool children grouped under that name.
-                    name=agent_observation_name,
-                    as_type="generation",
-                    input={
-                        "action": moderation_data.action,
-                        "model_name": request_model_name,
-                        "persona": persona,
-                    },
-                    model=request_model_name,
-                    metadata={
-                        "pipeline": _PIPELINE_NAME,
-                        "pipeline_profile": pipeline_profile,
-                        "persona": persona,
-                    },
-                )
-                if _lf_ag
-                else nullcontext()
-            )
-
-            with _agrinet_obs_ctx as agrinet_obs:
+            with agent_input.observe() as agent_obs:
                 # ── ONE agent-streaming path ─────────────────────────────────
                 # Collapsed from the three duplicated blocks (fallback / anthropic
                 # .iter / openai .run_stream) into a single token stream parameterized
@@ -1250,10 +1298,10 @@ async def run_turn(
                 new_messages: list = []
 
                 english_src = execution.stream(
-                    active_agent,
-                    user_message,
-                    message_history=trimmed_history,
-                    deps=deps,
+                    agent_input.agent,
+                    agent_input.prompt,
+                    message_history=agent_input.message_history,
+                    deps=agent_input.deps,
                     new_messages=new_messages,
                 )
 
@@ -1271,7 +1319,7 @@ async def run_turn(
                         await _write_short_circuit_history(
                             history, gated, message_history_session_id, request_id
                         )
-                        _turn_outcome = "success"
+                        _turn_outcome = gated.outcome
                         yield TextEmission(gated.canned_text, raw=gated.raw)
                         return
 
@@ -1291,8 +1339,8 @@ async def run_turn(
                 if get_langfuse_client:
                     try:
                         # Match moderation: structured output so Langfuse shows JSON in the observation panel.
-                        if agrinet_obs is not None:
-                            agrinet_obs.update(
+                        if agent_obs is not None:
+                            agent_obs.update(
                                 output={"response": trace_output or ""},
                             )
                         # Which tier ACTUALLY answered. compact_metadata reports the
@@ -1316,7 +1364,7 @@ async def run_turn(
             # output and must never enter TTS, prompt history, or trace bodies.
             # They leave the turn only as an emission; how they reach the caller
             # (terminal SSE frame, JSON array, never spoken) is the adapter's call.
-            chat_artifacts = deps.take_chat_artifacts()
+            chat_artifacts = agent_input.deps.take_chat_artifacts()
             if chat_artifacts:
                 yield ArtifactEmission(artifacts=tuple(chat_artifacts))
 
@@ -1328,7 +1376,7 @@ async def run_turn(
 
             # Post-processing happens AFTER streaming is complete
             messages = [
-                *history,
+                *agent_input.history,
                 *new_messages
             ]
 

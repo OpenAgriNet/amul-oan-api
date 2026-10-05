@@ -12,12 +12,14 @@ and decides what each one means on its wire.
 
 Following the rule in ``app/channels/base``, a field appears only when something
 reads it. The sink and the telemetry are on ``SurfaceProfile`` because ``run_turn``
-reads them and chat populates them with its real ones; so is pretranslation.
+reads them and chat populates them with its real ones; so are pretranslation
+and the agent input.
 ``Turn.call`` is there because voice's classifiers read it, and the background set
 and liveness because ``run_turn`` runs voice's.
 """
 from __future__ import annotations
 
+from contextlib import nullcontext
 from dataclasses import dataclass
 from enum import Enum
 from typing import (
@@ -29,6 +31,7 @@ from typing import (
     Mapping,
     Optional,
     Protocol,
+    Sequence,
     Union,
 )
 
@@ -202,8 +205,9 @@ class ClassifierResult:
     """A decision to answer the turn with fixed text instead of the agent's.
 
     Returned by a pre-turn classifier that MATCHED (one that does not apply
-    returns ``None`` and the chain moves on), and by the gate before the first
-    emission when a background check says the agent's answer must not be sent.
+    returns ``None`` and the chain moves on), by the gate before the first
+    emission when a background check says the agent's answer must not be sent,
+    and by pretranslation or the agent input when they answer instead.
     """
 
     #: The text to emit to the caller.
@@ -219,6 +223,10 @@ class ClassifierResult:
 
     #: Carried onto the ``TextEmission``; see ``TextEmission.raw``.
     raw: bool = False
+
+    #: How the turn is recorded as having ended. An answer given because a
+    #: check failed (chat's fail-closed moderation line) is not a success.
+    outcome: str = "success"
 
 
 #: Decides, before any background task is spawned or any model is called,
@@ -311,6 +319,47 @@ class Pretranslation(Protocol):
         execution: Any,
         background: Optional[TurnBackground],
     ) -> Union[Pretranslated, ClassifierResult]: ...
+
+
+# ── agent input ─────────────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class AgentInput:
+    """What the agent is run with for one turn."""
+
+    agent: Any
+    #: The caller's message as the agent reads it.
+    prompt: str
+    #: What the model sees before ``prompt``.
+    message_history: list[ModelMessage]
+    #: The turn's ``FarmerContext``, handed to pydantic-ai as ``deps`` and to the sink.
+    deps: Any
+    #: The history the agent's new messages are appended to when the turn is saved.
+    history: Sequence[ModelMessage]
+    #: Opens the surface's observation around the agent's run. What it yields,
+    #: if not None, is given the answer with ``update(output=...)``.
+    observe: Callable[[], AbstractContextManager[Any]] = nullcontext
+
+
+class AgentInputStep(Protocol):
+    """Builds the agent's input from the pretranslated query.
+
+    Returns what the agent is run with, or an answer that ends the turn
+    instead: chat's moderation decides here, before the agent starts, and
+    declines a query it rejects. ``translate_to`` is set when the answer will
+    be translated for the caller, so the agent answers in English.
+    """
+
+    async def __call__(
+        self,
+        turn: Turn,
+        pretranslated: Pretranslated,
+        *,
+        execution: Any,
+        scheduler: DeferredScheduler,
+        translate_to: Optional[str],
+    ) -> Union[AgentInput, ClassifierResult]: ...
 
 
 # ── the sink ────────────────────────────────────────────────────────────────
@@ -417,6 +466,9 @@ class SurfaceProfile:
     #: Puts the query into the language the agent reads. Like the sink, a surface
     #: that always answers from its classifiers may leave it unset.
     pretranslation: Optional[Pretranslation] = None
+    #: What the agent is run with. Chat's also runs its moderation. Like the
+    #: sink, a surface that always answers from its classifiers may leave it unset.
+    agent_input: Optional[AgentInputStep] = None
     #: Languages switched off for this surface, whose turns are answered in
     #: English. Chat's come from its ``*_CHAT_ENABLED`` settings; voice has none.
     disabled_languages: Optional[Callable[[], set[str]]] = None
