@@ -142,6 +142,11 @@ _STATE_BY_PROFILE_STATUS: dict = {
 }
 
 
+def profile_status_for_state(state: FarmerIdentityState) -> str:
+    """The FarmerContext.farmer_profile_status a turn with this state carries."""
+    return next(status for status, known in _STATE_BY_PROFILE_STATUS.items() if known == state)
+
+
 def identity_state_for_deps(deps: Optional[FarmerContext]) -> FarmerIdentityState:
     """Read the state off the per-turn deps, defaulting to unresolved.
 

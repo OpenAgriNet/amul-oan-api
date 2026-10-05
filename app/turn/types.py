@@ -225,8 +225,13 @@ class ClassifierResult:
     raw: bool = False
 
     #: How the turn is recorded as having ended. An answer given because a
-    #: check failed (chat's fail-closed moderation line) is not a success.
+    #: check failed (chat's fail-closed moderation line) is not a success, and
+    #: voice names its own (``outbound_declined``, ``outbound_no_data``).
     outcome: str = "success"
+
+    #: Emitted after ``canned_text`` on its own, raw: voice's hang-up token
+    #: after the outbound farewell, which must reach the provider exactly.
+    raw_tail: Optional[str] = None
 
 
 #: Decides, before any background task is spawned or any model is called,
@@ -340,6 +345,11 @@ class AgentInput:
     #: Opens the surface's observation around the agent's run. What it yields,
     #: if not None, is given the answer with ``update(output=...)``.
     observe: Callable[[], AbstractContextManager[Any]] = nullcontext
+    #: pydantic-ai ``UsageLimits`` for the run, or None for the agent's own.
+    usage_limits: Any = None
+    #: Given the agent's new messages, a raw line to say after its answer, or
+    #: None. Voice's hangs up when the agent said the conversation is closing.
+    closing_line: Optional[Callable[[Sequence[ModelMessage]], Optional[str]]] = None
 
 
 class AgentInputStep(Protocol):
@@ -347,8 +357,11 @@ class AgentInputStep(Protocol):
 
     Returns what the agent is run with, or an answer that ends the turn
     instead: chat's moderation decides here, before the agent starts, and
-    declines a query it rejects. ``translate_to`` is set when the answer will
-    be translated for the caller, so the agent answers in English.
+    declines a query it rejects; voice's outbound consent gate declines or
+    reads out milk details. ``translate_to`` is set when the answer will be
+    translated for the caller, so the agent answers in English. Voice reads the
+    farmer data and the consent verdict off the background set, and asks
+    ``is_stale`` before it rewrites history. Chat ignores both.
     """
 
     async def __call__(
@@ -359,6 +372,8 @@ class AgentInputStep(Protocol):
         execution: Any,
         scheduler: DeferredScheduler,
         translate_to: Optional[str],
+        background: Optional[TurnBackground],
+        is_stale: Optional[StalenessCheck],
     ) -> Union[AgentInput, ClassifierResult]: ...
 
 
@@ -427,8 +442,8 @@ class TurnTelemetry(Protocol):
         ...
 
     def record_outcome(self, outcome: str) -> None:
-        """Record how the turn ended: ``success``, ``cancelled``, ``error``, or
-        the outcome a ``StalenessCheck`` stopped it with."""
+        """Record how the turn ended: ``success``, ``cancelled``, ``error``, the
+        outcome a ``StalenessCheck`` stopped it with, or one an answer carried."""
         ...
 
 

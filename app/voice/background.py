@@ -11,8 +11,10 @@ A turn that ends before the gate still declines a rejected query: when
 pretranslation leaves nothing to ask the agent, voice's pretranslation asks
 ``decline`` rather than having the caller repeat a rejected question.
 
-Voice's other background tasks, the farmer data fetch and the outbound consent
-classifier, arrive with the code that reads them.
+The farmer data fetch starts here too, and on the farmer's reply to an outbound
+call the consent classifier and the milk prefetch. The agent input reads the
+first two. The farmer fetch is left to finish when the turn ends, as voice
+leaves it: it fills the cache for the call's next turn.
 """
 from __future__ import annotations
 
@@ -21,13 +23,17 @@ import re
 from functools import partial
 from typing import Optional
 
+from agents.voice.tools.farmer import normalize_phone_to_mobile
 from app.config import settings
 from app.turn.types import BackgroundFactory, ClassifierResult, Turn
 from app.utils import format_message_pairs
+from app.voice import outbound as _outbound
 from app.voice.classifiers import TELEPHONY_TERMINATE_CALL_TOKEN, RenderForCaller
+from app.voice.farmer import _collect_farmer_accounts, get_or_fetch_farmer_data
 from app.voice.history import HISTORY_MARKERS, history_pair
 from app.voice.moderation import ModerationVerdict, check_moderation
 from app.voice.non_meaningful import NonMeaningfulVerdict, check_non_meaningful_streak
+from app.voice.outbound_consent import ConsentVerdict, classify_consent
 from helpers.utils import get_logger
 
 logger = get_logger(__name__)
@@ -110,6 +116,14 @@ def _should_gate_non_meaningful_llm(turns: list[str]) -> bool:
     return len(turns) >= 5
 
 
+async def _warm_outbound_milk(session_id: str, mobile_number: str) -> None:
+    """Warm the milk summary alongside the consent classifier, so an affirmative
+    reply does not pay the upstream lookup serially. Failure just means the
+    agent fetches it itself."""
+    envelope = await get_or_fetch_farmer_data(mobile_number)
+    await _outbound.prefetch_milk_summary(session_id, _collect_farmer_accounts(envelope))
+
+
 async def _cancel_and_reap(task: asyncio.Task) -> None:
     if task.done():
         return
@@ -121,9 +135,10 @@ async def _cancel_and_reap(task: asyncio.Task) -> None:
 
 
 class VoiceBackground:
-    """Moderation and the non-meaningful streak for one call turn.
+    """Moderation, the non-meaningful streak and the farmer data for one call turn.
 
-    Building it starts both checks. ``gate`` resolves them in voice's order,
+    Building it starts them all, plus the consent classifier on an outbound
+    call's consent turn. ``gate`` resolves the checks in voice's order,
     moderation first.
     """
 
@@ -152,10 +167,59 @@ class VoiceBackground:
                 execution=execution,
             )
         )
+        self._mobile = normalize_phone_to_mobile(turn.user_id)
+        self._farmer_task = (
+            asyncio.create_task(get_or_fetch_farmer_data(self._mobile))
+            if self._mobile
+            else None
+        )
+        consent_turn = turn.call is not None and turn.call.outbound_consent_turn
+        # It reads the raw native-language reply, so it runs under pretranslation
+        # and the farmer fetch rather than after them.
+        self._consent_task = (
+            asyncio.create_task(
+                classify_consent(reply=turn.query, source_lang=self._source_lang, execution=execution)
+            )
+            if consent_turn
+            else None
+        )
+        if consent_turn and self._mobile:
+            _outbound.spawn(
+                _warm_outbound_milk(turn.session_id, self._mobile), label="outbound_milk_prefetch"
+            )
         self._moderation_resolved = False
         self._moderation_verdict: Optional[ModerationVerdict] = None
         self._non_meaningful_resolved = False
         self._non_meaningful_verdict: Optional[NonMeaningfulVerdict] = None
+
+    @property
+    def mobile(self) -> Optional[str]:
+        """The caller's mobile, when the user id is one."""
+        return self._mobile
+
+    @property
+    def moderation_task(self) -> asyncio.Task:
+        """The running moderation check. Booking tools wait on it through
+        ``FarmerContext.ensure_in_scope`` before they write anything."""
+        return self._moderation_task
+
+    @property
+    def history_text(self) -> str:
+        """What history keeps for the caller's turn."""
+        return self._history_text
+
+    async def farmer_data(self):
+        """The farmer fetch's envelope, or None without a mobile or when the
+        fetch did not resolve. Raises what the fetch raised."""
+        if self._farmer_task is None:
+            return None
+        return await self._farmer_task
+
+    async def consent(self) -> Optional[ConsentVerdict]:
+        """The verdict on an outbound call's consent turn, else None."""
+        if self._consent_task is None:
+            return None
+        return await self._consent_task
 
     def set_history_text(self, text: str) -> None:
         """What history keeps for the caller's turn: the English pretranslation
@@ -180,7 +244,8 @@ class VoiceBackground:
         return None
 
     async def close(self) -> None:
-        for task in (self._moderation_task, self._non_meaningful_task):
+        tasks = (self._moderation_task, self._non_meaningful_task, self._consent_task)
+        for task in (task for task in tasks if task is not None):
             try:
                 if task.done():
                     # A check that failed before anyone asked: take its error,
