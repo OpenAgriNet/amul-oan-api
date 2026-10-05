@@ -223,21 +223,16 @@ def test_legacy_client_follows_voice_moderation_provider_not_the_session(provide
 
 @pytest.fixture
 def oss_on(monkeypatch):
-    """Fallback on, an [oss, managed] chain, deterministic per-kind backends, and
-    the fallback events captured."""
+    """Fallback on, with the fallback events captured. Tiers resolve from the
+    config as they do in production; only the model call itself is faked."""
     events = []
     monkeypatch.setattr(llm_execution, "emit", events.append)
-    monkeypatch.setattr(mod, "_client_model_for_kind", lambda execution, kind: (
-        f"{kind}-client",
-        f"{kind}-model",
-        "vllm" if kind == "oss" else "openai",
-    ))
     return events
 
 
 def test_oss_failure_falls_back_to_managed(oss_on, monkeypatch):
     async def fake_create(client, model, text, source_lang, recent_history_text=""):
-        if model.startswith("oss"):
+        if model == "gemma":
             raise ConnectionError("vllm refused")
         return _resp('{"category": "in_scope", "reason": "ok"}')
 
@@ -308,7 +303,7 @@ def test_a_profile_without_moderation_walks_the_managed_profile(oss_on, monkeypa
     v = _check("x", execution=_execution(fallback=True, profile="agent-only"))
     assert v.requested_tier == "managed"
     assert v.category == "offensive" and v.rejected
-    assert models == ["managed-model"]
+    assert models == ["gpt"]
 
 
 def test_a_primary_that_cannot_be_built_degrades_to_managed(monkeypatch):
@@ -332,12 +327,22 @@ def test_a_primary_that_cannot_be_built_degrades_to_managed(monkeypatch):
 # ── the real clients ────────────────────────────────────────────────────────
 
 
-@pytest.mark.parametrize("kind, model, label", [("oss", "gemma", "vllm"), ("managed", "gpt", "openai")])
-def test_each_attempt_gets_a_bare_openai_client_for_its_kind(kind, model, label):
-    client, got_model, got_label = mod._client_model_for_kind(_execution(fallback=True, profile="managed"), kind)
+def test_each_attempt_gets_a_bare_openai_client_for_its_tier(oss_on, monkeypatch):
+    calls = []
 
-    assert isinstance(client, AsyncOpenAI)
-    assert (got_model, got_label) == (model, label)
+    async def fake_create(client, model, text, source_lang, recent_history_text=""):
+        calls.append((client, model))
+        if model == "gemma":
+            raise ConnectionError("vllm refused")
+        return _resp(_VALID_IN_SCOPE)
+
+    monkeypatch.setattr(mod, "_create_moderation_response", fake_create)
+
+    _check("hi", execution=_execution(fallback=True))
+
+    assert [model for _, model in calls] == ["gemma", "gpt"]
+    assert all(isinstance(client, AsyncOpenAI) for client, _ in calls)
+    assert str(calls[0][0].base_url).startswith("http://oss:8020/v1")
 
 
 def test_the_fallback_walk_requests_raw_clients(monkeypatch):
@@ -375,3 +380,70 @@ def test_a_session_on_a_named_profile_is_moderated_on_that_profile(oss_on, monke
     requested.append(_check("hi", execution=_execution(fallback=True)).requested_tier)
 
     assert requested == ["managed", "oss"]
+
+
+# ── N-way chains and a config without moderation (review on #332) ───────────
+
+
+_OSS_A = Tier(provider=Provider.VLLM, model="gemma-a", endpoint="http://oss-a:8020/v1")
+_OSS_C = Tier(provider=Provider.VLLM, model="gemma-c", endpoint="http://oss-c:8020/v1")
+_MANAGED_B = Tier(provider=Provider.OPENAI, model="gpt-b")
+
+
+def _canary(*, managed_moderation=True):
+    managed = {Step.AGENT: StepConfig(tiers=[_MANAGED])}
+    if managed_moderation:
+        managed[Step.MODERATION] = StepConfig(tiers=[_MANAGED])
+    config = PipelineConfig(
+        profiles=[
+            NamedProfile(name="canary", weight=50, steps={Step.MODERATION: StepConfig(tiers=[_OSS_A, _OSS_C, _MANAGED_B])}),
+            NamedProfile(name="agent-only", weight=0, steps={Step.AGENT: StepConfig(tiers=[_MANAGED])}),
+            NamedProfile(name="managed", weight=50, steps=managed),
+        ],
+        fallback_enabled=True,
+    )
+    return config
+
+
+@pytest.mark.parametrize(
+    "down, called, served",
+    [
+        ({"gemma-a"}, ["gemma-a", "gemma-c"], ("oss", "vllm", "gemma-c")),
+        ({"gemma-a", "gemma-c"}, ["gemma-a", "gemma-c", "gpt-b"], ("managed", "openai", "gpt-b")),
+    ],
+)
+def test_each_tier_of_an_n_way_chain_is_tried_once_in_order(oss_on, monkeypatch, down, called, served):
+    calls = []
+
+    async def fake_create(client, model, text, source_lang, recent_history_text=""):
+        calls.append((str(client.base_url), model))
+        if model in down:
+            raise ConnectionError(f"{model} down")
+        return _resp(_VALID_IN_SCOPE)
+
+    monkeypatch.setattr(mod, "_create_moderation_response", fake_create)
+
+    v = _check("hi", execution=ExecutionContext(session_id="s", config=_canary(), profile_name="canary"))
+
+    assert [model for _, model in calls] == called
+    assert calls[0][0].startswith("http://oss-a:8020/v1")
+    assert v.category == "in_scope" and not v.rejected
+    assert (v.requested_tier, v.requested_provider, v.requested_model) == ("oss", "vllm", "gemma-a")
+    assert (v.actual_tier, v.actual_provider, v.actual_model) == served
+    assert [(a["provider"], a["model"], a["status"]) for a in v.attempts] == [
+        ("openai" if model == "gpt-b" else "vllm", model, "error" if model in down else "ok") for model in called
+    ]
+    assert v.fallback_used is True
+
+
+def test_a_config_with_no_moderation_anywhere_fails_closed_instead_of_raising(oss_on, monkeypatch):
+    async def never(client, model, text, source_lang, recent_history_text=""):
+        raise AssertionError("no tier should be called")
+
+    monkeypatch.setattr(mod, "_create_moderation_response", never)
+    execution = ExecutionContext(session_id="s", config=_canary(managed_moderation=False), profile_name="agent-only")
+
+    v = _check("book an AI visit", execution=execution)
+
+    assert v.category == "unavailable" and v.rejected and v.failed_closed
+    assert v.attempts == []

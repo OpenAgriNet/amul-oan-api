@@ -108,17 +108,6 @@ def _moderation_client_and_model(execution: ExecutionContext) -> tuple[AsyncOpen
     return mt.handle, mt.model_name, ("openai" if _MODERATION_PROVIDER == "openai" else "vllm")
 
 
-def _client_model_for_kind(execution: ExecutionContext, kind: str) -> tuple[AsyncOpenAI, str, str]:
-    """Return (client, model, provider_label) for one fallback-chain attempt:
-    'oss' -> self-hosted vLLM, anything else -> managed OpenAI.
-
-    The client + model come from the MODERATION tier for the matching variant
-    ('oss' tier vs managed tier), keeping the provider label byte-identical."""
-    variant = "oss" if kind == "oss" else "legacy"
-    mt = _moderation_tier(execution, variant)
-    return mt.handle, mt.model_name, ("vllm" if kind == "oss" else "openai")
-
-
 def _legacy_requested_model(tier: str) -> str:
     """The model the legacy path reports when its client could not be built: the
     pretranslation model moderation shares, from the same env and defaults as
@@ -334,52 +323,34 @@ async def check_moderation(
             execution=execution,
         )
 
-    # Requested (primary) tier for this session's profile — resolved by NAME from the
-    # unified config, so a 3rd profile's kind is honoured (vllm -> "oss"; managed
-    # provider -> "managed"), not collapsed via a variant string.
-    #
-    # Finding voice#1 (fail-CLOSED): this resolution MUST NOT escape check_moderation.
-    # It sat outside the fail-closed try below, so a resolver error (e.g. an N-way
-    # config whose profile omits the ``moderation`` step -> ``ValueError("no config
-    # for step=moderation")``) propagated to voice's ``_resolve_moderation`` handler,
-    # which fails OPEN -> moderation bypassed. Default to a managed kind on ANY
-    # error, and walk the managed profile's chain as voice's resolver degraded to: a
-    # managed default NEVER bypasses, and the walk below still fail-CLOSEs if every
-    # tier is unavailable. The client is built here, as voice's resolver built it,
-    # so a tier that cannot be built takes the same managed default.
-    walk = execution
-    try:
-        primary = execution.target(Step.MODERATION, client_kind=StepClientKind.RAW_OPENAI)
-        primary.handle
-        requested_kind = primary.kind
-    except Exception:
-        requested_kind = "managed"
-        walk = replace(execution, profile_name="managed")
-    _, requested_model, requested_provider = _client_model_for_kind(execution, requested_kind)
+    # Nothing from here on may raise into the caller: voice's background check turns
+    # an exception into no verdict, and no verdict lets the booking tools run. So the
+    # requested tier is resolved inside the fail-closed try below too.
+    requested_kind = requested_provider = requested_model = "unknown"
     attempts: list[dict[str, object]] = []
-    actual_tier = requested_kind
-    actual_provider = requested_provider
-    actual_model = requested_model
+    actual_tier = actual_provider = actual_model = "unknown"
 
     async def _run(attempt):
+        # Each attempt is the tier the fallback walker picked, used as it is.
         nonlocal actual_tier, actual_provider, actual_model
-        client, model, provider = _client_model_for_kind(execution, attempt.kind)
         attempt_info: dict[str, object] = {
             "tier": attempt.kind,
-            "provider": provider,
-            "model": model,
+            "provider": attempt.provider,
+            "model": attempt.model_name,
             "endpoint": attempt.endpoint,
             "status": "started",
         }
         attempts.append(attempt_info)
         try:
-            response = await _create_moderation_response(client, model, text, source_lang, recent_history_text)
+            response = await _create_moderation_response(
+                attempt.handle, attempt.model_name, text, source_lang, recent_history_text
+            )
             raw = (response.choices[0].message.content or "").strip()
             verdict = _parse_verdict_strict(raw)
             attempt_info["status"] = "ok"
             actual_tier = attempt.kind
-            actual_provider = provider
-            actual_model = model
+            actual_provider = attempt.provider
+            actual_model = attempt.model_name
             return verdict
         except Exception as exc:
             attempt_info["status"] = "error"
@@ -388,6 +359,18 @@ async def check_moderation(
             raise
 
     try:
+        # The session's profile, or managed when that profile has no moderation step
+        # or its primary can't be built (voice's finding #1): moderation is never
+        # skipped, and if managed has none either the check fails closed below.
+        walk = execution
+        try:
+            primary = execution.target(Step.MODERATION, client_kind=StepClientKind.RAW_OPENAI)
+            primary.handle
+        except Exception:
+            walk = replace(execution, profile_name="managed")
+            primary = walk.target(Step.MODERATION, client_kind=StepClientKind.RAW_OPENAI)
+        requested_kind, requested_provider, requested_model = primary.kind, primary.provider, primary.model_name
+        actual_tier, actual_provider, actual_model = requested_kind, requested_provider, requested_model
         verdict = await walk.run_adapter(
             Step.MODERATION, _run, client_kind=StepClientKind.RAW_OPENAI
         )
@@ -405,7 +388,7 @@ async def check_moderation(
         )
     except Exception as e:
         logger.error(
-            "Moderation failed on all tiers; failing closed - source_lang=%s error=%s",
+            "Moderation gave no verdict on any tier; failing closed - source_lang=%s error=%s",
             source_lang,
             type(e).__name__,
         )
