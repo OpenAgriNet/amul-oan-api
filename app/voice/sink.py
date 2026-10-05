@@ -256,8 +256,9 @@ def _trouble_message(target_lang: str) -> str:
     return TRANSLATION_TROUBLE_MESSAGE.get(target_lang, TRANSLATION_TROUBLE_MESSAGE["en"])
 
 
-async def render_for_caller(text_en: str, target_lang: str) -> str:
-    """Render English loop text for the caller's language outside the agent loop."""
+async def render_for_caller(text_en: str, target_lang: str, *, execution) -> str:
+    """Render English loop text for the caller's language outside the agent loop,
+    on the turn's ExecutionContext, so a fixed reply uses the turn's models."""
     normalized_target = (target_lang or "en").strip().lower()
     if normalized_target in {"en", "english"}:
         return _prepare_voice_output(text_en, "en")
@@ -272,6 +273,7 @@ async def render_for_caller(text_en: str, target_lang: str) -> str:
                 text=text_en,
                 source_lang="english",
                 target_lang=normalized_target,
+                execution=execution,
             )
         return _prepare_voice_output(translated, normalized_target)
     except Exception as e:
@@ -356,12 +358,17 @@ class VoiceSink:
         self._first_text_chunk_received = False
         self._last_emitted_sig_char: str | None = None
         self._spoken: list[str] = []
+        self._failed = False
 
     def stream(self, english: AsyncIterator[str]) -> AsyncIterator[str]:
         return self._stream(english)
 
     def final_text(self) -> Optional[str]:
         return "".join(self._spoken) or None
+
+    def outcome(self) -> Optional[str]:
+        # The agent or a translation failed and the caller heard the trouble line.
+        return "error" if self._failed else None
 
     async def _stale(self, reason: str) -> bool:
         return self._is_stale is not None and await self._is_stale(reason) is not None
@@ -397,6 +404,7 @@ class VoiceSink:
                 async for text in spoken:
                     yield text
         except Exception as error:
+            self._failed = True
             logger.error(
                 "Voice agent stream failed %s first token; session_id=%s process_id=%s error=%s",
                 "after" if self._agent_started else "before",
@@ -513,6 +521,7 @@ class VoiceSink:
                         yield cleaned
         except Exception as e:
             trace.increment("output_translation_errors")
+            self._failed = True
             logger.error(
                 "Translation pipeline output translation failed for session_id=%s error=%s",
                 self._session_id,

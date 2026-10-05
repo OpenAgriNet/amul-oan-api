@@ -405,6 +405,7 @@ async def _voice_agent_input(
             farewell_en = _outbound.OUTBOUND_DECLINE_FAREWELL["en"]
             farewell_for_caller = await _canned_for_caller(
                 render, farewell_en, requested_target_lang, _outbound.OUTBOUND_DECLINE_FAREWELL,
+                execution=execution,
             )
             logger.info(
                 "Outbound consent declined; emitting farewell + hangup - session_id=%s process_id=%s reason=%r",
@@ -443,6 +444,7 @@ async def _voice_agent_input(
                 no_data_en = _outbound.OUTBOUND_NO_DATA["en"]
                 no_data_for_caller = await _canned_for_caller(
                     render, no_data_en, requested_target_lang, _outbound.OUTBOUND_NO_DATA,
+                    execution=execution,
                 )
                 logger.info(
                     "Outbound consent affirmative but no milk data available - "

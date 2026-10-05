@@ -150,6 +150,7 @@ class VoiceBackground:
 
     def __init__(self, turn: Turn, *, execution, render: RenderForCaller) -> None:
         self._turn = turn
+        self._execution = execution
         self._render = render
         self._source_lang = (turn.source_lang or "gu").strip().lower()
         self._target_lang = (turn.target_lang or "gu").strip().lower()
@@ -460,7 +461,7 @@ class VoiceBackground:
         """The canned decline for a rejected query. History keeps it in English."""
         nudge_stopped("moderation_rejected")
         decline_en = verdict.decline_text_en() or _DEFAULT_DECLINE_EN
-        decline_for_caller = await self._render(decline_en, self._target_lang)
+        decline_for_caller = await self._render(decline_en, self._target_lang, execution=self._execution)
         return ClassifierResult(
             canned_text=decline_for_caller,
             label="moderation_rejected",

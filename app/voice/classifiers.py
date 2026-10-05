@@ -19,6 +19,7 @@ import re
 from functools import partial
 from typing import Literal, Optional, Protocol
 
+from app import llm_core
 from app.config import settings
 from app.turn.types import Classifier, ClassifierResult, Turn
 from app.voice.history import HISTORY_MARKERS as _HISTORY_MARKERS
@@ -35,9 +36,10 @@ logger = get_logger(__name__)
 
 
 class RenderForCaller(Protocol):
-    """Puts an English line into the caller's language, ready to be spoken."""
+    """Puts an English line into the caller's language, ready to be spoken, on the
+    turn's own models: ``execution`` is the turn's ExecutionContext."""
 
-    async def __call__(self, text_en: str, target_lang: str) -> str: ...
+    async def __call__(self, text_en: str, target_lang: str, *, execution) -> str: ...
 
 
 # ── Greeting short-circuit helpers ─────────────────────────────────────
@@ -197,7 +199,7 @@ def _fast_paths_apply(turn: Turn) -> bool:
 
 
 async def _canned_for_caller(
-    render: RenderForCaller, text_en: str, target_lang: str, canned: dict[str, str]
+    render: RenderForCaller, text_en: str, target_lang: str, canned: dict[str, str], *, execution
 ) -> str:
     """The pre-written line for the caller's language when there is one, which
     skips a translation round-trip on a fixed reply; otherwise the English line
@@ -205,7 +207,13 @@ async def _canned_for_caller(
     key = (target_lang or "en").strip().lower()
     if key in canned:
         return canned[key]
-    return await render(text_en, target_lang)
+    return await render(text_en, target_lang, execution=execution)
+
+
+async def _session_execution(turn: Turn):
+    """The turn's session on llm_core. A classifier is given only the turn, and the
+    profile follows the session id, so its fixed reply runs on the turn's models."""
+    return await llm_core.context(turn.session_id)
 
 
 async def _stt_signal_classifier(turn: Turn) -> Optional[ClassifierResult]:
@@ -283,7 +291,8 @@ async def _greeting_classifier(turn: Turn, *, render: RenderForCaller) -> Option
     greeting_history = _GREETING_RESPONSES["en"]
     with current_trace().stage("greeting_fast_path"):
         greeting_response = await _canned_for_caller(
-            render, greeting_history, _caller_lang(turn), _GREETING_RESPONSES
+            render, greeting_history, _caller_lang(turn), _GREETING_RESPONSES,
+            execution=await _session_execution(turn),
         )
     return ClassifierResult(
         canned_text=greeting_response,
@@ -305,7 +314,9 @@ async def _identity_classifier(turn: Turn, *, render: RenderForCaller) -> Option
         turn.session_id, _process_id(turn), turn.query,
     )
     with current_trace().stage("identity_fast_path"):
-        identity_resp_for_caller = await render(_IDENTITY_RESPONSE_EN, _caller_lang(turn))
+        identity_resp_for_caller = await render(
+            _IDENTITY_RESPONSE_EN, _caller_lang(turn), execution=await _session_execution(turn)
+        )
     return ClassifierResult(
         canned_text=identity_resp_for_caller,
         label="identity_fast_path",
@@ -326,7 +337,8 @@ async def _fragment_classifier(turn: Turn, *, render: RenderForCaller) -> Option
     frag_response_for_history = _FRAGMENT_RESPONSES["en"]
     with current_trace().stage("fragment_fast_path"):
         frag_response_for_caller = await _canned_for_caller(
-            render, frag_response_for_history, _caller_lang(turn), _FRAGMENT_RESPONSES
+            render, frag_response_for_history, _caller_lang(turn), _FRAGMENT_RESPONSES,
+            execution=await _session_execution(turn),
         )
     return ClassifierResult(
         canned_text=frag_response_for_caller,

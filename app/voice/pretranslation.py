@@ -717,7 +717,8 @@ async def _voice_pretranslation(
         )
         low_conf_resp_for_history = _FRAGMENT_RESPONSES["en"]
         low_conf_resp_for_caller = await _canned_for_caller(
-            render, low_conf_resp_for_history, requested_target_lang, _FRAGMENT_RESPONSES
+            render, low_conf_resp_for_history, requested_target_lang, _FRAGMENT_RESPONSES,
+            execution=execution,
         )
         return ClassifierResult(
             canned_text=low_conf_resp_for_caller,
