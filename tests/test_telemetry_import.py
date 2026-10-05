@@ -798,6 +798,8 @@ def test_chat_duration_needs_a_completed_child_and_a_turn_root():
     [unfinished] = stamped.inserts["chat_turns"]
     assert unfinished["full_turn_latency_ms"] is None
     assert unfinished["field_availability"]["full_turn_latency_ms"] == "unavailable"
+    assert unfinished["tool_names"] == []
+    assert unfinished["tool_call_count"] == 0
 
     started_ms = int(datetime(2026, 7, 23, 10, tzinfo=timezone.utc).timestamp() * 1000)
     historical = FakeClickHouse(

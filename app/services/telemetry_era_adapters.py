@@ -710,7 +710,7 @@ def _adapt_stamped_chat_trace(
         user_id_semantics="jwt_phone_then_query_param_then_anonymous",
         turn_outcome=score_values.get("turn_outcome"),
         served_tier=score_values.get("served_tier"),
-        tool_calls=tool_calls or None,
+        tool_calls=tool_calls,
         root_input=raw.get("input") if isinstance(raw.get("input"), Mapping) else None,
         root_output=raw.get("output"),
         observation_names=_names(observations),

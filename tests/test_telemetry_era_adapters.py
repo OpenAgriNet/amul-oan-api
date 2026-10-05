@@ -674,6 +674,12 @@ def test_stamped_chat_trace_uses_the_shared_mapping_engine_without_an_era_regist
     assert "private tool output" not in imported
 
 
+def test_stamped_chat_without_tool_observations_has_an_empty_tool_list():
+    turn = adapt_chat_trace(_stamped_chat_trace(), observations=[])
+
+    assert turn.tool_calls == []
+
+
 def test_unknown_stamped_chat_schema_is_rejected():
     # Far past any real version, so releasing chat.turn.v2 later doesn't make it a known stamp.
     with pytest.raises(UnsupportedTelemetryEra, match="Unknown chat schema version"):
