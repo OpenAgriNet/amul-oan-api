@@ -56,7 +56,7 @@ def _turn(query="My cow has fever", *, history=(), source_lang="en", target_lang
     )
 
 
-async def _render(text_en, target_lang):
+async def _render(text_en, target_lang, *, execution):
     return f"<{target_lang}> {text_en}"
 
 
@@ -198,6 +198,26 @@ def test_a_rejected_query_is_declined_in_the_callers_language(checks):
     assert decision.canned_text == f"<gu> {decline_en}"
     assert decision.raw is False
     assert _pair_texts(decision) == ["[moderation-rejected]", decline_en]
+
+
+def test_the_decline_is_rendered_on_the_turns_execution(checks):
+    checks["moderation_result"] = ModerationVerdict(category="irrelevant", reason="off topic")
+    used = []
+
+    async def _render_on(text_en, target_lang, *, execution):
+        used.append(execution)
+        return text_en
+
+    async def _run():
+        background = bg.VoiceBackground(_turn(target_lang="gu"), execution=_EXECUTION, render=_render_on)
+        try:
+            return await background.gate()
+        finally:
+            await background.close()
+
+    asyncio.run(_run())
+
+    assert used == [_EXECUTION]
 
 
 def test_moderation_failing_closed_is_declined_with_the_try_again_line(checks):

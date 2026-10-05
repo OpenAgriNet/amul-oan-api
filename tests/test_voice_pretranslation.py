@@ -323,7 +323,7 @@ class _Background:
         return self.declined
 
 
-async def _render(text_en, target_lang):
+async def _render(text_en, target_lang, *, execution):
     return f"<{target_lang}> {text_en}"
 
 
