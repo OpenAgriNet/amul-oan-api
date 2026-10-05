@@ -237,7 +237,7 @@ def test_an_answered_turn_is_one_agent_journey_stamped_voice_turn_v1(lf, call):
     assert root.kwargs["name"] == "agent_journey" and root.ended == 1
     (propagated,) = lf.propagated
     assert propagated["trace_name"] == "agent_journey"
-    assert propagated["session_id"] == "call-1" and propagated["user_id"] == f"+91 {_MOBILE}"
+    assert propagated["session_id"] == "call-1" and propagated["user_id"] == summary["user_id_hash"]
     assert propagated["tags"] == ["voice", "raya", f"pipeline_profile:{summary['pipeline_profile']}"]
     assert summary["amul.schema_version"] == "voice.turn.v1"
     assert summary["service"] == "amul-oan-api"
@@ -276,6 +276,37 @@ def test_an_answered_turn_sends_only_what_the_contract_lists(lf, call, monkeypat
     for block, keys in contract["nested_keys"].items():
         if block != "error":
             assert set(keys) <= set(summary[block]), block
+
+
+def _everything_sent(client):
+    return json.dumps(
+        [[o.kwargs, o.updates] for o in client.observations] + client.propagated, ensure_ascii=False, default=str
+    )
+
+
+def test_by_default_a_turn_sends_langfuse_no_phone_and_no_words(lf, call, monkeypatch):
+    default = type(settings).model_fields["voice_trace_text_mode"].default
+    monkeypatch.setattr(settings, "voice_trace_text_mode", default)
+
+    _run(_turn(history=_PRIOR))
+
+    sent = _everything_sent(lf)
+    for private in (_MOBILE, "fever", "water"):
+        assert private not in sent
+    assert lf.summary["query"].keys() == {"chars", "sha256"}
+
+
+@pytest.mark.parametrize("mode", sorted(voice_trace._VALID_TEXT_MODES))
+def test_the_summary_log_holds_no_words_whatever_the_text_mode(lf, call, caplog, monkeypatch, mode):
+    monkeypatch.setattr(settings, "voice_trace_text_mode", mode)
+    caplog.set_level("INFO", logger=voice_trace.logger.name)
+
+    _run(_turn(history=_PRIOR))
+
+    (logged,) = [r.getMessage() for r in caplog.records if r.getMessage().startswith("VOICE_TRACE_SUMMARY")]
+    for private in (_MOBILE, "fever", "water"):
+        assert private not in logged
+    assert json.loads(logged.split(" ", 1)[1])["query"].keys() == {"chars", "sha256"}
 
 
 @pytest.mark.parametrize("query, path, stage", [
