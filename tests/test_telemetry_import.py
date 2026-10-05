@@ -1,3 +1,5 @@
+import hashlib
+import hmac
 import importlib.util
 import json
 import re
@@ -12,6 +14,7 @@ from app.services.telemetry_era_registry import TelemetryEraRegistry, default_er
 from app.services.telemetry_fetcher import REDACTED_USER_ID, fetch_voice_bundles
 from app.services.telemetry_import import (
     IMPORT_DAY_COLUMNS,
+    CallerKey,
     NOT_STORED,
     REJECTION_COLUMNS,
     VOICE_TURN_COLUMNS,
@@ -25,6 +28,7 @@ REPO = Path(__file__).resolve().parents[1]
 IST = timezone(timedelta(hours=5, minutes=30))
 DAY_START = datetime(2026, 9, 24, tzinfo=timezone.utc)
 DAY_END = datetime(2026, 9, 25, tzinfo=timezone.utc)
+KEY = CallerKey(b"k" * 32)
 
 
 class FakeResult:
@@ -169,6 +173,7 @@ def _import(client, *, writer=True, first_day=date(2026, 9, 24), last_day=None):
         registry=TelemetryEraRegistry.from_yaml(path, section="voice_eras"),
         vocabulary=VoiceOutcomeVocabulary.from_yaml(path),
         mappings=load_voice_mappings(),
+        caller_key=KEY if writer else None,
     )
 
 
@@ -193,6 +198,48 @@ def test_turns_are_written_without_the_phone_number_or_caller_text():
         assert row["signed_in"] is True
         assert row["full_turn_latency_ms"] == 1234.5
     assert report.turns == 2 and report.written
+
+
+def test_the_caller_hash_is_stored_only_as_an_hmac_under_the_caller_key():
+    anonymous = hashlib.sha256(b"voice-oan-api:anonymous").hexdigest()
+    client = FakeClickHouse(
+        traces=[trace_row("known", metadata=turn_metadata()), trace_row("anonymous", metadata=turn_metadata(user_id_hash=anonymous))]
+    )
+
+    _import(client)
+
+    rows = {row["source_trace_id"]: row for row in client.inserts["voice_turns"]}
+    expected = hmac.new(b"k" * 32, ("0" * 64).encode(), hashlib.sha256).hexdigest()
+    assert (rows["known"]["user_id_hash"], rows["known"]["user_id_hash_key"]) == (expected, KEY.key_id)
+    assert (rows["anonymous"]["user_id_hash"], rows["anonymous"]["user_id_hash_key"]) == (None, None)
+
+
+def test_turns_are_not_written_without_the_caller_key():
+    client = FakeClickHouse(traces=[trace_row("known", metadata=turn_metadata())])
+    path = default_era_registry_path()
+
+    with pytest.raises(ValueError, match="caller key"):
+        import_voice_days(
+            client,
+            client,
+            environment="voice-development",
+            first_day=date(2026, 9, 24),
+            last_day=date(2026, 9, 24),
+            registry=TelemetryEraRegistry.from_yaml(path, section="voice_eras"),
+            vocabulary=VoiceOutcomeVocabulary.from_yaml(path),
+            mappings=load_voice_mappings(),
+        )
+    assert not client.inserts
+
+
+def test_each_caller_key_makes_its_own_hashes_and_id():
+    other = CallerKey(b"o" * 32)
+
+    assert KEY.pseudonym("0" * 64) == CallerKey(b"k" * 32).pseudonym("0" * 64) != other.pseudonym("0" * 64)
+    assert KEY.key_id != other.key_id and "k" * 8 not in KEY.key_id
+    assert "k" * 8 not in repr(KEY)
+    with pytest.raises(ValueError, match="at least 32 bytes"):
+        CallerKey(b"short")
 
 
 def test_rejected_traces_are_counted_by_reason_not_raised():
@@ -306,6 +353,7 @@ RELEASED_VOICE_TURN_COLUMNS = {
     "field_availability": "Map(String, LowCardinality(String))",
     "imported_at": "DateTime64(3, 'UTC')",
     "is_deleted": "UInt8",
+    "user_id_hash_key": "LowCardinality(Nullable(String))",
 }
 
 
@@ -408,3 +456,37 @@ def test_the_script_reads_the_password_from_the_env_or_a_file(monkeypatch, tmp_p
     assert script._password("reader") == "from-file"
     monkeypatch.setenv("TELEMETRY_READER_PASSWORD", "from-env")
     assert script._password("reader") == "from-env"
+
+
+def test_the_script_reads_the_caller_key_from_the_env_or_a_file(monkeypatch, tmp_path):
+    script = _script()
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.delenv("TELEMETRY_CALLER_KEY", raising=False)
+    with pytest.raises(SystemExit, match="No caller key"):
+        script._caller_key()
+
+    (tmp_path / ".telemetry_caller_key").write_text("f" * 64 + "\n", encoding="utf-8")
+    assert script._caller_key().key_id == CallerKey(b"f" * 64).key_id
+    monkeypatch.setenv("TELEMETRY_CALLER_KEY", "e" * 64)
+    assert script._caller_key().key_id == CallerKey(b"e" * 64).key_id
+    monkeypatch.setenv("TELEMETRY_CALLER_KEY", "short")
+    with pytest.raises(SystemExit, match="at least 32 bytes"):
+        script._caller_key()
+
+
+@pytest.mark.parametrize("argv, writer, caller_key", [([], "writer", KEY), (["--dry-run"], None, None)])
+def test_the_script_writes_with_the_caller_key_and_dry_runs_without_one(monkeypatch, capsys, argv, writer, caller_key):
+    script = _script()
+    calls = []
+    monkeypatch.setattr(script, "_client", lambda role, *, database: role)
+    monkeypatch.setattr(script, "_caller_key", lambda: KEY)
+    monkeypatch.setattr(script, "import_voice_days", lambda reader, writer, **kw: calls.append((writer, kw["caller_key"])) or _NoLines())
+
+    script.main(["--env", "voice-production", *argv])
+
+    assert calls == [(writer, caller_key)]
+
+
+class _NoLines:
+    def lines(self):
+        return []

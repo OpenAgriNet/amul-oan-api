@@ -15,7 +15,8 @@ Langfuse tables (traces, observations, scores)
 ## What is stored
 
 - `telemetry.voice_turns`: one row per turn. The caller's `user_id` (a phone
-  number) is never stored, only `user_id_hash`. Question and answer keep only
+  number) is never stored, only `user_id_hash`, keyed with the caller key (see
+  below) so a list of numbers can't reverse it. Question and answer keep only
   their length and sha256, never the text. Count with `FINAL`: a re-imported
   day replaces its rows in the background, and `FINAL` also leaves out the
   turns a re-import removed (`is_deleted = 1`).
@@ -37,6 +38,10 @@ The tables are in `telemetry/clickhouse/voice.sql`.
    `TELEMETRY_READER_PASSWORD` / `TELEMETRY_WRITER_PASSWORD`.
    `TELEMETRY_CLICKHOUSE_HOST` and `TELEMETRY_CLICKHOUSE_PORT` default to
    `localhost:8123`.
+4. Make the caller key once, e.g. `openssl rand -hex 32`, and keep it like the
+   passwords: in `~/.telemetry_caller_key` or `TELEMETRY_CALLER_KEY`. Writing
+   refuses to run without it. Anyone with the key and read access to the
+   telemetry tables can match hashes to phone numbers, so keep it secret.
 
 ## Running
 
@@ -57,6 +62,26 @@ the re-import no longer finds gets a row with `is_deleted = 1`: a trace deleted
 in Langfuse, one that is now rejected, or one whose timestamp moved to another
 day (up to a day away). So re-importing a day after Langfuse has dropped its
 traces empties it.
+
+## Caller key
+
+Traces carry the caller's hash as a SHA-256 under a public prefix, which a list
+of phone numbers reverses. The import stores an HMAC of it under the caller key
+instead, and the key's id in `user_id_hash_key`.
+
+To rotate the key, on a schedule or because it leaked:
+
+1. Put the new key where the import reads it.
+2. Re-import every day Langfuse still has. Each day's rows are replaced under
+   the new key. Days Langfuse has dropped can't be re-keyed (re-importing them
+   would empty them), so they keep the old key's id.
+3. If the old key leaked, blank what's still under it, as the ClickHouse admin:
+   `ALTER TABLE telemetry.voice_turns UPDATE user_id_hash = NULL, user_id_hash_key = NULL WHERE user_id_hash_key = '<old id>'`.
+   Those turns then count as anonymous.
+4. Check: `SELECT user_id_hash_key, count() FROM telemetry.voice_turns FINAL GROUP BY user_id_hash_key`.
+
+A caller counts once per key, so a date range that spans a rotation counts
+some callers twice.
 
 ## Adding a column
 

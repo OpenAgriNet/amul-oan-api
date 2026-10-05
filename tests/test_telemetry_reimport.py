@@ -14,7 +14,7 @@ import pytest
 chdb_session = pytest.importorskip("chdb.session")
 
 from app.services.telemetry_era_registry import TelemetryEraRegistry, default_era_registry_path  # noqa: E402
-from app.services.telemetry_import import import_voice_days  # noqa: E402
+from app.services.telemetry_import import CallerKey, import_voice_days  # noqa: E402
 from app.services.telemetry_voice_era_adapters import VoiceOutcomeVocabulary, load_voice_mappings  # noqa: E402
 
 REPO = Path(__file__).resolve().parents[1]
@@ -79,7 +79,7 @@ class ClickHouse:
         ).named_results()
         return [(row["source_trace_id"], row["day"]) for row in rows]
 
-    def import_day(self, first_day, last_day=None, environment=ENV):
+    def import_day(self, first_day, last_day=None, environment=ENV, caller_key=None):
         path = default_era_registry_path()
         return import_voice_days(
             self,
@@ -90,6 +90,7 @@ class ClickHouse:
             registry=TelemetryEraRegistry.from_yaml(path, section="voice_eras"),
             vocabulary=VoiceOutcomeVocabulary.from_yaml(path),
             mappings=load_voice_mappings(),
+            caller_key=caller_key or KEY,
         )
 
 
@@ -137,6 +138,7 @@ def turn_metadata(**overrides):
 
 
 SEP_20 = date(2026, 9, 20)
+KEY = CallerKey(b"k" * 32)
 
 
 @pytest.fixture(scope="module")
@@ -253,3 +255,14 @@ def test_removed_turns_stay_removed_once_clickhouse_merges_the_table(clickhouse)
     clickhouse.query("OPTIMIZE TABLE telemetry.voice_turns FINAL")
 
     assert clickhouse.turns() == [("A", "2026-09-20")]
+
+
+def test_a_reimport_under_a_new_caller_key_moves_the_day_to_it(clickhouse):
+    new_key = CallerKey(b"n" * 32)
+    clickhouse.langfuse_trace("A", "2026-09-20 10:00:00", metadata=turn_metadata(user_id_hash="0" * 64))
+    clickhouse.import_day(SEP_20)
+
+    clickhouse.import_day(SEP_20, caller_key=new_key)
+
+    [row] = clickhouse.query("SELECT user_id_hash, user_id_hash_key FROM telemetry.voice_turns FINAL").named_results()
+    assert (row["user_id_hash"], row["user_id_hash_key"]) == (new_key.pseudonym("0" * 64), new_key.key_id)

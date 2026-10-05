@@ -7,7 +7,9 @@
 Connects to TELEMETRY_CLICKHOUSE_HOST:TELEMETRY_CLICKHOUSE_PORT (default
 localhost:8123) as telemetry_reader, and as telemetry_writer unless --dry-run.
 Each password comes from TELEMETRY_READER_PASSWORD / TELEMETRY_WRITER_PASSWORD,
-or else ~/.telemetry_reader_password / ~/.telemetry_writer_password.
+or else ~/.telemetry_reader_password / ~/.telemetry_writer_password. Writing
+also needs the caller key (TELEMETRY_CALLER_KEY or ~/.telemetry_caller_key):
+see "Caller key" in docs/TELEMETRY_PIPELINE.md.
 """
 
 import argparse
@@ -21,12 +23,13 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 from app.services.telemetry_era_registry import TelemetryEraRegistry, default_era_registry_path  # noqa: E402
-from app.services.telemetry_import import import_voice_days  # noqa: E402
+from app.services.telemetry_import import CallerKey, import_voice_days  # noqa: E402
 from app.services.telemetry_voice_era_adapters import VoiceOutcomeVocabulary, load_voice_mappings  # noqa: E402
 
 
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
+    caller_key = None if args.dry_run else _caller_key()
     registry_path = default_era_registry_path()
     report = import_voice_days(
         _client("reader", database="default"),
@@ -37,6 +40,7 @@ def main(argv: list[str] | None = None) -> int:
         registry=TelemetryEraRegistry.from_yaml(registry_path, section="voice_eras"),
         vocabulary=VoiceOutcomeVocabulary.from_yaml(registry_path),
         mappings=load_voice_mappings(),
+        caller_key=caller_key,
     )
     print("\n".join(report.lines()))
     return 0
@@ -77,6 +81,20 @@ def _password(role: str) -> str:
         return path.read_text(encoding="utf-8").strip()
     except OSError:
         sys.exit(f"No password for telemetry_{role}: set TELEMETRY_{role.upper()}_PASSWORD or write it to {path}")
+
+
+def _caller_key() -> CallerKey:
+    secret = os.getenv("TELEMETRY_CALLER_KEY")
+    path = Path.home() / ".telemetry_caller_key"
+    if not secret:
+        try:
+            secret = path.read_text(encoding="utf-8").strip()
+        except OSError:
+            sys.exit(f"No caller key: set TELEMETRY_CALLER_KEY or write it to {path}")
+    try:
+        return CallerKey(secret.encode("utf-8"))
+    except ValueError as exc:
+        sys.exit(str(exc))
 
 
 if __name__ == "__main__":

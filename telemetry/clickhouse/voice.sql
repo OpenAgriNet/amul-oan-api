@@ -79,3 +79,6 @@ ORDER BY (environment, day, imported_at, trace_name, reason);
 --   ALTER TABLE telemetry.voice_turns ADD COLUMN IF NOT EXISTS farmer_type LowCardinality(Nullable(String));
 -- Don't edit or remove the columns above. Dashboards read them, and a table
 -- that already exists won't pick up a change there.
+
+-- Which caller key made user_id_hash (scripts/telemetry_import.py).
+ALTER TABLE telemetry.voice_turns ADD COLUMN IF NOT EXISTS user_id_hash_key LowCardinality(Nullable(String));
