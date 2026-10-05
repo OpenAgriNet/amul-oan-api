@@ -15,7 +15,8 @@ chdb_session = pytest.importorskip("chdb.session")
 
 from app.services.telemetry_era_adapters import load_chat_mappings  # noqa: E402
 from app.services.telemetry_era_registry import TelemetryEraRegistry, default_era_registry_path  # noqa: E402
-from app.services.telemetry_import import import_chat_days, import_voice_days  # noqa: E402
+from app.services.telemetry_import import IMPORT_DAY_COLUMNS, import_chat_days, import_voice_days  # noqa: E402
+from app.services.telemetry_query import _LAST_IMPORT_SQL  # noqa: E402
 from app.services.telemetry_voice_era_adapters import VoiceOutcomeVocabulary, load_voice_mappings  # noqa: E402
 
 REPO = Path(__file__).resolve().parents[1]
@@ -339,3 +340,36 @@ def test_a_chat_turn_moved_to_the_next_day_is_kept_once(clickhouse):
 
     assert clickhouse.turns(table="chat_turns") == [("A", "2026-09-21")]
     assert clickhouse.ledger("chat") == [("A", "2026-09-21", "turn")]
+
+
+def _last_import(clickhouse):
+    """What /health reports as the environment's last import: (day, imported_at)."""
+    sql = _LAST_IMPORT_SQL.format(channel="voice", where="environment = {environment:String}")
+    [row] = clickhouse.query(sql, {"environment": ENV}).named_results()
+    return row["last_day"], row["last_imported_at"]
+
+
+def _imported_at(clickhouse, day):
+    [row] = clickhouse.query(
+        "SELECT imported_at FROM telemetry.voice_import_days FINAL WHERE day = {day:Date}", {"day": day}
+    ).named_results()
+    return row["imported_at"]
+
+
+def test_a_backfilled_day_is_reported_as_the_last_import_with_its_own_time(clickhouse):
+    clickhouse.langfuse_trace("A", "2026-09-30 10:00:00")
+    clickhouse.langfuse_trace("B", "2026-09-20 10:00:00")
+    clickhouse.import_day(date(2026, 9, 30))
+
+    clickhouse.import_day(SEP_20)
+
+    assert _last_import(clickhouse) == ("2026-09-20", _imported_at(clickhouse, SEP_20))
+    assert _imported_at(clickhouse, SEP_20) > _imported_at(clickhouse, date(2026, 9, 30))
+
+
+def test_of_two_days_written_in_the_same_millisecond_the_newer_is_the_last_import(clickhouse):
+    at = datetime(2026, 10, 1, 1, tzinfo=timezone.utc)
+    rows = [[ENV, day, 0, 0, 0, at] for day in (date(2026, 9, 21), SEP_20)]
+    clickhouse.insert("voice_import_days", rows, column_names=list(IMPORT_DAY_COLUMNS), database="telemetry")
+
+    assert _last_import(clickhouse) == ("2026-09-21", "2026-10-01 01:00:00.000")

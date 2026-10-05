@@ -428,7 +428,7 @@ def test_health_reports_imports_dispositions_and_coverage(monkeypatch, api, conf
     voice = body["voice"]
     assert voice["days"] == [{"environment": "voice-production", "day": "2026-09-01", "traces": 8, "turns": 5,
                               "rejected": 1, "imported_at": "2026-09-03T01:00:00Z"}]
-    assert voice["last_import"] == [{"environment": "voice-production", "last_day": "2026-10-01",
+    assert voice["last_import"] == [{"environment": "voice-production", "day": "2026-10-01",
                                      "imported_at": "2026-10-02T01:00:00Z"}]
     assert voice["traces"] == {"activity": 1, "rejected": 1, "turn": 5, "unrecognised": 1}
     assert voice["not_turns"] == [{"disposition": "rejected", "trace_name": "agent_journey",

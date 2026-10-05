@@ -315,9 +315,11 @@ WHERE {where}
 ORDER BY environment, day
 """
 
-# Not limited to the range: when each environment was last imported.
+# Not limited to the range: each environment's most recent import, the day it
+# wrote and when, from the same row. Of two days written in the same
+# millisecond, the newer day counts as the last.
 _LAST_IMPORT_SQL = """
-SELECT environment, max(day), max(imported_at)
+SELECT environment, argMax(day, (imported_at, day)) AS last_day, max(imported_at) AS last_imported_at
 FROM telemetry.{channel}_import_days FINAL
 WHERE {where}
 GROUP BY environment
@@ -600,7 +602,7 @@ def health(
                 for env, day, traces, count, rejected, imported_at in import_days.result_rows
             ],
             "last_import": [
-                {"environment": env, "last_day": _start(day), "imported_at": _start(imported_at)}
+                {"environment": env, "day": _start(day), "imported_at": _start(imported_at)}
                 for env, day, imported_at in last_import.result_rows
             ],
             "traces": {disposition: int(count) for disposition, count in ledger.result_rows},
