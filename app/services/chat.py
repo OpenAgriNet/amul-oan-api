@@ -636,6 +636,10 @@ class _ChatSink:
             text = sanitize_doctor_answer(text)
         return text
 
+    def outcome(self) -> str | None:
+        # Chat's sink lets a failure propagate; run_turn records it as an error.
+        return None
+
 
 class _ChatTelemetry:
     """Chat's turn telemetry: one chat.turn.v1 root, its input, and how the turn ended.
@@ -1055,6 +1059,7 @@ CHAT_SURFACE = SurfaceProfile(
     telemetry=_ChatTelemetry,
     pretranslation=_chat_pretranslation,
     agent_input=_chat_agent_input,
+    disabled_languages=_disabled_chat_langs,
 )
 
 
@@ -1207,10 +1212,11 @@ async def run_turn(
         background = None
         liveness = None
         try:
-            # Resolve per-language kill switches before any response path. This
-            # keeps deterministic short-circuits and tool language selection in
-            # the same English-passthrough mode as the translation pipeline.
-            disabled_langs = _disabled_chat_langs()
+            # Resolve the surface's per-language kill switches before any response
+            # path. This keeps deterministic short-circuits and tool language
+            # selection in the same English-passthrough mode as the translation
+            # pipeline. They are chat's settings: a voice call isn't switched off.
+            disabled_langs = surface.disabled_languages() if surface.disabled_languages else set()
             request_id = session_id
 
             logger.info("request_id=%s user_info=%s", request_id, dict(user_info))
@@ -1380,6 +1386,7 @@ async def run_turn(
                 trace_output = sink.final_text()
                 if trace_output:
                     telemetry.record_output(trace_output, "final")
+                sink_outcome = sink.outcome()
                 if get_langfuse_client and agent_obs is not None:
                     try:
                         # Match moderation: structured output so Langfuse shows JSON in the observation panel.
@@ -1397,6 +1404,12 @@ async def run_turn(
             chat_artifacts = agent_input.deps.take_chat_artifacts()
             if chat_artifacts:
                 yield ArtifactEmission(artifacts=tuple(chat_artifacts))
+
+            if sink_outcome is not None:
+                # The sink caught a failure and told the caller. The turn ends
+                # there: recorded as it is, and nothing half-done goes into history.
+                _turn_outcome = sink_outcome
+                return
 
             # A last raw line after the answer: voice's hang-up token when the
             # agent said the conversation is closing.

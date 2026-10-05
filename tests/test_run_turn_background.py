@@ -289,7 +289,7 @@ def test_a_hang_up_mid_answer_still_closes_the_background(monkeypatch):
 # ── voice's background through run_turn ─────────────────────────────────────
 
 
-async def _render(text_en, target_lang):
+async def _render(text_en, target_lang, *, execution):
     return f"<{target_lang}> {text_en}"
 
 

@@ -330,7 +330,7 @@ def test_a_greeting_gets_no_nudge(monkeypatch, nudge_after_20ms):
     sender = _Sender()
     from app.voice.classifiers import voice_classifiers
 
-    async def _render(text_en, target_lang):
+    async def _render(text_en, target_lang, *, execution):
         return text_en
 
     surface = _surface(voice_liveness.VoiceLiveness, classifiers=voice_classifiers(_render))
