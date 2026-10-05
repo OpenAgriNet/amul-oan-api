@@ -19,7 +19,11 @@ from pydantic import ValidationError
 
 from app.models.telemetry_analytics import CanonicalChatTurn
 from app.models.telemetry_voice_analytics import CanonicalVoiceTurn
-from app.services.telemetry_era_adapters import UnsupportedTelemetryEra, adapt_chat_trace
+from app.services.telemetry_era_adapters import (
+    UnsupportedTelemetryEra,
+    _chat_has_full_turn_root,
+    adapt_chat_trace,
+)
 from app.services.telemetry_era_registry import TelemetryEraRegistry, load_yaml_file
 from app.services.telemetry_fetcher import (
     ClickHouseReader,
@@ -455,10 +459,6 @@ def _import_days(
                 writer, table, columns, environment, day, imported_at, rows, rejected, traces, ledger
             )
     return report
-
-
-def _chat_has_full_turn_root(turn: CanonicalChatTurn) -> bool:
-    return turn.source_era in {"chat.c6", "chat.c8"} or turn.source_schema_version.startswith("chat.turn.")
 
 
 def voice_turn_row(turn: CanonicalVoiceTurn, *, environment: str, imported_at: datetime) -> dict[str, Any]:
