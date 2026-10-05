@@ -1,9 +1,10 @@
 from contextlib import aclosing, contextmanager, nullcontext
 from types import MappingProxyType
-from typing import Any, AsyncGenerator, Mapping
+from typing import Any, AsyncGenerator, Mapping, Optional
 from functools import lru_cache
 import regex
 import re
+import time
 from fastapi import BackgroundTasks
 from agents.agrinet import agrinet_agent
 from agents.doctor import doctor_agent
@@ -47,6 +48,8 @@ from app.turn.types import (
     DeferredScheduler,
     Emission,
     SideChannelEmission,
+    SideChannelSender,
+    StalenessCheck,
     Surface,
     SurfaceProfile,
     TextEmission,
@@ -451,6 +454,13 @@ async def _write_short_circuit_history(history, decision, key: str, request_id: 
         len(messages),
     )
     await update_message_history(key, messages)
+
+
+async def _stale_outcome(is_stale: Optional[StalenessCheck], reason: str) -> Optional[str]:
+    """The outcome to stop with if this request should no longer speak, else None."""
+    if is_stale is None:
+        return None
+    return await is_stale(reason)
 
 
 _NO_CHUNK = object()
@@ -870,6 +880,8 @@ async def run_turn(
     surface: SurfaceProfile,
     *,
     scheduler: DeferredScheduler,
+    side_channel: Optional[SideChannelSender] = None,
+    is_stale: Optional[StalenessCheck] = None,
 ) -> AsyncGenerator[Emission, None]:
     """One turn, transport-free.
 
@@ -878,7 +890,13 @@ async def run_turn(
     spawned, and yields ``Emission`` values for the transport adapter to render.
     Deferred work goes through ``scheduler``; private documents leave only as an
     ``ArtifactEmission``.
+
+    ``side_channel`` and ``is_stale`` are wired where the turn is composed, like
+    the scheduler. A surface's liveness speaks through the first. The second is
+    asked before the turn commits anything (a classifier's answer, the gate's,
+    the history write), and a stale turn stops there. Chat passes neither.
     """
+    started_at = time.monotonic()
     query = turn.query
     session_id = turn.session_id
     source_lang = turn.source_lang
@@ -924,6 +942,7 @@ async def run_turn(
         # in run_turn, not the adapter, so every surface's turn carries it.
         _turn_outcome = "error"
         background = None
+        liveness = None
         try:
             # Resolve per-language kill switches before any response path. This
             # keeps deterministic short-circuits and tool language selection in
@@ -949,6 +968,10 @@ async def run_turn(
                 short_circuit = await classify(turn)
                 if short_circuit is None:
                     continue
+                stale = await _stale_outcome(is_stale, f"before_{short_circuit.label}_response")
+                if stale is not None:
+                    _turn_outcome = stale
+                    return
                 telemetry.record_output(short_circuit.canned_text, short_circuit.label)
                 await _write_short_circuit_history(
                     history, short_circuit, message_history_session_id, request_id
@@ -960,6 +983,13 @@ async def run_turn(
                 _turn_outcome = "success"
                 yield TextEmission(short_circuit.canned_text, raw=short_circuit.raw)
                 return
+
+            # What the caller hears while the model works starts here, for the
+            # same reason, and stops before the first thing they hear.
+            if surface.liveness is not None and side_channel is not None:
+                liveness = surface.liveness(
+                    turn, started_at=started_at, send=side_channel, is_stale=is_stale
+                )
 
             # A surface's background checks start here: after the classifiers, so
             # a match has nothing to cancel, and before everything else, so they
@@ -1180,6 +1210,13 @@ async def run_turn(
                 if background is not None:
                     gated, english_src = await _gate_first_chunk(english_src, background)
                     if gated is not None:
+                        stale = await _stale_outcome(is_stale, f"before_{gated.label}_response")
+                        if stale is not None:
+                            _turn_outcome = stale
+                            return
+                        if liveness is not None:
+                            await liveness.stop()
+                            liveness = None
                         telemetry.record_output(gated.canned_text, gated.label)
                         await _write_short_circuit_history(
                             history, gated, message_history_session_id, request_id
@@ -1189,6 +1226,9 @@ async def run_turn(
                         return
 
                 async for _out in sink.stream(english_src):
+                    if liveness is not None:
+                        await liveness.stop()
+                        liveness = None
                     yield TextEmission(_out)
                 logger.info(f"Streaming complete for session {session_id}")
 
@@ -1234,6 +1274,10 @@ async def run_turn(
                 *new_messages
             ]
 
+            stale = await _stale_outcome(is_stale, "before_history_write")
+            if stale is not None:
+                _turn_outcome = stale
+                return
             logger.info(f"Updating message history for session {session_id} with {len(messages)} messages")
             await update_message_history(message_history_session_id, messages)
             _turn_outcome = "success"
@@ -1246,5 +1290,7 @@ async def run_turn(
             raise
         finally:
             telemetry.record_outcome(_turn_outcome)
+            if liveness is not None:
+                await liveness.stop()
             if background is not None:
                 await background.close()
