@@ -128,6 +128,42 @@ def validate_content(cfg: PipelineConfig) -> None:
     validate_config(cfg)
     if _truthy_env("REQUIRE_OVERFLOW_ARMED") and not cfg.fallback_enabled:
         raise ValueError("REQUIRE_OVERFLOW_ARMED=true but fallback_enabled=false")
+    validate_voice(cfg)
+
+
+# What a voice call runs on (app/voice): moderation, pretranslation, the agent and
+# output translation on the call's own profile, and the non-meaningful and consent
+# classifiers on the managed one.
+_VOICE_PROFILE_STEPS = (Step.MODERATION, Step.PRE_TRANSLATION, Step.AGENT, Step.POST_TRANSLATION)
+
+
+def validate_voice(cfg: PipelineConfig) -> None:
+    """With VOICE_ROUTE_ENABLED, refuse a config voice can't run on.
+
+    The route on its own would boot fine on chat's channel and chat's plans, which
+    have no non_meaningful step, and voice would then fail open or call the wrong
+    models. Boot and every live config go through this."""
+    from app.config import settings
+    from app.llm_core import config_source
+
+    if not settings.voice_route_enabled:
+        return
+    problems: list[str] = []
+    if config_source.channel() != "voice":
+        problems.append(f"PIPELINE_CHANNEL is {config_source.channel()!r}, voice needs 'voice'")
+    for profile in cfg.profiles:
+        if profile.weight <= 0:
+            continue
+        for step in _VOICE_PROFILE_STEPS:
+            if cfg.step_plan(profile, step) is None:
+                problems.append(f"profile={profile.name} has no {step.value} plan")
+    managed = cfg.by_name("managed") or cfg.profiles[0]
+    if cfg.step_plan(managed, Step.NON_MEANINGFUL) is None:
+        problems.append(f"profile={managed.name} has no non_meaningful plan")
+    if problems:
+        raise ValueError(
+            "VOICE_ROUTE_ENABLED but the pipeline config can't run voice:\n  - " + "\n  - ".join(problems)
+        )
 
 
 def _truthy_env(name: str) -> bool:

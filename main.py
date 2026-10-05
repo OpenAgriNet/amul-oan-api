@@ -112,3 +112,9 @@ app.include_router(telemetry_query.router, prefix=settings.api_prefix)
 # Keep telemetry path compatible with existing frontend calls:
 # /observability-service/action/data/v3/telemetry
 app.include_router(telemetry.router)
+
+if settings.voice_route_enabled:
+    # Imported only when on, so a chat deployment never loads the voice stack.
+    from app.routers import voice
+
+    app.include_router(voice.router, prefix=settings.api_prefix)

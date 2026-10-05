@@ -2,13 +2,13 @@
 
 ``app/channels`` models the *delivery medium* (web | whatsapp) — how rendered
 text is delivered. This module models the orthogonal axis ``app/channels/base``
-reserved: which *pipeline shape* a turn runs (chat today, voice when it is
-ported). The two compose rather than nest; see docs/channel-seam-design.md.
+reserved: which *pipeline shape* a turn runs (chat or voice). The two compose
+rather than nest; see docs/channel-seam-design.md.
 
 Transport-free by construction: nothing here imports FastAPI, Redis, or a
-telemetry client, and nothing here may. The transport adapter (the chat router's
-``stream_chat_messages`` today) builds a ``Turn``, consumes ``Emission`` values,
-and decides what each one means on its wire.
+telemetry client, and nothing here may. The transport adapter (``stream_chat_messages``
+for chat, ``stream_voice_message`` for voice) builds a ``Turn``, consumes
+``Emission`` values, and decides what each one means on its wire.
 
 Following the rule in ``app/channels/base``, a field appears only when something
 reads it. The sink and the telemetry are on ``SurfaceProfile`` because ``run_turn``
@@ -48,7 +48,8 @@ if TYPE_CHECKING:
 class Surface(str, Enum):
     #: The text pipeline served from this repo.
     CHAT = "chat"
-    # VOICE lands when voice is ported off voice-oan-api, not before.
+    #: The telephony pipeline, brought over from voice-oan-api.
+    VOICE = "voice"
 
 
 @dataclass(frozen=True)
@@ -100,8 +101,10 @@ class Turn:
     #: Where this turn's history is persisted. Resolved by the transport; differs
     #: from ``session_id`` when a persona keeps its own conversation.
     history_session_id: str
-    channel: ChannelProfile
     persona: ChatPersona
+    #: The chat channel's profile. None on voice: a call is not a chat channel,
+    #: and nothing voice runs reads one.
+    channel: Optional[ChannelProfile] = None
     #: The call a voice turn belongs to. None on chat.
     call: Optional[TelephonyCall] = None
 

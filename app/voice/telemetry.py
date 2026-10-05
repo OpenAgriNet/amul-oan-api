@@ -8,6 +8,8 @@ and voice's modules record their stages through ``current_trace``.
 from __future__ import annotations
 
 from contextlib import contextmanager
+from dataclasses import dataclass
+from typing import Optional
 
 from app.llm_core import trace as _pipeline_trace
 from app.turn.types import Turn
@@ -27,10 +29,28 @@ logger = get_logger(__name__)
 _OUTCOMES = {"cancelled": "client_disconnected"}
 
 
+@dataclass(frozen=True)
+class RouteTimings:
+    """What the route did before the turn, timed as voice's router timed it."""
+
+    #: ``time.perf_counter()`` when the request came in.
+    started_at: float
+    ownership_claim_ms: float
+    history_load_ms: float
+    history_messages: int
+
+
 class VoiceTelemetry:
     """One call turn's ``agent_journey`` trace."""
 
-    def __init__(self, turn: Turn, *, pipeline_profile: str, pipeline_trace) -> None:
+    def __init__(
+        self,
+        turn: Turn,
+        *,
+        pipeline_profile: str,
+        pipeline_trace,
+        route: Optional[RouteTimings] = None,
+    ) -> None:
         call = turn.call
         self._session_id = turn.session_id
         self._pipeline_profile = pipeline_profile
@@ -52,6 +72,14 @@ class VoiceTelemetry:
         trace.metadata["call_type"] = normalize_call_type(call.call_type if call is not None else None)
         # pipeline_profile, pipeline_flags and one pc_<step> per step, on the root.
         _pipeline_trace.add_compact_metadata(pipeline_trace, trace.metadata)
+        if route is not None:
+            # From when the request came in, as voice's trace was, so total_ms
+            # includes claiming the session and loading its history.
+            trace.started_at = route.started_at
+            trace.attach_stage_timing("ownership_claim", route.ownership_claim_ms)
+            trace.attach_stage_timing(
+                "history_load", route.history_load_ms, history_messages=route.history_messages
+            )
         self._trace = trace
 
     @contextmanager
