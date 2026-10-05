@@ -793,6 +793,7 @@ CHAT_SURFACE = SurfaceProfile(
     classifiers=(_identity_classifier,),
     sink=_ChatSink,
     telemetry=_ChatTelemetry,
+    disabled_languages=_disabled_chat_langs,
 )
 
 
@@ -959,10 +960,11 @@ async def run_turn(
         background = None
         liveness = None
         try:
-            # Resolve per-language kill switches before any response path. This
-            # keeps deterministic short-circuits and tool language selection in
-            # the same English-passthrough mode as the translation pipeline.
-            disabled_langs = _disabled_chat_langs()
+            # Resolve the surface's per-language kill switches before any response
+            # path. This keeps deterministic short-circuits and tool language
+            # selection in the same English-passthrough mode as the translation
+            # pipeline. They are chat's settings: a voice call isn't switched off.
+            disabled_langs = surface.disabled_languages() if surface.disabled_languages else set()
             request_id = session_id
 
             def localize_system_text(text_en: str):

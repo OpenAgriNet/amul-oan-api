@@ -383,3 +383,6 @@ class SurfaceProfile:
     #: What the caller hears while the model works. It needs a side channel, so a
     #: turn run without a ``SideChannelSender`` has none. Chat has none.
     liveness: Optional[LivenessFactory] = None
+    #: Languages switched off for this surface, whose turns are answered in
+    #: English. Chat's come from its ``*_CHAT_ENABLED`` settings; voice has none.
+    disabled_languages: Optional[Callable[[], set[str]]] = None
