@@ -58,6 +58,7 @@ pymupdf==1.28.0
 
 # Search and Data
 rapidfuzz==3.14.3
+marqo==3.18.0  # agents/voice/tools/search.py
 regex
 
 # Authentication and Security
