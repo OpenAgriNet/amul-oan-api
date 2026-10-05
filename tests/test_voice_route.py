@@ -120,6 +120,37 @@ def test_a_question_is_answered_over_the_voice_route(world):
     assert world["released"] == [_OWNER]
 
 
+def _logged_by(caplog, *loggers):
+    return "\n".join(record.getMessage() for record in caplog.records if record.name in loggers)
+
+
+def test_the_route_logs_no_caller_phone_words_or_ownership_token(world, caplog):
+    caplog.set_level("INFO")
+
+    _get(query="My cow has fever", user_id="9990001112", source_lang="en", target_lang="en")
+
+    logged = _logged_by(caplog, voice_router.logger.name, voice_service.logger.name)
+    assert "query_chars: 16" in logged
+    for private in ("9990001112", "My cow has fever", "token-1"):
+        assert private not in logged
+
+
+def test_a_consent_turn_logs_no_caller_phone_or_words(monkeypatch, caplog):
+    caplog.set_level("INFO")
+
+    async def _stage(session_id):
+        return outbound.STAGE_INTRO_SENT
+
+    monkeypatch.setattr(settings, "outbound_intro_enabled", True)
+    monkeypatch.setattr(outbound, "get_stage", _stage)
+    _stream(monkeypatch, [], call_type="inbound", history=("earlier",))
+
+    logged = _logged_by(caplog, voice_service.logger.name)
+    assert "Outbound consent turn" in logged
+    for private in ("9876543210", "હા"):
+        assert private not in logged
+
+
 def test_a_canned_answer_goes_through_voices_normalizer(world):
     response = _get(query="hello", source_lang="gu", target_lang="gu")
 

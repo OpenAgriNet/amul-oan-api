@@ -103,8 +103,8 @@ async def stream_voice_message(
         consent_turn = await _is_outbound_consent_turn(session_id, call_type, history)
         if consent_turn:
             logger.info(
-                "Outbound consent turn; session_id=%s process_id=%s user_id=%s query=%r",
-                session_id, process_id, user_id, (query or "")[:60],
+                "Outbound consent turn; session_id=%s process_id=%s query_chars=%s",
+                session_id, process_id, len(query or ""),
             )
         turn = Turn(
             query=query,

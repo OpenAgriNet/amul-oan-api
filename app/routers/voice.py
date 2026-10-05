@@ -32,20 +32,26 @@ async def voice_endpoint(
     """
     started_at = time.perf_counter()
     session_id = request.session_id or str(uuid.uuid4())
+    # No caller phone or words in the log: only whether there is a caller, and the query's length.
     logger.info(
-        f"Voice request received - session_id: {session_id}, user_id: {request.user_id}, "
-        f"source_lang: {request.source_lang}, "
-        f"target_lang: {request.target_lang}, provider: {request.provider}, process_id: {request.process_id}, "
-        f"call_type: {request.call_type}, query: {request.query}"
+        "Voice request received - session_id: %s, has_user_id: %s, source_lang: %s, target_lang: %s, "
+        "provider: %s, process_id: %s, call_type: %s, query_chars: %s",
+        session_id,
+        bool(request.user_id) and request.user_id != "anonymous",
+        request.source_lang,
+        request.target_lang,
+        request.provider,
+        request.process_id,
+        request.call_type,
+        len(request.query or ""),
     )
     owner_started_at = time.perf_counter()
     owner = await claim_session_request_ownership(session_id)
     ownership_claim_ms = (time.perf_counter() - owner_started_at) * 1000.0
     logger.info(
-        "Session ownership claimed - session_id=%s epoch=%s token=%s process_id=%s",
+        "Session ownership claimed - session_id=%s epoch=%s process_id=%s",
         session_id,
         owner.epoch,
-        owner.request_token,
         request.process_id,
     )
 
