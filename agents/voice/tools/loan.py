@@ -130,6 +130,12 @@ async def check_loan_eligibility(ctx: RunContext[FarmerContext], confirmed: bool
         confirmed: Set true ONLY after the farmer has explicitly agreed to avail the
             loan (their yes to the offer). Leave false for the initial eligibility/offer.
     """
+    # Moderation runs concurrently with the agent, so like the booking tools this
+    # waits for the verdict: a rejected query must never check or issue a loan.
+    if not await ctx.deps.ensure_in_scope():
+        logger.info("Loan check blocked: query failed moderation; session=%s", ctx.deps.session_id)
+        return "This helpline only handles dairy farming and animal husbandry questions."
+
     accounts = await _resolve_accounts(ctx)
     name: Optional[str] = None
     for acct in accounts:

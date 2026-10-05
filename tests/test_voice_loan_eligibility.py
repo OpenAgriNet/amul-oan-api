@@ -25,9 +25,15 @@ class _FakeSession:
     def __init__(self):
         self.added = []
         self.committed = False
+        self.locked = []
 
     def add(self, obj):
         self.added.append(obj)
+
+    async def execute(self, statement, params=None):
+        # Only the per-phone lock goes through execute; the queries are stubbed.
+        assert "pg_advisory_xact_lock" in str(statement)
+        self.locked.append(params["key"])
 
     async def flush(self):
         pass
@@ -320,6 +326,67 @@ class TestPerFarmerAmount:
         monkeypatch.setattr(le, "_eligibility_row_for_phone", _row_with(max_loan_amount=12000))
         res = _run(confirm=True)
         assert res.reshared is True and res.loan_amount == 8000.0
+
+class TestPerPhoneLock:
+    """One active code per farmer: a confirmation locks the phone before reading its codes."""
+
+    def _eligible(self, monkeypatch, session, **wire):
+        _wire(monkeypatch, session, **wire)
+        monkeypatch.setattr(le, "_active_code_for_phone", _none)
+        monkeypatch.setattr(le, "_eligibility_row_for_phone", _row)
+        monkeypatch.setattr(le, "_compute_last_month_milk", _milk(5200.0))
+        monkeypatch.setattr(le, "_generate_unique_code", _code("123456"))
+
+    def test_a_confirmation_locks_the_phone(self, monkeypatch):
+        session = _FakeSession()
+        self._eligible(monkeypatch, session)
+        assert _run(confirm=True).outcome == le.ELIGIBLE
+        assert session.locked == ["loan_codes:7011854675"]
+
+    def test_an_offer_takes_no_lock(self, monkeypatch):
+        session = _FakeSession()
+        self._eligible(monkeypatch, session)
+        assert _run(confirm=False).outcome == le.ELIGIBLE_OFFER
+        assert session.locked == []
+
+    def test_no_lock_when_several_codes_are_allowed(self, monkeypatch):
+        session = _FakeSession()
+        self._eligible(monkeypatch, session, allow_multiple=True)
+        assert _run(confirm=True).outcome == le.ELIGIBLE
+        assert session.locked == []
+
+
+class TestToolWaitsForModeration:
+    def _ctx(self, in_scope):
+        async def ensure_in_scope():
+            return in_scope
+
+        deps = SimpleNamespace(
+            ensure_in_scope=ensure_in_scope, mobile="7011854675", farmer_accounts=[], session_id="call-1"
+        )
+        return SimpleNamespace(deps=deps)
+
+    @pytest.mark.parametrize("confirmed", [False, True])
+    def test_a_rejected_query_checks_and_issues_nothing(self, monkeypatch, confirmed):
+        async def _never(**kwargs):
+            raise AssertionError("no eligibility check or issuance after a moderation reject")
+
+        monkeypatch.setattr(le, "evaluate_and_issue", _never)
+        message = asyncio.run(loan_tool.check_loan_eligibility(self._ctx(False), confirmed=confirmed))
+        assert message == "This helpline only handles dairy farming and animal husbandry questions."
+
+    def test_an_in_scope_query_goes_on_to_the_service(self, monkeypatch):
+        calls = []
+
+        async def _service(**kwargs):
+            calls.append(kwargs)
+            return le.LoanResult(outcome=le.ELIGIBLE_OFFER, loan_amount=5000.0)
+
+        monkeypatch.setattr(le, "evaluate_and_issue", _service)
+        monkeypatch.setattr(le.settings, "loan_check_milk_enabled", False)
+        asyncio.run(loan_tool.check_loan_eligibility(self._ctx(True), confirmed=True))
+        assert [(c["phone"], c["confirm"]) for c in calls] == [("7011854675", True)]
+
 
 # ── shared async stubs ───────────────────────────────────────────────────────
 async def _none(*a, **k):

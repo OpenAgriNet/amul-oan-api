@@ -26,7 +26,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Sequence
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 from agents.deps import FarmerAccount
 from agents.voice.tools.farmer import normalize_phone_to_mobile
@@ -101,6 +101,19 @@ async def _maybe_resend_sms(session, record, mobile: str) -> Optional[str]:
     await session.commit()
     logger.info("Loan SMS re-sent code=%s to=%s status=%s", record.code, mobile, sms.status)
     return sms.status
+
+
+async def _lock_phone(session, phone: str) -> None:
+    """Hold a per-phone Postgres advisory lock until this transaction ends.
+
+    Only code is unique in loan_codes, so one active code per farmer is kept by
+    taking this before a confirmation reads the phone's codes: a second
+    confirmation for the same phone waits for the first to commit, then finds its
+    code and re-shares it instead of issuing another."""
+    await session.execute(
+        text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
+        {"key": f"loan_codes:{phone}"},
+    )
 
 
 async def _active_code_for_phone(session, phone: str) -> Optional[LoanCode]:
@@ -258,6 +271,9 @@ async def evaluate_and_issue(
 
     try:
         async with get_loan_session() as session:
+            if confirm and not settings.loan_allow_multiple_codes:
+                await _lock_phone(session, mobile)
+
             # Existing codes (only consulted when a single loan per farmer is enforced).
             existing = None
             issued = None
