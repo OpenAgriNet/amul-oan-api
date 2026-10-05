@@ -64,6 +64,10 @@ class TelephonyCall:
     #: so the greeting, identity and fragment short-circuits leave it alone.
     #: The adapter works it out from the outbound stage in Redis.
     outbound_consent_turn: bool = False
+    #: The telephony provider the request came from, as it named itself. For the trace.
+    provider: Optional[str] = None
+    #: ``outbound`` for a call we placed, else ``inbound``. For the trace.
+    call_type: str = "inbound"
 
 
 @dataclass(frozen=True)
@@ -350,6 +354,9 @@ class AgentInput:
     #: Given the agent's new messages, a raw line to say after its answer, or
     #: None. Voice's hangs up when the agent said the conversation is closing.
     closing_line: Optional[Callable[[Sequence[ModelMessage]], Optional[str]]] = None
+    #: Called with the agent's new messages once its answer has been streamed.
+    #: Chat's records which tier served the turn; voice's records the agent's run.
+    after_run: Optional[Callable[[Sequence[ModelMessage]], None]] = None
 
 
 class AgentInputStep(Protocol):
@@ -438,7 +445,9 @@ class TurnTelemetry(Protocol):
         ...
 
     def record_output(self, text: str, label: str) -> None:
-        """Record what the caller received. ``label`` names the path for logs."""
+        """Record what the caller received. ``label`` names the path: an answer's
+        own label, ``"final"`` for the agent's answer, or ``"closing"`` for the
+        closing line said after it."""
         ...
 
     def record_outcome(self, outcome: str) -> None:

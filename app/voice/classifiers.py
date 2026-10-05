@@ -29,6 +29,7 @@ from app.voice.stt_signals import (
     detect_stt_signal,
     generate_stt_signal_response,
 )
+from app.voice.trace import current_trace
 from helpers.utils import get_logger
 
 logger = get_logger(__name__)
@@ -232,11 +233,12 @@ async def _stt_signal_classifier(turn: Turn) -> Optional[ClassifierResult]:
     )
     prior_stt_failures = count_consecutive_stt_signals(turn.history)
     final_attempt = (prior_stt_failures + 1) >= max(1, settings.stt_signal_retry_ceiling)
-    stt_response = await generate_stt_signal_response(
-        signal=stt_signal,
-        target_lang=_caller_lang(turn),
-        final_attempt=final_attempt,
-    )
+    with current_trace().stage("stt_signal_response", as_type="generation"):
+        stt_response = await generate_stt_signal_response(
+            signal=stt_signal,
+            target_lang=_caller_lang(turn),
+            final_attempt=final_attempt,
+        )
     history_signal = (
         _HISTORY_MARKERS["stt_no_audio"]
         if stt_signal == "No audio/User is speaking softly"
@@ -251,6 +253,7 @@ async def _stt_signal_classifier(turn: Turn) -> Optional[ClassifierResult]:
         canned_text=stt_response,
         label="stt_signal",
         history_pair=_history_pair(history_signal, history_response),
+        outcome="stt_signal",
     )
 
 
@@ -271,7 +274,7 @@ async def _hold_message_classifier(turn: Turn) -> Optional[ClassifierResult]:
     )
     # The telephony hang-up token must stay exact ASCII "Goodbye.". The Gujarati
     # normalizer would strip the Latin letters and leave only ".".
-    return ClassifierResult(canned_text=goodbye, label="hold_message", raw=True)
+    return ClassifierResult(canned_text=goodbye, label="hold_message", raw=True, outcome="hold_message")
 
 
 async def _greeting_classifier(turn: Turn, *, render: RenderForCaller) -> Optional[ClassifierResult]:
@@ -286,14 +289,16 @@ async def _greeting_classifier(turn: Turn, *, render: RenderForCaller) -> Option
         turn.session_id, _process_id(turn), turn.query,
     )
     greeting_history = _GREETING_RESPONSES["en"]
-    greeting_response = await _canned_for_caller(
-        render, greeting_history, _caller_lang(turn), _GREETING_RESPONSES,
-        execution=await _session_execution(turn),
-    )
+    with current_trace().stage("greeting_fast_path"):
+        greeting_response = await _canned_for_caller(
+            render, greeting_history, _caller_lang(turn), _GREETING_RESPONSES,
+            execution=await _session_execution(turn),
+        )
     return ClassifierResult(
         canned_text=greeting_response,
         label="greeting_fast_path",
         history_pair=_history_pair(_HISTORY_MARKERS["greeting"], greeting_history),
+        outcome="greeting_fast_path",
     )
 
 
@@ -308,13 +313,15 @@ async def _identity_classifier(turn: Turn, *, render: RenderForCaller) -> Option
         "Identity fast-path triggered; session_id=%s process_id=%s query=%r",
         turn.session_id, _process_id(turn), turn.query,
     )
-    identity_resp_for_caller = await render(
-        _IDENTITY_RESPONSE_EN, _caller_lang(turn), execution=await _session_execution(turn)
-    )
+    with current_trace().stage("identity_fast_path"):
+        identity_resp_for_caller = await render(
+            _IDENTITY_RESPONSE_EN, _caller_lang(turn), execution=await _session_execution(turn)
+        )
     return ClassifierResult(
         canned_text=identity_resp_for_caller,
         label="identity_fast_path",
         history_pair=_history_pair(_HISTORY_MARKERS["greeting"], _IDENTITY_RESPONSE_EN),
+        outcome="identity_fast_path",
     )
 
 
@@ -328,14 +335,16 @@ async def _fragment_classifier(turn: Turn, *, render: RenderForCaller) -> Option
         turn.session_id, _process_id(turn), turn.query,
     )
     frag_response_for_history = _FRAGMENT_RESPONSES["en"]
-    frag_response_for_caller = await _canned_for_caller(
-        render, frag_response_for_history, _caller_lang(turn), _FRAGMENT_RESPONSES,
-        execution=await _session_execution(turn),
-    )
+    with current_trace().stage("fragment_fast_path"):
+        frag_response_for_caller = await _canned_for_caller(
+            render, frag_response_for_history, _caller_lang(turn), _FRAGMENT_RESPONSES,
+            execution=await _session_execution(turn),
+        )
     return ClassifierResult(
         canned_text=frag_response_for_caller,
         label="fragment_fast_path",
         history_pair=_history_pair(_HISTORY_MARKERS["fragment"], frag_response_for_history),
+        outcome="fragment_fast_path",
     )
 
 

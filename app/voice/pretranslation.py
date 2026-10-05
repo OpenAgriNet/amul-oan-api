@@ -34,12 +34,14 @@ from agents.tools.terms import TERM_PAIRS
 from app.config import settings
 from app.llm_core import Step
 from app.llm_core.config_model import StepClientKind
+from app.llm_core.execution import classify
 from app.services.translation import LANG_CODES, LANG_NAMES, _get_langfuse
 from app.turn.types import ClassifierResult, Pretranslated, Pretranslation, Turn
 from app.voice.classifiers import _FRAGMENT_RESPONSES, RenderForCaller, _canned_for_caller
 from app.voice.history import HISTORY_MARKERS as _HISTORY_MARKERS
 from app.voice.history import history_pair as _history_pair
 from app.voice.stt_signals import detect_stt_signal
+from app.voice.trace import current_trace
 from helpers.utils import get_logger
 
 logger = get_logger(__name__)
@@ -571,27 +573,86 @@ async def _voice_pretranslation(
     process_id = turn.call.process_id if turn.call is not None else None
     processing_query = query
     history_user_text = query
+    trace = current_trace()
 
     if requested_source_lang not in {"en", "english"}:
+        _pre_mt = execution.info(Step.PRE_TRANSLATION)
+        _pretrans_provider_label = "vllm" if _pre_mt.kind == "oss" else "openai"
+        _pretrans_model = _pre_mt.model_name
+        _pretrans_requested_tier = _pre_mt.kind
+        _pretranslation_attempts: list[dict[str, object]] = []
+        _pretranslation_actual_tier = _pretrans_requested_tier
+        _pretranslation_actual_provider = _pretrans_provider_label
+        _pretranslation_actual_model = _pretrans_model
         logger.info(
             "Translation pipeline enabled; pretranslating %s -> en with %s (variant=%s)",
             requested_source_lang,
-            execution.info(Step.PRE_TRANSLATION).model_name,
+            _pretrans_model,
             execution.profile_name,
         )
         # Recent understood conversation — see _pretranslation_context.
         _pretranslation_conversation = _pretranslation_context(list(turn.history))
-        try:
-            processing_query = await execution.run_adapter(
-                Step.PRE_TRANSLATION,
-                partial(
-                    _pretranslate_on,
+
+        async def _run_pretranslation_attempt(a):
+            nonlocal _pretranslation_actual_tier, _pretranslation_actual_provider, _pretranslation_actual_model
+            attempt_info: dict[str, object] = {
+                "tier": a.kind,
+                "provider": a.provider,
+                "model": a.model_name,
+                "endpoint": a.endpoint,
+            }
+            _pretranslation_attempts.append(attempt_info)
+            try:
+                translated = await _pretranslate_on(
+                    a,
                     text=query,
                     source_lang=requested_source_lang,
                     conversation=_pretranslation_conversation,
                     pipeline_profile=execution.profile_name,
-                ),
-                client_kind=StepClientKind.RAW_OPENAI,
+                )
+            except Exception as _attempt_exc:
+                attempt_info["status"] = "error"
+                attempt_info["error_class"] = type(_attempt_exc).__name__
+                attempt_info["error_reason"] = classify(_attempt_exc).value
+                raise
+            attempt_info["status"] = "ok"
+            _pretranslation_actual_tier = a.kind
+            _pretranslation_actual_provider = a.provider
+            _pretranslation_actual_model = a.model_name
+            return translated
+
+        try:
+            with trace.stage(
+                "pretranslation",
+                as_type="generation",
+                input=trace.metadata.get("query"),
+                metadata={
+                    "provider": _pretrans_provider_label,
+                    "source_lang": requested_source_lang,
+                    "pipeline_profile": execution.profile_name,
+                },
+                model=_pretrans_model,
+            ):
+                processing_query = await execution.run_adapter(
+                    Step.PRE_TRANSLATION,
+                    _run_pretranslation_attempt,
+                    client_kind=StepClientKind.RAW_OPENAI,
+                )
+            _pretranslation_fallback_used = (
+                len(_pretranslation_attempts) > 1
+                and _pretranslation_attempts[0].get("status") == "error"
+            )
+            trace.set_pretranslation(
+                text=processing_query,
+                provider=_pretrans_provider_label,
+                fallback_used=_pretranslation_fallback_used,
+                requested_tier=_pretrans_requested_tier,
+                requested_provider=_pretrans_provider_label,
+                requested_model=_pretrans_model,
+                actual_tier=_pretranslation_actual_tier,
+                actual_provider=_pretranslation_actual_provider,
+                actual_model=_pretranslation_actual_model,
+                attempts=_pretranslation_attempts,
             )
             history_user_text = processing_query or _canonical_history_user_text("low_confidence")
         except Exception as e:
@@ -602,7 +663,36 @@ async def _voice_pretranslation(
                 e,
             )
             processing_query = ""
+            _pretranslation_fallback_used = (
+                len(_pretranslation_attempts) > 1
+                and _pretranslation_attempts[0].get("status") == "error"
+            )
+            trace.set_pretranslation(
+                text=processing_query,
+                provider="failed",
+                fallback_used=_pretranslation_fallback_used,
+                requested_tier=_pretrans_requested_tier,
+                requested_provider=_pretrans_provider_label,
+                requested_model=_pretrans_model,
+                actual_tier="failed",
+                actual_provider="failed",
+                actual_model="failed",
+                attempts=_pretranslation_attempts,
+            )
             history_user_text = _canonical_history_user_text("pretranslation_failed")
+    else:
+        trace.set_pretranslation(
+            text=query,
+            provider="none",
+            fallback_used=False,
+            requested_tier="none",
+            requested_provider="none",
+            requested_model="none",
+            actual_tier="none",
+            actual_provider="none",
+            actual_model="none",
+            attempts=[],
+        )
 
     if background is not None:
         background.set_history_text(history_user_text)
@@ -637,6 +727,7 @@ async def _voice_pretranslation(
                 history_user_text or _canonical_history_user_text("low_confidence"),
                 low_conf_resp_for_history,
             ),
+            outcome="pretranslation_empty",
         )
 
     return Pretranslated(query=processing_query, lang="en")

@@ -45,7 +45,8 @@ and the mapping loader check this.
 
 Contract files live in `telemetry/contracts/<schema version>.json` in the repo
 that sends the trace: `voice.turn.v1.json` in voice-oan-api, `chat.turn.v1.json`
-here. The telemetry tests fail with the exact step to take when the code and
+here. Voice served from this repo (`app/voice`) sends voice.turn.v1 too, so its
+contract is copied here unchanged and checked the same way. The telemetry tests fail with the exact step to take when the code and
 the contract disagree.
 
 Once the new version is live in production, add an era to `telemetry/eras.yaml`

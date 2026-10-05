@@ -11,15 +11,19 @@ context before it and the per-query hints after it; and the signed-in agent with
 a higher request limit. After the answer, the agent's ``conversation_closing``
 signal ends the call.
 
-Voice's trace stages and routes come with voice's telemetry.
+What voice's trace records along the way is recorded here too: the farmer data
+and scheme summary stages, the consent verdict, the milk readout routes, and the
+agent's run.
 """
 from __future__ import annotations
 
 import re
+import time
+from contextlib import contextmanager
 from functools import partial
 from typing import Optional
 
-from pydantic_ai.messages import ModelRequest, UserPromptPart
+from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, UserPromptPart
 from pydantic_ai.usage import UsageLimits
 
 from agents.deps import FarmerAccount, FarmerContext
@@ -38,6 +42,7 @@ from agents.voice.services.farmer_identity import (
 )
 from agents.voice.tools.terms import get_ambiguity_hints_for_query
 from app.config import settings
+from app.llm_core import Step
 from app.model_boundary_capture import boundary_capture_context
 from app.turn.types import AgentInput, AgentInputStep, ClassifierResult, Pretranslated, StalenessCheck, Turn
 from app.utils import trim_history, update_message_history
@@ -53,6 +58,8 @@ from app.voice.farmer import (
     _is_signed_in_session,
 )
 from app.voice.history import clean_message_history_for_openai, history_pair
+from app.voice.liveness import nudge_stopped
+from app.voice.trace import current_trace
 from helpers.utils import get_logger, get_today_date_str
 
 logger = get_logger(__name__)
@@ -223,6 +230,71 @@ def _goodbye_after_closing(target_lang: str, session_id: str, process_id: Option
     return " " + TELEPHONY_TERMINATE_CALL_TOKEN.get(target_lang, TELEPHONY_TERMINATE_CALL_TOKEN["en"])
 
 
+def _agent_text(new_messages) -> str:
+    """The text the agent streamed, as its new messages hold it."""
+    return "".join(
+        part.content
+        for message in new_messages
+        if isinstance(message, ModelResponse)
+        for part in message.parts
+        if isinstance(part, TextPart)
+    ).strip()
+
+
+class _AgentRun:
+    """The voice agent's run as the trace records it: timed from when it starts
+    streaming, and what it produced once its answer is out."""
+
+    def __init__(
+        self,
+        *,
+        execution,
+        signed_in: bool,
+        request_limit: int,
+        session_id: str,
+        process_id: Optional[str],
+        user_query: str,
+    ) -> None:
+        self._execution = execution
+        self._signed_in = signed_in
+        self._request_limit = request_limit
+        self._session_id = session_id
+        self._process_id = process_id
+        self._user_query = user_query
+
+    @contextmanager
+    def observe(self):
+        self._started_at = time.monotonic()
+        with boundary_capture_context(
+            session_id=self._session_id,
+            process_id=self._process_id,
+            user_query=self._user_query,
+        ):
+            yield None
+
+    def after_run(self, new_messages) -> None:
+        trace = current_trace()
+        agent = self._execution.info(Step.AGENT)
+        trace.attach_stage_timing(
+            "agent",
+            (time.monotonic() - self._started_at) * 1000.0,
+            signed_in=self._signed_in,
+            request_limit=self._request_limit,
+            pipeline_profile=self._execution.profile_name,
+            requested_tier=agent.kind,
+            requested_model=agent.model_name,
+            requested_provider=agent.provider,
+        )
+        trace.set_agent(
+            signed_in=self._signed_in,
+            output=_agent_text(new_messages),
+            new_messages=list(new_messages),
+            requested_tier=agent.kind,
+            requested_provider=agent.provider,
+            requested_model=agent.model_name,
+        )
+
+
 async def _voice_agent_input(
     turn: Turn,
     pretranslated: Pretranslated,
@@ -253,9 +325,11 @@ async def _voice_agent_input(
     farmer_village: Optional[str] = None
     farmer_district: Optional[str] = None
     ai_technician_info = ""
+    trace = current_trace()
     if mobile:
         try:
-            envelope = await background.farmer_data()
+            with trace.stage("farmer_context"):
+                envelope = await background.farmer_data()
             if envelope is None:
                 # A concurrent fetch (e.g. the outbound prefetch) may have
                 # landed while ours was giving up. Cheap Redis re-read
@@ -270,10 +344,18 @@ async def _voice_agent_input(
             farmer_unions = _collect_farmer_unions(envelope)
             farmer_accounts = _collect_farmer_accounts(envelope)
             farmer_village, farmer_district = _collect_farmer_location(envelope)
-            scheme_summary = await _build_union_scheme_summary(farmer_unions)
+            with trace.stage("scheme_summary"):
+                scheme_summary = await _build_union_scheme_summary(farmer_unions)
             if scheme_summary:
                 farmer_info = f"{farmer_info}\n{scheme_summary}" if farmer_info else scheme_summary
             ai_technician_info = _build_ai_technician_summary(envelope)
+            trace.set_farmer_context(
+                source=getattr(envelope, "source", None) if envelope else None,
+                stale=getattr(envelope, "stale", None) if envelope else None,
+                unions=farmer_unions,
+                farmer_info_chars=len(farmer_info),
+                technician_info_chars=len(ai_technician_info),
+            )
             logger.info(
                 "Farmer summary loaded from cache; session_id=%s source=%s stale=%s unions=%s summary_chars=%s technician_chars=%s",
                 session_id,
@@ -300,8 +382,16 @@ async def _voice_agent_input(
     # (typically the farmer asking their own question) simply falls through
     # to a normal agent turn, which is the outcome we most want to protect.
     outbound_milk_hint: Optional[str] = None
+    _consent_wait_started = time.monotonic()
     consent_verdict = await background.consent()
     if consent_verdict is not None:
+        trace.attach_stage_timing(
+            "outbound_consent",
+            (time.monotonic() - _consent_wait_started) * 1000.0,
+            intent=consent_verdict.intent,
+            failed_open=consent_verdict.failed_open,
+        )
+        trace.metadata["outbound_consent_intent"] = consent_verdict.intent
         logger.info(
             "Outbound consent verdict - session_id=%s process_id=%s intent=%s reason=%r failed_open=%s",
             session_id, process_id, consent_verdict.intent,
@@ -311,6 +401,7 @@ async def _voice_agent_input(
         await _outbound.set_stage(session_id, _outbound.STAGE_RESOLVED)
 
         if consent_verdict.is_negative:
+            nudge_stopped("outbound_declined")
             farewell_en = _outbound.OUTBOUND_DECLINE_FAREWELL["en"]
             farewell_for_caller = await _canned_for_caller(
                 render, farewell_en, requested_target_lang, _outbound.OUTBOUND_DECLINE_FAREWELL,
@@ -339,11 +430,13 @@ async def _voice_agent_input(
             prefetched = await _outbound.get_prefetched_milk_summary(session_id)
             if prefetched:
                 outbound_milk_hint = _outbound.milk_answer_hint(prefetched)
+                trace.set_route("outbound_milk_readout")
             elif signed_in and mobile and farmer_accounts:
                 # Prefetch missed (cold cache or slow upstream) — the agent
                 # fetches it itself against the same pinned window.
                 _from, _to = _outbound.milk_window(settings.outbound_milk_window_days)
                 outbound_milk_hint = _outbound.milk_fetch_hint(_from, _to)
+                trace.set_route("outbound_milk_readout_cold")
             else:
                 # Consented, but there is nothing to read out (no account on
                 # this number). Say so and leave the call open rather than
@@ -426,6 +519,14 @@ async def _voice_agent_input(
         )
     active_agent = voice_agent_signed_in if (signed_in and mobile) else voice_agent
     usage_limits = UsageLimits(request_limit=6 if (signed_in and mobile) else 4)
+    run = _AgentRun(
+        execution=execution,
+        signed_in=bool(signed_in and mobile),
+        request_limit=usage_limits.request_limit,
+        session_id=session_id,
+        process_id=process_id,
+        user_query=processing_query,
+    )
 
     if settings.retrieval_audit_log:
         logger.info(
@@ -442,14 +543,10 @@ async def _voice_agent_input(
         message_history=model_input_history,
         deps=deps,
         history=history,
-        observe=partial(
-            boundary_capture_context,
-            session_id=session_id,
-            process_id=process_id,
-            user_query=processing_query,
-        ),
+        observe=run.observe,
         usage_limits=usage_limits,
         closing_line=partial(_goodbye_after_closing, requested_target_lang, session_id, process_id),
+        after_run=run.after_run,
     )
 
 

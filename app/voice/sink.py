@@ -11,6 +11,10 @@ stopped it, and an agent that fails is answered with voice's trouble line.
 Translation is this repo's ``app/services/translation.py`` in its voice channel.
 ``render_for_caller`` is voice's way of putting a fixed English line into the
 caller's language; the classifiers and the gate take it as ``render``.
+
+The turn's trace gets what voice's recorded here: every chunk spoken, when the
+agent's first text and the first translated text came, each batch's translation,
+and why the nudge was stopped.
 """
 from __future__ import annotations
 
@@ -25,6 +29,8 @@ from agents.tools.models.union import UNION_BANNED_MESSAGE, union_banned_message
 from app.services.translation import translate_text, translate_text_stream_fast, translation_channel
 from app.turn.types import StalenessCheck, Turn
 from app.voice.classifiers import _IDENTITY_RESPONSE_EN
+from app.voice.liveness import nudge_stopped
+from app.voice.trace import current_trace
 from helpers.utils import get_logger, normalize_voice_output
 
 logger = get_logger(__name__)
@@ -302,6 +308,15 @@ async def _voice_translation(text: str, target_lang: str, execution) -> AsyncIte
             yield chunk
 
 
+# Why the nudge was stopped when the first translated chunk came, as voice names
+# it, by the batch the chunk came from.
+_NUDGE_STOPPED_BY = {
+    "before_translated_yield": "first_translated_chunk_received",
+    "before_final_translated_yield": "final_translated_batch",
+    "before_tail_translated_yield": "tail_translated_fragment",
+}
+
+
 def _first_sig_char(text: str) -> str | None:
     for ch in text or "":
         if not ch.isspace():
@@ -359,6 +374,7 @@ class VoiceSink:
         return self._is_stale is not None and await self._is_stale(reason) is not None
 
     def _emit(self, text: str) -> str:
+        current_trace().record_emit(text)
         # What the trace keeps as the answer: every chunk the caller hears.
         if text.strip():
             self._spoken.append(text)
@@ -398,6 +414,8 @@ class VoiceSink:
             )
             if not await self._stale("after_stream_error"):
                 yield self._emit(_trouble_message(self._target_lang))
+        finally:
+            nudge_stopped("stream_ended")
 
     async def _speak(self, english: AsyncIterator[str]) -> AsyncIterator[str]:
         sentence_buffer = ""
@@ -409,8 +427,13 @@ class VoiceSink:
                 self._agent_started = True
                 if await self._stale("during_agent_stream"):
                     break
+                if chunk and chunk.strip():
+                    current_trace().mark("first_agent_text_ms")
 
                 if not self._translating:
+                    if not self._first_text_chunk_received and chunk and chunk.strip():
+                        self._first_text_chunk_received = True
+                        current_trace().set_nudge(cancel_reason="first_text_chunk_received")
                     cleaned_chunk = _prepare_voice_output(chunk, self._target_lang) if chunk else chunk
                     if await self._stale("before_direct_yield"):
                         break
@@ -463,6 +486,8 @@ class VoiceSink:
         async with aclosing(self._yield_translated_text(text)) as translated:
             async for translated_chunk in translated:
                 if translated_chunk and translated_chunk.strip():
+                    if not self._first_text_chunk_received:
+                        current_trace().set_nudge(cancel_reason=_NUDGE_STOPPED_BY[before_yield])
                     self._first_text_chunk_received = True
                 if await self._stale(before_yield):
                     break
@@ -476,15 +501,26 @@ class VoiceSink:
         if canned_ban is not None:
             yield _prepare_voice_output(canned_ban, self._target_lang)
             return
+        trace = current_trace()
         try:
-            async with aclosing(
-                _voice_translation(text_to_translate, self._target_lang, self._execution)
-            ) as translated:
-                async for chunk in translated:
-                    if await self._stale("during_output_translation"):
-                        return
-                    yield _prepare_voice_output(chunk, self._target_lang) if chunk else chunk
+            with trace.stage(
+                "output_translation",
+                as_type="generation",
+                input={"chars": len(text_to_translate)},
+                metadata={"target_lang": self._target_lang},
+            ):
+                async with aclosing(
+                    _voice_translation(text_to_translate, self._target_lang, self._execution)
+                ) as translated:
+                    async for chunk in translated:
+                        if await self._stale("during_output_translation"):
+                            return
+                        cleaned = _prepare_voice_output(chunk, self._target_lang) if chunk else chunk
+                        if cleaned and cleaned.strip():
+                            trace.mark("first_translation_chunk_ms")
+                        yield cleaned
         except Exception as e:
+            trace.increment("output_translation_errors")
             self._failed = True
             logger.error(
                 "Translation pipeline output translation failed for session_id=%s error=%s",

@@ -385,6 +385,11 @@ class Settings(BaseSettings):
     voice_outbound_consent_timeout_seconds: float = float(
         os.getenv("VOICE_OUTBOUND_CONSENT_TIMEOUT_SECONDS", "0.60")
     )
+    # Voice's trace (app/voice/trace.py). Same names and defaults as voice-oan-api.
+    enable_voice_tracing: bool = _get_bool_env("ENABLE_VOICE_TRACING", default=True)
+    voice_trace_text_mode: str = os.getenv("VOICE_TRACE_TEXT_MODE", "none")
+    voice_trace_preview_chars: int = int(os.getenv("VOICE_TRACE_PREVIEW_CHARS", "120"))
+    voice_trace_log_summary: bool = _get_bool_env("VOICE_TRACE_LOG_SUMMARY", default=True)
     # Voice's agent and its farmer data (agents/voice/), inert on the chat path.
     # Same names and defaults as voice-oan-api.
     voice_profile_service_channels: str = os.getenv(

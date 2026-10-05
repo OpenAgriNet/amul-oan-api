@@ -6,7 +6,9 @@ the ones in ``app/services/voice.py``.
 
 The nudge fires on whichever comes first, the configured timeout since the
 request started or the agent's first tool call, and is sent through the side
-channel. ``run_turn`` stops it before the first thing the caller hears.
+channel. ``run_turn`` stops it before the first thing the caller hears. The
+turn's trace records whether it was armed, when and why it was sent, and why it
+was stopped.
 """
 from __future__ import annotations
 
@@ -22,6 +24,7 @@ from app.config import settings
 from app.observability import start_observation
 from app.turn.types import SideChannelEmission, SideChannelSender, StalenessCheck, Turn
 from app.utils import is_session_request_owner, refresh_session_request_ownership
+from app.voice.trace import current_trace
 from helpers.utils import get_logger
 
 logger = get_logger(__name__)
@@ -141,6 +144,17 @@ async def send_nudge_message_raya(message: str, session_id: str, process_id: str
         )
 
 
+def nudge_stopped(reason: str) -> None:
+    """Record why a nudge that was still waiting will not go out.
+
+    Voice records it only for a nudge armed and not yet sent, and keeps the
+    first reason it records.
+    """
+    nudge = current_trace().metadata.get("nudge") or {}
+    if nudge.get("armed") and not nudge.get("sent") and "cancel_reason" not in nudge:
+        current_trace().set_nudge(cancel_reason=reason)
+
+
 class RayaNudgeSender:
     """The telephony provider's nudge endpoint, as a ``SideChannelSender``."""
 
@@ -227,12 +241,14 @@ class VoiceLiveness:
         self._process_id = turn.call.process_id if turn.call is not None else None
         self._task: Optional[asyncio.Task] = None
         if not settings.enable_voice_nudges:
+            current_trace().set_nudge(armed=False, sent=False)
             logger.info(
                 "Voice nudges disabled by config; session_id=%s process_id=%s",
                 self._session_id,
                 self._process_id,
             )
             return
+        current_trace().set_nudge(armed=True, sent=False)
         self._tool_call = asyncio.Event()
         set_tool_call_nudge_event(self._tool_call)
         lang = (turn.target_lang or "gu").strip().lower()
@@ -285,6 +301,11 @@ class VoiceLiveness:
             trigger_reason = "tool_call" if event_task in done else "timeout"
             if is_stale is not None and await is_stale("before_nudge_send") is not None:
                 return
+            current_trace().set_nudge(
+                sent=True,
+                trigger=trigger_reason,
+                sent_ms=round((time.monotonic() - started_at) * 1000.0, 2),
+            )
             nudge_msg = (
                 get_tool_nudge_message(lang)
                 if trigger_reason == "tool_call"
