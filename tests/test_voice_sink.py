@@ -393,21 +393,21 @@ def test_render_speaks_english_as_is(monkeypatch):
 
     monkeypatch.setattr(voice_sink, "translate_text", _no_translation)
 
-    assert asyncio.run(voice_sink.render_for_caller("Give **5 kg** feed.", "en")) == "Give 5 kilograms feed."
+    assert asyncio.run(voice_sink.render_for_caller("Give **5 kg** feed.", "en", execution=_EXECUTION)) == "Give 5 kilograms feed."
 
 
 def test_render_translates_in_the_voice_channel(monkeypatch):
     seen = []
 
-    async def _translate(text, source_lang, target_lang, **_kw):
-        seen.append((text, target_lang, translation._is_voice_channel()))
+    async def _translate(text, source_lang, target_lang, **kw):
+        seen.append((text, target_lang, translation._is_voice_channel(), kw.get("execution")))
         return "**૫** કિ.ગ્રા. દાણ આપો."
 
     monkeypatch.setattr(voice_sink, "translate_text", _translate)
 
-    spoken = asyncio.run(voice_sink.render_for_caller("Give 5 kg feed.", "gu"))
+    spoken = asyncio.run(voice_sink.render_for_caller("Give 5 kg feed.", "gu", execution=_EXECUTION))
 
-    assert seen == [("Give 5 kg feed.", "gu", True)]
+    assert seen == [("Give 5 kg feed.", "gu", True, _EXECUTION)], "on the turn's ExecutionContext"
     assert spoken == voice_sink.clean_output_by_language("**૫** કિ.ગ્રા. દાણ આપો.", "gu")
     assert not translation._is_voice_channel()
 
@@ -418,7 +418,7 @@ def test_render_pins_the_union_ban_line(monkeypatch):
 
     monkeypatch.setattr(voice_sink, "translate_text", _no_translation)
 
-    assert asyncio.run(voice_sink.render_for_caller(UNION_BANNED_MESSAGE, "gu")) == union_banned_message("gu")
+    assert asyncio.run(voice_sink.render_for_caller(UNION_BANNED_MESSAGE, "gu", execution=_EXECUTION)) == union_banned_message("gu")
 
 
 def test_render_falls_back_to_the_trouble_line(monkeypatch):
@@ -427,7 +427,7 @@ def test_render_falls_back_to_the_trouble_line(monkeypatch):
 
     monkeypatch.setattr(voice_sink, "translate_text", _down)
 
-    assert asyncio.run(voice_sink.render_for_caller("Give feed.", "gu")) == _TROUBLE_GU
+    assert asyncio.run(voice_sink.render_for_caller("Give feed.", "gu", execution=_EXECUTION)) == _TROUBLE_GU
 
 
 # ── the sink on the seam ────────────────────────────────────────────────────
@@ -500,7 +500,7 @@ def test_a_call_turn_that_goes_stale_mid_answer_stops_and_saves_nothing(monkeypa
 
 
 def test_an_agent_that_fails_before_its_first_chunk_is_answered_after_the_gate(monkeypatch):
-    patch_turn(monkeypatch)
+    seen = patch_turn(monkeypatch)
     _Translation(monkeypatch)
     log = []
 
@@ -526,7 +526,21 @@ def test_an_agent_that_fails_before_its_first_chunk_is_answered_after_the_gate(m
 
     assert log == ["agent", "gate"]
     assert emissions == [TextEmission(_TROUBLE_GU)]
-    assert _Outcomes.seen[-1] == ("outcome", "success")
+    # The caller heard the trouble line, but the turn failed: no success, no history.
+    assert _Outcomes.seen[-1] == ("outcome", "error")
+    assert seen["history_writes"] == []
+
+
+def test_a_translation_that_fails_mid_answer_ends_the_turn_as_an_error(monkeypatch):
+    seen = patch_turn(monkeypatch, agent_text="Give clean water daily. Keep the cow in shade.")
+    _Translation(monkeypatch, replies=[["ગાયને રોજ પાણી આપો."]], fail_on={2})
+
+    emissions = _run(_turn(), _surface())
+
+    assert emissions[0] == TextEmission("ગાયને રોજ પાણી આપો.")
+    assert emissions[-1].text.strip() == _TROUBLE_GU
+    assert _Outcomes.seen[-1] == ("outcome", "error")
+    assert seen["history_writes"] == []
 
 
 def test_a_blank_first_chunk_does_not_stop_the_nudge(monkeypatch):

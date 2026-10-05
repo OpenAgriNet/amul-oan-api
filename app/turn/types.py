@@ -332,6 +332,12 @@ class TurnSink(Protocol):
         """The turn's complete output for the trace, or None if nothing was produced."""
         ...
 
+    def outcome(self) -> Optional[str]:
+        """How the turn ended, when the sink caught a failure itself and told the
+        caller so; None when the answer went through. ``run_turn`` then records
+        it and keeps the turn out of history."""
+        ...
+
 
 class SinkFactory(Protocol):
     """Builds a turn's sink from what ``run_turn`` knows at that point.
@@ -411,3 +417,6 @@ class SurfaceProfile:
     #: Puts the query into the language the agent reads. Like the sink, a surface
     #: that always answers from its classifiers may leave it unset.
     pretranslation: Optional[Pretranslation] = None
+    #: Languages switched off for this surface, whose turns are answered in
+    #: English. Chat's come from its ``*_CHAT_ENABLED`` settings; voice has none.
+    disabled_languages: Optional[Callable[[], set[str]]] = None
