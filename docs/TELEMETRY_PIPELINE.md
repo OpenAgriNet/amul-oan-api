@@ -247,10 +247,39 @@ endpoints, for a server rather than a browser, with the key in `X-API-Key`:
   and seconds from its first turn to its last, over sessions with a question.
 - `GET /api/telemetry/outcomes?from=...&to=...`: turns, sessions and users per
   `outcome_class`, and `not_recorded` for turns with no outcome.
+- `GET /api/telemetry/overview?from=...&to=...`: per channel, for the range and
+  each day: turns, questions, delivered, failed, refused_or_blocked and
+  non_question turns, the delivered rate, sessions, known users, anonymous turns
+  and sessions, and p50/p95 full-turn latency.
+- `GET /api/telemetry/breakdown?from=...&to=...&by=pipeline_profile`: the same
+  numbers per value of `by`, with each value's share of the turns. `by` is one of
+  `environment`, `schema_version`, `source_era`, `pipeline_profile`,
+  `source_lang`, `target_lang`, `outcome`, `outcome_class`, `service`,
+  `release`; for voice also `route`, `call_type`, `provider`, `signed_in`; for
+  chat also `chat_channel` (web or WhatsApp), `pipeline`, `persona`,
+  `served_tier`.
+- `GET /api/telemetry/latency?from=...&to=...`: p50/p95/p99 full-turn latency,
+  per value of an optional `by`, and per stage. Chat's stage times are worked
+  out at import from the trace's spans.
+- `GET /api/telemetry/tools?from=...&to=...`: turns that used each tool and
+  turns by number of tool calls, with their share. Chat only: voice keeps no
+  tool names yet.
+- `GET /api/telemetry/health?from=...&to=...`: each day's import, when each
+  environment was last imported, how many root traces became turns, were
+  rejected, were activity or weren't recognised, why, and the schema versions
+  and eras the turns came in.
+- `GET /api/telemetry/turns?from=...&to=...&channel=voice&limit=50&offset=0`:
+  a page of turns, newest first, as metadata: never the text, a hash of the text
+  or the caller's id.
 
-Days are UTC and both ends count. Without `from` the range starts at the first
-turn, without `to` it ends today. They read as `telemetry_dashboard` and follow
-the rules above.
+`from` and `to` are required, in UTC days, both ends counting. They read as
+`telemetry_dashboard` and follow the rules above.
+
+The last five also filter: `environment` (one, or `all`; each channel's
+production one by default), and an exact match on any of the `by` values, e.g.
+`&pipeline_profile=oss&source_lang=gu`. A channel that doesn't record what is
+matched or grouped by answers `null`. `service` and `release` are only on turns
+sent after the stamps; older turns have them as `null`.
 
 - A question is a turn, except voice's `non_question` ones (a stale re-dispatch,
   non-speech, a greeting...). Voice before v3 recorded no outcome, so all of its
