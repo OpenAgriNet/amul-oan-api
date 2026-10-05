@@ -729,13 +729,14 @@ def chat_row(trace_id, *, name="chat.translation", when="2026-09-20T10:00:00Z", 
     }
 
 
-def chat_observation(obs_id, trace_id, *, name, type="SPAN", start_ms=0, metadata=None, output=None):
+def chat_observation(obs_id, trace_id, *, name, type="SPAN", start_ms=0, end_ms=None, metadata=None, output=None):
     return {
         "id": obs_id,
         "trace_id": trace_id,
         "type": type,
         "name": name,
         "start_ms": start_ms,
+        "end_ms": end_ms,
         "metadata": {key: json.dumps(value) if isinstance(value, dict) else value for key, value in (metadata or {}).items()},
         "input": json.dumps({"farmer_code": "<redacted>"}) if type == "TOOL" else None,
         "output": json.dumps(output) if output is not None else None,
@@ -780,6 +781,89 @@ def test_chat_rows_keep_no_phone_number_text_or_tool_data():
     for row in rows.values():
         assert "9990001112" not in repr(row) and "<redacted" not in repr(row)
         assert row["user_id_hash"] and "user_id" not in row
+
+
+def test_stamped_chat_tool_observation_is_imported_as_safe_tool_identity():
+    client = FakeClickHouse(
+        traces=[chat_row(
+            "stamped",
+            metadata={"amul.schema_version": "chat.turn.v1", "pipeline": "translation"},
+            input={"query": "<redacted question>"},
+            output="<redacted answer>",
+        )],
+        observations=[chat_observation(
+            "tool", "stamped", name="get_farmer_bonus_amount", type="TOOL",
+            metadata={"attributes": {
+                "gen_ai.tool.name": "get_farmer_bonus_amount",
+                "gen_ai.tool.call.id": "test-call-id",
+            }},
+            output="<private tool output>",
+        )],
+    )
+
+    _import_chat(client)
+
+    [row] = client.inserts["chat_turns"]
+    assert row["tool_names"] == ["get_farmer_bonus_amount"]
+    assert row["tool_call_count"] == 1
+    assert row["field_availability"]["tool_calls"] == "derived"
+    assert "private tool output" not in repr(row)
+    assert "farmer_code" not in repr(row)
+
+
+@pytest.mark.parametrize(
+    ("metadata", "when", "day"),
+    [
+        ({"amul.schema_version": "chat.turn.v1", "pipeline": "translation"}, "2026-09-20T10:00:00Z", date(2026, 9, 20)),
+        ({"pipeline": "translation", "pipeline_profile": "oss"}, "2026-08-06T10:00:00Z", date(2026, 8, 6)),
+    ],
+)
+def test_chat_turn_root_imports_completed_full_turn_duration(metadata, when, day):
+    started_ms = int(datetime.fromisoformat(when.replace("Z", "+00:00")).timestamp() * 1000)
+    client = FakeClickHouse(
+        traces=[chat_row("timed", when=when, metadata=metadata, input={"query": "<redacted question>"})],
+        observations=[
+            chat_observation("agent", "timed", name="Amul AI Agent", start_ms=started_ms + 100,
+                             end_ms=started_ms + 900),
+            chat_observation("response", "timed", name="stream_translation", start_ms=started_ms + 900,
+                             end_ms=started_ms + 1_250),
+        ],
+    )
+
+    report = _import_chat(client, first_day=day)
+
+    [row] = client.inserts["chat_turns"]
+    assert row["full_turn_latency_ms"] == 1_250.0
+    assert row["field_availability"]["full_turn_latency_ms"] == "derived"
+    assert report.available["full_turn_latency_ms"] == 1
+    [ledger] = client.inserts["trace_ledger"]
+    assert ledger["duration_ms"] == 1_250.0
+
+
+def test_chat_duration_needs_a_completed_child_and_a_turn_root():
+    stamped = FakeClickHouse(
+        traces=[chat_row("unfinished", metadata={"amul.schema_version": "chat.turn.v1"})],
+        observations=[chat_observation("agent", "unfinished", name="Amul AI Agent", end_ms=None)],
+    )
+    _import_chat(stamped)
+    [unfinished] = stamped.inserts["chat_turns"]
+    assert unfinished["full_turn_latency_ms"] is None
+    assert unfinished["field_availability"]["full_turn_latency_ms"] == "unavailable"
+    assert unfinished["tool_names"] == []
+    assert unfinished["tool_call_count"] == 0
+
+    started_ms = int(datetime(2026, 7, 23, 10, tzinfo=timezone.utc).timestamp() * 1000)
+    historical = FakeClickHouse(
+        traces=[chat_row("agent-root", name="Amul AI Agent", when="2026-07-23T10:00:00Z")],
+        observations=[chat_observation("agent", "agent-root", name="Amul AI Agent run",
+                                       start_ms=started_ms, end_ms=started_ms + 2_000)],
+    )
+    _import_chat(historical, first_day=date(2026, 7, 23))
+    [agent_root] = historical.inserts["chat_turns"]
+    assert agent_root["full_turn_latency_ms"] is None
+    assert agent_root["field_availability"]["full_turn_latency_ms"] == "unavailable"
+    [ledger] = historical.inserts["trace_ledger"]
+    assert ledger["duration_ms"] == 2_000.0
 
 
 def test_a_chat_caller_hash_is_stored_only_as_an_hmac_under_the_caller_key():

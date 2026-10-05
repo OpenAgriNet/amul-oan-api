@@ -22,7 +22,11 @@ from pydantic import ValidationError
 
 from app.models.telemetry_analytics import CanonicalChatTurn
 from app.models.telemetry_voice_analytics import CanonicalVoiceTurn
-from app.services.telemetry_era_adapters import UnsupportedTelemetryEra, adapt_chat_trace
+from app.services.telemetry_era_adapters import (
+    UnsupportedTelemetryEra,
+    _chat_has_full_turn_root,
+    adapt_chat_trace,
+)
 from app.services.telemetry_era_registry import TelemetryEraRegistry, load_yaml_file
 from app.services.telemetry_fetcher import (
     ClickHouseReader,
@@ -382,6 +386,7 @@ def _import_days(
         end = start + timedelta(days=1)
         imported_at = datetime.now(timezone.utc)
         rows, rejected, traces, ledger = [], Counter(), 0, []
+        accepted_turns = []
 
         def account(trace_id, name, timestamp, schema_version, disposition, reason="", duration_ms=None, outcome=None):
             ledger.append(
@@ -416,8 +421,7 @@ def _import_days(
                 rejected[(trace["name"], reason)] += 1
                 account(trace["id"], trace["name"], trace["timestamp"], stamp, "rejected", reason)
                 continue
-            report.add(turn)
-            rows.append(row(turn, environment=environment, imported_at=imported_at, caller_key=caller_key))
+            accepted_turns.append(turn)
             account(
                 trace["id"],
                 trace["name"],
@@ -470,6 +474,23 @@ def _import_days(
                 entry[11] = identity.duration_ms
             if entry[12] is None:
                 entry[12] = identity.outcome
+
+        # The identity pass measures the turn-root span from its timestamp to
+        # the latest completed child. Earlier chat roots represent agent work,
+        # not a whole farmer turn, so their duration stays ledger-only.
+        for turn in accepted_turns:
+            if table == "chat" and _chat_has_full_turn_root(turn) and turn.full_turn_latency_ms is None:
+                identity = identities_by_id.get(turn.source_trace_id)
+                if identity is not None and identity.duration_ms is not None:
+                    turn = turn.model_copy(update={
+                        "full_turn_latency_ms": identity.duration_ms,
+                        "field_availability": {
+                            **turn.field_availability,
+                            "full_turn_latency_ms": "derived",
+                        },
+                    })
+            report.add(turn)
+            rows.append(row(turn, environment=environment, imported_at=imported_at, caller_key=caller_key))
 
         report.traces += traces
         report.rejected.update(rejected)
