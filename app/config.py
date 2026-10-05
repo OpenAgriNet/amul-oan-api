@@ -346,6 +346,16 @@ class Settings(BaseSettings):
     telemetry_ingest_max_feedback_text_len: int = 4000
     telemetry_ingest_max_error_text_len: int = 2000
 
+    # Telemetry database, read by the dashboard query API (docs/TELEMETRY_PIPELINE.md).
+    # The host and port are the ones scripts/telemetry_import.py uses. Without the
+    # password and the API key the query endpoints answer 503.
+    telemetry_clickhouse_host: str = "localhost"
+    telemetry_clickhouse_port: int = 8123
+    telemetry_dashboard_password: Optional[str] = None
+    telemetry_query_api_key: Optional[str] = None
+    telemetry_query_voice_environment: str = "voice-production"
+    telemetry_query_chat_environment: str = "chat-production"
+
     # External Service URLs
     telemetry_api_url: str = "https://vistaar.kenpath.ai/observability-service/action/data/v3/telemetry"
     bhashini_api_url: str = "https://dhruva-api.bhashini.gov.in/services/inference/pipeline"
