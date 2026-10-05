@@ -212,7 +212,7 @@ def test_a_fresh_turn_is_asked_once_before_its_history_write(monkeypatch):
 
     _run(_turn(), _surface(), is_stale=staleness)
 
-    assert staleness.asked == ["before_history_write"]
+    assert staleness.asked == ["before_query_pretranslation", "before_history_write"]
     assert len(seen["history_writes"]) == 1
     assert _Outcomes.seen == ["success"]
 

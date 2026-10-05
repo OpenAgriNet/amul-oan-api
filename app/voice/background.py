@@ -7,9 +7,12 @@ A rejected query is declined and five non-meaningful turns in a row end the
 call. A check that errors lets the turn through; moderation's own fail-closed
 verdict is a rejection and is declined like one.
 
+A turn that ends before the gate still declines a rejected query: when
+pretranslation leaves nothing to ask the agent, voice's pretranslation asks
+``decline`` rather than having the caller repeat a rejected question.
+
 Voice's other background tasks, the farmer data fetch and the outbound consent
-classifier, arrive with the code that reads them. So do the nudge cancellation
-and the stale-request checks around a decline.
+classifier, arrive with the code that reads them.
 """
 from __future__ import annotations
 
@@ -131,6 +134,7 @@ class VoiceBackground:
         self._source_lang = (turn.source_lang or "gu").strip().lower()
         self._target_lang = (turn.target_lang or "gu").strip().lower()
         self._process_id = turn.call.process_id if turn.call is not None else None
+        self._history_text = turn.query
         history = list(turn.history)
         self._non_meaningful_turns = _collect_recent_user_turns_for_non_meaningful(history, turn.query, limit=5)
         self._moderation_task = asyncio.create_task(
@@ -153,10 +157,22 @@ class VoiceBackground:
         self._non_meaningful_resolved = False
         self._non_meaningful_verdict: Optional[NonMeaningfulVerdict] = None
 
-    async def gate(self) -> Optional[ClassifierResult]:
+    def set_history_text(self, text: str) -> None:
+        """What history keeps for the caller's turn: the English pretranslation
+        gave, or the marker it left when it gave nothing."""
+        self._history_text = text
+
+    async def decline(self) -> Optional[ClassifierResult]:
+        """The decline for a query moderation rejected, else None."""
         verdict = await self._resolve_moderation()
         if verdict is not None and verdict.rejected:
             return await self._decline(verdict)
+        return None
+
+    async def gate(self) -> Optional[ClassifierResult]:
+        declined = await self.decline()
+        if declined is not None:
+            return declined
         # Resolving here also reaps the classifier task on the normal agent path.
         streak = await self._resolve_non_meaningful()
         if streak is not None and streak.five_consecutive_non_meaningful:
@@ -289,12 +305,10 @@ class VoiceBackground:
             verdict.reason,
         )
         # Keep the exact telephony termination token: raw, past the normalizer.
-        # History keeps the caller's words until pretranslation supplies the
-        # English text voice stores for the turn.
         return ClassifierResult(
             canned_text=goodbye,
             label="non_meaningful_hangup",
-            history_pair=history_pair(self._turn.query, TELEPHONY_TERMINATE_CALL_TOKEN["en"]),
+            history_pair=history_pair(self._history_text, TELEPHONY_TERMINATE_CALL_TOKEN["en"]),
             raw=True,
         )
 

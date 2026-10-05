@@ -47,6 +47,7 @@ from app.turn.types import (
     ClassifierResult,
     DeferredScheduler,
     Emission,
+    Pretranslated,
     SideChannelEmission,
     SideChannelSender,
     StalenessCheck,
@@ -375,6 +376,20 @@ async def _pretranslate_query(
         translated[:80],
     )
     return translated, "en"
+
+
+async def _chat_pretranslation(turn: Turn, *, execution, background) -> Pretranslated:
+    """Chat's pretranslation, for ``SurfaceProfile.pretranslation``. It has no
+    answer of its own to give, so the background set is not needed."""
+    processing_query, processing_lang = await _pretranslate_query(
+        turn.query,
+        source_lang=turn.source_lang,
+        target_lang=turn.target_lang,
+        disabled_langs=_disabled_chat_langs(),
+        execution=execution,
+        request_id=turn.session_id,
+    )
+    return Pretranslated(query=processing_query, lang=processing_lang)
 
 
 async def _load_farmer_context(
@@ -793,6 +808,7 @@ CHAT_SURFACE = SurfaceProfile(
     classifiers=(_identity_classifier,),
     sink=_ChatSink,
     telemetry=_ChatTelemetry,
+    pretranslation=_chat_pretranslation,
     disabled_languages=_disabled_chat_langs,
 )
 
@@ -913,9 +929,7 @@ async def run_turn(
     to stop mid-answer. Chat passes neither.
     """
     started_at = time.monotonic()
-    query = turn.query
     session_id = turn.session_id
-    source_lang = turn.source_lang
     target_lang = turn.target_lang
     user_info = turn.authenticated_user
     history = turn.history
@@ -1015,14 +1029,32 @@ async def run_turn(
                 background = surface.background(turn, execution=execution)
 
             farmer_context = await _load_farmer_context(persona, user_info, request_id)
-            processing_query, processing_lang = await _pretranslate_query(
-                query,
-                source_lang=source_lang,
-                target_lang=target_lang,
-                disabled_langs=disabled_langs,
-                execution=execution,
-                request_id=request_id,
+            if surface.pretranslation is None:
+                raise TypeError(f"surface {surface.surface.value!r} reached pretranslation without one")
+            stale = await _stale_outcome(is_stale, "before_query_pretranslation")
+            if stale is not None:
+                _turn_outcome = stale
+                return
+            pretranslated = await surface.pretranslation(
+                turn, execution=execution, background=background
             )
+            if isinstance(pretranslated, ClassifierResult):
+                # An answer instead of a query for the agent: said like the gate's.
+                stale = await _stale_outcome(is_stale, f"before_{pretranslated.label}_response")
+                if stale is not None:
+                    _turn_outcome = stale
+                    return
+                if liveness is not None:
+                    await liveness.stop()
+                    liveness = None
+                telemetry.record_output(pretranslated.canned_text, pretranslated.label)
+                await _write_short_circuit_history(
+                    history, pretranslated, message_history_session_id, request_id
+                )
+                _turn_outcome = "success"
+                yield TextEmission(pretranslated.canned_text, raw=pretranslated.raw)
+                return
+            processing_query, processing_lang = pretranslated.query, pretranslated.lang
             needs_output_translation = (
                 target_lang.lower() in INDIAN_LANGUAGES
                 and target_lang.lower() not in disabled_langs

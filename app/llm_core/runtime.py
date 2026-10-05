@@ -52,14 +52,15 @@ _POST_TRANSLATION_OK = {
 def _built_as_raw_openai(step: Step) -> bool:
     """Whether this deployment builds the step's tiers as bare OpenAI clients.
 
-    ``non_meaningful`` always is. Moderation is on the voice channel, where it is
-    voice's own classifier call rather than chat's moderation agent.
+    ``non_meaningful`` always is. Moderation and pretranslation are on the voice
+    channel, where they are voice's own ``chat.completions`` calls rather than
+    chat's moderation agent and provider-native pretranslation.
     """
     from app.llm_core import config_source
     from app.llm_core.config_model import StepClientKind
     from app.llm_core.factory import STEP_CLIENT_KIND
 
-    if step is Step.MODERATION and config_source.channel() == "voice":
+    if step in (Step.MODERATION, Step.PRE_TRANSLATION) and config_source.channel() == "voice":
         return True
     return STEP_CLIENT_KIND[step] is StepClientKind.RAW_OPENAI
 
