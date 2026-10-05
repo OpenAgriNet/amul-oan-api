@@ -83,3 +83,27 @@ def test_forward_telemetry_metadata_reads_a_packed_branch_ref(monkeypatch, tmp_p
     telemetry_stamps.chat_telemetry_release.cache_clear()
 
     assert forward_chat_telemetry_metadata()["release"] == "a" * 40
+
+
+def test_the_image_build_passes_the_commit_for_the_release_stamp():
+    # .dockerignore drops .git, so without this every prod trace says "unknown".
+    workflow = Path(__file__).resolve().parents[1] / ".github" / "workflows" / "build-and-push.yml"
+
+    assert "GIT_SHA=${{ github.sha }}" in workflow.read_text(encoding="utf-8")
+
+
+def test_the_image_is_checked_for_its_release_before_it_is_pushed():
+    workflow = (Path(__file__).resolve().parents[1] / ".github" / "workflows" / "build-and-push.yml").read_text(
+        encoding="utf-8"
+    )
+    build, check, push = (
+        workflow.index(f"name: {name}")
+        for name in ("Build Docker image", "Check the image's release stamp", "Push Docker image")
+    )
+
+    assert build < check < push
+    assert "push: true" not in workflow[build:check]
+    assert 'test "$release" = "$GITHUB_SHA"' in workflow[check:push]
+    # The image that is checked and the one that is pushed are built the same way.
+    assert workflow[build:check].count("GIT_SHA=${{ github.sha }}") == 1
+    assert workflow[push:].count("GIT_SHA=${{ github.sha }}") == 1
