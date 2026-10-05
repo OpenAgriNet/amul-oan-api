@@ -329,11 +329,14 @@ reads it. So a slot lands in the same PR as the code that reads it, never ahead 
    `VOICE_ROUTE_ENABLED=true` and `HISTORY_CACHE_TTL_SECONDS=86400` (voice keeps history for 24
    hours, this repo's default is 2), the telephony
    provider pointed at it, voice-oan-api kept deployable for rollback, and a new era in
-   `telemetry/eras.yaml`. The voice deployment takes its LLM config from `PIPELINE_CONFIG_PATH`
-   or the live `llm_pipeline_config:voice` key: this repo's env synthesis builds chat's steps,
-   not voice's (`VOICE_MODERATION_PROVIDER`, `VOICE_NON_MEANINGFUL_PROVIDER`, moderation on the
-   pretranslation models). Porting that synthesis is the alternative if the deployment has to
-   run from env alone.
+   `telemetry/eras.yaml`. The voice deployment boots from `PIPELINE_CONFIG_PATH` with voice's
+   steps; the live `llm_pipeline_config:voice` key can override it after that. With
+   `VOICE_ROUTE_ENABLED` the app refuses to start, and rejects a live config, unless
+   `PIPELINE_CHANNEL=voice` and every profile calls are routed to has moderation,
+   pre_translation, agent and post_translation, with non_meaningful on managed. This repo's env
+   synthesis builds chat's steps, not voice's (`VOICE_MODERATION_PROVIDER`,
+   `VOICE_NON_MEANINGFUL_PROVIDER`, moderation on the pretranslation models), so it can't boot
+   voice; porting it is the alternative if the deployment has to run from env alone.
 
 Each PR is checked the same way: no existing test edited, every existing test's result unchanged,
 a mutation check on what it adds, and a trial merge onto the open telemetry PRs and the earlier
