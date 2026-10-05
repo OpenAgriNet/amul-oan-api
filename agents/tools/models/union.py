@@ -40,6 +40,9 @@ UNION_NAME_ALIASES: dict[str, str] = {
     "sursagar": UnionName.SURENDRANAGAR.value,
     "dudhdhara": UnionName.BHARUCH.value,
     "dudh dhara": UnionName.BHARUCH.value,
+    "madhur": UnionName.GANDHINAGAR.value,
+    "madhur dairy": UnionName.GANDHINAGAR.value,
+    "gandhinagar dairy": UnionName.GANDHINAGAR.value,
 }
 
 
