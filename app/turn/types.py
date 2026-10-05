@@ -11,9 +11,10 @@ telemetry client, and nothing here may. The transport adapter (the chat router's
 and decides what each one means on its wire.
 
 Following the rule in ``app/channels/base``, a field appears only when something
-reads it. The sink is on ``SurfaceProfile`` because ``run_turn`` reads it and chat
-populates it with its real sink. The background set and the liveness channel are
-not stubbed: they land with the voice surface that populates them.
+reads it. The sink and the telemetry are on ``SurfaceProfile`` because ``run_turn``
+reads them and chat populates them with its real ones. The background set and the
+liveness channel are not stubbed: they land with the voice surface that
+populates them.
 """
 from __future__ import annotations
 
@@ -34,6 +35,8 @@ from typing import (
 from app.channels.base import ChannelProfile
 
 if TYPE_CHECKING:
+    from contextlib import AbstractContextManager
+
     from pydantic_ai.messages import ModelMessage
 
     from app.personas import ChatPersona
@@ -212,6 +215,43 @@ class SinkFactory(Protocol):
     ) -> TurnSink: ...
 
 
+# ── telemetry ───────────────────────────────────────────────────────────────
+
+
+class TurnTelemetry(Protocol):
+    """One turn's telemetry: the single root span and how the turn went.
+
+    ``run_turn`` owns the lifecycle (one root, opened and closed once, the
+    outcome recorded on every exit); the surface owns the contract written
+    inside it. Chat writes ``chat.turn.v1``; voice's root, stamps and outcome
+    vocabulary are its own.
+    """
+
+    def root(self) -> AbstractContextManager[None]:
+        """Open the turn's root span for the whole turn, and close it after."""
+        ...
+
+    def record_output(self, text: str, label: str) -> None:
+        """Record what the caller received. ``label`` names the path for logs."""
+        ...
+
+    def record_outcome(self, outcome: str) -> None:
+        """Record how the turn ended: ``success``, ``cancelled`` or ``error``."""
+        ...
+
+
+class TelemetryFactory(Protocol):
+    """Builds a turn's telemetry from what ``run_turn`` knows before the root opens."""
+
+    def __call__(
+        self,
+        turn: Turn,
+        *,
+        pipeline_profile: str,
+        pipeline_trace: Any,
+    ) -> TurnTelemetry: ...
+
+
 @dataclass(frozen=True)
 class SurfaceProfile:
     """What a surface populates. One field per structure that is built."""
@@ -222,3 +262,6 @@ class SurfaceProfile:
     #: Turns the agent's English stream into caller text. A surface that always
     #: answers from its classifiers never reaches it, so it may be left unset.
     sink: Optional[SinkFactory] = None
+    #: The turn's root span and what is recorded in it. Left unset (as in tests
+    #: that build a bare surface), the turn runs without writing a trace.
+    telemetry: Optional[TelemetryFactory] = None
