@@ -221,6 +221,32 @@ def test_a_moderation_task_that_raises_lets_the_turn_through(checks):
     assert checks["non_meaningful"], "the streak check must still be consulted"
 
 
+def test_a_config_without_moderation_is_declined_not_let_through(monkeypatch):
+    # The real moderation check, on a config where no profile has a moderation step.
+    from app.llm_core.config_model import NamedProfile, PipelineConfig, Provider, Step, StepConfig, Tier
+    from app.llm_core.execution import ExecutionContext
+
+    async def _streak(**kwargs):
+        return _KEEP_GOING
+
+    monkeypatch.setattr(bg, "check_non_meaningful_streak", _streak)
+    agent_only = {Step.AGENT: StepConfig(tiers=[Tier(provider=Provider.OPENAI, model="gpt")])}
+    config = PipelineConfig(profiles=[NamedProfile(name="managed", weight=100, steps=agent_only)], fallback_enabled=True)
+    execution = ExecutionContext(session_id="call-1", config=config, profile_name="managed")
+
+    async def _run():
+        background = bg.VoiceBackground(_turn(), execution=execution, render=_render)
+        try:
+            return await background.gate()
+        finally:
+            await background.close()
+
+    decision = asyncio.run(_run())
+
+    assert decision.label == "moderation_rejected"
+    assert "trouble processing your request" in decision.canned_text
+
+
 def test_five_non_meaningful_turns_hang_up_with_the_exact_token(checks):
     checks["streak_result"] = _FIVE_FILLERS
 
