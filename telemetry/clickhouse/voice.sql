@@ -82,3 +82,6 @@ ORDER BY (environment, day, imported_at, trace_name, reason);
 ALTER TABLE telemetry.voice_turns ADD COLUMN IF NOT EXISTS attributes Map(String, String);
 ALTER TABLE telemetry.voice_turns ADD COLUMN IF NOT EXISTS service LowCardinality(Nullable(String));
 ALTER TABLE telemetry.voice_turns ADD COLUMN IF NOT EXISTS release LowCardinality(Nullable(String));
+
+-- Which caller key made user_id_hash (scripts/telemetry_import.py).
+ALTER TABLE telemetry.voice_turns ADD COLUMN IF NOT EXISTS user_id_hash_key LowCardinality(Nullable(String));
