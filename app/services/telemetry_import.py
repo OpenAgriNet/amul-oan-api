@@ -1,13 +1,16 @@
 """Import voice and chat turns into the telemetry database (telemetry/clickhouse/).
 
-Rows never carry a phone number or anyone's words: user ids are only kept
-hashed, and question/answer keep only their length and sha256.
+Rows never carry a phone number or anyone's words: user ids are only kept as
+an HMAC under a secret caller key, and question/answer keep only their length
+and sha256.
 
 No trace is dropped without a record: every root trace of a day gets one row in
 telemetry.trace_ledger saying what became of it (a turn, rejected with the
 reason, a known non-turn activity, or unrecognised).
 """
 
+import hashlib
+import hmac
 import re
 from collections import Counter
 from dataclasses import dataclass, field
@@ -70,6 +73,7 @@ VOICE_TURN_COLUMNS = (
     "attributes",
     "service",
     "release",
+    "user_id_hash_key",
 )
 # CanonicalVoiceTurn fields voice_turns leaves out on purpose. Every other field
 # needs a column, or tests fail, so a new field can't quietly miss the table.
@@ -119,6 +123,7 @@ CHAT_TURN_COLUMNS = (
     "service",
     "release",
     "stage_totals_ms",
+    "user_id_hash_key",
 )
 # CanonicalChatTurn fields chat_turns leaves out on purpose.
 CHAT_NOT_STORED = {
@@ -191,6 +196,32 @@ class NonTurnTraces:
         return name in self.names or name.startswith(self.prefixes)
 
 
+@dataclass(frozen=True)
+class CallerKey:
+    """The secret that turns a caller's hash into the one stored.
+
+    Traces carry a SHA-256 of the caller id under a public prefix, which a list
+    of phone numbers reverses. Rows keep an HMAC of it under this key instead,
+    with the key's id, so rows written under an older key can be found and
+    re-imported after a rotation."""
+
+    secret: bytes = field(repr=False)
+
+    def __post_init__(self) -> None:
+        if len(self.secret) < 32:
+            raise ValueError("The caller key must be at least 32 bytes, e.g. from `openssl rand -hex 32`.")
+
+    @property
+    def key_id(self) -> str:
+        """Names the key without giving it away."""
+        return hashlib.sha256(b"telemetry caller key id:" + self.secret).hexdigest()[:12]
+
+    def pseudonym(self, caller_hash: str | None) -> str | None:
+        if caller_hash is None:
+            return None
+        return hmac.new(self.secret, caller_hash.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
 class ClickHouseWriter(Protocol):
     def insert(self, table: str, data: Sequence[Sequence[Any]], column_names: Sequence[str], database: str) -> Any: ...
 
@@ -260,8 +291,10 @@ def import_voice_days(
     vocabulary: VoiceOutcomeVocabulary,
     mappings: Mapping[str, ContractMapping],
     non_turn: NonTurnTraces | None = None,
+    caller_key: CallerKey | None = None,
 ) -> ImportReport:
-    """Adapt every voice turn from first_day to last_day (UTC, inclusive). Without a writer nothing is written."""
+    """Adapt every voice turn from first_day to last_day (UTC, inclusive). Without a writer nothing is written;
+    with one, caller_key is required."""
     return _import_days(
         reader,
         writer,
@@ -282,6 +315,7 @@ def import_voice_days(
         table="voice",
         columns=VOICE_TURN_COLUMNS,
         non_turn=non_turn or NonTurnTraces.from_yaml(),
+        caller_key=caller_key,
     )
 
 
@@ -295,8 +329,10 @@ def import_chat_days(
     registry: TelemetryEraRegistry,
     mappings: Mapping[str, ContractMapping],
     non_turn: NonTurnTraces | None = None,
+    caller_key: CallerKey | None = None,
 ) -> ImportReport:
-    """Adapt every chat turn from first_day to last_day (UTC, inclusive). Without a writer nothing is written."""
+    """Adapt every chat turn from first_day to last_day (UTC, inclusive). Without a writer nothing is written;
+    with one, caller_key is required."""
     return _import_days(
         reader,
         writer,
@@ -317,6 +353,7 @@ def import_chat_days(
         table="chat",
         columns=CHAT_TURN_COLUMNS,
         non_turn=non_turn or NonTurnTraces.from_yaml(),
+        caller_key=caller_key,
     )
 
 
@@ -334,7 +371,10 @@ def _import_days(
     table: str,
     columns: Sequence[str],
     non_turn: NonTurnTraces,
+    caller_key: CallerKey | None,
 ) -> ImportReport:
+    if writer is not None and caller_key is None:
+        raise ValueError("Writing turns needs the caller key, so no caller hash is stored without it.")
     report = ImportReport(environment, first_day, last_day, written=writer is not None)
     root_names = set(root_names)
     for day in _days(first_day, last_day):
@@ -377,7 +417,7 @@ def _import_days(
                 account(trace["id"], trace["name"], trace["timestamp"], stamp, "rejected", reason)
                 continue
             report.add(turn)
-            rows.append(row(turn, environment=environment, imported_at=imported_at))
+            rows.append(row(turn, environment=environment, imported_at=imported_at, caller_key=caller_key))
             account(
                 trace["id"],
                 trace["name"],
@@ -440,8 +480,11 @@ def _import_days(
     return report
 
 
-def voice_turn_row(turn: CanonicalVoiceTurn, *, environment: str, imported_at: datetime) -> dict[str, Any]:
+def voice_turn_row(
+    turn: CanonicalVoiceTurn, *, environment: str, imported_at: datetime, caller_key: CallerKey | None = None
+) -> dict[str, Any]:
     question, answer = turn.question_sanitized, turn.answer_sanitized
+    user_id_hash = caller_key.pseudonym(turn.user_id_hash) if caller_key else None
     return {
         "source_trace_id": turn.source_trace_id,
         "timestamp": turn.timestamp,
@@ -453,7 +496,7 @@ def voice_turn_row(turn: CanonicalVoiceTurn, *, environment: str, imported_at: d
         "source_trace_name": turn.source_trace_name,
         "session_id": turn.session_id,
         "process_id": turn.process_id,
-        "user_id_hash": turn.user_id_hash,
+        "user_id_hash": user_id_hash,
         "signed_in": turn.signed_in,
         "provider": turn.provider,
         "call_type": turn.call_type,
@@ -478,12 +521,16 @@ def voice_turn_row(turn: CanonicalVoiceTurn, *, environment: str, imported_at: d
         "attributes": dict(turn.attributes),
         "service": turn.service,
         "release": turn.release,
+        "user_id_hash_key": caller_key.key_id if user_id_hash else None,
     }
 
 
-def chat_turn_row(turn: CanonicalChatTurn, *, environment: str, imported_at: datetime) -> dict[str, Any]:
+def chat_turn_row(
+    turn: CanonicalChatTurn, *, environment: str, imported_at: datetime, caller_key: CallerKey | None = None
+) -> dict[str, Any]:
     question, answer = turn.question_sanitized, turn.answer_sanitized
     tool_calls = turn.tool_calls
+    user_id_hash = caller_key.pseudonym(turn.user_id_hash) if caller_key else None
     return {
         "source_trace_id": turn.source_trace_id,
         "timestamp": turn.timestamp,
@@ -494,7 +541,7 @@ def chat_turn_row(turn: CanonicalChatTurn, *, environment: str, imported_at: dat
         "source_era_extensions": list(turn.source_era_extensions),
         "source_trace_name": turn.source_trace_name,
         "session_id": turn.session_id,
-        "user_id_hash": turn.user_id_hash,
+        "user_id_hash": user_id_hash,
         "user_id_semantics": turn.user_id_semantics,
         "channel": turn.channel,
         "pipeline": turn.pipeline,
@@ -521,6 +568,7 @@ def chat_turn_row(turn: CanonicalChatTurn, *, environment: str, imported_at: dat
         "attributes": dict(turn.attributes),
         "service": turn.service,
         "release": turn.release,
+        "user_id_hash_key": caller_key.key_id if user_id_hash else None,
     }
 
 

@@ -15,7 +15,7 @@ chdb_session = pytest.importorskip("chdb.session")
 
 from app.services.telemetry_era_adapters import load_chat_mappings  # noqa: E402
 from app.services.telemetry_era_registry import TelemetryEraRegistry, default_era_registry_path  # noqa: E402
-from app.services.telemetry_import import IMPORT_DAY_COLUMNS, import_chat_days, import_voice_days  # noqa: E402
+from app.services.telemetry_import import IMPORT_DAY_COLUMNS, CallerKey, import_chat_days, import_voice_days  # noqa: E402
 from app.services.telemetry_query import _LAST_IMPORT_SQL  # noqa: E402
 from app.services.telemetry_voice_era_adapters import VoiceOutcomeVocabulary, load_voice_mappings  # noqa: E402
 
@@ -110,9 +110,10 @@ class ClickHouse:
             last_day=day,
             registry=TelemetryEraRegistry.from_yaml(default_era_registry_path(), section="chat_eras"),
             mappings=load_chat_mappings(),
+            caller_key=KEY,
         )
 
-    def import_day(self, first_day, last_day=None, environment=ENV):
+    def import_day(self, first_day, last_day=None, environment=ENV, caller_key=None):
         path = default_era_registry_path()
         return import_voice_days(
             self,
@@ -123,6 +124,7 @@ class ClickHouse:
             registry=TelemetryEraRegistry.from_yaml(path, section="voice_eras"),
             vocabulary=VoiceOutcomeVocabulary.from_yaml(path),
             mappings=load_voice_mappings(),
+            caller_key=caller_key or KEY,
         )
 
 
@@ -171,6 +173,7 @@ def turn_metadata(**overrides):
 
 CHAT_STAMP = {"amul.schema_version": "chat.turn.v1", "pipeline": "translation", "user_id": "9990001112"}
 SEP_20 = date(2026, 9, 20)
+KEY = CallerKey(b"k" * 32)
 
 
 @pytest.fixture(scope="module")
@@ -373,3 +376,14 @@ def test_of_two_days_written_in_the_same_millisecond_the_newer_is_the_last_impor
     clickhouse.insert("voice_import_days", rows, column_names=list(IMPORT_DAY_COLUMNS), database="telemetry")
 
     assert _last_import(clickhouse) == ("2026-09-21", "2026-10-01 01:00:00.000")
+
+
+def test_a_reimport_under_a_new_caller_key_moves_the_day_to_it(clickhouse):
+    new_key = CallerKey(b"n" * 32)
+    clickhouse.langfuse_trace("A", "2026-09-20 10:00:00", metadata=turn_metadata(user_id_hash="0" * 64))
+    clickhouse.import_day(SEP_20)
+
+    clickhouse.import_day(SEP_20, caller_key=new_key)
+
+    [row] = clickhouse.query("SELECT user_id_hash, user_id_hash_key FROM telemetry.voice_turns FINAL").named_results()
+    assert (row["user_id_hash"], row["user_id_hash_key"]) == (new_key.pseudonym("0" * 64), new_key.key_id)
