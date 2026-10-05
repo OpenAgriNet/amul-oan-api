@@ -83,3 +83,6 @@ ALTER TABLE telemetry.chat_turns ADD COLUMN IF NOT EXISTS attributes Map(String,
 ALTER TABLE telemetry.chat_turns ADD COLUMN IF NOT EXISTS service LowCardinality(Nullable(String));
 ALTER TABLE telemetry.chat_turns ADD COLUMN IF NOT EXISTS release LowCardinality(Nullable(String));
 ALTER TABLE telemetry.chat_turns ADD COLUMN IF NOT EXISTS stage_totals_ms Map(String, Float64);
+
+-- Which caller key made user_id_hash (scripts/telemetry_import.py).
+ALTER TABLE telemetry.chat_turns ADD COLUMN IF NOT EXISTS user_id_hash_key LowCardinality(Nullable(String));
