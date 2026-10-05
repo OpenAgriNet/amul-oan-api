@@ -410,6 +410,42 @@ def test_the_agent_runs_inside_voices_boundary_capture(world):
     assert inside == ("call-1", "proc-1")
 
 
+# ── what is logged ──────────────────────────────────────────────────────────
+
+_PRIVATE_HISTORY = (
+    ModelRequest(parts=[UserPromptPart(content="can I get a loan of 40000")]),
+    ModelResponse(parts=[TextPart(content="Rameshbhai, your loan is approved")]),
+)
+
+
+def _stale_record(world, monkeypatch):
+    world["envelope"] = _FOUND.model_copy(update={"stale": True})
+
+
+def _read_again(world, monkeypatch):
+    world["envelope"], world["cached"] = None, _FOUND
+
+
+def _summary_fails(world, monkeypatch):
+    async def _down(unions):
+        raise RuntimeError(f"scheme lookup failed for {_MOBILE}")
+
+    monkeypatch.setattr(ai, "_build_union_scheme_summary", _down)
+
+
+@pytest.mark.parametrize("setup", [_stale_record, _read_again, _summary_fails], ids=lambda f: f.__name__.strip("_"))
+def test_the_farmers_words_number_and_details_are_not_logged(world, monkeypatch, caplog, setup):
+    caplog.set_level("DEBUG", logger=ai.logger.name)
+    setup(world, monkeypatch)
+
+    _agent_input(_turn(query="my cow has mastitis", history=_PRIVATE_HISTORY))
+
+    logged = "\n".join(record.getMessage() for record in caplog.records if record.name == ai.logger.name)
+    assert "Running voice agent; session_id=call-1" in logged
+    for private in (_MOBILE, "mastitis", "40000", "Rameshbhai"):
+        assert private not in logged
+
+
 # ── the outbound consent gate ───────────────────────────────────────────────
 
 

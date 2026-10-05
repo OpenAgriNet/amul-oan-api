@@ -40,7 +40,7 @@ from agents.voice.tools.terms import get_ambiguity_hints_for_query
 from app.config import settings
 from app.model_boundary_capture import boundary_capture_context
 from app.turn.types import AgentInput, AgentInputStep, ClassifierResult, Pretranslated, StalenessCheck, Turn
-from app.utils import format_message_pairs, trim_history, update_message_history
+from app.utils import trim_history, update_message_history
 from app.voice import outbound as _outbound
 from app.voice.classifiers import TELEPHONY_TERMINATE_CALL_TOKEN, RenderForCaller, _canned_for_caller
 from app.voice.farmer import (
@@ -262,7 +262,7 @@ async def _voice_agent_input(
                 # before we commit to an unresolved turn.
                 envelope = await get_farmer_data_cached_only(mobile)
                 if envelope is not None:
-                    logger.info("Farmer context resolved on re-read for mobile %s", mobile)
+                    logger.info("Farmer context resolved on re-read; session_id=%s", session_id)
             # Scored AFTER the re-read: a recovered envelope must not be
             # graded UNRESOLVED and have the identity tools withheld.
             farmer_identity = identity_state_for_envelope(envelope)
@@ -275,8 +275,8 @@ async def _voice_agent_input(
                 farmer_info = f"{farmer_info}\n{scheme_summary}" if farmer_info else scheme_summary
             ai_technician_info = _build_ai_technician_summary(envelope)
             logger.info(
-                "Farmer summary loaded from cache for mobile %s source=%s stale=%s unions=%s summary_chars=%s technician_chars=%s",
-                mobile,
+                "Farmer summary loaded from cache; session_id=%s source=%s stale=%s unions=%s summary_chars=%s technician_chars=%s",
+                session_id,
                 getattr(envelope, "source", None) if envelope else None,
                 getattr(envelope, "stale", None) if envelope else None,
                 farmer_unions,
@@ -286,13 +286,13 @@ async def _voice_agent_input(
             if mobile and should_refresh_farmer_data(envelope):
                 await enqueue_farmer_refresh(mobile)
                 logger.info(
-                    "Farmer cache refresh scheduled in background for mobile %s stale=%s status=%s",
-                    mobile,
+                    "Farmer cache refresh scheduled in background; session_id=%s stale=%s status=%s",
+                    session_id,
                     getattr(envelope, "stale", None) if envelope else None,
                     getattr(envelope, "lookupStatus", None) if envelope else None,
                 )
         except Exception as e:
-            logger.warning(f"Failed to load farmer summary for mobile {mobile}: {e}")
+            logger.warning("Failed to load farmer summary; session_id=%s error=%s", session_id, type(e).__name__)
 
     # ── Outbound consent gate ─────────────────────────────────────
     # Turn 2 of an outbound call: the farmer's first reply to the scripted
@@ -385,11 +385,14 @@ async def _voice_agent_input(
     # moderation verdict before performing any write.
     deps.set_moderation_task(background.moderation_task)
 
-    message_pairs = "\n\n".join(format_message_pairs(history, 3))
-    logger.info(f"Message pairs: {message_pairs}")
     user_message = deps.get_user_message()
     runtime_context_request = _build_runtime_context_request(deps)
-    logger.info(f"Running agent with user message: {user_message}")
+    # Sizes only: the conversation and the model's message carry the farmer's
+    # words and details, which stay out of application logs.
+    logger.info(
+        "Running voice agent; session_id=%s process_id=%s history_messages=%s user_message_chars=%s",
+        session_id, process_id, len(history), len(user_message),
+    )
 
     cleaned_history = clean_message_history_for_openai(history)
     if len(cleaned_history) != len(history):
