@@ -67,7 +67,7 @@ def _turn(query="My cow has fever", *, user_id=f"+91 {_MOBILE}", consent_turn=Fa
     )
 
 
-async def _render(text_en, target_lang):
+async def _render(text_en, target_lang, *, execution):
     return f"<{target_lang}> {text_en}"
 
 
