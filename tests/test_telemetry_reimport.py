@@ -1,7 +1,7 @@
 """Re-importing a day on real ClickHouse (chdb): the day ends as a first import would leave it.
 
-Langfuse's tables and the telemetry tables from telemetry/clickhouse/voice.sql run
-in one chdb session, and the import reads and writes them with its own SQL.
+Langfuse's tables and the telemetry tables from telemetry/clickhouse/ run in one
+chdb session, and the import reads and writes them with its own SQL.
 """
 
 import json
@@ -13,8 +13,9 @@ import pytest
 
 chdb_session = pytest.importorskip("chdb.session")
 
+from app.services.telemetry_era_adapters import load_chat_mappings  # noqa: E402
 from app.services.telemetry_era_registry import TelemetryEraRegistry, default_era_registry_path  # noqa: E402
-from app.services.telemetry_import import CallerKey, import_voice_days  # noqa: E402
+from app.services.telemetry_import import CallerKey, import_chat_days, import_voice_days  # noqa: E402
 from app.services.telemetry_voice_era_adapters import VoiceOutcomeVocabulary, load_voice_mappings  # noqa: E402
 
 REPO = Path(__file__).resolve().parents[1]
@@ -25,10 +26,12 @@ LANGFUSE_SQL = """
 CREATE TABLE traces (
     id String, name String, timestamp DateTime64(3), environment String,
     session_id Nullable(String), user_id Nullable(String), metadata Map(LowCardinality(String), String),
-    is_deleted UInt8, event_ts DateTime64(3)
+    input Nullable(String), output Nullable(String), is_deleted UInt8, event_ts DateTime64(3)
 ) ENGINE = ReplacingMergeTree(event_ts, is_deleted) ORDER BY id;
 CREATE TABLE observations (
-    id String, trace_id String, name String, start_time DateTime64(3), is_deleted UInt8, event_ts DateTime64(3)
+    id String, trace_id String, type String, name String, start_time DateTime64(3),
+    end_time Nullable(DateTime64(3)), metadata Map(LowCardinality(String), String),
+    input Nullable(String), output Nullable(String), is_deleted UInt8, event_ts DateTime64(3)
 ) ENGINE = ReplacingMergeTree(event_ts, is_deleted) ORDER BY id;
 CREATE TABLE scores (
     id String, trace_id String, name String, value Float64, string_value Nullable(String),
@@ -48,7 +51,8 @@ class ClickHouse:
         for table in ("traces", "observations", "scores"):
             self.session.query(f"DROP TABLE IF EXISTS default.{table}")
         self.session.query("DROP DATABASE IF EXISTS telemetry")
-        for sql in (LANGFUSE_SQL, (REPO / "telemetry" / "clickhouse" / "voice.sql").read_text(encoding="utf-8")):
+        tables = [(REPO / "telemetry" / "clickhouse" / name).read_text(encoding="utf-8") for name in ("voice.sql", "chat.sql", "ledger.sql")]
+        for sql in (LANGFUSE_SQL, *tables):
             for statement in re.sub(r"--[^\n]*", "", sql).split(";"):
                 if statement.strip():
                     self.session.query(statement)
@@ -62,22 +66,51 @@ class ClickHouse:
         lines = "\n".join(json.dumps(dict(zip(column_names, row)), default=_json) for row in data)
         self.session.query(f"INSERT INTO {database}.{table} ({', '.join(column_names)}) FORMAT JSONEachRow\n{lines}")
 
-    def langfuse_trace(self, trace_id, when, *, metadata=None, is_deleted=0, environment=ENV):
+    def langfuse_trace(self, trace_id, when, *, name="agent_journey", metadata=None, is_deleted=0, environment=ENV, **text):
         """A new version of a trace in Langfuse, newer than every one before it."""
         self.events += 1
         event_ts = datetime(2026, 10, 1, tzinfo=timezone.utc) + timedelta(seconds=self.events)
-        row = [trace_id, "agent_journey", when, environment, "session-x", None, metadata or turn_metadata(), is_deleted, event_ts]
+        row = [trace_id, name, when, environment, "session-x", None, metadata or turn_metadata(), is_deleted, event_ts]
         columns = ["id", "name", "timestamp", "environment", "session_id", "user_id", "metadata", "is_deleted", "event_ts"]
+        for column, value in text.items():
+            row.append(json.dumps(value))
+            columns.append(column)
         self.insert("traces", [row], column_names=columns, database="default")
 
-    def turns(self, environment=ENV):
+    def chat_trace(self, trace_id, when, **kwargs):
+        self.langfuse_trace(
+            trace_id, when, name="chat.translation", metadata=CHAT_STAMP, input={"query": "q"}, output="a", **kwargs
+        )
+
+    def turns(self, environment=ENV, table="voice_turns"):
         """What a dashboard sees: (trace id, UTC day) of every turn, read with FINAL."""
         rows = self.query(
-            "SELECT source_trace_id, toString(toDate(timestamp)) AS day FROM telemetry.voice_turns FINAL "
+            f"SELECT source_trace_id, toString(toDate(timestamp)) AS day FROM telemetry.{table} FINAL "
             "WHERE environment = {environment:String} ORDER BY day, source_trace_id",
             {"environment": environment},
         ).named_results()
         return [(row["source_trace_id"], row["day"]) for row in rows]
+
+    def ledger(self, channel="voice", environment=ENV):
+        """(trace id, day, disposition) of every root trace the channel's import accounted for."""
+        rows = self.query(
+            "SELECT source_trace_id, toString(day) AS day, disposition FROM telemetry.trace_ledger FINAL "
+            "WHERE environment = {environment:String} AND channel = {channel:String} ORDER BY day, source_trace_id",
+            {"environment": environment, "channel": channel},
+        ).named_results()
+        return [(row["source_trace_id"], row["day"], row["disposition"]) for row in rows]
+
+    def import_chat_day(self, day, environment=ENV):
+        return import_chat_days(
+            self,
+            self,
+            environment=environment,
+            first_day=day,
+            last_day=day,
+            registry=TelemetryEraRegistry.from_yaml(default_era_registry_path(), section="chat_eras"),
+            mappings=load_chat_mappings(),
+            caller_key=KEY,
+        )
 
     def import_day(self, first_day, last_day=None, environment=ENV, caller_key=None):
         path = default_era_registry_path()
@@ -137,6 +170,7 @@ def turn_metadata(**overrides):
     return metadata
 
 
+CHAT_STAMP = {"amul.schema_version": "chat.turn.v1", "pipeline": "translation", "user_id": "9990001112"}
 SEP_20 = date(2026, 9, 20)
 KEY = CallerKey(b"k" * 32)
 
@@ -255,6 +289,59 @@ def test_removed_turns_stay_removed_once_clickhouse_merges_the_table(clickhouse)
     clickhouse.query("OPTIMIZE TABLE telemetry.voice_turns FINAL")
 
     assert clickhouse.turns() == [("A", "2026-09-20")]
+
+
+def test_a_chat_turn_deleted_in_langfuse_leaves_the_day(clickhouse):
+    clickhouse.chat_trace("A", "2026-09-20 10:00:00")
+    clickhouse.chat_trace("B", "2026-09-20 11:00:00")
+    clickhouse.import_chat_day(SEP_20)
+
+    clickhouse.chat_trace("B", "2026-09-20 11:00:00", is_deleted=1)
+    report = clickhouse.import_chat_day(SEP_20)
+
+    assert clickhouse.turns(table="chat_turns") == [("A", "2026-09-20")]
+    assert clickhouse.ledger("chat") == [("A", "2026-09-20", "turn")]
+    assert report.removed == 1
+
+
+def test_a_ledger_row_goes_with_its_deleted_trace_and_follows_a_moved_one(clickhouse):
+    clickhouse.langfuse_trace("A", "2026-09-20 10:00:00")
+    clickhouse.langfuse_trace("S", "2026-09-20 10:01:00", name="suggestions")
+    clickhouse.langfuse_trace("M", "2026-09-20 23:59:00", name="suggestions")
+    clickhouse.import_day(SEP_20)
+
+    clickhouse.langfuse_trace("S", "2026-09-20 10:01:00", name="suggestions", is_deleted=1)
+    clickhouse.langfuse_trace("M", "2026-09-21 00:01:00", name="suggestions")
+    clickhouse.import_day(date(2026, 9, 21))
+    assert ("M", "2026-09-20", "activity") not in clickhouse.ledger()
+    clickhouse.import_day(SEP_20)
+
+    assert clickhouse.ledger() == [("A", "2026-09-20", "turn"), ("M", "2026-09-21", "activity")]
+
+
+def test_each_channel_keeps_its_own_ledger_rows(clickhouse):
+    # Both imports read every root of the environment; neither may replace the other's rows.
+    clickhouse.langfuse_trace("V", "2026-09-20 10:00:00")
+    clickhouse.chat_trace("C", "2026-09-20 11:00:00")
+    clickhouse.import_day(SEP_20)
+    clickhouse.import_chat_day(SEP_20)
+
+    clickhouse.import_day(SEP_20)
+
+    assert clickhouse.ledger("voice") == [("C", "2026-09-20", "unrecognised"), ("V", "2026-09-20", "turn")]
+    assert clickhouse.ledger("chat") == [("C", "2026-09-20", "turn"), ("V", "2026-09-20", "unrecognised")]
+
+
+def test_a_chat_turn_moved_to_the_next_day_is_kept_once(clickhouse):
+    clickhouse.chat_trace("A", "2026-09-20 23:59:00")
+    clickhouse.import_chat_day(SEP_20)
+
+    clickhouse.chat_trace("A", "2026-09-21 00:01:00")
+    clickhouse.import_chat_day(date(2026, 9, 21))
+    clickhouse.import_chat_day(SEP_20)
+
+    assert clickhouse.turns(table="chat_turns") == [("A", "2026-09-21")]
+    assert clickhouse.ledger("chat") == [("A", "2026-09-21", "turn")]
 
 
 def test_a_reimport_under_a_new_caller_key_moves_the_day_to_it(clickhouse):

@@ -30,6 +30,7 @@ from app.services.telemetry_mappings import (
     ContractMapping,
     default_mappings_path,
     load_mappings,
+    mapped_attributes,
     mapping_or_none,
     mapped_values,
 )
@@ -330,6 +331,7 @@ def _adapt_mapped_voice_turn(
         observation_names=_names(observations),
         score_names=[score.name for score in scores],
         field_availability=availability,
+        attributes=mapped_attributes(mapping, raw),
         **values,
     )
 
@@ -561,4 +563,6 @@ _MAPPED_FIELDS = {
     "full_turn_latency_ms": _float_or_none,
     "stage_totals_ms": _float_mapping_or_none,
     "timings_ms": _float_mapping_or_none,
+    "service": _string_or_none,
+    "release": _string_or_none,
 }

@@ -472,6 +472,8 @@ def test_stamped_trace_is_routed_by_its_stamp_not_its_date(adapt_with_stamped_er
     assert turn.source_schema_version == "voice.turn.v1"
     assert turn.source_era_extensions == []
     assert turn.pipeline_profile == "managed"
+    assert turn.service == "voice-oan-api"
+    assert turn.release == "test-release-sha"
     assert turn.outcome_class == "delivered"
 
 
@@ -484,7 +486,8 @@ def test_stamped_trace_does_not_need_the_dated_boundaries(tmp_path):
         adapt(_voice_turn_trace("agent_journey", "2026-10-05T10:00:00Z"))
 
 
-@pytest.mark.parametrize("stamp", ["voice.turn.v2", "chat.turn.v1", "", None])
+# Far past any real version, so releasing voice.turn.v2 later doesn't make it a known stamp.
+@pytest.mark.parametrize("stamp", ["voice.turn.v999", "chat.turn.v1", "", None])
 def test_unknown_stamp_is_rejected_even_on_a_known_root(adapt_with_stamped_era, stamp):
     with pytest.raises(UnsupportedTelemetryEra, match="Unknown voice schema version"):
         adapt_with_stamped_era(_stamped(_voice_turn_trace("agent_journey", "2026-10-05T10:00:00Z"), stamp))

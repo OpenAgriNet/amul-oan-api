@@ -58,10 +58,19 @@ class CanonicalChatTurn(BaseModel):
     ] | None = None
     served_tier: str | None = None
     full_turn_latency_ms: float | None = None
+    # Derived at import from child-observation start/end times. Historical
+    # traces can therefore participate whenever Langfuse retained those times.
+    stage_totals_ms: dict[str, float] | None = None
     tool_calls: list[CanonicalToolCall] | None = None
     observation_names: list[str] = Field(default_factory=list)
     score_names: list[str] = Field(default_factory=list)
     field_availability: dict[str, FieldAvailability] = Field(default_factory=dict)
+    # Extra values named under `attributes` in telemetry/mappings/chat.yaml, as text.
+    attributes: dict[str, str] = Field(default_factory=dict)
+    # Deployment provenance from the forward telemetry stamp. Historical turns
+    # predate the stamp and therefore leave these unavailable.
+    service: str | None = None
+    release: str | None = None
 
     @model_validator(mode="before")
     @classmethod
