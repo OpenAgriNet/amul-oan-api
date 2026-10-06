@@ -1,0 +1,1057 @@
+import hashlib
+import hmac
+import importlib.util
+import json
+import re
+from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
+
+import pytest
+
+from app.models.telemetry_analytics import CanonicalChatTurn
+from app.models.telemetry_voice_analytics import CanonicalVoiceTurn
+from app.services import telemetry_fetcher
+from app.services.telemetry_era_adapters import load_chat_mappings
+from app.services.telemetry_era_registry import TelemetryEraRegistry, default_era_registry_path
+from app.services.telemetry_fetcher import REDACTED_USER_ID, fetch_chat_bundles, fetch_voice_bundles
+from app.services.telemetry_import import (
+    CHAT_NOT_STORED,
+    CHAT_TURN_COLUMNS,
+    IMPORT_DAY_COLUMNS,
+    LEDGER_COLUMNS,
+    CallerKey,
+    NOT_STORED,
+    REJECTION_COLUMNS,
+    VOICE_TURN_COLUMNS,
+    NonTurnTraces,
+    chat_turn_row,
+    import_chat_days,
+    import_voice_days,
+    rejection_reason,
+    voice_turn_row,
+)
+from app.services.telemetry_voice_era_adapters import VoiceOutcomeVocabulary, load_voice_mappings
+from app.services.telemetry_mappings import ContractMapping
+
+REPO = Path(__file__).resolve().parents[1]
+IST = timezone(timedelta(hours=5, minutes=30))
+DAY_START = datetime(2026, 9, 24, tzinfo=timezone.utc)
+DAY_END = datetime(2026, 9, 25, tzinfo=timezone.utc)
+KEY = CallerKey(b"k" * 32)
+
+
+class FakeResult:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def named_results(self):
+        return iter(self._rows)
+
+
+class FakeClickHouse:
+    """Serves rows per table and records every query and insert."""
+
+    def __init__(self, traces=(), observations=(), scores=()):
+        self.tables = {"traces": list(traces), "observations": list(observations), "scores": list(scores)}
+        self.queries = []
+        self.inserts = {}
+
+    def query(self, query, parameters=None):
+        self.queries.append((query, parameters))
+        table = re.search(r"FROM ([\w.]+)", query).group(1)
+        # The telemetry tables start empty here; test_telemetry_reimport.py runs them on ClickHouse.
+        rows = [] if table.startswith("telemetry.") else self.tables[table]
+        if "trace_ids" in parameters:
+            rows = [row for row in rows if row["trace_id"] in parameters["trace_ids"]]
+        if table == "traces":
+            # What the SQL filters on: root names, when given, and the time window.
+            if "names" in parameters:
+                rows = [row for row in rows if row["name"] in parameters["names"]]
+            start, end = (_sql_moment(parameters[key]) for key in ("start", "end"))
+            rows = [row for row in rows if start <= row["timestamp_ms"] < end]
+            if "AS schema_version" in query:
+                rows = [
+                    {
+                        **row,
+                        "schema_version": row["metadata"].get("amul.schema_version", ""),
+                        "outcome": row["metadata"].get("outcome", ""),
+                    }
+                    for row in rows
+                ]
+        return FakeResult(rows)
+
+    def insert(self, table, data, column_names, database):
+        assert database == "telemetry"
+        self.inserts.setdefault(table, []).extend(dict(zip(column_names, row)) for row in data)
+
+
+def _sql_moment(text):
+    """A '%Y-%m-%d %H:%M:%S.fff' UTC parameter as epoch milliseconds."""
+    return int(datetime.strptime(text, "%Y-%m-%d %H:%M:%S.%f").replace(tzinfo=timezone.utc).timestamp() * 1000)
+
+
+def trace_row(trace_id, *, name="agent_journey", when="2026-09-24T10:00:00Z", metadata=None, is_deleted=0):
+    moment = datetime.fromisoformat(when.replace("Z", "+00:00"))
+    return {
+        "id": trace_id,
+        "name": name,
+        "timestamp_ms": int(moment.timestamp() * 1000),
+        "session_id": "session-redacted",
+        "user_id": REDACTED_USER_ID,
+        "metadata": metadata or {},
+        "is_deleted": is_deleted,
+    }
+
+
+def turn_metadata(**overrides):
+    """A voice turn's metadata as ClickHouse returns it: strings, with blocks as JSON."""
+    metadata = {
+        "process_id": "3",
+        "provider": "<redacted-provider>",
+        "source_lang": "gu",
+        "target_lang": "gu",
+        "user_id_hash": "0" * 64,
+        "session_id": "session-redacted",
+        "route": "agent",
+        "outcome": "success",
+        "pipeline_profile": "managed",
+        "total_ms": "1234.5",
+        "timings_ms": json.dumps({"ttft_ms": 900.0}),
+        "stage_totals_ms": json.dumps({"agent": 800.0}),
+        "agent": json.dumps({"signed_in": True, "tool_call_count": 1}),
+        "query": json.dumps({"chars": 12, "sha256": "a" * 64, "preview": "<redacted question>"}),
+        "response": json.dumps({"chars": 30, "sha256": "b" * 64, "preview": "<redacted answer>"}),
+    }
+    metadata.update(overrides)
+    return metadata
+
+
+def test_a_bundle_carries_its_observation_names_and_scores():
+    client = FakeClickHouse(
+        traces=[trace_row("t1", metadata=turn_metadata())],
+        observations=[
+            {"id": "o1", "trace_id": "t1", "name": "stream_translation", "is_deleted": 0},
+            {"id": "o2", "trace_id": "other", "name": "unit_stage", "is_deleted": 0},
+        ],
+        scores=[{"id": "s1", "trace_id": "t1", "name": "turn_outcome", "value": 0.0, "string_value": "answered", "is_deleted": 0}],
+    )
+
+    [bundle] = fetch_voice_bundles(client, environment="voice-development", start=DAY_START, end=DAY_END, root_names=["agent_journey"])
+
+    assert bundle.trace["id"] == "t1"
+    assert bundle.trace["timestamp"] == datetime(2026, 9, 24, 10, tzinfo=timezone.utc)
+    assert bundle.trace["user_id"] == REDACTED_USER_ID
+    assert bundle.trace["metadata"]["outcome"] == "success"
+    assert bundle.observations == [{"name": "stream_translation"}]
+    assert bundle.scores == [{"name": "turn_outcome", "value": "answered"}]
+
+
+def test_deleted_rows_are_skipped():
+    client = FakeClickHouse(
+        traces=[trace_row("t1"), trace_row("gone", is_deleted=1)],
+        observations=[{"id": "o1", "trace_id": "t1", "name": "unit_stage", "is_deleted": 1}],
+    )
+
+    bundles = list(fetch_voice_bundles(client, environment="voice-development", start=DAY_START, end=DAY_END, root_names=["agent_journey"]))
+
+    assert [bundle.trace["id"] for bundle in bundles] == ["t1"]
+    assert bundles[0].observations == []
+
+
+def test_the_raw_user_id_is_never_selected_and_times_are_utc():
+    client = FakeClickHouse(traces=[trace_row("t1")])
+
+    list(
+        fetch_voice_bundles(
+            client,
+            environment="voice-development",
+            start=datetime(2026, 9, 24, 5, 30, tzinfo=IST),
+            end=datetime(2026, 9, 25, 5, 30, tzinfo=IST),
+            root_names=["voice_request", "agent_journey"],
+        )
+    )
+
+    (traces_sql, traces_params), (observations_sql, observations_params), _ = client.queries
+    assert "NULL, {redacted:String}) AS user_id" in traces_sql
+    assert "LIMIT 1 BY id" in traces_sql and "LIMIT 1 BY id" in observations_sql
+    assert traces_params["start"] == "2026-09-24 00:00:00.000"
+    assert traces_params["end"] == "2026-09-25 00:00:00.000"
+    assert traces_params["names"] == ["agent_journey", "voice_request"]
+    assert observations_params["start"] == "2026-09-23 00:00:00.000"
+    assert observations_params["trace_ids"] == ["t1"]
+
+
+def test_children_are_fetched_per_batch(monkeypatch):
+    monkeypatch.setattr(telemetry_fetcher, "_BATCH_SIZE", 1)
+    client = FakeClickHouse(traces=[trace_row("t1"), trace_row("t2")])
+
+    list(fetch_voice_bundles(client, environment="voice-development", start=DAY_START, end=DAY_END, root_names=["agent_journey"]))
+
+    child_queries = [params["trace_ids"] for sql, params in client.queries if "FROM observations" in sql]
+    assert child_queries == [["t1"], ["t2"]]
+
+
+def _import(client, *, writer=True, first_day=date(2026, 9, 24), last_day=None):
+    path = default_era_registry_path()
+    return import_voice_days(
+        client,
+        client if writer else None,
+        environment="voice-development",
+        first_day=first_day,
+        last_day=last_day or first_day,
+        registry=TelemetryEraRegistry.from_yaml(path, section="voice_eras"),
+        vocabulary=VoiceOutcomeVocabulary.from_yaml(path),
+        mappings=load_voice_mappings(),
+        caller_key=KEY if writer else None,
+    )
+
+
+STAMP = {"amul.schema_version": "voice.turn.v1", "service": "voice-oan-api", "release": "unknown"}
+
+
+def test_turns_are_written_without_the_phone_number_or_caller_text():
+    client = FakeClickHouse(traces=[trace_row("stamped", metadata=turn_metadata(**STAMP)), trace_row("unstamped", metadata=turn_metadata())])
+
+    report = _import(client)
+
+    rows = {row["source_trace_id"]: row for row in client.inserts["voice_turns"]}
+    assert rows["stamped"]["source_era"] == "voice.turn.v1"
+    assert rows["stamped"]["service"] == "voice-oan-api"
+    assert rows["stamped"]["release"] == "unknown"
+    assert rows["unstamped"]["source_era"] == "voice.v4"
+    for row in rows.values():
+        assert "user_id" not in row
+        assert "<redacted question>" not in repr(row) and "<redacted answer>" not in repr(row)
+        assert (row["question_chars"], row["question_sha256"]) == (12, "a" * 64)
+        assert (row["answer_chars"], row["answer_sha256"]) == (30, "b" * 64)
+        assert row["field_availability"]["user_id"] == "recorded"
+        assert row["outcome_class"] == "delivered"
+        assert row["signed_in"] is True
+        assert row["full_turn_latency_ms"] == 1234.5
+    assert report.turns == 2 and report.written
+
+
+def test_the_caller_hash_is_stored_only_as_an_hmac_under_the_caller_key():
+    anonymous = hashlib.sha256(b"voice-oan-api:anonymous").hexdigest()
+    client = FakeClickHouse(
+        traces=[trace_row("known", metadata=turn_metadata()), trace_row("anonymous", metadata=turn_metadata(user_id_hash=anonymous))]
+    )
+
+    _import(client)
+
+    rows = {row["source_trace_id"]: row for row in client.inserts["voice_turns"]}
+    expected = hmac.new(b"k" * 32, ("0" * 64).encode(), hashlib.sha256).hexdigest()
+    assert (rows["known"]["user_id_hash"], rows["known"]["user_id_hash_key"]) == (expected, KEY.key_id)
+    assert (rows["anonymous"]["user_id_hash"], rows["anonymous"]["user_id_hash_key"]) == (None, None)
+
+
+def test_turns_are_not_written_without_the_caller_key():
+    client = FakeClickHouse(traces=[trace_row("known", metadata=turn_metadata())])
+    path = default_era_registry_path()
+
+    with pytest.raises(ValueError, match="caller key"):
+        import_voice_days(
+            client,
+            client,
+            environment="voice-development",
+            first_day=date(2026, 9, 24),
+            last_day=date(2026, 9, 24),
+            registry=TelemetryEraRegistry.from_yaml(path, section="voice_eras"),
+            vocabulary=VoiceOutcomeVocabulary.from_yaml(path),
+            mappings=load_voice_mappings(),
+        )
+    assert not client.inserts
+
+
+def test_each_caller_key_makes_its_own_hashes_and_id():
+    other = CallerKey(b"o" * 32)
+
+    assert KEY.pseudonym("0" * 64) == CallerKey(b"k" * 32).pseudonym("0" * 64) != other.pseudonym("0" * 64)
+    assert KEY.key_id != other.key_id and "k" * 8 not in KEY.key_id
+    assert "k" * 8 not in repr(KEY)
+    with pytest.raises(ValueError, match="at least 32 bytes"):
+        CallerKey(b"short")
+
+
+def test_rejected_traces_are_counted_by_reason_not_raised():
+    client = FakeClickHouse(
+        traces=[
+            trace_row("ok", metadata=turn_metadata()),
+            trace_row("future", metadata=turn_metadata(**{"amul.schema_version": "voice.turn.v999"})),
+            trace_row("early", name="agent_journey", when="2026-09-24T01:00:00Z", metadata=turn_metadata(**{"amul.schema_version": "voice.turn.v999"})),
+        ]
+    )
+
+    report = _import(client)
+
+    assert report.rejected == {("agent_journey", "Unknown voice schema version 'voice.turn.v999'"): 2}
+    [rejection] = client.inserts["voice_rejections"]
+    assert rejection["count"] == 2 and rejection["day"] == date(2026, 9, 24)
+    [day] = client.inserts["voice_import_days"]
+    assert (day["traces"], day["turns"], day["rejected"]) == (3, 1, 2)
+    assert day["imported_at"] == rejection["imported_at"]
+
+
+def test_a_trace_outside_every_era_is_rejected_without_its_timestamp_in_the_reason():
+    client = FakeClickHouse(traces=[trace_row("old", when="2026-06-01T10:00:00Z", metadata=turn_metadata())])
+
+    report = _import(client, first_day=date(2026, 6, 1))
+
+    assert report.rejected == {("agent_journey", "No voice adapter registered for trace name='agent_journey'"): 1}
+
+
+def test_a_dry_run_writes_nothing():
+    client = FakeClickHouse(traces=[trace_row("t1", metadata=turn_metadata())])
+
+    report = _import(client, writer=False)
+
+    assert client.inserts == {}
+    assert report.turns == 1
+    assert "dry run" in report.lines()[0]
+
+
+def test_each_utc_day_is_read_once():
+    client = FakeClickHouse()
+
+    _import(client, first_day=date(2026, 9, 24), last_day=date(2026, 9, 25))
+
+    turn_reads = [params["start"] for sql, params in client.queries if "FROM traces" in sql and "names" in params]
+    ledger_reads = [params["start"] for sql, params in client.queries if "FROM traces" in sql and "names" not in params]
+    assert turn_reads == ledger_reads == ["2026-09-24 00:00:00.000", "2026-09-25 00:00:00.000"]
+    assert [day["turns"] for day in client.inserts["voice_import_days"]] == [0, 0]
+
+
+def test_a_range_of_days_imports_the_turns_of_every_day():
+    client = FakeClickHouse(
+        traces=[
+            trace_row("first", when="2026-09-24T10:00:00Z", metadata=turn_metadata()),
+            trace_row("second", when="2026-09-25T10:00:00Z", metadata=turn_metadata()),
+        ]
+    )
+
+    report = _import(client, first_day=date(2026, 9, 24), last_day=date(2026, 9, 25))
+
+    assert [row["source_trace_id"] for row in client.inserts["voice_turns"]] == ["first", "second"]
+    assert report.turns == 2
+
+
+def test_every_voice_root_name_is_fetched():
+    client = FakeClickHouse()
+
+    _import(client)
+
+    names = next(params["names"] for sql, params in client.queries if "FROM traces" in sql and "names" in params)
+    assert {"Voice Agent run", "Voice Agent Signed In run", "voice_request", "agent_journey"} <= set(names)
+
+
+def test_validation_errors_become_one_line_reasons():
+    with pytest.raises(Exception) as error:
+        CanonicalVoiceTurn.model_validate({"source_era": "voice.v4"})
+
+    assert rejection_reason(error.value).startswith("invalid trace: ")
+
+
+def test_the_report_shows_counts_and_field_coverage():
+    client = FakeClickHouse(traces=[trace_row("t1", metadata=turn_metadata())])
+
+    lines = _import(client, writer=False).lines()
+
+    assert "turns        1" in lines
+    assert "  1  voice.v4" in lines
+    assert "  1  delivered" in lines
+    assert "  100.0%  outcome" in lines
+
+
+def test_every_root_trace_of_the_day_is_accounted_for():
+    client = FakeClickHouse(
+        traces=[
+            trace_row("turn", metadata=turn_metadata()),
+            trace_row("bad-stamp", metadata=turn_metadata(**{"amul.schema_version": "voice.turn.v999"})),
+            trace_row("refresh", name="farmer_background_refresh", metadata={"task": "refresh"}),
+            trace_row("frontend", name="frontend.question", metadata={}),
+            trace_row("mystery", name="nightly_mystery_job", metadata={}),
+            trace_row("deleted", name="nightly_mystery_job", is_deleted=1),
+            trace_row("yesterday", name="nightly_mystery_job", when="2026-09-23T23:59:59Z"),
+        ]
+    )
+
+    report = _import(client)
+
+    ledger = {row["source_trace_id"]: row for row in client.inserts["trace_ledger"]}
+    assert {trace_id: row["disposition"] for trace_id, row in ledger.items()} == {
+        "turn": "turn",
+        "bad-stamp": "rejected",
+        "refresh": "activity",
+        "frontend": "activity",
+        "mystery": "unrecognised",
+    }
+    assert ledger["bad-stamp"]["reason"] == "Unknown voice schema version 'voice.turn.v999'"
+    assert ledger["bad-stamp"]["schema_version"] == "voice.turn.v999"
+    assert ledger["mystery"]["reason"] == "no importer reads this trace name"
+    for row in ledger.values():
+        assert set(row) == set(LEDGER_COLUMNS)
+        assert (row["environment"], row["channel"], row["day"]) == ("voice-development", "voice", date(2026, 9, 24))
+    assert report.ledger == {"turn": 1, "rejected": 1, "activity": 2, "unrecognised": 1}
+    assert report.not_turns[("unrecognised", "nightly_mystery_job")] == 1
+    # The day is only marked imported once its turns and its ledger are in.
+    assert list(client.inserts)[-2:] == ["trace_ledger", "voice_import_days"]
+
+
+def test_ledger_keeps_safe_root_duration_and_raw_outcome_for_activities():
+    started = datetime(2026, 9, 24, 10, tzinfo=timezone.utc)
+    client = FakeClickHouse(
+        traces=[trace_row("suggestion", name="suggestions", metadata={"outcome": "completed"})],
+        observations=[
+            {
+                "id": "suggestion-end",
+                "trace_id": "suggestion",
+                "end_ms": int(started.timestamp() * 1000) + 2_500,
+                "is_deleted": 0,
+            }
+        ],
+    )
+
+    _import(client)
+
+    [row] = client.inserts["trace_ledger"]
+    assert (row["disposition"], row["duration_ms"], row["outcome"]) == ("activity", 2500.0, "completed")
+    duration_query, duration_parameters = next(
+        (query, parameters)
+        for query, parameters in client.queries
+        if "end_time IS NOT NULL" in query
+    )
+    assert "start_time >= toDateTime64({start:String}, 3, 'UTC')" in duration_query
+    assert "start_time < toDateTime64({end:String}, 3, 'UTC')" in duration_query
+    assert duration_parameters["start"] == "2026-09-23 00:00:00.000"
+    assert duration_parameters["end"] == "2026-09-26 00:00:00.000"
+
+
+class _LateTraceClickHouse(FakeClickHouse):
+    """A turn trace that lands after the turns were read but before the ledger read."""
+
+    def query(self, query, parameters=None):
+        result = super().query(query, parameters)
+        if "names" in (parameters or {}):
+            return FakeResult([row for row in result.named_results() if row["id"] != "late"])
+        return result
+
+
+def test_a_trace_written_during_the_import_is_kept_as_rejected():
+    client = _LateTraceClickHouse(traces=[trace_row("on-time", metadata=turn_metadata()), trace_row("late", metadata=turn_metadata())])
+
+    _import(client)
+
+    ledger = {row["source_trace_id"]: row for row in client.inserts["trace_ledger"]}
+    assert ledger["late"]["disposition"] == "rejected"
+    assert ledger["late"]["reason"] == "arrived during the import; re-import the day"
+    [day] = client.inserts["voice_import_days"]
+    assert (day["traces"], day["turns"], day["rejected"]) == (2, 1, 1)
+
+def test_the_report_names_traces_that_are_not_turns():
+    client = FakeClickHouse(traces=[trace_row("mystery", name="nightly_mystery_job", metadata={})])
+
+    lines = _import(client, writer=False).lines()
+
+    assert "  1  unrecognised" in lines
+    assert "  1  nightly_mystery_job (unrecognised)" in lines
+
+
+def test_non_turn_traces_come_from_the_file():
+    non_turn = NonTurnTraces.from_yaml()
+
+    assert "suggestions" in non_turn and "farmer_background_refresh" in non_turn
+    assert "frontend.feedback" in non_turn
+    assert "agent_journey" not in non_turn and "chat.translation" not in non_turn
+
+
+def test_mapped_attributes_are_stored_without_a_new_column():
+    mappings = {
+        **load_voice_mappings(),
+        "voice.turn.v1": ContractMapping(
+            schema_version="voice.turn.v1",
+            root="agent_journey",
+            fields=load_voice_mappings()["voice.turn.v1"].fields,
+            attributes={"call_quality": ("metadata.call_quality",), "retries": ("metadata.retries",)},
+        ),
+    }
+    client = FakeClickHouse(traces=[trace_row("t1", metadata=turn_metadata(**STAMP, call_quality="good", retries="2"))])
+
+    import_voice_days(
+        client,
+        client,
+        environment="voice-development",
+        first_day=date(2026, 9, 24),
+        last_day=date(2026, 9, 24),
+        registry=TelemetryEraRegistry.from_yaml(default_era_registry_path(), section="voice_eras"),
+        vocabulary=VoiceOutcomeVocabulary.from_yaml(default_era_registry_path()),
+        mappings=mappings,
+        caller_key=KEY,
+    )
+
+    [row] = client.inserts["voice_turns"]
+    assert row["attributes"] == {"call_quality": "good", "retries": "2"}
+
+
+VOICE_SQL = (REPO / "telemetry" / "clickhouse" / "voice.sql").read_text(encoding="utf-8")
+
+# voice_turns as released with voice.canonical.v1. Dashboards read these, so each
+# keeps its name and type for good. Only ever add to this list.
+RELEASED_VOICE_TURN_COLUMNS = {
+    "source_trace_id": "String",
+    "timestamp": "DateTime64(3, 'UTC')",
+    "environment": "LowCardinality(String)",
+    "schema_version": "LowCardinality(String)",
+    "source_era": "LowCardinality(String)",
+    "source_schema_version": "LowCardinality(String)",
+    "source_era_extensions": "Array(LowCardinality(String))",
+    "source_trace_name": "LowCardinality(String)",
+    "session_id": "Nullable(String)",
+    "process_id": "Nullable(String)",
+    "user_id_hash": "Nullable(String)",
+    "signed_in": "Nullable(Bool)",
+    "provider": "LowCardinality(Nullable(String))",
+    "call_type": "LowCardinality(Nullable(String))",
+    "route": "LowCardinality(Nullable(String))",
+    "pipeline_profile": "LowCardinality(Nullable(String))",
+    "source_lang": "LowCardinality(Nullable(String))",
+    "target_lang": "LowCardinality(Nullable(String))",
+    "question_chars": "Nullable(UInt32)",
+    "question_sha256": "Nullable(String)",
+    "answer_chars": "Nullable(UInt32)",
+    "answer_sha256": "Nullable(String)",
+    "outcome": "LowCardinality(Nullable(String))",
+    "outcome_class": "LowCardinality(Nullable(String))",
+    "full_turn_latency_ms": "Nullable(Float64)",
+    "stage_totals_ms": "Map(String, Float64)",
+    "timings_ms": "Map(String, Float64)",
+    "observation_names": "Array(String)",
+    "score_names": "Array(String)",
+    "field_availability": "Map(String, LowCardinality(String))",
+    "imported_at": "DateTime64(3, 'UTC')",
+    "is_deleted": "UInt8",
+    "attributes": "Map(String, String)",
+    "user_id_hash_key": "LowCardinality(Nullable(String))",
+}
+
+
+def _table_columns(sql, table):
+    """Column name -> type: the CREATE for the table, then each ALTER ... ADD COLUMN, in file order."""
+    text = "\n".join(line for line in sql.splitlines() if not line.lstrip().startswith("--"))
+    body = re.search(rf"CREATE TABLE IF NOT EXISTS telemetry\.{table}\s*\((.*?)\n\)", text, re.S).group(1)
+    columns = {}
+    for line in body.strip().splitlines():
+        name, _, kind = line.strip().rstrip(",").partition(" ")
+        columns[name] = kind
+    for name, kind in re.findall(rf"ALTER TABLE telemetry\.{table} ADD COLUMN IF NOT EXISTS (\w+) ([^;]+);", text):
+        columns[name] = kind.strip()
+    return columns
+
+
+@pytest.mark.parametrize(
+    ("table", "columns"),
+    [("voice_turns", VOICE_TURN_COLUMNS), ("voice_import_days", IMPORT_DAY_COLUMNS), ("voice_rejections", REJECTION_COLUMNS)],
+)
+def test_written_columns_match_the_tables(table, columns):
+    assert tuple(_table_columns(VOICE_SQL, table)) == columns, (
+        f"telemetry.{table} and the importer disagree. A new column goes at the end of both: an ALTER at the "
+        "bottom of telemetry/clickhouse/voice.sql, and the end of the importer's column list."
+    )
+
+
+LEDGER_SQL = (REPO / "telemetry" / "clickhouse" / "ledger.sql").read_text(encoding="utf-8")
+
+
+def test_written_ledger_columns_match_the_table():
+    assert tuple(_table_columns(LEDGER_SQL, "trace_ledger")) == LEDGER_COLUMNS, (
+        "telemetry.trace_ledger and the importer disagree. A new column goes at the end of both: an ALTER at the "
+        "bottom of telemetry/clickhouse/ledger.sql, and the end of LEDGER_COLUMNS."
+    )
+
+
+# chat_turns and trace_ledger as released. Same rule as voice_turns: only ever add.
+RELEASED_CHAT_TURN_COLUMNS = {
+    "source_trace_id": "String",
+    "timestamp": "DateTime64(3, 'UTC')",
+    "environment": "LowCardinality(String)",
+    "schema_version": "LowCardinality(String)",
+    "source_era": "LowCardinality(String)",
+    "source_schema_version": "LowCardinality(String)",
+    "source_era_extensions": "Array(LowCardinality(String))",
+    "source_trace_name": "LowCardinality(String)",
+    "session_id": "Nullable(String)",
+    "user_id_hash": "Nullable(String)",
+    "user_id_semantics": "LowCardinality(Nullable(String))",
+    "channel": "LowCardinality(Nullable(String))",
+    "pipeline": "LowCardinality(Nullable(String))",
+    "pipeline_profile": "LowCardinality(Nullable(String))",
+    "source_lang": "LowCardinality(Nullable(String))",
+    "target_lang": "LowCardinality(Nullable(String))",
+    "question_chars": "Nullable(UInt32)",
+    "question_sha256": "Nullable(String)",
+    "answer_chars": "Nullable(UInt32)",
+    "answer_sha256": "Nullable(String)",
+    "persona": "LowCardinality(Nullable(String))",
+    "outcome": "LowCardinality(Nullable(String))",
+    "outcome_class": "LowCardinality(Nullable(String))",
+    "served_tier": "LowCardinality(Nullable(String))",
+    "full_turn_latency_ms": "Nullable(Float64)",
+    "tool_names": "Array(LowCardinality(String))",
+    "tool_call_count": "Nullable(UInt16)",
+    "observation_names": "Array(String)",
+    "score_names": "Array(String)",
+    "field_availability": "Map(String, LowCardinality(String))",
+    "imported_at": "DateTime64(3, 'UTC')",
+    "is_deleted": "UInt8",
+    "attributes": "Map(String, String)",
+    "user_id_hash_key": "LowCardinality(Nullable(String))",
+}
+RELEASED_LEDGER_COLUMNS = {
+    "environment": "LowCardinality(String)",
+    "channel": "LowCardinality(String)",
+    "day": "Date",
+    "source_trace_id": "String",
+    "timestamp": "DateTime64(3, 'UTC')",
+    "trace_name": "LowCardinality(String)",
+    "disposition": "LowCardinality(String)",
+    "reason": "String",
+    "schema_version": "LowCardinality(String)",
+    "imported_at": "DateTime64(3, 'UTC')",
+    "is_deleted": "UInt8",
+}
+
+
+@pytest.mark.parametrize(
+    ("sql_file", "table", "released"),
+    [("chat.sql", "chat_turns", RELEASED_CHAT_TURN_COLUMNS), ("ledger.sql", "trace_ledger", RELEASED_LEDGER_COLUMNS)],
+)
+def test_released_chat_and_ledger_columns_keep_their_name_and_type(sql_file, table, released):
+    current = _table_columns((REPO / "telemetry" / "clickhouse" / sql_file).read_text(encoding="utf-8"), table)
+    changed = sorted(name for name, kind in released.items() if current.get(name) != kind)
+
+    assert not changed, (
+        f"telemetry.{table} changed the released columns {changed}. Dashboards read them, so add a new "
+        f"column with an ALTER at the bottom of {sql_file} instead."
+    )
+
+def test_released_columns_keep_their_name_and_type():
+    current = _table_columns(VOICE_SQL, "voice_turns")
+    changed = sorted(name for name, kind in RELEASED_VOICE_TURN_COLUMNS.items() if current.get(name) != kind)
+
+    assert not changed, (
+        f"telemetry.voice_turns changed the released columns {changed}. Dashboards read them, so add a new "
+        "column instead. A change that can't be avoided needs a new table and a new canonical version."
+    )
+
+
+def test_every_canonical_field_is_stored_or_left_out_on_purpose():
+    fields = set(CanonicalVoiceTurn.model_fields)
+    missing = sorted(fields - set(VOICE_TURN_COLUMNS) - set(NOT_STORED))
+
+    assert not missing, (
+        f"CanonicalVoiceTurn has {missing}, but telemetry.voice_turns doesn't store it, so dashboards can't read "
+        "it. Add a column (an ALTER in voice.sql, VOICE_TURN_COLUMNS and voice_turn_row), or list it in "
+        "NOT_STORED with the reason."
+    )
+    assert set(NOT_STORED) <= fields, f"NOT_STORED lists {sorted(set(NOT_STORED) - fields)}, which isn't a field"
+
+
+def test_a_row_has_exactly_the_table_columns():
+    turn = CanonicalVoiceTurn(source_era="voice.v4", source_schema_version="voice.v4.v1", source_trace_name="agent_journey", timestamp=DAY_START)
+
+    assert set(voice_turn_row(turn, environment="voice-development", imported_at=DAY_START)) == set(VOICE_TURN_COLUMNS)
+
+
+def test_new_columns_are_read_from_alter_statements():
+    sql = """
+CREATE TABLE IF NOT EXISTS telemetry.voice_turns
+(
+    source_trace_id String,
+    imported_at DateTime64(3, 'UTC')
+)
+ENGINE = ReplacingMergeTree(imported_at);
+--   ALTER TABLE telemetry.voice_turns ADD COLUMN IF NOT EXISTS example String;
+ALTER TABLE telemetry.voice_turns ADD COLUMN IF NOT EXISTS farmer_type LowCardinality(Nullable(String));
+"""
+
+    assert _table_columns(sql, "voice_turns") == {
+        "source_trace_id": "String",
+        "imported_at": "DateTime64(3, 'UTC')",
+        "farmer_type": "LowCardinality(Nullable(String))",
+    }
+
+
+def _script():
+    spec = importlib.util.spec_from_file_location("telemetry_import_script", REPO / "scripts" / "telemetry_import.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_the_script_imports_yesterday_by_default():
+    args = _script()._parse_args(["--env", "voice-production"])
+
+    yesterday = datetime.now(timezone.utc).date() - timedelta(days=1)
+    assert (args.first_day, args.last_day, args.dry_run) == (yesterday, yesterday, False)
+
+
+def test_the_script_rejects_a_backwards_range():
+    with pytest.raises(SystemExit):
+        _script()._parse_args(["--env", "voice-production", "--from", "2026-09-25", "--to", "2026-09-24"])
+
+
+def test_the_script_reads_the_password_from_the_env_or_a_file(monkeypatch, tmp_path):
+    script = _script()
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.delenv("TELEMETRY_READER_PASSWORD", raising=False)
+    (tmp_path / ".telemetry_reader_password").write_text("from-file\n", encoding="utf-8")
+
+    assert script._password("reader") == "from-file"
+    monkeypatch.setenv("TELEMETRY_READER_PASSWORD", "from-env")
+    assert script._password("reader") == "from-env"
+
+
+# Chat
+
+
+def chat_row(trace_id, *, name="chat.translation", when="2026-09-20T10:00:00Z", session="session-a", metadata=None, input=None, output=None):
+    """A chat root as ClickHouse returns it: metadata values as strings, input and output as JSON text."""
+    moment = datetime.fromisoformat(when.replace("Z", "+00:00"))
+    return {
+        "id": trace_id,
+        "name": name,
+        "timestamp_ms": int(moment.timestamp() * 1000),
+        "session_id": session,
+        "user_id": REDACTED_USER_ID,
+        "metadata": metadata if metadata is not None else {"pipeline": "translation", "pipeline_profile": "oss", "user_id": "9990001112"},
+        "input": json.dumps(input) if input is not None else None,
+        "output": json.dumps(output) if output is not None else None,
+        "is_deleted": 0,
+    }
+
+
+def chat_observation(obs_id, trace_id, *, name, type="SPAN", start_ms=0, end_ms=None, metadata=None, output=None):
+    return {
+        "id": obs_id,
+        "trace_id": trace_id,
+        "type": type,
+        "name": name,
+        "start_ms": start_ms,
+        "end_ms": end_ms,
+        "metadata": {key: json.dumps(value) if isinstance(value, dict) else value for key, value in (metadata or {}).items()},
+        "input": json.dumps({"farmer_code": "<redacted>"}) if type == "TOOL" else None,
+        "output": json.dumps(output) if output is not None else None,
+        "is_deleted": 0,
+    }
+
+
+def _import_chat(client, *, writer=True, first_day=date(2026, 9, 20)):
+    return import_chat_days(
+        client,
+        client if writer else None,
+        environment="chat-development",
+        first_day=first_day,
+        last_day=first_day,
+        registry=TelemetryEraRegistry.from_yaml(default_era_registry_path(), section="chat_eras"),
+        mappings=load_chat_mappings(),
+        caller_key=KEY if writer else None,
+    )
+
+
+def test_chat_rows_keep_no_phone_number_text_or_tool_data():
+    client = FakeClickHouse(
+        traces=[
+            chat_row("c8", input={"query": "<redacted question>", "channel": "web"}, output="<redacted answer>"),
+            chat_row("c4", name="Amul AI Agent", when="2026-07-23T10:00:00Z", input={"action": "<redacted action>"}, output="<redacted answer>"),
+        ],
+        observations=[
+            chat_observation("tool", "c4", name="get_farmer_bonus_amount (redacted)", type="TOOL",
+                             metadata={"attributes": {"gen_ai.tool.name": "get_farmer_bonus_amount"}}, output="<redacted tool response>"),
+        ],
+    )
+
+    _import_chat(client, first_day=date(2026, 9, 20))
+    _import_chat(client, first_day=date(2026, 7, 23))
+
+    rows = {row["source_trace_id"]: row for row in client.inserts["chat_turns"]}
+    assert rows["c8"]["source_era"] == "chat.c8"
+    assert rows["c8"]["question_chars"] == len("<redacted question>")
+    assert rows["c8"]["answer_chars"] == len("<redacted answer>")
+    assert rows["c4"]["tool_names"] == ["get_farmer_bonus_amount"]
+    assert rows["c4"]["tool_call_count"] == 1
+    for row in rows.values():
+        assert "9990001112" not in repr(row) and "<redacted" not in repr(row)
+        assert row["user_id_hash"] and "user_id" not in row
+
+
+def test_stamped_chat_tool_observation_is_imported_as_safe_tool_identity():
+    client = FakeClickHouse(
+        traces=[chat_row(
+            "stamped",
+            metadata={"amul.schema_version": "chat.turn.v1", "pipeline": "translation"},
+            input={"query": "<redacted question>"},
+            output="<redacted answer>",
+        )],
+        observations=[chat_observation(
+            "tool", "stamped", name="get_farmer_bonus_amount", type="TOOL",
+            metadata={"attributes": {
+                "gen_ai.tool.name": "get_farmer_bonus_amount",
+                "gen_ai.tool.call.id": "test-call-id",
+            }},
+            output="<private tool output>",
+        )],
+    )
+
+    _import_chat(client)
+
+    [row] = client.inserts["chat_turns"]
+    assert row["tool_names"] == ["get_farmer_bonus_amount"]
+    assert row["tool_call_count"] == 1
+    assert row["field_availability"]["tool_calls"] == "derived"
+    assert "private tool output" not in repr(row)
+    assert "farmer_code" not in repr(row)
+
+
+@pytest.mark.parametrize(
+    ("metadata", "when", "day"),
+    [
+        ({"amul.schema_version": "chat.turn.v1", "pipeline": "translation"}, "2026-09-20T10:00:00Z", date(2026, 9, 20)),
+        ({"pipeline": "translation", "pipeline_profile": "oss"}, "2026-08-06T10:00:00Z", date(2026, 8, 6)),
+    ],
+)
+def test_chat_turn_root_imports_completed_full_turn_duration(metadata, when, day):
+    started_ms = int(datetime.fromisoformat(when.replace("Z", "+00:00")).timestamp() * 1000)
+    client = FakeClickHouse(
+        traces=[chat_row("timed", when=when, metadata=metadata, input={"query": "<redacted question>"})],
+        observations=[
+            chat_observation("agent", "timed", name="Amul AI Agent", start_ms=started_ms + 100,
+                             end_ms=started_ms + 900),
+            chat_observation("response", "timed", name="stream_translation", start_ms=started_ms + 900,
+                             end_ms=started_ms + 1_250),
+        ],
+    )
+
+    report = _import_chat(client, first_day=day)
+
+    [row] = client.inserts["chat_turns"]
+    assert row["full_turn_latency_ms"] == 1_250.0
+    assert row["field_availability"]["full_turn_latency_ms"] == "derived"
+    assert report.available["full_turn_latency_ms"] == 1
+    [ledger] = client.inserts["trace_ledger"]
+    assert ledger["duration_ms"] == 1_250.0
+
+
+def test_chat_duration_needs_a_completed_child_and_a_turn_root():
+    stamped = FakeClickHouse(
+        traces=[chat_row("unfinished", metadata={"amul.schema_version": "chat.turn.v1"})],
+        observations=[chat_observation("agent", "unfinished", name="Amul AI Agent", end_ms=None)],
+    )
+    _import_chat(stamped)
+    [unfinished] = stamped.inserts["chat_turns"]
+    assert unfinished["full_turn_latency_ms"] is None
+    assert unfinished["field_availability"]["full_turn_latency_ms"] == "unavailable"
+    assert unfinished["tool_names"] == []
+    assert unfinished["tool_call_count"] == 0
+
+    started_ms = int(datetime(2026, 7, 23, 10, tzinfo=timezone.utc).timestamp() * 1000)
+    historical = FakeClickHouse(
+        traces=[chat_row("agent-root", name="Amul AI Agent", when="2026-07-23T10:00:00Z")],
+        observations=[chat_observation("agent", "agent-root", name="Amul AI Agent run",
+                                       start_ms=started_ms, end_ms=started_ms + 2_000)],
+    )
+    _import_chat(historical, first_day=date(2026, 7, 23))
+    [agent_root] = historical.inserts["chat_turns"]
+    assert agent_root["full_turn_latency_ms"] is None
+    assert agent_root["field_availability"]["full_turn_latency_ms"] == "unavailable"
+    [ledger] = historical.inserts["trace_ledger"]
+    assert ledger["duration_ms"] == 2_000.0
+
+
+def test_a_chat_caller_hash_is_stored_only_as_an_hmac_under_the_caller_key():
+    anonymous = {"pipeline": "translation", "pipeline_profile": "oss", "user_id": "anonymous"}
+    client = FakeClickHouse(
+        traces=[
+            chat_row("known", input={"query": "q"}, output="a"),
+            chat_row("anonymous", session="session-b", metadata=anonymous, input={"query": "q"}, output="a"),
+        ]
+    )
+
+    _import_chat(client)
+
+    rows = {row["source_trace_id"]: row for row in client.inserts["chat_turns"]}
+    plain = hashlib.sha256(b"amul-oan-api:9990001112").hexdigest()
+    assert (rows["known"]["user_id_hash"], rows["known"]["user_id_hash_key"]) == (KEY.pseudonym(plain), KEY.key_id)
+    assert (rows["anonymous"]["user_id_hash"], rows["anonymous"]["user_id_hash_key"]) == (None, None)
+
+
+def test_a_c2_turn_finds_its_question_in_a_pretranslation_just_before_midnight():
+    client = FakeClickHouse(
+        traces=[
+            chat_row("question", when="2026-05-11T23:59:40Z", session="s1",
+                     metadata={"pipeline_stage": "query_pretranslation"}, input={"text": "<redacted question>"}),
+            chat_row("turn", when="2026-05-12T00:00:30Z", session="s1", metadata={"pipeline": "translation"}),
+        ],
+        observations=[
+            chat_observation("agent", "turn", name="Amul AI Agent run (redacted)",
+                             metadata={"attributes": {"agent_name": "Amul AI Agent", "final_result": "<redacted answer>"}}),
+        ],
+    )
+
+    report = _import_chat(client, first_day=date(2026, 5, 12))
+
+    (sql, params), *_ = client.queries
+    assert params["start"] == "2026-05-11 23:58:00.000"
+    [row] = client.inserts["chat_turns"]
+    assert row["source_trace_id"] == "turn"
+    assert row["question_chars"] == len("<redacted question>")
+    assert report.traces == 1
+
+
+def test_c2_traces_without_an_agent_run_are_rejected_with_the_reason():
+    client = FakeClickHouse(traces=[chat_row("noise", when="2026-05-12T10:00:00Z", metadata={"pipeline_stage": "text_translation"})])
+
+    report = _import_chat(client, writer=False, first_day=date(2026, 5, 12))
+
+    [(name, reason)] = report.rejected
+    assert name == "chat.translation" and reason.startswith("chat.c2 requires an 'Amul AI Agent run' observation")
+
+
+def test_chat_reads_full_rows_only_for_the_observations_the_adapters_use():
+    client = FakeClickHouse(traces=[chat_row("c8", when="2026-09-24T10:00:00Z", input={"query": "q"})])
+
+    list(fetch_chat_bundles(client, environment="chat-development", start=DAY_START, end=DAY_END, root_names=["chat.translation"]))
+
+    names_sql, details_sql = [sql for sql, _ in client.queries if "FROM observations" in sql]
+    assert "input" not in names_sql.split("FROM")[0]
+    assert "type = 'TOOL'" in details_sql and "stream_translation" in details_sql
+
+
+CHAT_SQL = (REPO / "telemetry" / "clickhouse" / "chat.sql").read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    ("table", "columns"),
+    [("chat_turns", CHAT_TURN_COLUMNS), ("chat_import_days", IMPORT_DAY_COLUMNS), ("chat_rejections", REJECTION_COLUMNS)],
+)
+def test_written_chat_columns_match_the_tables(table, columns):
+    assert tuple(_table_columns(CHAT_SQL, table)) == columns, (
+        f"telemetry.{table} and the importer disagree. A new column goes at the end of both: an ALTER at the "
+        "bottom of telemetry/clickhouse/chat.sql, and the end of the importer's column list."
+    )
+
+
+def test_every_canonical_chat_field_is_stored_or_left_out_on_purpose():
+    fields = set(CanonicalChatTurn.model_fields)
+    missing = sorted(fields - set(CHAT_TURN_COLUMNS) - set(CHAT_NOT_STORED))
+
+    assert not missing, (
+        f"CanonicalChatTurn has {missing}, but telemetry.chat_turns doesn't store it. Add a column (an ALTER in "
+        "chat.sql, CHAT_TURN_COLUMNS and chat_turn_row), or list it in CHAT_NOT_STORED with the reason."
+    )
+    assert set(CHAT_NOT_STORED) <= fields, f"CHAT_NOT_STORED lists {sorted(set(CHAT_NOT_STORED) - fields)}, which isn't a field"
+
+
+def test_a_chat_row_has_exactly_the_table_columns():
+    turn = CanonicalChatTurn(source_era="chat.c8", source_schema_version="chat.c8.v1", source_trace_name="chat.translation", timestamp=DAY_START)
+
+    assert set(chat_turn_row(turn, environment="chat-development", imported_at=DAY_START)) == set(CHAT_TURN_COLUMNS)
+
+
+def test_the_script_takes_a_channel():
+    assert _script()._parse_args(["--channel", "chat", "--env", "chat-production"]).channel == "chat"
+    assert _script()._parse_args(["--env", "voice-production"]).channel == "voice"
+
+
+def test_tool_names_are_read_from_the_old_and_new_tool_call_shapes():
+    from types import SimpleNamespace
+
+    turn = CanonicalChatTurn(source_era="chat.c4", source_schema_version="chat.c4.v1", source_trace_name="Amul AI Agent", timestamp=DAY_START)
+    calls = [SimpleNamespace(tool_name="get_bonus", call_id="c1"), {"tool_name": "get_scheme"}, {"name": "search_documents"}, {"call_id": "c4"}]
+
+    row = chat_turn_row(turn.model_copy(update={"tool_calls": calls}), environment="chat-development", imported_at=DAY_START)
+
+    assert row["tool_names"] == ["get_bonus", "get_scheme", "search_documents"]
+    assert row["tool_call_count"] == 4
+
+
+def test_chat_attributes_are_stored_too():
+    base = load_chat_mappings()
+    mappings = {
+        **base,
+        "chat.turn.v1": ContractMapping(
+            schema_version="chat.turn.v1",
+            root="chat.translation",
+            fields=base["chat.turn.v1"].fields,
+            attributes={
+                **base["chat.turn.v1"].attributes,
+                "entry_surface": ("metadata.entry_surface",),
+            },
+        ),
+    }
+    stamped = {
+        "amul.schema_version": "chat.turn.v1",
+        "pipeline": "translation",
+        "user_id": "9990001112",
+        "entry_surface": "whatsapp",
+        "service": "amul-oan-api",
+        "release": "test-release-sha",
+        "pc_agent": "vllm:agent-model",
+    }
+    client = FakeClickHouse(traces=[chat_row("s1", metadata=stamped, input={"query": "<redacted question>"}, output="<redacted answer>")])
+
+    import_chat_days(
+        client,
+        client,
+        environment="chat-development",
+        first_day=date(2026, 9, 20),
+        last_day=date(2026, 9, 20),
+        registry=TelemetryEraRegistry.from_yaml(default_era_registry_path(), section="chat_eras"),
+        mappings=mappings,
+        caller_key=KEY,
+    )
+
+    [row] = client.inserts["chat_turns"]
+    assert row["source_era"] == "chat.turn.v1"
+    assert row["attributes"] == {
+        "entry_surface": "whatsapp",
+        "pc_agent": "vllm:agent-model",
+    }
+    assert (row["service"], row["release"]) == ("amul-oan-api", "test-release-sha")
+    assert "9990001112" not in repr(row) and "<redacted" not in repr(row)
+    [ledger] = client.inserts["trace_ledger"]
+    assert (ledger["disposition"], ledger["channel"], ledger["schema_version"]) == ("turn", "chat", "chat.turn.v1")
+
+
+def test_the_script_reads_the_caller_key_from_the_env_or_a_file(monkeypatch, tmp_path):
+    script = _script()
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.delenv("TELEMETRY_CALLER_KEY", raising=False)
+    with pytest.raises(SystemExit, match="No caller key"):
+        script._caller_key()
+
+    (tmp_path / ".telemetry_caller_key").write_text("f" * 64 + "\n", encoding="utf-8")
+    assert script._caller_key().key_id == CallerKey(b"f" * 64).key_id
+    monkeypatch.setenv("TELEMETRY_CALLER_KEY", "e" * 64)
+    assert script._caller_key().key_id == CallerKey(b"e" * 64).key_id
+    monkeypatch.setenv("TELEMETRY_CALLER_KEY", "short")
+    with pytest.raises(SystemExit, match="at least 32 bytes"):
+        script._caller_key()
+
+
+@pytest.mark.parametrize("channel", ["voice", "chat"])
+@pytest.mark.parametrize("argv, writer, caller_key", [([], "writer", KEY), (["--dry-run"], None, None)])
+def test_the_script_writes_with_the_caller_key_and_dry_runs_without_one(monkeypatch, capsys, channel, argv, writer, caller_key):
+    script = _script()
+    calls = []
+    monkeypatch.setattr(script, "_client", lambda role, *, database: role)
+    monkeypatch.setattr(script, "_caller_key", lambda: KEY)
+    for name in ("import_voice_days", "import_chat_days"):
+        monkeypatch.setattr(script, name, lambda reader, writer, name=name, **kw: calls.append((name, writer, kw["caller_key"])) or _NoLines())
+
+    script.main(["--channel", channel, "--env", f"{channel}-production", *argv])
+
+    assert calls == [(f"import_{channel}_days", writer, caller_key)]
+
+
+class _NoLines:
+    def lines(self):
+        return []

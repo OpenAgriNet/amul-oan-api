@@ -37,6 +37,10 @@ from agents.tools.models.union import (
         ("Sursagar", "surendranagar"),
         ("sumul", "sumul"),
         ("kaira", "kaira"),
+        ("madhur", "gandhinagar"),
+        ("Madhur Dairy", "gandhinagar"),
+        ("  GANDHINAGAR DAIRY  ", "gandhinagar"),
+        ("gandhinagar", "gandhinagar"),
         ("", ""),
         (None, ""),
     ],
@@ -161,6 +165,10 @@ async def test_scheme_tool_rejects_unsupported_union(monkeypatch):
 async def test_prepare_matches_supported_union_set():
     sentinel = object()
     assert await schemes.prepare_get_union_scheme_data(_ctx(["banaskantha"]), sentinel) is sentinel
+    assert await schemes.prepare_get_union_scheme_data(_ctx(["dudhdhara"]), sentinel) is sentinel
+    assert await schemes.prepare_get_union_scheme_data(_ctx(["madhur"]), sentinel) is sentinel
+    assert await schemes.prepare_get_union_scheme_data(_ctx(["madhur dairy"]), sentinel) is sentinel
+    assert await schemes.prepare_get_union_scheme_data(_ctx(["gandhinagar dairy"]), sentinel) is sentinel
     assert await schemes.prepare_get_union_scheme_data(_ctx(["dudhsagar"]), sentinel) is None
 
 

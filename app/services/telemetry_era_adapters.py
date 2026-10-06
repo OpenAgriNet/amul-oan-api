@@ -20,6 +20,7 @@ from app.services.telemetry_era_registry import (
     default_era_registry_path,
 )
 from app.services.telemetry_mappings import (
+    mapped_attributes,
     ContractMapping,
     default_mappings_path,
     load_mappings,
@@ -40,6 +41,12 @@ _C2_PRETRANSLATION_MATCH_WINDOW = timedelta(minutes=2)
 SCHEMA_VERSION_KEY = "amul.schema_version"
 
 
+def _chat_has_full_turn_root(turn: CanonicalChatTurn) -> bool:
+    """Only these chat eras root a full farmer turn rather than an agent step."""
+
+    return turn.source_era in {"chat.c6", "chat.c8"} or turn.source_schema_version.startswith("chat.turn.")
+
+
 def _string(value: Any) -> str | None:
     return value if isinstance(value, str) and value else None
 
@@ -55,6 +62,8 @@ _MAPPED_FIELDS = {
     "original_question": _string,
     "answer": lambda value: value,
     "persona": _string,
+    "service": _string,
+    "release": _string,
 }
 
 
@@ -427,15 +436,18 @@ def adapt_chat_trace(
     )
 
     if SCHEMA_VERSION_KEY in metadata:
-        return _apply_chat_outcome_vocabulary(
-            _adapt_stamped_chat_trace(
-                raw,
-                metadata[SCHEMA_VERSION_KEY],
-                mappings=chat_mappings or load_chat_mappings(),
-                observations=observations,
-                scores=parsed_scores,
+        return _with_observation_stage_timings(
+            _apply_chat_outcome_vocabulary(
+                _adapt_stamped_chat_trace(
+                    raw,
+                    metadata[SCHEMA_VERSION_KEY],
+                    mappings=chat_mappings or load_chat_mappings(),
+                    observations=observations,
+                    scores=parsed_scores,
+                ),
+                vocabulary,
             ),
-            vocabulary,
+            observations,
         )
 
     registry = era_registry or TelemetryEraRegistry.from_yaml(default_era_registry_path())
@@ -457,7 +469,7 @@ def adapt_chat_trace(
             extensions.append("chat.c2b")
         if timestamp >= c2c.valid_from:
             extensions.append("chat.c2c")
-        return _apply_historical_chat_mapping(
+        return _with_observation_stage_timings(_apply_historical_chat_mapping(
             ChatC2Adapter.adapt(
                 ChatC2TraceSchema.model_validate(raw),
                 observations=observations,
@@ -473,37 +485,37 @@ def adapt_chat_trace(
             raw,
             mappings=chat_mappings or load_chat_mappings(),
             outcome_vocabulary=vocabulary,
-        )
+        ), observations)
     if name == ChatC3Adapter._trace_name and c3.valid_from <= timestamp < c4.valid_from:
-        return _apply_historical_chat_mapping(
+        return _with_observation_stage_timings(_apply_historical_chat_mapping(
             ChatC3Adapter.adapt(
                 ChatC3TraceSchema.model_validate(raw), observations=observations, scores=parsed_scores
             ),
             raw,
             mappings=chat_mappings or load_chat_mappings(),
             outcome_vocabulary=vocabulary,
-        )
+        ), observations)
     if name == ChatC3Adapter._trace_name and c4.valid_from <= timestamp < c5.valid_from:
-        return _apply_historical_chat_mapping(
+        return _with_observation_stage_timings(_apply_historical_chat_mapping(
             ChatC4Adapter.adapt(
                 ChatC4TraceSchema.model_validate(raw), observations=observations, scores=parsed_scores
             ),
             raw,
             mappings=chat_mappings or load_chat_mappings(),
             outcome_vocabulary=vocabulary,
-        )
+        ), observations)
     if name == ChatC3Adapter._trace_name and c5.valid_from <= timestamp < (c3.valid_to or c6.valid_from):
-        return _apply_historical_chat_mapping(
+        return _with_observation_stage_timings(_apply_historical_chat_mapping(
             ChatC5Adapter.adapt(
                 ChatC5TraceSchema.model_validate(raw), observations=observations, scores=parsed_scores
             ),
             raw,
             mappings=chat_mappings or load_chat_mappings(),
             outcome_vocabulary=vocabulary,
-        )
+        ), observations)
     if name in c6.root_trace_names and c6.valid_from <= timestamp < c8.valid_from:
         extensions = _c6_extensions(timestamp, raw, parsed_scores, c6b=c6b, c6c=c6c, c7=c7)
-        return _apply_historical_chat_mapping(
+        return _with_observation_stage_timings(_apply_historical_chat_mapping(
             ChatC6Adapter.adapt(
                 ChatC6TraceSchema.model_validate(raw),
                 observations=observations,
@@ -513,20 +525,20 @@ def adapt_chat_trace(
             raw,
             mappings=chat_mappings or load_chat_mappings(),
             outcome_vocabulary=vocabulary,
-        )
+        ), observations)
     if name in c8.root_trace_names and timestamp >= c8.valid_from:
         if c8.valid_from_confidence != "high":
             raise UnsupportedTelemetryEra(
                 "chat.c8 has a low-confidence production boundary and needs validation before dispatch"
             )
-        return _apply_historical_chat_mapping(
+        return _with_observation_stage_timings(_apply_historical_chat_mapping(
             ChatC8Adapter.adapt(
                 ChatC8TraceSchema.model_validate(raw), observations=observations, scores=parsed_scores
             ),
             raw,
             mappings=chat_mappings or load_chat_mappings(),
             outcome_vocabulary=vocabulary,
-        )
+        ), observations)
     raise UnsupportedTelemetryEra(f"No adapter registered for trace name={name!r} timestamp={timestamp.isoformat()}")
 
 
@@ -562,6 +574,7 @@ def _apply_historical_chat_mapping(
         availability[field] = (
             "derived" if field == "pipeline_profile" and source_path == "metadata.variant" else "recorded"
         )
+    payload["attributes"] = mapped_attributes(mapping, raw)
     payload["field_availability"] = availability
     return _apply_chat_outcome_vocabulary(CanonicalChatTurn.model_validate(payload), outcome_vocabulary)
 
@@ -575,6 +588,89 @@ def _apply_chat_outcome_vocabulary(
     availability = dict(turn.field_availability)
     availability["outcome_class"] = "derived" if outcome_class is not None else "unavailable"
     return turn.model_copy(update={"outcome_class": outcome_class, "field_availability": availability})
+
+
+_OBSERVATION_STAGE_NAMES = {
+    "query_pretranslation": "pre_translation",
+    "pre_translation": "pre_translation",
+    "text_translation": "post_translation",
+    "stream_translation": "post_translation",
+}
+
+
+def _with_observation_stage_timings(
+    turn: CanonicalChatTurn, observations: Sequence[Mapping[str, Any]]
+) -> CanonicalChatTurn:
+    """Union completed child-observation intervals into stable chat stages.
+
+    This is intentionally derived at import, not emitted by the running chat
+    service, so it also fills the canonical shape for historical trace eras.
+    Observations without both recorded timestamps, or without a known pipeline
+    stage, are not guessed.
+    """
+
+    intervals_by_stage: dict[str, list[tuple[float, float]]] = {}
+    for observation in observations:
+        stage = _observation_stage(observation)
+        interval = _observation_interval_ms(observation)
+        if stage is not None and interval is not None:
+            intervals_by_stage.setdefault(stage, []).append(interval)
+
+    totals = {
+        stage: _merged_interval_duration_ms(intervals)
+        for stage, intervals in intervals_by_stage.items()
+    }
+
+    availability = dict(turn.field_availability)
+    availability["stage_totals_ms"] = "derived" if totals else "unavailable"
+    return turn.model_copy(
+        update={"stage_totals_ms": totals or None, "field_availability": availability}
+    )
+
+
+def _observation_stage(observation: Mapping[str, Any]) -> str | None:
+    metadata = mapping_or_none(observation.get("metadata")) or {}
+    recorded = _string(metadata.get("pipeline_stage"))
+    if recorded:
+        return _OBSERVATION_STAGE_NAMES.get(recorded)
+
+    name = _string(observation.get("name"))
+    if name is None:
+        return None
+    normalized = name.lower()
+    if observation.get("type") == "TOOL":
+        return "tool"
+    if "moderation" in normalized:
+        return "moderation"
+    if "amul ai agent" in normalized or "amul doctor agent" in normalized:
+        return "agent"
+    if "suggestion" in normalized:
+        return "suggestions"
+    return None
+
+
+def _observation_interval_ms(observation: Mapping[str, Any]) -> tuple[float, float] | None:
+    start, end = observation.get("start_ms"), observation.get("end_ms")
+    if isinstance(start, bool) or isinstance(end, bool):
+        return None
+    if not isinstance(start, (int, float)) or not isinstance(end, (int, float)):
+        return None
+    return (float(start), float(end)) if end >= start else None
+
+
+def _merged_interval_duration_ms(intervals: Sequence[tuple[float, float]]) -> float:
+    """Return the duration covered by intervals, counting overlap only once."""
+
+    ordered = sorted(intervals)
+    start, end = ordered[0]
+    total = 0.0
+    for next_start, next_end in ordered[1:]:
+        if next_start <= end:
+            end = max(end, next_end)
+            continue
+        total += end - start
+        start, end = next_start, next_end
+    return total + end - start
 
 
 def _adapt_stamped_chat_trace(
@@ -593,13 +689,14 @@ def _adapt_stamped_chat_trace(
 
     values = mapped_values(mapping, raw, _MAPPED_FIELDS)
     score_values = {score.name: _string_or_none(score.value) for score in scores}
+    tool_calls = _tool_calls(observations)
     availability = {field: _availability(value) for field, value in values.items()}
     availability.update(
         {
             "turn_outcome": _availability(score_values.get("turn_outcome")),
             "served_tier": _availability(score_values.get("served_tier")),
             "full_turn_latency_ms": "unavailable",
-            "tool_calls": "unavailable",
+            "tool_calls": "derived" if tool_calls else "unavailable",
             "root_input": _availability(raw.get("input")),
             "root_output": _availability(raw.get("output")),
         }
@@ -613,11 +710,13 @@ def _adapt_stamped_chat_trace(
         user_id_semantics="jwt_phone_then_query_param_then_anonymous",
         turn_outcome=score_values.get("turn_outcome"),
         served_tier=score_values.get("served_tier"),
+        tool_calls=tool_calls,
         root_input=raw.get("input") if isinstance(raw.get("input"), Mapping) else None,
         root_output=raw.get("output"),
         observation_names=_names(observations),
         score_names=[score.name for score in scores],
         field_availability=availability,
+        attributes=mapped_attributes(mapping, raw),
         **values,
     )
 
