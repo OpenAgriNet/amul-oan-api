@@ -170,7 +170,7 @@ Canonical field names are an analytics API. Use lowercase `snake_case` names
 that describe both the entity and the meaning: `source_trace_id`,
 `source_schema_version`, `outcome_class`, `full_turn_latency_ms`, and
 `user_id_hash` are intentional redundancy. Do not use generic names such as
-`status`, `result`, `data`, `value`, `type`, `id`, or `time` when a specific
+`status`, `result`, `data`, `value`, `type`, `id`, `time`, or `score` when a specific
 name is possible. Vendor-owned stamp keys may keep their namespace, for example
 `amul.schema_version`.
 

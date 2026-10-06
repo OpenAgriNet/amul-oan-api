@@ -10,9 +10,10 @@ duplicate farmer turn by itself.
    deleted. The fetcher reads the newest `event_ts` row with `LIMIT 1 BY id`,
    then ignores a newest row marked `is_deleted`.
 2. The canonical importer is intentionally rerunnable by UTC day. It writes a
-   new row for a re-import into `ReplacingMergeTree(imported_at)`. ClickHouse
-   retains earlier physical copies until a background merge; `FINAL` selects the
-   newest copy for the same sorting key.
+   new row for a re-import into `ReplacingMergeTree(imported_at, is_deleted)`.
+   ClickHouse retains earlier physical copies until a background merge; `FINAL`
+   selects the newest copy for the same sorting key and omits turns whose latest
+   re-import marked them `is_deleted = 1`.
 
 This means dashboards and verification queries must read
 `telemetry.chat_turns FINAL` / `telemetry.voice_turns FINAL`, not the raw
@@ -157,7 +158,8 @@ otherwise the source trace was updated after an earlier import.
 
 The fetcher/importer owner should run the four checks for one day in each
 environment and record only aggregate counts in the importer report. If the
-results match the expectations above, retain `ReplacingMergeTree` and require
-`FINAL` in dashboard queries. If not, investigate the first mismatching layer:
+results match the expectations above, retain
+`ReplacingMergeTree(imported_at, is_deleted)` and require `FINAL` in dashboard
+queries. If not, investigate the first mismatching layer:
 Langfuse source versions, fetcher pagination/window overlap, or target-table
 sorting key.
