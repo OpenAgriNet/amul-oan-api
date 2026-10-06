@@ -7,7 +7,7 @@ worked there.
 """
 
 from app.voice.farmer import _build_ai_technician_summary, _dedupe_technicians
-from agents.voice.models.farmer import FarmerDataEnvelope
+from agents.tools.models.farmer_transport import FarmerDataEnvelope
 
 
 # Names are distinguished by letters, not digits: digits are stripped from

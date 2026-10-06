@@ -11,7 +11,7 @@ import asyncio
 
 import app.voice.farmer as voice
 
-from agents.voice.models.farmer import FarmerDataEnvelope
+from agents.tools.models.farmer_transport import FarmerDataEnvelope
 from app.voice.models.union import UnionName
 from helpers.gujarati_numbers import mask_tag_identifier
 

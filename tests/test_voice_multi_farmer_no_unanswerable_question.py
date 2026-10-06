@@ -14,7 +14,7 @@ import os
 os.environ.setdefault("OPENAI_API_KEY", "test-key")
 os.environ.setdefault("LLM_MODEL_NAME", "gpt-test")
 
-from agents.voice.models.farmer import FarmerDataEnvelope
+from agents.tools.models.farmer_transport import FarmerDataEnvelope
 from app.voice.farmer import _build_compact_farmer_summary
 
 

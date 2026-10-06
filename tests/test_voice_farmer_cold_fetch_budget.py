@@ -1,16 +1,17 @@
-"""Cold-fetch budget and the in-flight marker (issue #282, causes A and D)."""
+"""The cold-fetch budget on a voice turn, and what the next turn does after it
+runs out (issue #282, causes A and D)."""
 import os
 
 os.environ.setdefault("OPENAI_API_KEY", "test-key")
 os.environ.setdefault("LLM_MODEL_NAME", "gpt-test")
 
 import asyncio
+import functools
 
-import pytest
+import agents.tools.farmer_cache as fc
+from agents.tools.models.farmer_transport import FarmerDataEnvelope
 
-import app.voice.farmer as voice
-from agents.voice.models.farmer import FarmerDataEnvelope
-from agents.voice.services import farmer_cache as fc
+PHONE = "9876543210"
 
 
 def _envelope():
@@ -27,22 +28,28 @@ def test_budget_stays_inside_a_callers_patience():
     Voice, successful 200s, 2026-09-01..09-16: 94.0% of lookups land within 2s,
     3.9% in 2-4s, only 0.86% in 4-8s, and 1.2% exceed 8s anyway. Raising the
     budget past 4s buys under 1% of lookups and doubles the wait for every slow
-    caller; the in-flight marker is what recovers a cancelled fetch, on the next
-    turn, at no cost to this one.
+    caller; the worker finishes a fetch that ran out, for the next turn, at no
+    cost to this one.
     """
     assert fc.FARMER_COLD_FETCH_TIMEOUT <= 4.0
 
 
 def test_budget_is_configurable():
     from app.config import settings
-    assert fc.FARMER_COLD_FETCH_TIMEOUT == settings.farmer_cold_fetch_timeout
+    assert fc.FARMER_COLD_FETCH_TIMEOUT == settings.farmer_cold_fetch_timeout_seconds
 
 
 class _Redis:
     def __init__(self):
         self.keys = {}
+        self.queued = set()
+
+    async def get(self, key):
+        return self.keys.get(key)
 
     async def set(self, key, value, ex=None, nx=None):
+        if nx and key in self.keys:
+            return None
         self.keys[key] = value
         return True
 
@@ -53,86 +60,79 @@ class _Redis:
         self.keys.pop(key, None)
         return 1
 
-    async def sadd(self, *a, **k):
+    async def sadd(self, key, member):
+        self.queued.add(member)
         return 1
 
 
-def test_cancelled_fetch_leaves_a_marker(monkeypatch):
-    redis = _Redis()
+class _NoCache:
+    async def get(self, key, namespace=None):
+        return None
+
+
+def _cold(monkeypatch, redis, refresh):
     monkeypatch.setattr(fc, "redis_client", redis)
+    monkeypatch.setattr(fc, "cache", _NoCache())
+    monkeypatch.setattr(fc, "refresh_farmer_data", refresh)
+    monkeypatch.setattr(
+        fc, "refresh_farmer_data_bounded", functools.partial(fc.refresh_farmer_data_bounded, timeout=0.05)
+    )
+
+
+def test_fetch_that_runs_out_is_left_to_the_worker(monkeypatch):
+    redis = _Redis()
 
     async def _hang(phone):
         await asyncio.sleep(10)
 
-    monkeypatch.setattr(fc, "refresh_farmer_data", _hang)
+    _cold(monkeypatch, redis, _hang)
 
-    result = asyncio.run(fc.refresh_farmer_data_bounded("9876543210", timeout=0.05))
-
-    assert result is None
-    assert asyncio.run(fc.is_fetch_inflight("9876543210")) is True
+    assert asyncio.run(fc.get_or_fetch_farmer_data(PHONE)) is None
+    assert redis.queued == {PHONE}
 
 
-def test_no_marker_when_fetch_succeeds(monkeypatch):
-    redis = _Redis()
-    monkeypatch.setattr(fc, "redis_client", redis)
-
-    async def _ok(phone):
-        return _envelope()
-
-    monkeypatch.setattr(fc, "refresh_farmer_data", _ok)
-
-    assert asyncio.run(fc.refresh_farmer_data_bounded("9876543210")) is not None
-    assert asyncio.run(fc.is_fetch_inflight("9876543210")) is False
-
-
-def test_next_turn_does_not_re_block_while_marker_is_set(monkeypatch):
+def test_next_turn_does_not_re_block_while_the_worker_has_it(monkeypatch):
     """The second turn used to pay the same budget again on a still-cold cache."""
+    redis = _Redis()
     calls = {"n": 0}
 
-    async def _no_cache(mobile):
-        return None
-
-    async def _inflight(mobile):
-        return True
-
-    async def _bounded(mobile):
+    async def _hang(phone):
         calls["n"] += 1
-        return None
+        await asyncio.sleep(10)
 
-    monkeypatch.setattr(voice, "get_farmer_data_cached_only", _no_cache)
-    monkeypatch.setattr(voice, "is_fetch_inflight", _inflight)
-    monkeypatch.setattr(voice, "refresh_farmer_data_bounded", _bounded)
+    _cold(monkeypatch, redis, _hang)
 
-    assert asyncio.run(voice.get_or_fetch_farmer_data("9876543210")) is None
-    assert calls["n"] == 0
-
-
-def test_blocks_normally_when_no_marker(monkeypatch):
-    calls = {"n": 0}
-
-    async def _no_cache(mobile):
-        return None
-
-    async def _not_inflight(mobile):
-        return False
-
-    async def _bounded(mobile):
-        calls["n"] += 1
-        return _envelope()
-
-    monkeypatch.setattr(voice, "get_farmer_data_cached_only", _no_cache)
-    monkeypatch.setattr(voice, "is_fetch_inflight", _not_inflight)
-    monkeypatch.setattr(voice, "refresh_farmer_data_bounded", _bounded)
-
-    assert asyncio.run(voice.get_or_fetch_farmer_data("9876543210")) is not None
+    assert asyncio.run(fc.get_or_fetch_farmer_data(PHONE)) is None
+    assert asyncio.run(fc.get_or_fetch_farmer_data(PHONE)) is None
     assert calls["n"] == 1
 
 
-def test_marker_check_failure_does_not_block_the_turn(monkeypatch):
+def test_blocks_normally_when_nothing_is_pending(monkeypatch):
+    calls = {"n": 0}
+
+    async def _ok(phone):
+        calls["n"] += 1
+        return _envelope()
+
+    _cold(monkeypatch, _Redis(), _ok)
+
+    assert asyncio.run(fc.get_or_fetch_farmer_data(PHONE)) is not None
+    assert calls["n"] == 1
+
+
+def test_unreadable_retry_state_does_not_block_the_turn(monkeypatch):
     """Redis being unreachable must not make every caller look unresolved."""
-    class _Broken:
-        async def exists(self, key):
+    class _Broken(_Redis):
+        async def get(self, key):
             raise RuntimeError("redis down")
 
-    monkeypatch.setattr(fc, "redis_client", _Broken())
-    assert asyncio.run(fc.is_fetch_inflight("9876543210")) is False
+    calls = {"n": 0}
+
+    async def _ok(phone):
+        calls["n"] += 1
+        return _envelope()
+
+    _cold(monkeypatch, _Broken(), _ok)
+
+    assert asyncio.run(fc.get_or_fetch_farmer_data(PHONE)) is not None
+    assert calls["n"] == 1

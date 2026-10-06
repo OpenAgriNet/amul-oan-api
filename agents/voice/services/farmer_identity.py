@@ -31,7 +31,7 @@ from pydantic_ai import RunContext
 from pydantic_ai.tools import ToolDefinition
 
 from agents.deps import FarmerContext
-from agents.voice.models.farmer import FarmerDataEnvelope
+from agents.tools.models.farmer_transport import FarmerDataEnvelope
 from helpers.utils import get_logger
 
 logger = get_logger(__name__)

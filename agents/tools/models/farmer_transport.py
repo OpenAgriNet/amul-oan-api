@@ -6,7 +6,7 @@ live beside that model so the two representations and their conversion boundary
 are explicit instead of being split between ``app.models`` and ``agents.models``.
 """
 from datetime import datetime, timezone
-from typing import List, Optional, Union
+from typing import Any, List, Optional, Union
 
 from pydantic import BaseModel, ConfigDict
 
@@ -23,8 +23,9 @@ class AnimalRecord(BaseModel):
     pregnancyStage: Optional[str] = None
     dateOfBirth: Optional[str] = None
     lactationNo: Optional[Union[int, str]] = None
-    lastBreedingActivity: Optional[str] = None
-    lastHealthActivity: Optional[str] = None
+    # An object (AI date, bull id, ...) on most records, a flat string on some.
+    lastBreedingActivity: Optional[Any] = None
+    lastHealthActivity: Optional[Any] = None
 
 
 class FarmerRecord(BaseModel):
@@ -40,6 +41,9 @@ class FarmerRecord(BaseModel):
     totalAnimals: Optional[int] = None
     tagNo: Optional[str] = None
     tagNumbers: Optional[str] = None
+    # Per-animal records, filled by the background refresh when the voice route
+    # is on: voice answers AI/breeding history questions from them.
+    animals: List[AnimalRecord] = []
 
     @classmethod
     def model_validate(cls, obj, **kwargs):
@@ -107,6 +111,10 @@ class FarmerDataEnvelope(BaseModel):
     staleReason: Optional[str] = None
     refreshAfter: Optional[str] = None
     lookupStatus: Optional[str] = None
+    # When the background refresh last fetched the per-animal records, even if
+    # none came back, so a farmer whose tags return nothing is not refetched on
+    # every voice turn.
+    animalsFetchedAt: Optional[str] = None
 
     @classmethod
     def from_records(
