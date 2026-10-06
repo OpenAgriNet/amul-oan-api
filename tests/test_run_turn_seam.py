@@ -504,6 +504,42 @@ def test_disconnect_that_cancels_the_stream_closes_the_turn_before_background_wo
     )
 
 
+def test_disconnect_before_the_first_chunk_is_recorded_as_cancelled(monkeypatch):
+    """A hang-up while the turn is still working cancels the stream task mid-await.
+
+    run_turn then sees CancelledError rather than GeneratorExit, but the caller
+    still hung up; the turn did not fail.
+    """
+    seen = patch_turn(monkeypatch)
+    pretranslating = asyncio.Event()
+
+    async def _slow_pretranslate(_tier, *, text, **_k):
+        pretranslating.set()
+        await asyncio.Event().wait()  # until the disconnect cancels it
+
+    monkeypatch.setattr(chat_service, "pretranslate_with_tier", _slow_pretranslate)
+    app = _asgi_app(monkeypatch)
+    requested = []
+
+    async def receive():
+        if not requested:
+            requested.append(True)
+            return {"type": "http.request", "body": b"", "more_body": False}
+        await pretranslating.wait()
+        return {"type": "http.disconnect"}
+
+    async def send(message):
+        assert not (message["type"] == "http.response.body" and message.get("body")), "nothing was produced"
+
+    async def _go():
+        await app(_asgi_scope("2.3"), receive, send)
+        return _outcomes(seen), list(seen["spans"])
+
+    outcomes, spans = asyncio.run(_go())
+    assert outcomes == ["cancelled"]
+    assert spans[-1] == ("exit", "chat.translation"), spans
+
+
 def test_turn_close_completes_even_if_the_turn_awaits_while_unwinding(monkeypatch):
     """The close runs inside the cancelled stream task, so it must be shielded.
 
