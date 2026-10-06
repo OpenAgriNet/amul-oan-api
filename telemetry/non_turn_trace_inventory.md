@@ -25,6 +25,20 @@ Not for now.
 - `suggestions` and `frontend.*` carry the session id, so in Langfuse they can
   already be looked at per session.
 
+## C2 question-recovery exception
+
+In the c2 era, `query_pretranslation` and moderation were separate root traces,
+not children of the agent-turn trace. The c2 adapter may use a pretranslation
+trace only to recover a missing original question; it does not import that root
+as another turn or attach other background activity by session and time.
+
+Recovery requires an explicitly supplied related trace with the same session
+ID, `metadata.pipeline_stage == "query_pretranslation"`, and a timestamp within
+two minutes of the c2 turn. The adapter chooses the uniquely nearest eligible
+trace; a nearest-time tie, missing data, or no eligible trace leaves the question
+unavailable. The recovered question is marked **derived**, not recorded. C2
+moderation roots do not supply a question and are not joined to a turn.
+
 ## A new name in the import report
 
 A root trace that is neither a turn nor listed in `non_turn_traces.yaml` is
