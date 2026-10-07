@@ -15,7 +15,7 @@ from agents.voice import agent as voice_agent_module
 from agents.voice.services import farmer_identity as fi
 from agents.voice.tools import BASE_TOOLS, SIGNED_IN_FARMER_TOOLS
 from app.voice.farmer import _collect_farmer_accounts
-from agents.voice.models.farmer import FarmerDataEnvelope
+from agents.tools.models.farmer_transport import FarmerDataEnvelope
 
 _ACCOUNT = FarmerAccount(union_code="1", society_code="22", farmer_code="333")
 _PROFILE_STATUSES = typing.get_args(FarmerContext.model_fields["farmer_profile_status"].annotation)

@@ -8,14 +8,9 @@ from typing import Optional
 import regex
 
 from agents.deps import FarmerAccount
+from agents.tools.farmer_cache import technician_lookup_failed
+from agents.tools.models.farmer_transport import FarmerDataEnvelope, FarmerRecord
 from agents.voice.models.ai_call import strip_ait_name_codes
-from agents.voice.models.farmer import FarmerDataEnvelope, FarmerRecord
-from agents.voice.services.farmer_cache import (
-    exceeds_max_serve_stale,
-    get_farmer_data_cached_only,
-    is_fetch_inflight,
-    refresh_farmer_data_bounded,
-)
 from agents.voice.services.farmer_identity import (
     identity_state_for_envelope,
     unavailable_capability_lines,
@@ -43,33 +38,6 @@ def _is_signed_in_session(user_info: Optional[dict], user_id: str) -> bool:
     return bool(user_info)
 
 
-async def get_or_fetch_farmer_data(mobile: str):
-    """Voice read policy (stale-while-revalidate).
-
-    Serve the cached envelope immediately when present (fresh or stale — the
-    caller enqueues a background refresh for stale records). On a cold/never-
-    cached (or hard-expired/deleted) miss, do a bounded blocking fetch so the
-    first turn has data, capped by FARMER_COLD_FETCH_TIMEOUT so a slow upstream
-    never hangs the call.
-
-    Still patchable by tests that stub this symbol.
-    """
-    cached = await get_farmer_data_cached_only(mobile)
-    if cached is not None:
-        if exceeds_max_serve_stale(cached):
-            # Too stale to serve (e.g. background refresh has been failing):
-            # block on a bounded API call, falling back to the stale record
-            # only if the API also fails.
-            fresh = await refresh_farmer_data_bounded(mobile)
-            return fresh if fresh is not None else cached
-        return cached
-    if await is_fetch_inflight(mobile):
-        # A recent cold fetch was cancelled and a worker is still on it. Don't
-        # pay the same budget again — this turn is unresolved.
-        return None
-    return await refresh_farmer_data_bounded(mobile)
-
-
 def _extract_farmer_tags(records: list[FarmerRecord]) -> list[str]:
     tags: list[str] = []
     for record in records:
@@ -85,8 +53,8 @@ def _extract_farmer_tags(records: list[FarmerRecord]) -> list[str]:
 
 
 def _render_breeding_value(value) -> str:
-    """Compact, model-readable form of lastBreedingActivity (amulpashudhan returns
-    a nested object with the AI date + bull id; herdman returns a flat string)."""
+    """Compact, model-readable form of lastBreedingActivity (an object with the AI
+    date + bull id on most records, a flat string on some)."""
     if isinstance(value, (dict, list)):
         return json.dumps(value, ensure_ascii=False)
     return str(value)
@@ -214,7 +182,7 @@ def _build_compact_farmer_summary(envelope: Optional[FarmerDataEnvelope]) -> str
             """The village a record belongs to, for grouping.
 
             (unionCode, societyCode) is exactly the key the technician lookup
-            uses — GetAITechniciansBySocietyQueryParams takes nothing else — so
+            uses — it takes nothing else — so
             two records share a village iff they share this pair. A union-only
             key would merge two societies of one union.
 
@@ -599,7 +567,7 @@ def _build_ai_technician_summary(envelope: Optional[FarmerDataEnvelope]) -> str:
             )
             technicians = _dedupe_technicians(group.get("technicians") or [])
             if not technicians:
-                if group.get("lookupFailed"):
+                if technician_lookup_failed(group):
                     # Distinct from "none exist": the lookup errored, so the
                     # agent must not assert the society has no technicians.
                     lines.append(

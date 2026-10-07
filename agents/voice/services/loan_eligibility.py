@@ -29,7 +29,7 @@ from typing import Optional, Sequence
 from sqlalchemy import select, text
 
 from agents.deps import FarmerAccount
-from agents.voice.tools.farmer import normalize_phone_to_mobile
+from agents.tools.farmer import normalize_phone_to_mobile
 from agents.voice.tools.farmer_animal_backends import get_farmer_milk_collection_details_api
 from agents.tools.onex_sms import send_loan_approval_sms
 from app.config import settings

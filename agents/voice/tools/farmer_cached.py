@@ -14,11 +14,7 @@ async def _get_envelope(ctx: RunContext[FarmerContext]):
     mobile = ctx.deps.mobile
     if not mobile:
         return None
-    # Lazy import: this module is pulled in by agents.voice.tools/__init__, and
-    # farmer_cache imports back into agents.voice.tools at module top — importing
-    # get_or_fetch_farmer_data here (not at module scope) breaks that cycle so
-    # farmer_cache can be imported cold (e.g. by the refresh worker at startup).
-    from agents.voice.services.farmer_cache import get_or_fetch_farmer_data
+    from agents.tools.farmer_cache import get_or_fetch_farmer_data
 
     return await get_or_fetch_farmer_data(mobile)
 

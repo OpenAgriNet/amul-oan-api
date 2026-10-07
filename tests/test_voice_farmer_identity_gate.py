@@ -26,7 +26,7 @@ import pytest
 import app.voice.farmer as voice
 from app.voice.agent_input import _runtime_context_message
 from agents.deps import FarmerAccount, FarmerContext
-from agents.voice.models.farmer import FarmerDataEnvelope
+from agents.tools.models.farmer_transport import FarmerDataEnvelope
 from agents.voice.services import farmer_identity as fi
 from agents.voice.tools import BASE_TOOLS
 

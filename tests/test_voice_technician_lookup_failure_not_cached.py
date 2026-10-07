@@ -1,21 +1,20 @@
 """A failed AI-technician lookup must not be cached as "no technicians".
 
-get_ai_technicians_by_society_api returns None on failure and [] when the
-society genuinely has none. Both were flattened to [] in the cached envelope,
-so a transient upstream blip was indistinguishable from an empty society and
-persisted for the life of the envelope: the "aiTechnicians" key was present
-(so the missing_ai_technicians check could not fire) and the envelope was not
-stale by age.
+The lookup returns None on failure and [] when the society genuinely has none.
+Both used to be flattened to [] in the cached envelope, so a transient upstream
+blip was indistinguishable from an empty society and persisted for the life of
+the envelope: the "aiTechnicians" key was present (so the missing_ai_technicians
+check could not fire) and the envelope was not stale by age.
 """
+import asyncio
+from datetime import datetime, timezone
 
-import pytest
-
-from agents.voice.models.farmer import FarmerDataEnvelope
-from agents.voice.services.farmer_cache import _has_failed_technician_lookup
+import agents.tools.farmer_cache as fc
+from agents.tools.models.farmer_transport import FarmerDataEnvelope, FarmerRecord
 from app.voice.farmer import _build_ai_technician_summary
 
 
-def _group(*, technicians: list[dict], lookup_failed: bool | None) -> dict:
+def _group(*, technicians, failed=None, flag="techniciansLookupFailed") -> dict:
     group = {
         "farmerName": "Farmer 1",
         "farmerCode": "FC001",
@@ -24,8 +23,8 @@ def _group(*, technicians: list[dict], lookup_failed: bool | None) -> dict:
         "unionCode": "BANAS",
         "technicians": technicians,
     }
-    if lookup_failed is not None:
-        group["lookupFailed"] = lookup_failed
+    if failed is not None:
+        group[flag] = failed
     return group
 
 
@@ -37,90 +36,102 @@ def _envelope(groups: list[dict]) -> FarmerDataEnvelope:
 
 class TestFailedLookupDetection:
     def test_failed_lookup_is_detected(self):
-        envelope = _envelope([_group(technicians=[], lookup_failed=True)])
-        assert _has_failed_technician_lookup(envelope) is True
+        assert fc.technician_lookup_failed(_group(technicians=None, failed=True)) is True
 
     def test_genuinely_empty_society_is_not_a_failure(self):
-        envelope = _envelope([_group(technicians=[], lookup_failed=False)])
-        assert _has_failed_technician_lookup(envelope) is False
+        assert fc.technician_lookup_failed(_group(technicians=[], failed=False)) is False
 
     def test_successful_lookup_is_not_a_failure(self):
         group = _group(
             technicians=[{"userId": "AIT001", "fullName": "A", "mobileNumber": "9"}],
-            lookup_failed=False,
+            failed=False,
         )
-        assert _has_failed_technician_lookup(_envelope([group])) is False
+        assert fc.technician_lookup_failed(group) is False
 
     def test_legacy_envelope_without_the_flag_is_not_a_failure(self):
         """Pre-flag cache entries omit the key; treating them as failed would
         refresh them forever."""
-        envelope = _envelope([_group(technicians=[], lookup_failed=None)])
-        assert _has_failed_technician_lookup(envelope) is False
+        assert fc.technician_lookup_failed(_group(technicians=[])) is False
 
-    def test_one_failed_group_among_several_is_detected(self):
-        groups = [
-            _group(technicians=[{"userId": "AIT001"}], lookup_failed=False),
-            _group(technicians=[], lookup_failed=True),
-        ]
-        assert _has_failed_technician_lookup(_envelope(groups)) is True
+    def test_voice_oan_api_flag_is_read_too(self):
+        """voice-oan-api writes the same Redis keys with ``lookupFailed``."""
+        group = _group(technicians=[], failed=True, flag="lookupFailed")
+        assert fc.technician_lookup_failed(group) is True
 
-    def test_no_groups_is_not_a_failure(self):
-        assert _has_failed_technician_lookup(_envelope([])) is False
+
+class TestFailedLookupIsRetried:
+    def _read(self, monkeypatch, groups):
+        raw = FarmerDataEnvelope(
+            farmers=[FarmerRecord(farmerName="Farmer 1")],
+            aiTechnicians=groups,
+            fetchedAt=datetime.now(timezone.utc).isoformat(),
+            lookupStatus="found",
+        ).model_dump()
+
+        class _Cache:
+            async def get(self, key, namespace=None):
+                return raw
+
+        monkeypatch.setattr(fc, "cache", _Cache())
+        return asyncio.run(fc.get_cached_farmer_data("9876543210"))
+
+    def test_one_failed_group_among_several_marks_the_record_stale(self, monkeypatch):
+        envelope = self._read(monkeypatch, [
+            _group(technicians=[{"userId": "AIT001"}], failed=False),
+            _group(technicians=None, failed=True),
+        ])
+        assert envelope.stale is True
+        assert envelope.staleReason == "ai_technician_lookup_failed"
+
+    def test_successful_lookups_leave_a_fresh_record_fresh(self, monkeypatch):
+        envelope = self._read(monkeypatch, [_group(technicians=[], failed=False)])
+        assert envelope.stale is False
 
 
 class TestPromptWording:
     def test_failed_lookup_does_not_claim_none_exist(self):
         summary = _build_ai_technician_summary(
-            _envelope([_group(technicians=[], lookup_failed=True)])
+            _envelope([_group(technicians=None, failed=True)])
         )
         assert "temporarily unavailable" in summary
         assert "none available for this farmer group" not in summary
 
+    def test_voice_oan_api_failed_lookup_does_not_claim_none_exist(self):
+        summary = _build_ai_technician_summary(
+            _envelope([_group(technicians=[], failed=True, flag="lookupFailed")])
+        )
+        assert "temporarily unavailable" in summary
+
     def test_genuinely_empty_society_still_says_none_available(self):
         summary = _build_ai_technician_summary(
-            _envelope([_group(technicians=[], lookup_failed=False)])
+            _envelope([_group(technicians=[], failed=False)])
         )
         assert "none available for this farmer group" in summary
         assert "temporarily unavailable" not in summary
 
     def test_legacy_envelope_keeps_the_none_available_wording(self):
-        summary = _build_ai_technician_summary(
-            _envelope([_group(technicians=[], lookup_failed=None)])
-        )
+        summary = _build_ai_technician_summary(_envelope([_group(technicians=[])]))
         assert "none available for this farmer group" in summary
 
 
 class TestFetchMarksFailure:
-    @pytest.mark.asyncio
-    async def test_api_none_marks_lookup_failed(self, monkeypatch):
-        import agents.voice.services.farmer_cache as fc
+    def _fetch(self, monkeypatch, search):
+        monkeypatch.setattr(fc, "search_ai_technicians", search)
+        record = FarmerRecord(unionCode="BANAS", societyCode="SC001")
+        return asyncio.run(fc._fetch_ai_technicians([record]))
 
-        monkeypatch.setenv("PASHUGPT_TOKEN", "test-token")
+    def test_failed_search_marks_lookup_failed(self, monkeypatch):
+        async def _fails(**kwargs):
+            raise RuntimeError("upstream down")
 
-        async def _api_returns_none(*args, **kwargs):
-            return None
+        groups = self._fetch(monkeypatch, _fails)
+        assert groups[0]["techniciansLookupFailed"] is True
+        assert groups[0]["technicians"] is None
 
-        monkeypatch.setattr(fc, "get_ai_technicians_by_society_api", _api_returns_none)
-
-        record = fc.FarmerRecord(unionCode="BANAS", societyCode="SC001")
-        groups = await fc._fetch_ai_technicians([record])
-
-        assert groups[0]["lookupFailed"] is True
-        assert groups[0]["technicians"] == []
-
-    @pytest.mark.asyncio
-    async def test_api_empty_list_does_not_mark_failure(self, monkeypatch):
-        import agents.voice.services.farmer_cache as fc
-
-        monkeypatch.setenv("PASHUGPT_TOKEN", "test-token")
-
-        async def _api_returns_empty(*args, **kwargs):
+    def test_empty_society_does_not_mark_failure(self, monkeypatch):
+        async def _empty(**kwargs):
             return []
 
-        monkeypatch.setattr(fc, "get_ai_technicians_by_society_api", _api_returns_empty)
-
-        record = fc.FarmerRecord(unionCode="BANAS", societyCode="SC001")
-        groups = await fc._fetch_ai_technicians([record])
-
-        assert groups[0]["lookupFailed"] is False
+        groups = self._fetch(monkeypatch, _empty)
+        assert groups[0]["techniciansLookupFailed"] is False
         assert groups[0]["technicians"] == []

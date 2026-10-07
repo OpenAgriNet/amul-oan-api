@@ -27,13 +27,14 @@ import time
 from functools import partial
 from typing import Optional
 
-from agents.voice.tools.farmer import normalize_phone_to_mobile
+from agents.tools.farmer import normalize_phone_to_mobile
+from agents.tools.farmer_cache import get_or_fetch_farmer_data
 from app.config import settings
 from app.turn.types import BackgroundFactory, ClassifierResult, Turn
 from app.utils import format_message_pairs
 from app.voice import outbound as _outbound
 from app.voice.classifiers import TELEPHONY_TERMINATE_CALL_TOKEN, RenderForCaller
-from app.voice.farmer import _collect_farmer_accounts, get_or_fetch_farmer_data
+from app.voice.farmer import _collect_farmer_accounts
 from app.voice.history import HISTORY_MARKERS, history_pair
 from app.voice.liveness import nudge_stopped
 from app.voice.moderation import ModerationVerdict, check_moderation

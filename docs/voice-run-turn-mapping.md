@@ -275,6 +275,11 @@ reads it. So a slot lands in the same PR as the code that reads it, never ahead 
    in both repos and is shared. Voice's document search needs `marqo`. Voice's own tests for these
    modules come along, 294 of them.
 
+   Voice has since moved onto chat's farmer cache (`agents/tools/farmer_cache.py`): one envelope,
+   one refresh and one technician-failure flag for both surfaces. With the voice route on, the
+   worker's refresh also fetches each animal's record, which voice answers AI history questions
+   from. The herdman fallback is gone, as in voice-oan-api#296.
+
    `refactor/run-turn-surface-agent-input` moves chat's agent input behind
    `SurfaceProfile.agent_input`: the farmer context, the FarmerContext, moderation, and the prompt
    and history the agent sees. Chat's moderation decline and fail-closed line are answers said

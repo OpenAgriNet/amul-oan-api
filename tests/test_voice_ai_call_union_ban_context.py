@@ -11,24 +11,23 @@ os.environ.setdefault("LLM_MODEL_NAME", "gpt-test")
 
 import pytest
 
-from agents.voice.models.farmer import FarmerDataEnvelope, FarmerRecord
+import agents.tools.farmer_cache as farmer_cache
+from agents.tools.beckn.amul import AITechnicianRecord
+from agents.tools.models.farmer_transport import FarmerDataEnvelope, FarmerRecord
 from agents.voice.models.ai_call import AISpecies
 from agents.voice.models.health_call import HealthCaseType
-from agents.voice.services.farmer_cache import _has_failed_technician_lookup
 from agents.voice.tools import ai_call as ai_mod
 from agents.voice.tools import health_call as hc_mod
-from agents.voice.tools.farmer_animal_backends import AITechnicianBySocietyRecord
 from app.voice.models.union import UNION_BANNED_MESSAGE, UNION_BANNED_MESSAGES
 from app.voice.farmer import _build_ai_technician_summary
 from app.voice.sink import _canned_union_ban_translation, _prepare_voice_output
-import agents.voice.services.farmer_cache as farmer_cache
 
 
 BANNED_UNION_ALIASES = ("sarhad", "kutch", "kachchh", "kutchh")
 
 
 def _tech():
-    return AITechnicianBySocietyRecord(
+    return AITechnicianRecord(
         userId="ait-1",
         fullName="Ramesh Patel",
         mobileNumber="9999999999",
@@ -38,12 +37,11 @@ def _tech():
 def _fetch_cache(records, monkeypatch):
     calls = []
 
-    async def fake_api(query, token):
-        calls.append((query.union_code, query.society_code))
+    async def fake_search(*, union_code, society_code, force_refresh=False):
+        calls.append((union_code, society_code))
         return [_tech()]
 
-    monkeypatch.setenv("PASHUGPT_TOKEN", "tok")
-    monkeypatch.setattr(farmer_cache, "get_ai_technicians_by_society_api", fake_api)
+    monkeypatch.setattr(farmer_cache, "search_ai_technicians", fake_search)
     return asyncio.run(farmer_cache._fetch_ai_technicians(records)), calls
 
 
@@ -68,7 +66,7 @@ def test_cache_fetches_technicians_for_kaira(monkeypatch):
     assert len(groups) == 1
     assert groups[0]["unionCode"] == "1"
     assert groups[0]["technicians"][0]["userId"] == "ait-1"
-    assert groups[0]["lookupFailed"] is False
+    assert groups[0]["techniciansLookupFailed"] is False
 
 
 def test_cache_fetches_technicians_for_kaira_and_skips_kutch(monkeypatch):
@@ -110,7 +108,7 @@ def test_cache_still_fetches_when_union_name_is_missing(monkeypatch):
 
 def test_skipped_banned_union_is_not_a_failed_lookup():
     envelope = FarmerDataEnvelope(farmers=[FarmerRecord(unionName="sarhad")], aiTechnicians=[])
-    assert _has_failed_technician_lookup(envelope) is False
+    assert not any(farmer_cache.technician_lookup_failed(group) for group in envelope.aiTechnicians)
 
 
 # ── technician summary ────────────────────────────────────────────────────────

@@ -27,12 +27,12 @@ from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, UserProm
 from pydantic_ai.usage import UsageLimits
 
 from agents.deps import FarmerAccount, FarmerContext
-from agents.voice.agent import voice_agent, voice_agent_signed_in
-from agents.voice.services.farmer_cache import (
+from agents.tools.farmer_cache import (
     enqueue_farmer_refresh,
     get_farmer_data_cached_only,
     should_refresh_farmer_data,
 )
+from agents.voice.agent import voice_agent, voice_agent_signed_in
 from agents.voice.services.farmer_identity import (
     has_usable_farmer_identity,
     identity_state_for_envelope,

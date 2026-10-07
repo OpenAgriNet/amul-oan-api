@@ -101,7 +101,7 @@ async def _resolve_accounts(ctx: RunContext[FarmerContext]):
     if accounts or not ctx.deps.mobile or not settings.loan_check_milk_enabled:
         return accounts
     try:
-        from agents.voice.services.farmer_cache import get_or_fetch_farmer_data
+        from agents.tools.farmer_cache import get_or_fetch_farmer_data
         from app.voice.farmer import _collect_farmer_accounts
         envelope = await get_or_fetch_farmer_data(ctx.deps.mobile)
         return _collect_farmer_accounts(envelope)

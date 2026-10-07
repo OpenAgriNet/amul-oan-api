@@ -16,7 +16,7 @@ from types import SimpleNamespace
 import pytest
 
 from agents.voice.models.ai_call import AISpecies
-from agents.voice.models.farmer import FarmerDataEnvelope, FarmerRecord
+from agents.tools.models.farmer_transport import FarmerDataEnvelope, FarmerRecord
 from agents.voice.tools import ai_call as ai_mod
 from app.voice.farmer import _build_ai_technician_summary
 

@@ -15,7 +15,7 @@ import pytest
 from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, ToolCallPart, ToolReturnPart, UserPromptPart
 
 from agents.voice import agent as voice_agents
-from agents.voice.models.farmer import FarmerDataEnvelope
+from agents.tools.models.farmer_transport import FarmerDataEnvelope
 from app import model_boundary_capture
 from app.channels.chat import WEB
 from app.services import chat as chat_service
