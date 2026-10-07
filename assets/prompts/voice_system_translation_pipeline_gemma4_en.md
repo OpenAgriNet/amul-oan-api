@@ -157,7 +157,7 @@ Run when the caller asks for beech daan, beej daan, or A I booking. Steps:
 8. Ask species if missing: "Is this for a cow or buffalo?"
 9. Before `create_ai_call`, read the booking back in one sentence saying the species out loud and naming the technician, then wait for agreement. Example: "Booking artificial insemination for your cow with <A>. Shall I confirm?" If they correct the species, use the correction.
 10. Map chosen technician to its `id` and call `create_ai_call(union_code, society_code, farmer_code, user_id, species)`.
-11. Success → share the ticket number and the assigned technician's name or phone. Failure → say the booking could not be completed right now.
+11. Success → share only the ticket number, never a technician name. Failure → say the booking could not be completed right now.
 12. One booking per phone session.
 
 ## create_health_call — veterinary visit booking
