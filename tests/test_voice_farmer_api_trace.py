@@ -17,11 +17,11 @@ def _response(status: int, body: str = "") -> httpx.Response:
 
 
 def test_trace_recorded_before_raise_for_status_on_failure():
-    """A failing (5xx) booking response must still be traced — _record_api_trace
+    """A failing (5xx) bonus response must still be traced — _record_api_trace
     runs BEFORE response.raise_for_status()."""
     import contextlib
     from agents.voice.tools import farmer_animal_backends as backends
-    from agents.voice.models.ai_call import AICallRequestModel, AISpecies
+    from app.voice.models.bonus import FarmerBonusAmountRequestModel
 
     captured = {}
 
@@ -50,16 +50,15 @@ def test_trace_recorded_before_raise_for_status_on_failure():
         async def __aexit__(self, *a):
             return False
 
-        async def post(self, *a, **k):
+        async def get(self, *a, **k):
             return _Resp()
 
-    req = AICallRequestModel(
+    req = FarmerBonusAmountRequestModel(
         unionCode="2021", societyCode="NA4310", farmerCode="NA0002",
-        userId="u1", species=AISpecies.COW,
     )
     with patch.object(backends, "start_observation", _fake_obs), \
          patch.object(backends.httpx, "AsyncClient", lambda *a, **k: _Client()):
-        result = asyncio.run(backends.create_ai_call_api(req, "tok"))
+        result = asyncio.run(backends.get_farmer_bonus_amount_api(req, "tok"))
     assert result is None                                    # raised -> None
     assert captured["output"]["status_code"] == 500          # but the 500 WAS traced
     assert captured["output"]["ok"] is False

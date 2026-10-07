@@ -422,3 +422,47 @@ def _code(value):
     async def inner(session):
         return value
     return inner
+
+
+# ── milk total over Beckn ────────────────────────────────────────────────────
+def _milk_accounts():
+    return [
+        FarmerAccount(union_code="U1", society_code="S1", farmer_code="F1"),
+        FarmerAccount(union_code="U1", society_code="S1", farmer_code="F2"),
+        FarmerAccount(union_code="U1", society_code="S1"),  # incomplete: skipped
+    ]
+
+
+def _milk_response(*amounts):
+    return SimpleNamespace(milk=[SimpleNamespace(amount=a) for a in amounts])
+
+
+class TestMilkTotal:
+    def test_sums_amounts_across_accounts_without_the_pashugpt_token(self, monkeypatch):
+        monkeypatch.delenv("PASHUGPT_TOKEN", raising=False)
+        seen = []
+
+        async def fetch(account, **kwargs):
+            seen.append(account.farmer_code)
+            return _milk_response(100.5, None, 50)
+
+        monkeypatch.setattr(le, "fetch_milk_collection", fetch)
+        assert asyncio.run(le._compute_last_month_milk(_milk_accounts())) == 301.0
+        assert seen == ["F1", "F2"]
+
+    def test_one_failed_account_still_counts_the_others(self, monkeypatch):
+        async def fetch(account, **kwargs):
+            if account.farmer_code == "F1":
+                raise RuntimeError("milk collection callback is still pending")
+            return _milk_response(4200)
+
+        monkeypatch.setattr(le, "fetch_milk_collection", fetch)
+        assert asyncio.run(le._compute_last_month_milk(_milk_accounts())) == 4200.0
+
+    def test_unreachable_for_every_account_is_none_not_zero(self, monkeypatch):
+        """None lets the caller say "couldn't check" instead of "below threshold"."""
+        async def fetch(account, **kwargs):
+            raise RuntimeError("milk collection provider rejected the request")
+
+        monkeypatch.setattr(le, "fetch_milk_collection", fetch)
+        assert asyncio.run(le._compute_last_month_milk(_milk_accounts())) is None

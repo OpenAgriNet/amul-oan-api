@@ -15,6 +15,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from agents.tools.beckn import network as beckn_network
 from agents.voice.models.ai_call import AISpecies
 from agents.tools.models.farmer_transport import FarmerDataEnvelope, FarmerRecord
 from agents.voice.tools import ai_call as ai_mod
@@ -87,11 +88,10 @@ def test_real_prod_identifiers_pass(codes):
 def test_invented_booking_never_reaches_the_partner_api(monkeypatch):
     calls = {"n": 0}
 
-    async def fake_api(request, token):  # pragma: no cover - must not run
+    async def fake_confirm(*args, **kwargs):  # pragma: no cover - must not run
         calls["n"] += 1
 
-    monkeypatch.setattr(ai_mod, "create_ai_call_api", fake_api)
-    monkeypatch.setenv("PASHUGPT_TOKEN", "tok")
+    monkeypatch.setattr(beckn_network, "network_create_ai_call_result", fake_confirm)
 
     async def in_scope():
         return True

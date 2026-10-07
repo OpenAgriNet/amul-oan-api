@@ -1,12 +1,12 @@
 """Tool for fetching farmer milk collection and deduction details."""
-import os
+from typing import Optional
 
 from pydantic import ValidationError
 from pydantic_ai import RunContext
 
 from agents.deps import FarmerAccount, FarmerContext
+from agents.tools.beckn.amul import AuthenticatedFarmerAccount, fetch_milk_collection
 from app.voice.models.milk_collection import FarmerMilkCollectionRequestModel
-from agents.voice.tools.farmer_animal_backends import get_farmer_milk_collection_details_api
 from helpers.utils import get_logger
 
 logger = get_logger(__name__)
@@ -64,21 +64,31 @@ async def _fetch_one_account(
     account: FarmerAccount,
     fromdate: str,
     todate: str,
-    token: str,
+    session_id: Optional[str],
+    tool_call_id: Optional[str],
 ):
     """Fetch milk/deduction for one account. Returns the response, or None on failure.
 
     Dates are validated once by the caller before fan-out, so a per-account
     failure here is always an upstream/API issue, not a date problem.
     """
-    request = FarmerMilkCollectionRequestModel(
-        unionCode=account.union_code or "",
-        societyCode=account.society_code or "",
-        farmerCode=account.farmer_code or "",
-        fromdate=fromdate,
-        todate=todate,
-    )
-    response = await get_farmer_milk_collection_details_api(request, token)
+    try:
+        response = await fetch_milk_collection(
+            AuthenticatedFarmerAccount(
+                union_code=account.union_code or "",
+                society_code=account.society_code or "",
+                farmer_code=account.farmer_code or "",
+                farmer_name=account.farmer_name,
+                society_name=account.society_name,
+            ),
+            fromdate=fromdate,
+            todate=todate,
+            session_id=session_id,
+            tool_call_id=tool_call_id,
+        )
+    except Exception as e:
+        logger.warning("Beckn milk lookup failed: %s", e)
+        response = None
     logger.info(
         "Milk collection lookup: union=%s society=%s farmer=%s from=%s to=%s ok=%s milk=%s ded=%s",
         account.union_code, account.society_code, account.farmer_code, fromdate, todate,
@@ -152,13 +162,22 @@ async def get_farmer_milk_collection_details(
         "Milk collection tool invoked: accounts=%s from=%s to=%s (llm_codes=%s/%s/%s)",
         len(accounts), fromdate, todate, union_code, society_code, farmer_code,
     )
-    return await fetch_milk_summary_for_accounts(accounts, fromdate, todate)
+    return await fetch_milk_summary_for_accounts(
+        accounts,
+        fromdate,
+        todate,
+        session_id=ctx.deps.session_id,
+        tool_call_id=getattr(ctx, "tool_call_id", None),
+    )
 
 
 async def fetch_milk_summary_for_accounts(
     accounts: list[FarmerAccount],
     fromdate: str,
     todate: str,
+    *,
+    session_id: Optional[str] = None,
+    tool_call_id: Optional[str] = None,
 ) -> str:
     """Fan out over every account and render one plain-text summary.
 
@@ -168,11 +187,6 @@ async def fetch_milk_summary_for_accounts(
     ``app.services.outbound``). Any change to the wording the agent reads must
     therefore stay in here, not in the tool wrapper.
     """
-    token = os.getenv("PASHUGPT_TOKEN")
-    if not token:
-        logger.error("PASHUGPT_TOKEN is not set")
-        return "Milk collection lookup failed. Service is not configured."
-
     if not accounts:
         return "Milk collection lookup failed. No farmer account is available."
 
@@ -196,7 +210,7 @@ async def fetch_milk_summary_for_accounts(
     total_milk = 0
 
     for account in accounts:
-        result = await _fetch_one_account(account, fromdate, todate, token)
+        result = await _fetch_one_account(account, fromdate, todate, session_id, tool_call_id)
         if result is None:
             sections.append(
                 (_account_label(account, multi) + "\n" if multi else "")

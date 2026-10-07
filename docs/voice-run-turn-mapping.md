@@ -278,7 +278,9 @@ reads it. So a slot lands in the same PR as the code that reads it, never ahead 
    Voice has since moved onto chat's farmer cache (`agents/tools/farmer_cache.py`): one envelope,
    one refresh and one technician-failure flag for both surfaces. With the voice route on, the
    worker's refresh also fetches each animal's record, which voice answers AI history questions
-   from. The herdman fallback is gone, as in voice-oan-api#296.
+   from. The herdman fallback is gone, as in voice-oan-api#296. Its bookings, milk lookups and
+   the loan's milk check go through chat's Beckn functions too; only the bonus lookup still
+   calls PashuGPT directly, as chat's does.
 
    `refactor/run-turn-surface-agent-input` moves chat's agent input behind
    `SurfaceProfile.agent_input`: the farmer context, the FarmerContext, moderation, and the prompt

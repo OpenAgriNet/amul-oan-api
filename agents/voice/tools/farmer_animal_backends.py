@@ -1,7 +1,8 @@
 """
-Voice's direct calls to amulpashudhan.com (PASHUGPT_TOKEN): FarmerMilkCollectionDetails,
-GetFarmerBonusAmount, CreateAICall, CreateHealthCall. Farmer, animal and technician
-data come from the shared farmer cache (agents/tools/farmer_cache.py).
+Voice's one direct call to amulpashudhan.com (PASHUGPT_TOKEN): GetFarmerBonusAmount,
+which has no Beckn action yet. Bookings and milk go through chat's Beckn functions,
+and farmer, animal and technician data come from the shared farmer cache
+(agents/tools/farmer_cache.py).
 """
 import json
 import re
@@ -9,15 +10,9 @@ from typing import Any
 
 import httpx
 
-from agents.voice.models.ai_call import AICallRequestModel, AICallResponseModel
-from agents.voice.models.health_call import HealthCallRequestModel, HealthCallResponseModel
 from app.voice.models.bonus import (
     FarmerBonusAmountRecordModel,
     FarmerBonusAmountRequestModel,
-)
-from app.voice.models.milk_collection import (
-    FarmerMilkCollectionRequestModel,
-    FarmerMilkCollectionResponseModel,
 )
 from app.config import settings
 from app.observability import start_observation
@@ -115,148 +110,6 @@ def _record_api_trace(observation, response, *, provider: str, url: str) -> None
         observation.update(output=output, metadata={"provider": provider, "url": url})
     except Exception:
         pass
-
-
-async def create_ai_call_api(
-    request: AICallRequestModel, token: str
-) -> AICallResponseModel | None:
-    """Creates an artificial insemination call and returns the assigned technician."""
-    api_url = f"{BASE_AMULPASHUDHAN}/CreateAICall"
-    try:
-        with start_observation(
-            "create_ai_call_api",
-            input=request.to_query_params(),
-            metadata={"provider": "amulpashudhan", "url": api_url},
-        ) as observation:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.post(
-                    api_url,
-                    params=request.to_query_params(),
-                    headers={"Authorization": f"Bearer {token}"},
-                )
-                _record_api_trace(observation, response, provider="amulpashudhan", url=api_url)
-                response.raise_for_status()
-                _logger.info(
-                    "[CreateAICall(%s,%s,%s,%s)] :: Response received.",
-                    request.union_code, request.society_code, request.farmer_code, request.species.value,
-                )
-        response_json = response.json()
-        if not isinstance(response_json, dict):
-            raise Exception("Not a valid dict in response.")
-        return AICallResponseModel.model_validate(response_json)
-    except httpx.HTTPStatusError as e:
-        _logger.error("[CreateAICall] :: HTTP %s: %s", e.response.status_code, e.response.text)
-    except Exception as e:
-        _logger.error("[CreateAICall] :: Error: %s", e)
-    return None
-
-
-async def create_health_call_api(
-    request: HealthCallRequestModel, token: str
-) -> HealthCallResponseModel | None:
-    """Creates a health call and returns the ticket details."""
-    api_url = f"{BASE_AMULPASHUDHAN}/CreateHealthCall"
-    try:
-        with start_observation(
-            "create_health_call_api",
-            input=request.to_query_params(),
-            metadata={"provider": "amulpashudhan", "url": api_url},
-        ) as observation:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.post(
-                    api_url,
-                    params=request.to_query_params(),
-                    headers={"Authorization": f"Bearer {token}"},
-                )
-                _record_api_trace(observation, response, provider="amulpashudhan", url=api_url)
-                response.raise_for_status()
-                _logger.info(
-                    "[CreateHealthCall(%s,%s,%s,%s,%s)] :: Response received.",
-                    request.union_code,
-                    request.society_code,
-                    request.farmer_code,
-                    request.species.value,
-                    request.case_type.value,
-                )
-        response_json = response.json()
-        if not isinstance(response_json, dict):
-            raise Exception("Not a valid dict in response.")
-        return HealthCallResponseModel.model_validate(response_json)
-    except httpx.HTTPStatusError as e:
-        _logger.error(
-            "[CreateHealthCall(%s,%s,%s,%s,%s)] :: HTTP %s: %s",
-            request.union_code,
-            request.society_code,
-            request.farmer_code,
-            request.species.value,
-            request.case_type.value,
-            e.response.status_code,
-            e.response.text,
-        )
-    except Exception as e:
-        _logger.error(
-            "[CreateHealthCall(%s,%s,%s,%s,%s)] :: Error: %s",
-            request.union_code,
-            request.society_code,
-            request.farmer_code,
-            request.species.value,
-            request.case_type.value,
-            e,
-        )
-    return None
-
-
-async def get_farmer_milk_collection_details_api(
-    request: FarmerMilkCollectionRequestModel,
-    token: str,
-) -> FarmerMilkCollectionResponseModel | None:
-    """Fetches farmer milk collection and deduction details from PashuGPT."""
-    api_url = f"{BASE_AMULPASHUDHAN}/FarmerMilkCollectionDetails"
-    try:
-        with start_observation(
-            "get_farmer_milk_collection_details_api",
-            input=request.to_query_params(),
-            metadata={"provider": "amulpashudhan", "url": api_url},
-        ) as observation:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.get(
-                    api_url,
-                    params=request.to_query_params(),
-                    headers={"Authorization": f"Bearer {token}"},
-                )
-                _record_api_trace(observation, response, provider="amulpashudhan", url=api_url)
-                response.raise_for_status()
-
-        if response.status_code == 204 or not (response.text or "").strip():
-            return None
-
-        response_json = response.json()
-        if not isinstance(response_json, dict):
-            raise ValueError("Expected dict response from FarmerMilkCollectionDetails")
-
-        return FarmerMilkCollectionResponseModel.model_validate(response_json)
-    except httpx.HTTPStatusError as e:
-        _logger.error(
-            "[FarmerMilkCollectionDetails(%s,%s,%s,%s,%s)] :: HTTP %s: %s",
-            request.union_code,
-            request.society_code,
-            request.farmer_code,
-            request.fromdate,
-            request.todate,
-            e.response.status_code,
-            e.response.text,
-        )
-    except Exception as e:
-        _logger.error(
-            "[FarmerMilkCollectionDetails(%s,%s,%s,%s,%s)] :: Error: %s",
-            request.union_code,
-            request.society_code,
-            request.farmer_code,
-            request.fromdate,
-            request.todate,
-            e,
-        )
-    return None
 
 
 async def get_farmer_bonus_amount_api(
