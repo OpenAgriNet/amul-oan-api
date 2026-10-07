@@ -1,3 +1,4 @@
+import asyncio
 from contextlib import aclosing, contextmanager, nullcontext
 from types import MappingProxyType
 from typing import Any, AsyncGenerator, Mapping, Optional
@@ -1435,8 +1436,10 @@ async def run_turn(
             logger.info(f"Updating message history for session {session_id} with {len(messages)} messages")
             await update_message_history(message_history_session_id, messages)
             _turn_outcome = "success"
-        except GeneratorExit:
-            # Client hung up mid-stream. Re-raised so generator teardown is normal.
+        except (GeneratorExit, asyncio.CancelledError):
+            # Client hung up: GeneratorExit at a yield, CancelledError when the
+            # server cancels the stream mid-await (before the first chunk, say).
+            # Re-raised so teardown is normal.
             _turn_outcome = "cancelled"
             raise
         except BaseException:
