@@ -2,17 +2,14 @@
 Tool for booking an artificial insemination (beech daan) call for a farmer.
 One booking per session (30-min cooldown via Redis).
 """
-import json
-import os
 import re
 from typing import Optional
 
 from pydantic_ai import RunContext
 
 from agents.deps import FarmerContext
-from agents.voice.models.ai_call import AICallRequestModel, AISpecies
-from agents.voice.tools.farmer_animal_backends import create_ai_call_api
-from app.core.cache import cache, try_reserve, release_reservation
+from agents.tools.ai_call import _book_via_network
+from agents.voice.models.ai_call import AISpecies
 from agents.voice.services.farmer_identity import (
     CODE_PATTERN,
     invalid_identity_code_field,
@@ -21,9 +18,6 @@ from app.voice.models.union import UNION_BANNED_MESSAGE, any_union_banned_from_a
 from helpers.utils import get_logger
 
 logger = get_logger(__name__)
-
-AI_CALL_COOLDOWN_TTL = 60 * 30  # 30 minutes
-AI_CALL_CACHE_NAMESPACE = "ai_call_booked"
 
 # With no farmer/technician context the model does not stop — it invents
 # identifiers and books anyway (U11223/S67890/F12345/T55667,
@@ -108,7 +102,7 @@ async def create_ai_call(
         return "This helpline only handles dairy farming and animal husbandry questions."
 
     # Union ban is a policy gate, not a booking write: refuse before Redis
-    # reservation and before PashuGPT. farmer_unions may be missing on test
+    # reservation and before the booking. farmer_unions may be missing on test
     # stubs and on unsigned-in turns — those are not banned.
     farmer_unions = getattr(ctx.deps, "farmer_unions", []) if ctx and ctx.deps else []
     if any_union_banned_from_ai_calls(farmer_unions):
@@ -133,55 +127,23 @@ async def create_ai_call(
         )
         return INVALID_IDENTIFIERS_MESSAGE
 
-    token = os.getenv("PASHUGPT_TOKEN")
-    if not token:
-        logger.error("PASHUGPT_TOKEN is not set")
-        return "Artificial insemination call booking failed. Service is not configured."
-
-    request = AICallRequestModel(
-        unionCode=union_code,
-        societyCode=society_code,
-        farmerCode=farmer_code,
-        userId=user_id,
-        species=species,
+    # Chat's Beckn booking: one reservation per session whatever
+    # AI_CALL_BOOKING_GUARD_ENABLED says, released only when the booking
+    # provably did not happen.
+    return await _book_via_network(
+        union_code,
+        society_code,
+        farmer_code,
+        user_id,
+        species,
+        session_id,
+        {
+            "union_code": union_code,
+            "society_code": society_code,
+            "farmer_code": farmer_code,
+            "user_id": user_id,
+            "species": species.value,
+        },
+        tool_call_id=getattr(ctx, "tool_call_id", None),
+        guard=True,
     )
-
-    # Atomic reservation immediately before the write: first caller wins; a
-    # concurrent/duplicate submit OR a fallback re-run for the same session
-    # short-circuits instead of double-booking (Redis SET NX, shared across
-    # containers). Released below if the booking API itself fails.
-    _reserved = False
-    if session_id:
-        if not await try_reserve(session_id, AI_CALL_CACHE_NAMESPACE, AI_CALL_COOLDOWN_TTL):
-            logger.info("AI call already booked/in-flight for session %s, skipping", session_id)
-            return (
-                "This session already has an active artificial insemination booking. "
-                "Please try again later or contact your society for assistance."
-            )
-        _reserved = True
-
-    response = await create_ai_call_api(request, token)
-    if response is None:
-        if _reserved:
-            await release_reservation(session_id, AI_CALL_CACHE_NAMESPACE)
-        logger.info("AI call API failed for session=%s", session_id)
-        return "Artificial insemination call booking failed. Unable to create booking at the moment."
-
-    # Mark session as booked
-    if session_id:
-        try:
-            await cache.set(
-                session_id,
-                {"ticket": response.ticket_number, "species": species.value},
-                ttl=AI_CALL_COOLDOWN_TTL,
-                namespace=AI_CALL_CACHE_NAMESPACE,
-            )
-        except Exception as e:
-            logger.warning("Failed to set AI call cooldown: %s", e)
-
-    formatted = json.dumps(response.model_dump(), indent=2, ensure_ascii=False)
-    logger.info(
-        "AI call booked: session=%s ticket=%s ait=%s",
-        session_id, response.ticket_number, response.ait_name,
-    )
-    return f"Artificial insemination call booked successfully:\n\n{formatted}"

@@ -156,7 +156,7 @@ async def prefetch_milk_summary(session_id: str, accounts: list[FarmerAccount]) 
     fromdate, todate = milk_window(settings.outbound_milk_window_days)
     try:
         summary = await asyncio.wait_for(
-            fetch_milk_summary_for_accounts(accounts, fromdate, todate),
+            fetch_milk_summary_for_accounts(accounts, fromdate, todate, session_id=session_id),
             timeout=settings.outbound_milk_prefetch_timeout_seconds,
         )
     except asyncio.TimeoutError:

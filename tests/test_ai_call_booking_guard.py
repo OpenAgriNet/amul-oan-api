@@ -85,3 +85,63 @@ def test_guard_is_consulted_only_when_enabled(monkeypatch):
         "both the reservation and the post-success cooldown must be flag-gated"
     )
     assert "release_reservation" in src, "a failed booking must release the reservation"
+
+
+def _fake_redis(monkeypatch):
+    from app.core import cache as cache_mod
+
+    store = {}
+
+    async def add(key, value, ttl=None, namespace=None):
+        if (namespace, key) in store:
+            raise ValueError("key exists")
+        store[(namespace, key)] = value
+
+    async def set_(key, value, ttl=None, namespace=None):
+        store[(namespace, key)] = value
+
+    async def delete(key, namespace=None):
+        store.pop((namespace, key), None)
+
+    monkeypatch.setattr(cache_mod.cache, "add", add)
+    monkeypatch.setattr(cache_mod.cache, "set", set_)
+    monkeypatch.setattr(cache_mod.cache, "delete", delete)
+
+
+def _bookings_in_one_session(monkeypatch, guard=None):
+    import asyncio
+    from agents.tools.beckn import network
+    from agents.tools.models.ai_call import AISpecies
+
+    calls = []
+
+    async def confirm(*args, **kwargs):
+        calls.append(args)
+        return network.NetworkBookingResult(True, f"T{len(calls)}", "booked successfully")
+
+    monkeypatch.setattr(network, "network_create_ai_call_result", confirm)
+
+    async def book_twice():
+        for _ in range(2):
+            await ai_call._book_via_network(
+                "U", "S", "F", "TECH", AISpecies.COW, "s1", {}, guard=guard
+            )
+
+    asyncio.run(book_twice())
+    return len(calls)
+
+
+@pytest.mark.parametrize("flag,expected", [(False, 2), (True, 1)])
+def test_the_flag_decides_when_the_caller_does_not(monkeypatch, flag, expected):
+    _fake_redis(monkeypatch)
+    monkeypatch.setattr(ai_call.settings, "ai_call_booking_guard_enabled", flag)
+    assert _bookings_in_one_session(monkeypatch) == expected
+
+
+@pytest.mark.parametrize("flag", [False, True])
+@pytest.mark.parametrize("guard,expected", [(True, 1), (False, 2)])
+def test_an_explicit_guard_overrides_the_flag(monkeypatch, flag, guard, expected):
+    """Voice passes guard=True: it allows one booking per call."""
+    _fake_redis(monkeypatch)
+    monkeypatch.setattr(ai_call.settings, "ai_call_booking_guard_enabled", flag)
+    assert _bookings_in_one_session(monkeypatch, guard=guard) == expected

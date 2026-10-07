@@ -81,7 +81,7 @@ UNCONFIRMED_MESSAGE = (
 )
 
 
-async def _reserve_booking_slot(session_id: str | None) -> tuple[bool, bool]:
+async def _reserve_booking_slot(session_id: str | None, guard: bool | None = None) -> tuple[bool, bool]:
     """Atomic per-session reservation, taken immediately before a write.
 
     First caller wins; a concurrent submit OR a fallback re-run for the same
@@ -98,10 +98,13 @@ async def _reserve_booking_slot(session_id: str | None) -> tuple[bool, bool]:
     fail-open itself is unchanged (both routes have always proceeded when the
     cache is down); only the bogus release is gone.
 
-    Flag-gated (see the trade-off note in create_ai_call). With the guard off,
-    or with no session id, this is a no-op that allows the booking.
+    Flag-gated (see the trade-off note in create_ai_call) unless ``guard`` is
+    passed. With the guard off, or with no session id, this is a no-op that
+    allows the booking.
     """
-    if not (settings.ai_call_booking_guard_enabled and session_id):
+    if guard is None:
+        guard = settings.ai_call_booking_guard_enabled
+    if not (guard and session_id):
         return True, False
     outcome = await reserve(session_id, AI_CALL_CACHE_NAMESPACE, settings.ai_call_cooldown_ttl_seconds)
     if outcome is ReservationOutcome.TAKEN:
@@ -141,9 +144,13 @@ def _is_provably_pre_send(exc: BaseException) -> bool:
     )
 
 
-async def _mark_session_booked(session_id: str | None, ticket: str | None, species_value: str) -> None:
+async def _mark_session_booked(
+    session_id: str | None, ticket: str | None, species_value: str, guard: bool | None = None
+) -> None:
     """Mark this session as booked so a re-run (or retry) does not double-book."""
-    if settings.ai_call_booking_guard_enabled and session_id:
+    if guard is None:
+        guard = settings.ai_call_booking_guard_enabled
+    if guard and session_id:
         try:
             await cache.set(
                 session_id,
@@ -352,8 +359,13 @@ async def _book_via_network(
     session_id: str | None,
     _ai_tool_input: dict,
     tool_call_id: str | None = None,
+    guard: bool | None = None,
 ) -> str:
-    """Book via the Amul Beckn network with moderation and idempotency guards."""
+    """Book via the Amul Beckn network with moderation and idempotency guards.
+
+    ``guard`` overrides AI_CALL_BOOKING_GUARD_ENABLED. Voice passes True: it
+    allows one booking per call.
+    """
     from agents.tools.beckn.network import network_create_ai_call_result
 
     logger.info(
@@ -369,7 +381,7 @@ async def _book_via_network(
         metadata={"tool_name": "create_ai_call", "route": "beckn_network"},
     ) as ai_tool_obs:
         # Atomic reservation immediately before the irreversible write.
-        _allowed, _owned = await _reserve_booking_slot(session_id)
+        _allowed, _owned = await _reserve_booking_slot(session_id, guard)
         if not _allowed:
             return ALREADY_BOOKED_MESSAGE
 
@@ -451,7 +463,7 @@ async def _book_via_network(
             return result.message
 
         # Mark this session as booked so a re-run (or retry) does not double-book.
-        await _mark_session_booked(session_id, result.ticket, species.value)
+        await _mark_session_booked(session_id, result.ticket, species.value, guard)
 
         logger.info(
             "Network AI call succeeded for union=%s society=%s farmer=%s species=%s ticket=%s",

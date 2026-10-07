@@ -1,6 +1,7 @@
 """Voice booking tools must be idempotent per session so an agent re-run (the
 OSS->managed streaming fallback re-executes tool calls) cannot double-book.
-Mirror of amul-oan-api's test; voice tools take ctx (session_id + ensure_in_scope)."""
+Voice books through chat's Beckn confirm, so a reservation is released only when
+the booking provably did not happen."""
 
 import os
 
@@ -10,28 +11,38 @@ os.environ.setdefault("LLM_MODEL_NAME", "gpt-test")
 import asyncio
 from types import SimpleNamespace
 
+import httpx
 import pytest
 
+from agents.tools import ai_call as chat_ai_call
+from agents.tools.beckn import network as beckn_network
 from agents.voice.tools import ai_call as ai_mod
 from agents.voice.tools import health_call as hc_mod
 from agents.voice.models.ai_call import AISpecies
 from agents.voice.models.health_call import HealthCaseType
+from app.core import cache as cache_mod
 
 # create_ai_call rejects identifiers that cannot be real; 24 base64 chars is the
 # shape of every real prod technician id.
 TECH_ID = "YWl0LXRlY2gtMDAwMDAwMQ=="
+SPECIES = next(iter(AISpecies))
+CASE_TYPE = next(iter(HealthCaseType))
 
 
-def _ctx(session_id):
+def _ctx(session_id, tool_call_id=None):
     async def _ensure_in_scope():
         return True
 
-    return SimpleNamespace(deps=SimpleNamespace(session_id=session_id, ensure_in_scope=_ensure_in_scope))
+    return SimpleNamespace(
+        deps=SimpleNamespace(session_id=session_id, ensure_in_scope=_ensure_in_scope),
+        tool_call_id=tool_call_id,
+    )
 
 
-def _patch_cache(monkeypatch, module):
+@pytest.fixture
+def store(monkeypatch):
     """In-memory cache simulating Redis: add() is atomic SET-NX (raises if key
-    exists), shared by try_reserve/release_reservation and the tool's set/get."""
+    exists), shared by reserve/release_reservation and the tool's set/get."""
     store = {}
 
     async def fake_add(key, value, ttl=None, namespace=None):
@@ -50,87 +61,184 @@ def _patch_cache(monkeypatch, module):
     async def fake_delete(key, namespace=None):
         store.pop((namespace, key), None)
 
-    monkeypatch.setattr(module.cache, "add", fake_add)
-    monkeypatch.setattr(module.cache, "set", fake_set)
-    monkeypatch.setattr(module.cache, "get", fake_get)
-    monkeypatch.setattr(module.cache, "delete", fake_delete)
-    monkeypatch.setenv("PASHUGPT_TOKEN", "tok")
+    monkeypatch.setattr(cache_mod.cache, "add", fake_add)
+    monkeypatch.setattr(cache_mod.cache, "set", fake_set)
+    monkeypatch.setattr(cache_mod.cache, "get", fake_get)
+    monkeypatch.setattr(cache_mod.cache, "delete", fake_delete)
+    # Voice holds one booking per call whatever chat's flag says.
+    monkeypatch.setattr(chat_ai_call.settings, "ai_call_booking_guard_enabled", False)
+    monkeypatch.delenv("PASHUGPT_TOKEN", raising=False)
     return store
 
 
-def test_ai_call_idempotent_on_rerun(monkeypatch):
-    _patch_cache(monkeypatch, ai_mod)
-    calls = {"n": 0}
+def _confirms(monkeypatch, outcomes, name="network_create_ai_call_result", delay=0.0):
+    """Answer each Beckn confirm with the next outcome: a NetworkBookingResult,
+    or an exception to raise. Returns the list of calls made."""
+    calls = []
+    outcomes = list(outcomes)
 
-    async def fake_api(request, token):
-        calls["n"] += 1
-        return SimpleNamespace(ticket_number="T1", ait_name="AIT", model_dump=lambda: {"ticket_number": "T1"})
+    async def fake_confirm(*args, **kwargs):
+        calls.append((args, kwargs))
+        if delay:
+            await asyncio.sleep(delay)
+        outcome = outcomes.pop(0)
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome
 
-    monkeypatch.setattr(ai_mod, "create_ai_call_api", fake_api)
-    species = next(iter(AISpecies))
+    monkeypatch.setattr(beckn_network, name, fake_confirm)
+    return calls
 
-    r1 = asyncio.run(ai_mod.create_ai_call(_ctx("s1"), "159", "00002", "5058", TECH_ID, species))
-    r2 = asyncio.run(ai_mod.create_ai_call(_ctx("s1"), "159", "00002", "5058", TECH_ID, species))
 
-    assert calls["n"] == 1
-    assert "booked successfully" in r1
+def _booked(ticket="T1"):
+    return beckn_network.NetworkBookingResult(True, ticket, f"Booked successfully. Ticket: {ticket}")
+
+
+def _nack():
+    return beckn_network.NetworkBookingResult(
+        False, None, "Booking failed on the network: rejected", authoritative_no_booking=True
+    )
+
+
+def _pending():
+    return beckn_network.NetworkBookingResult(
+        False, None, "Booking is still pending confirmation.", authoritative_no_booking=False
+    )
+
+
+def _book_ai(session_id="s1", tool_call_id=None):
+    return asyncio.run(
+        ai_mod.create_ai_call(_ctx(session_id, tool_call_id), "159", "00002", "5058", TECH_ID, SPECIES)
+    )
+
+
+def _book_health(session_id="s1", remark="fever"):
+    return asyncio.run(
+        hc_mod.create_health_call(_ctx(session_id), "159", "00002", "5058", SPECIES, CASE_TYPE, remark)
+    )
+
+
+def test_ai_call_idempotent_on_rerun(monkeypatch, store):
+    calls = _confirms(monkeypatch, [_booked(), _booked("T2")])
+
+    r1 = _book_ai()
+    r2 = _book_ai()
+
+    assert len(calls) == 1
+    assert "booked successfully" in r1.lower()
     assert "already" in r2.lower()
+    assert store[("ai_call_booked", "s1")] == {"ticket": "T1", "species": SPECIES.value}
 
 
-def test_health_call_idempotent_on_rerun(monkeypatch):
-    _patch_cache(monkeypatch, hc_mod)
-    calls = {"n": 0}
+def test_ai_call_sends_the_callers_codes_and_tool_call_id(monkeypatch, store):
+    calls = _confirms(monkeypatch, [_booked()])
 
-    async def fake_api(request, token):
-        calls["n"] += 1
-        return SimpleNamespace(ticket_number="H1")
+    _book_ai(session_id="s1", tool_call_id="call-7")
 
-    monkeypatch.setattr(hc_mod, "create_health_call_api", fake_api)
-    species = next(iter(AISpecies))
-    case_type = next(iter(HealthCaseType))
+    (args, kwargs), = calls
+    assert args == ("159", "00002", "5058", TECH_ID, SPECIES.value)
+    assert kwargs == {"session_id": "s1", "tool_call_id": "call-7"}
+
+
+def test_health_call_sends_the_callers_codes_and_tool_call_id(monkeypatch, store):
+    calls = _confirms(monkeypatch, [_booked("H1")], name="network_create_health_call_result")
+
+    asyncio.run(hc_mod.create_health_call(
+        _ctx("s1", "call-9"), "159", "00002", "5058", SPECIES, CASE_TYPE, "fever"
+    ))
+
+    (args, kwargs), = calls
+    assert args == ("159", "00002", "5058", SPECIES.value, CASE_TYPE.value, "fever")
+    assert kwargs == {"session_id": "s1", "tool_call_id": "call-9"}
+
+
+def test_health_call_idempotent_on_rerun(monkeypatch, store):
+    calls = _confirms(monkeypatch, [_booked("H1"), _booked("H2")], name="network_create_health_call_result")
 
     # remark differs across the re-run (model output varies) — session key still dedupes
-    r1 = asyncio.run(hc_mod.create_health_call(_ctx("s1"), "159", "00002", "5058", species, case_type, "remark v1"))
-    r2 = asyncio.run(hc_mod.create_health_call(_ctx("s1"), "159", "00002", "5058", species, case_type, "remark v2"))
+    r1 = _book_health(remark="remark v1")
+    r2 = _book_health(remark="remark v2")
 
-    assert calls["n"] == 1
-    assert "booked successfully" in r1
+    assert len(calls) == 1
+    assert "booked successfully" in r1.lower()
     assert "already" in r2.lower()
 
 
-def test_ai_call_concurrent_submits_book_once(monkeypatch):
+def test_ai_call_concurrent_submits_book_once(monkeypatch, store):
     """Two concurrent submits for the same session (double-tap / retry) must
     result in exactly ONE booking — the atomic reservation closes the race."""
-    _patch_cache(monkeypatch, ai_mod)
-    calls = {"n": 0}
-
-    async def fake_api(request, token):
-        calls["n"] += 1
-        await asyncio.sleep(0.02)  # booking latency — the window two requests race in
-        return SimpleNamespace(ticket_number=f"T{calls['n']}", ait_name="AIT", model_dump=lambda: {})
-
-    monkeypatch.setattr(ai_mod, "create_ai_call_api", fake_api)
-    species = next(iter(AISpecies))
+    calls = _confirms(monkeypatch, [_booked("T1"), _booked("T2")], delay=0.02)
 
     async def go():
         return await asyncio.gather(
-            ai_mod.create_ai_call(_ctx("sX"), "159", "00002", "5058", TECH_ID, species),
-            ai_mod.create_ai_call(_ctx("sX"), "159", "00002", "5058", TECH_ID, species),
+            ai_mod.create_ai_call(_ctx("sX"), "159", "00002", "5058", TECH_ID, SPECIES),
+            ai_mod.create_ai_call(_ctx("sX"), "159", "00002", "5058", TECH_ID, SPECIES),
         )
 
     r1, r2 = asyncio.run(go())
-    assert calls["n"] == 1
-    assert any("booked successfully" in r for r in (r1, r2))
+    assert len(calls) == 1
+    assert any("booked successfully" in r.lower() for r in (r1, r2))
     assert any("already" in r.lower() for r in (r1, r2))
 
 
-def test_ai_call_no_session_does_not_crash(monkeypatch):
-    _patch_cache(monkeypatch, ai_mod)
+def test_ai_call_no_session_does_not_crash(monkeypatch, store):
+    _confirms(monkeypatch, [_booked()])
+    assert "booked successfully" in _book_ai(session_id=None).lower()
 
-    async def fake_api(request, token):
-        return SimpleNamespace(ticket_number="T1", ait_name="AIT", model_dump=lambda: {})
 
-    monkeypatch.setattr(ai_mod, "create_ai_call_api", fake_api)
-    species = next(iter(AISpecies))
-    r = asyncio.run(ai_mod.create_ai_call(_ctx(None), "159", "00002", "5058", TECH_ID, species))
-    assert "booked successfully" in r
+@pytest.mark.parametrize("outcome", [
+    _pending(),
+    httpx.ReadTimeout("read timed out"),
+    RuntimeError("unexpected"),
+])
+def test_ai_call_unconfirmed_booking_keeps_the_reservation(monkeypatch, store, outcome):
+    """The confirm may have reached the BPP, which may have booked and texted
+    the farmer: a retry in the same call must not book a second visit."""
+    calls = _confirms(monkeypatch, [outcome, _booked()])
+
+    first = _book_ai()
+    second = _book_ai()
+
+    assert len(calls) == 1
+    assert "booked successfully" not in first.lower()
+    assert "already" in second.lower()
+
+
+@pytest.mark.parametrize("outcome", [
+    _nack(),
+    httpx.ConnectError("connection refused"),
+])
+def test_ai_call_booking_that_provably_did_not_happen_can_be_retried(monkeypatch, store, outcome):
+    calls = _confirms(monkeypatch, [outcome, _booked()])
+
+    first = _book_ai()
+    second = _book_ai()
+
+    assert len(calls) == 2
+    assert "booked successfully" not in first.lower()
+    assert "booked successfully" in second.lower()
+
+
+def test_health_call_unconfirmed_booking_keeps_the_reservation(monkeypatch, store):
+    calls = _confirms(
+        monkeypatch, [_pending(), _booked("H1")], name="network_create_health_call_result"
+    )
+
+    first = _book_health()
+    second = _book_health()
+
+    assert len(calls) == 1
+    assert "booked successfully" not in first.lower()
+    assert "already" in second.lower()
+
+
+def test_health_call_nack_can_be_retried(monkeypatch, store):
+    calls = _confirms(
+        monkeypatch, [_nack(), _booked("H1")], name="network_create_health_call_result"
+    )
+
+    _book_health()
+    second = _book_health()
+
+    assert len(calls) == 2
+    assert "booked successfully" in second.lower()

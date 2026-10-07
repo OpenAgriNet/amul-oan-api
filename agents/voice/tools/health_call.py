@@ -1,16 +1,13 @@
 """
 Tool for booking a health call for a farmer.
 """
-import os
-
 from pydantic_ai import RunContext
 
 from agents.deps import FarmerContext
+from agents.tools.health_call import _book_health_via_network
 from agents.voice.models.ai_call import AISpecies
-from agents.voice.models.health_call import HealthCallRequestModel, HealthCaseType
+from agents.voice.models.health_call import HealthCaseType
 from agents.voice.services.farmer_identity import invalid_identity_code_field
-from agents.voice.tools.farmer_animal_backends import create_health_call_api
-from app.core.cache import cache, try_reserve, release_reservation
 from helpers.utils import get_logger
 
 logger = get_logger(__name__)
@@ -23,11 +20,6 @@ logger = get_logger(__name__)
 INVALID_IDENTIFIERS_MESSAGE = (
     "Health call booking failed. The farmer details are not available."
 )
-
-# One booking per session per 30 min (mirrors create_ai_call). Also makes this
-# tool idempotent against an agent re-run (OSS->managed streaming fallback).
-HEALTH_CALL_COOLDOWN_TTL = 60 * 30  # 30 minutes
-HEALTH_CALL_CACHE_NAMESPACE = "health_call_booked"
 
 
 async def create_health_call(
@@ -87,67 +79,22 @@ async def create_health_call(
         )
         return INVALID_IDENTIFIERS_MESSAGE
 
-    token = os.getenv("PASHUGPT_TOKEN")
-    if not token:
-        logger.error("PASHUGPT_TOKEN is not set")
-        return "Health call booking failed.\n\nPASHUGPT_TOKEN is not configured."
-
-    request = HealthCallRequestModel(
-        unionCode=union_code,
-        societyCode=society_code,
-        farmerCode=farmer_code,
+    # Chat's Beckn booking, with its one booking per session.
+    return await _book_health_via_network(
+        union_code=union_code,
+        society_code=society_code,
+        farmer_code=farmer_code,
         species=species,
-        caseType=case_type,
+        case_type=case_type,
         remark=remark,
+        session_id=session_id,
+        tool_call_id=getattr(ctx, "tool_call_id", None),
+        tool_input={
+            "union_code": union_code,
+            "society_code": society_code,
+            "farmer_code": farmer_code,
+            "species": species.value,
+            "case_type": case_type.value,
+            "remark": remark,
+        },
     )
-
-    # Atomic reservation immediately before the write: first caller wins; a
-    # concurrent/duplicate submit OR a fallback re-run for the same session
-    # short-circuits instead of double-booking (Redis SET NX, shared across
-    # containers). Released below if the booking API itself fails.
-    _reserved = False
-    if session_id:
-        if not await try_reserve(session_id, HEALTH_CALL_CACHE_NAMESPACE, HEALTH_CALL_COOLDOWN_TTL):
-            logger.info("Health call already booked/in-flight for session %s, skipping", session_id)
-            return (
-                "This session already has an active health call booking. "
-                "Please try again later or contact your society for assistance."
-            )
-        _reserved = True
-
-    response = await create_health_call_api(request, token)
-    if response is None:
-        if _reserved:
-            await release_reservation(session_id, HEALTH_CALL_CACHE_NAMESPACE)
-        logger.info(
-            "Health call API failed: session=%s union=%s society=%s farmer=%s species=%s case_type=%s",
-            session_id,
-            union_code,
-            society_code,
-            farmer_code,
-            species.value,
-            case_type.value,
-        )
-        return "Health call booking failed.\n\nUnable to create health call at the moment."
-
-    # Mark this session as booked so a re-run (or retry) does not double-book.
-    if session_id:
-        try:
-            await cache.set(
-                session_id,
-                {"ticket": response.ticket_number, "species": species.value},
-                ttl=HEALTH_CALL_COOLDOWN_TTL,
-                namespace=HEALTH_CALL_CACHE_NAMESPACE,
-            )
-        except Exception as e:
-            logger.warning("Failed to set health call cooldown: %s", e)
-
-    ticket_number = response.ticket_number
-    logger.info(
-        "Health call booked: session=%s ticket=%s",
-        session_id,
-        ticket_number,
-    )
-    if ticket_number:
-        return f"Health call booked successfully. Ticket number: {ticket_number}"
-    return "Health call booked successfully, but ticket number was not returned."

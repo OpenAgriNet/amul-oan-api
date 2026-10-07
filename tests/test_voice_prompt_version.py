@@ -251,6 +251,15 @@ class TestNewVariantInvariants:
         text = _load(version).lower()
         assert "ordinal" in text or "first technician" in text or "position" in text
 
+    @pytest.mark.parametrize("version", list(VARIANTS))
+    def test_ai_booking_success_names_no_technician(self, version):
+        """The Beckn booking result carries only the ticket. Asking for the
+        assigned technician invites an invented name."""
+        text = _load(version)
+        assert "share only the ticket number, never a technician name" in text
+        for asked in ("assigned AIT name", "assigned technician's name", "assigned A I technician's name"):
+            assert asked not in text
+
     @pytest.mark.parametrize("version", NEW_VARIANTS)
     def test_size_guardrails(self, version):
         text = _load(version)

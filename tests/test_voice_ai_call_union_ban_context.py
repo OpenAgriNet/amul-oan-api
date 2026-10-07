@@ -12,12 +12,15 @@ os.environ.setdefault("LLM_MODEL_NAME", "gpt-test")
 import pytest
 
 import agents.tools.farmer_cache as farmer_cache
+from agents.tools import ai_call as chat_ai_call
+from agents.tools.beckn import network as beckn_network
 from agents.tools.beckn.amul import AITechnicianRecord
 from agents.tools.models.farmer_transport import FarmerDataEnvelope, FarmerRecord
 from agents.voice.models.ai_call import AISpecies
 from agents.voice.models.health_call import HealthCaseType
 from agents.voice.tools import ai_call as ai_mod
 from agents.voice.tools import health_call as hc_mod
+from app.core.cache import ReservationOutcome
 from app.voice.models.union import UNION_BANNED_MESSAGE, UNION_BANNED_MESSAGES
 from app.voice.farmer import _build_ai_technician_summary
 from app.voice.sink import _canned_union_ban_translation, _prepare_voice_output
@@ -313,41 +316,35 @@ def _booking_ctx(session_id="s-ban", unions=None, include_unions=True):
     return SimpleNamespace(deps=deps)
 
 
-def test_create_ai_call_refuses_sarhad_without_writing(monkeypatch):
-    calls = {"api": 0, "reserve": 0}
-
-    async def fake_api(*args, **kwargs):
-        calls["api"] += 1
-        return SimpleNamespace(ticket_number="T1", ait_name="AIT", model_dump=lambda: {})
+def _patch_booking(monkeypatch, calls, name="network_create_ai_call_result"):
+    """Count Beckn confirms and reservations; every confirm books."""
+    async def fake_confirm(*args, **kwargs):
+        calls["n"] += 1
+        return beckn_network.NetworkBookingResult(True, "T1", "Booked successfully. Ticket: T1")
 
     async def fake_reserve(*args, **kwargs):
         calls["reserve"] += 1
-        return True
+        return ReservationOutcome.ACQUIRED
 
-    monkeypatch.setattr(ai_mod, "create_ai_call_api", fake_api)
-    monkeypatch.setattr(ai_mod, "try_reserve", fake_reserve)
+    monkeypatch.setattr(beckn_network, name, fake_confirm)
+    monkeypatch.setattr(chat_ai_call, "reserve", fake_reserve)
+
+
+def test_create_ai_call_refuses_sarhad_without_writing(monkeypatch):
+    calls = {"n": 0, "reserve": 0}
+    _patch_booking(monkeypatch, calls)
 
     out = asyncio.run(
         ai_mod.create_ai_call(_booking_ctx(unions=["sarhad"]), "159", "00002", "5058", TECH_ID, SPECIES)
     )
     assert out == UNION_BANNED_MESSAGE
-    assert calls == {"api": 0, "reserve": 0}
+    assert calls == {"n": 0, "reserve": 0}
 
 
 @pytest.mark.parametrize("unions", [["kutch"], ["KACHCHH"], ["kutchh"], ["kaira", "sarhad"]])
 def test_create_ai_call_refuses_canonical_and_mixed_banned_unions(monkeypatch, unions):
     calls = {"n": 0, "reserve": 0}
-
-    async def fake_api(*args, **kwargs):
-        calls["n"] += 1
-        return SimpleNamespace(ticket_number="T1", ait_name="AIT", model_dump=lambda: {})
-
-    async def fake_reserve(*args, **kwargs):
-        calls["reserve"] += 1
-        return True
-
-    monkeypatch.setattr(ai_mod, "create_ai_call_api", fake_api)
-    monkeypatch.setattr(ai_mod, "try_reserve", fake_reserve)
+    _patch_booking(monkeypatch, calls)
 
     out = asyncio.run(
         ai_mod.create_ai_call(_booking_ctx(unions=unions), "159", "00002", "5058", TECH_ID, SPECIES)
@@ -357,33 +354,21 @@ def test_create_ai_call_refuses_canonical_and_mixed_banned_unions(monkeypatch, u
 
 
 def test_create_ai_call_still_books_for_kaira(monkeypatch):
-    calls = {"n": 0}
-
-    async def fake_api(request, token):
-        calls["n"] += 1
-        return SimpleNamespace(ticket_number="T1", ait_name="AIT", model_dump=lambda: {"ticket_number": "T1"})
-
-    monkeypatch.setenv("PASHUGPT_TOKEN", "tok")
-    monkeypatch.setattr(ai_mod, "create_ai_call_api", fake_api)
+    calls = {"n": 0, "reserve": 0}
+    _patch_booking(monkeypatch, calls)
 
     out = asyncio.run(
         ai_mod.create_ai_call(_booking_ctx(session_id=None, unions=["kaira"]), "159", "00002", "5058", TECH_ID, SPECIES)
     )
     assert calls["n"] == 1
-    assert "booked successfully" in out
+    assert "booked successfully" in out.lower()
     assert out != UNION_BANNED_MESSAGE
 
 
 @pytest.mark.parametrize("unions,include_unions", [([], True), (None, False)])
 def test_create_ai_call_empty_or_missing_unions_is_not_banned(monkeypatch, unions, include_unions):
-    calls = {"n": 0}
-
-    async def fake_api(request, token):
-        calls["n"] += 1
-        return SimpleNamespace(ticket_number="T1", ait_name="AIT", model_dump=lambda: {"ticket_number": "T1"})
-
-    monkeypatch.setenv("PASHUGPT_TOKEN", "tok")
-    monkeypatch.setattr(ai_mod, "create_ai_call_api", fake_api)
+    calls = {"n": 0, "reserve": 0}
+    _patch_booking(monkeypatch, calls)
 
     out = asyncio.run(
         ai_mod.create_ai_call(
@@ -392,20 +377,16 @@ def test_create_ai_call_empty_or_missing_unions_is_not_banned(monkeypatch, union
         )
     )
     assert calls["n"] == 1
-    assert "booked successfully" in out
+    assert "booked successfully" in out.lower()
 
 
 def test_moderation_block_runs_before_union_ban(monkeypatch):
-    calls = {"n": 0}
-
-    async def fake_api(*args, **kwargs):
-        calls["n"] += 1
-        return SimpleNamespace(ticket_number="T1", ait_name="AIT", model_dump=lambda: {})
+    calls = {"n": 0, "reserve": 0}
+    _patch_booking(monkeypatch, calls)
 
     async def _out_of_scope():
         return False
 
-    monkeypatch.setattr(ai_mod, "create_ai_call_api", fake_api)
     ctx = SimpleNamespace(deps=SimpleNamespace(
         session_id="s-mod",
         ensure_in_scope=_out_of_scope,
@@ -417,14 +398,8 @@ def test_moderation_block_runs_before_union_ban(monkeypatch):
 
 
 def test_health_call_still_books_for_kutch_union(monkeypatch):
-    calls = {"n": 0}
-
-    async def fake_api(request, token):
-        calls["n"] += 1
-        return SimpleNamespace(ticket_number="H1")
-
-    monkeypatch.setenv("PASHUGPT_TOKEN", "tok")
-    monkeypatch.setattr(hc_mod, "create_health_call_api", fake_api)
+    calls = {"n": 0, "reserve": 0}
+    _patch_booking(monkeypatch, calls, name="network_create_health_call_result")
     out = asyncio.run(
         hc_mod.create_health_call(
             _booking_ctx(session_id=None, unions=["kutch"]),
@@ -432,7 +407,7 @@ def test_health_call_still_books_for_kutch_union(monkeypatch):
         )
     )
     assert calls["n"] == 1
-    assert "booked successfully" in out
+    assert "booked successfully" in out.lower()
     assert UNION_BANNED_MESSAGE not in out
 
 
