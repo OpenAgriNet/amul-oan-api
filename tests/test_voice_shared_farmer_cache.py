@@ -2,13 +2,16 @@
 
 With the voice route on, the worker's refresh also fetches each animal's record,
 which voice answers AI/breeding history questions from. A refresh on a turn
-leaves that to the worker, and a record whose animals were fetched is not
-queued again on every turn, even when none came back.
+leaves that to the worker. Every refresh keeps the animals already cached, so
+chat's worker on the same queue cannot wipe them, and they are fetched again only
+for new tags or once the refresh interval has passed.
 
 Self-contained: asyncio.run, an in-memory Redis and stubbed Beckn calls.
 """
 import asyncio
 import copy
+import json
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -74,12 +77,15 @@ class _Beckn:
     def __init__(self, *, technicians_fail=False, animals=True):
         self.technicians_fail = technicians_fail
         self.animals = animals
+        self.tags = list(TAGS)
+        self.farmer_calls = 0
         self.animal_calls = []
 
     async def farmer(self, phone):
+        self.farmer_calls += 1
         record = FarmerRecord.model_validate({
             "farmerName": "Ramesh", "farmerCode": "F1", "societyName": "Anand",
-            "societyCode": "S1", "unionCode": "U1", "tagNo": ",".join(TAGS),
+            "societyCode": "S1", "unionCode": "U1", "tagNo": ",".join(self.tags),
         })
         return [record], FarmerFetchOutcome.FOUND
 
@@ -133,7 +139,8 @@ def test_voice_reads_a_chat_written_envelope_with_its_history_and_does_not_reque
 
 
 def test_voice_reads_chats_failed_technician_lookup_as_a_failure(shared):
-    """Read as "try again later", never "no technicians", and queued to be retried."""
+    """Read as "try again later", never "no technicians", and retried once the
+    backoff lapses rather than straight away."""
     redis, beckn = shared
     beckn.technicians_fail = True
 
@@ -144,7 +151,7 @@ def test_voice_reads_chats_failed_technician_lookup_as_a_failure(shared):
     assert "temporarily unavailable" in summary
     assert "none available for this farmer group" not in summary
     assert envelope.staleReason == "ai_technician_lookup_failed"
-    assert redis.queued() == {PHONE}
+    assert redis.queued() == set()
 
 
 def test_cold_fetch_on_a_turn_leaves_the_animals_to_the_worker(shared, monkeypatch):
@@ -278,3 +285,135 @@ def test_animals_survive_the_cache_round_trip():
     ]
     restored = FarmerDataEnvelope.model_validate(envelope.model_dump())
     assert restored.farmers[0].animals[0].lastBreedingActivity == {"aiDate": "2026-09-01", "bullId": "B7"}
+
+
+def test_refresh_without_the_voice_route_keeps_voices_animals(shared, monkeypatch):
+    """Chat's worker pops from the same queue: its refresh must not wipe them."""
+    redis, beckn = shared
+    asyncio.run(fc.refresh_farmer_data(PHONE, background=True))
+    monkeypatch.setattr(settings, "voice_route_enabled", False)
+    asyncio.run(fc.refresh_farmer_data(PHONE, background=True))
+    monkeypatch.setattr(settings, "voice_route_enabled", True)
+
+    envelope = asyncio.run(fc.get_farmer_data_cached_only(PHONE))
+
+    assert [a.tagNumber for a in _animals(envelope)] == TAGS
+    assert envelope.animalsFetchedAt is not None
+    assert envelope.stale is False
+    assert redis.queued() == set()
+
+
+def test_refresh_on_a_turn_keeps_the_animals(shared):
+    """A cold or max-serve-stale fetch rebuilds the record too."""
+    redis, beckn = shared
+    asyncio.run(fc.refresh_farmer_data(PHONE, background=True))
+
+    asyncio.run(fc.refresh_farmer_data(PHONE))
+    envelope = asyncio.run(fc.get_farmer_data_cached_only(PHONE))
+
+    assert len(_animals(envelope)) == len(TAGS)
+    assert redis.queued() == set()
+
+
+def test_refresh_inside_the_interval_fetches_only_new_tags(shared):
+    redis, beckn = shared
+    asyncio.run(fc.refresh_farmer_data(PHONE, background=True))
+    fetched_at = asyncio.run(fc.get_cached_farmer_data(PHONE)).animalsFetchedAt
+    beckn.tags = TAGS + ["102030405062"]
+
+    asyncio.run(fc.refresh_farmer_data(PHONE, background=True))
+    envelope = asyncio.run(fc.get_cached_farmer_data(PHONE))
+
+    assert [tag for tag, _ in beckn.animal_calls] == TAGS + ["102030405062"]
+    assert [a.tagNumber for a in _animals(envelope)] == beckn.tags
+    assert envelope.animalsFetchedAt == fetched_at
+
+
+def test_animals_are_fetched_again_once_the_refresh_interval_has_passed(shared):
+    """So a new AI date reaches voice, as with the farmer record itself."""
+    redis, beckn = shared
+    asyncio.run(fc.refresh_farmer_data(PHONE, background=True))
+    key = build_cache_key(fc._cache_key(PHONE), namespace=fc.FARMER_CACHE_NAMESPACE)
+    old = datetime.now(timezone.utc) - timedelta(seconds=fc.FARMER_REFRESH_INTERVAL + 60)
+    redis.kv[key]["animalsFetchedAt"] = old.isoformat()
+
+    asyncio.run(fc.refresh_farmer_data(PHONE, background=True))
+
+    assert len(beckn.animal_calls) == 2 * len(TAGS)
+    assert asyncio.run(fc.get_cached_farmer_data(PHONE)).animalsFetchedAt > old.isoformat()
+
+
+def test_animal_of_a_tag_the_farmer_no_longer_has_is_dropped(shared, monkeypatch):
+    redis, beckn = shared
+    asyncio.run(fc.refresh_farmer_data(PHONE, background=True))
+    beckn.tags = TAGS[:1]
+    monkeypatch.setattr(settings, "voice_route_enabled", False)
+
+    asyncio.run(fc.refresh_farmer_data(PHONE, background=True))
+    envelope = asyncio.run(fc.get_cached_farmer_data(PHONE))
+
+    assert [a.tagNumber for a in _animals(envelope)] == TAGS[:1]
+
+
+def test_tags_with_no_data_wait_for_the_interval(shared):
+    redis, beckn = shared
+    beckn.animals = False
+
+    asyncio.run(fc.refresh_farmer_data(PHONE, background=True))
+    asyncio.run(fc.refresh_farmer_data(PHONE, background=True))
+
+    assert len(beckn.animal_calls) == len(TAGS)
+
+
+def test_failing_technician_lookup_is_not_refreshed_on_every_turn(shared):
+    """During a technician outage, three voice turns cost no extra upstream calls."""
+    redis, beckn = shared
+    beckn.technicians_fail = True
+    asyncio.run(fc.refresh_farmer_data(PHONE, background=True))
+    farmer_calls, animal_calls = beckn.farmer_calls, len(beckn.animal_calls)
+
+    for _ in range(3):
+        asyncio.run(fc.get_farmer_data_cached_only(PHONE))
+        asyncio.run(fc.drain_farmer_refresh_queue_once())
+
+    assert beckn.farmer_calls == farmer_calls
+    assert len(beckn.animal_calls) == animal_calls
+
+
+def test_failing_technician_lookup_is_retried_once_the_backoff_lapses(shared):
+    redis, beckn = shared
+    beckn.technicians_fail = True
+    asyncio.run(fc.refresh_farmer_data(PHONE, background=True))
+    attempt_key = fc._refresh_attempt_key(PHONE)
+    state = json.loads(redis.kv[attempt_key])
+    state["next_retry_at"] = (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat()
+    redis.kv[attempt_key] = json.dumps(state)
+
+    asyncio.run(fc.get_farmer_data_cached_only(PHONE))
+    assert redis.queued() == {PHONE}
+
+    beckn.technicians_fail = False
+    asyncio.run(fc.drain_farmer_refresh_queue_once())
+    envelope = asyncio.run(fc.get_farmer_data_cached_only(PHONE))
+    assert envelope.stale is False
+    assert attempt_key not in redis.kv
+
+
+def test_failed_animal_fetch_keeps_what_was_cached_for_that_tag(shared, monkeypatch):
+    redis, beckn = shared
+    asyncio.run(fc.refresh_farmer_data(PHONE, background=True))
+    key = build_cache_key(fc._cache_key(PHONE), namespace=fc.FARMER_CACHE_NAMESPACE)
+    old = datetime.now(timezone.utc) - timedelta(seconds=fc.FARMER_REFRESH_INTERVAL + 60)
+    redis.kv[key]["animalsFetchedAt"] = old.isoformat()
+    animal = beckn.animal
+
+    async def _animal(tag, **kwargs):
+        if tag == TAGS[0]:
+            raise RuntimeError("bpp timeout")
+        return await animal(tag, **kwargs)
+
+    monkeypatch.setattr(fc, "fetch_animal_profile", _animal)
+
+    envelope = asyncio.run(fc.refresh_farmer_data(PHONE, background=True))
+
+    assert [a.tagNumber for a in _animals(envelope)] == TAGS

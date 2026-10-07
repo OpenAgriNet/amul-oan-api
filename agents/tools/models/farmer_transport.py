@@ -111,9 +111,9 @@ class FarmerDataEnvelope(BaseModel):
     staleReason: Optional[str] = None
     refreshAfter: Optional[str] = None
     lookupStatus: Optional[str] = None
-    # When the background refresh last fetched the per-animal records, even if
-    # none came back, so a farmer whose tags return nothing is not refetched on
-    # every voice turn.
+    # When every per-animal record was last fetched, even if none came back, so
+    # tags with no data are not refetched on every voice turn. Refreshes carry
+    # it over with the animals until the refresh interval has passed.
     animalsFetchedAt: Optional[str] = None
 
     @classmethod

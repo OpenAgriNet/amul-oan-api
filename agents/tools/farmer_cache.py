@@ -109,6 +109,34 @@ def _needs_animals(envelope: FarmerDataEnvelope) -> bool:
     return any(_record_tags(farmer) and not farmer.animals for farmer in envelope.farmers)
 
 
+def _carry_over_animals(envelope: FarmerDataEnvelope, previous: Optional[FarmerDataEnvelope]) -> list[str]:
+    """Keep the cached animals of the tags the farmer still has, and when they were
+    fetched. Returns the tags the cached record did not have."""
+    if previous is None:
+        return []
+    known_tags = {tag for farmer in previous.farmers for tag in _record_tags(farmer)}
+    cached = {animal.tagNumber: animal for farmer in previous.farmers for animal in farmer.animals}
+    new_tags = []
+    for farmer in envelope.farmers:
+        tags = _record_tags(farmer)
+        farmer.animals = [cached[tag] for tag in tags if tag in cached]
+        new_tags += [tag for tag in tags if tag not in known_tags]
+    envelope.animalsFetchedAt = previous.animalsFetchedAt
+    return new_tags
+
+
+def _animals_expired(envelope: FarmerDataEnvelope) -> bool:
+    """True when the animals were never fetched, or longer ago than a found
+    record's refresh interval."""
+    if not envelope.animalsFetchedAt:
+        return True
+    try:
+        fetched_at = datetime.fromisoformat(envelope.animalsFetchedAt.replace("Z", "+00:00"))
+    except ValueError:
+        return True
+    return datetime.now(timezone.utc) - fetched_at >= timedelta(seconds=FARMER_REFRESH_INTERVAL)
+
+
 def _compute_backoff_seconds(attempt_count: int) -> int:
     """Exponential backoff capped at FARMER_REFRESH_RETRY_MAX_SECONDS."""
     if attempt_count <= 0:
@@ -342,8 +370,11 @@ async def refresh_farmer_data(phone: str, *, background: bool = False) -> Option
     Returns the refreshed envelope, or the in-flight refresh's result when the
     lock is busy and clears in time, or None on actual failure / lock-still-busy.
 
-    ``background`` is the worker's refresh. With the voice route on it also
-    fetches the per-animal records, which a refresh on a turn leaves to the worker.
+    Every refresh keeps the animals already cached for the tags the farmer still
+    has: chat's worker pops from the same queue, and its refresh must not wipe
+    what voice fetched. ``background`` is the worker's refresh; with the voice
+    route on it fetches new tags' animals, and all of them once the interval has
+    passed. A refresh on a turn leaves that to the worker.
     """
     phone = _normalize_cache_phone(phone)
     lock_key = _refresh_lock_key(phone)
@@ -370,14 +401,23 @@ async def refresh_farmer_data(phone: str, *, background: bool = False) -> Option
         if outcome == FarmerFetchOutcome.FOUND and records:
             envelope = FarmerDataEnvelope.from_records(records, source="api", lookup_status="found")
             envelope.aiTechnicians = await _fetch_ai_technicians(records)
+            new_tags = _carry_over_animals(envelope, await get_cached_farmer_data(phone))
             if background and settings.voice_route_enabled:
-                await _fetch_animals(envelope)
+                if _animals_expired(envelope):
+                    await _fetch_animals(envelope)
+                elif new_tags:
+                    await _fetch_animals(envelope, only=new_tags)
             # Queued once the lock is released (finally): a worker that took the
             # phone while this refresh held the lock would wait for it and keep
             # its envelope, animals still missing.
             enqueue_animals_after_unlock = _needs_animals(envelope)
             await set_cached_farmer_data(phone, envelope)
-            await _clear_refresh_attempt_state(phone)
+            if any(technician_lookup_failed(group) for group in envelope.aiTechnicians):
+                # The backoff stays, so the retry waits for it instead of
+                # refreshing on every turn while the lookup keeps failing.
+                await _record_refresh_failure(phone, outcome="technician_lookup_failed")
+            else:
+                await _clear_refresh_attempt_state(phone)
             return envelope
 
         if outcome == FarmerFetchOutcome.NOT_FOUND:
@@ -606,11 +646,19 @@ async def drain_farmer_refresh_queue_once(batch: int = FARMER_REFRESH_QUEUE_BATC
     return processed
 
 
-async def _fetch_animals(envelope: FarmerDataEnvelope) -> None:
-    """Fill each farmer's per-animal records, one Beckn animal-profile call per
-    tag, at most FARMER_ANIMAL_FETCH_CONCURRENCY at a time. Best-effort: a tag
-    that fails or comes back empty is left out."""
-    jobs = [(farmer, tag) for farmer in envelope.farmers for tag in _record_tags(farmer)]
+async def _fetch_animals(envelope: FarmerDataEnvelope, only: Optional[list[str]] = None) -> None:
+    """Fetch per-animal records, one Beckn animal-profile call per tag, at most
+    FARMER_ANIMAL_FETCH_CONCURRENCY at a time. With ``only``, just those tags,
+    added to the ones carried over; otherwise every tag, and the fetch time is
+    stamped. Best-effort: a tag that comes back empty is left out, and one whose
+    fetch fails keeps what was cached for it."""
+    jobs = [
+        (farmer, tag)
+        for farmer in envelope.farmers
+        for tag in _record_tags(farmer)
+        if only is None or tag in only
+    ]
+    cached = {animal.tagNumber: animal for farmer in envelope.farmers for animal in farmer.animals}
     semaphore = asyncio.Semaphore(FARMER_ANIMAL_FETCH_CONCURRENCY)
 
     async def _fetch(farmer: FarmerRecord, tag: str) -> Optional[AnimalRecord]:
@@ -619,11 +667,11 @@ async def _fetch_animals(envelope: FarmerDataEnvelope) -> None:
                 animal = await fetch_animal_profile(tag, union_code=farmer.model_dump().get("unionCode"))
             except Exception as e:
                 logger.warning("Animal profile fetch failed: %s", e)
-                return None
+                return cached.get(tag)
         if animal is None:
             return None
         return AnimalRecord(
-            tagNumber=animal.tag_number or tag,
+            tagNumber=tag,
             animalType=animal.animal_type,
             breed=animal.breed,
             milkingStage=animal.milking_stage,
@@ -640,8 +688,10 @@ async def _fetch_animals(envelope: FarmerDataEnvelope) -> None:
         if animal is not None:
             by_farmer.setdefault(id(farmer), []).append(animal)
     for farmer in envelope.farmers:
-        farmer.animals = by_farmer.get(id(farmer), [])
-    envelope.animalsFetchedAt = datetime.now(timezone.utc).isoformat()
+        fetched = by_farmer.get(id(farmer), [])
+        farmer.animals = fetched if only is None else farmer.animals + fetched
+    if only is None:
+        envelope.animalsFetchedAt = datetime.now(timezone.utc).isoformat()
 
 
 async def _fetch_ai_technicians(records: list[FarmerRecord]) -> list[dict]:
