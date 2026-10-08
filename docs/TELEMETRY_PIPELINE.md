@@ -296,6 +296,11 @@ localhost:8123. The environments read are `voice-production` and
 `TELEMETRY_QUERY_CHAT_ENVIRONMENT` say otherwise. Without the password or the
 key the endpoints answer 503.
 
+To run the API on its own, e.g. next to ClickHouse, start
+`uvicorn app.telemetry_api:app` from the same image. It serves only these
+endpoints and `/api/health/live`, and needs only the settings above, not the
+chat app's Beckn, LLM or Redis config.
+
 ## A new field
 
 A mapping can name extra values under `attributes`, and they land in the
