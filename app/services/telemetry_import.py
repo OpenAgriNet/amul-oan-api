@@ -160,24 +160,44 @@ REMOVED_LEDGER_COLUMNS = ("environment", "channel", "day", "source_trace_id", "i
 # Turns a day's import has to remove. On that day: every turn it didn't accept
 # (deleted in Langfuse, now rejected, or moved to another day). On other days:
 # older rows of the turns it did accept, left there when a timestamp moved.
-_TURNS_TO_REMOVE_SQL = """
+# A busy day has more trace ids than ClickHouse takes in one HTTP parameter
+# (128 KiB), so the day's rows are compared here and ids only go in batches.
+_DAY_TURNS_SQL = """
 SELECT source_trace_id, timestamp
 FROM {database}.{table} FINAL
 WHERE environment = {{environment:String}}
-  AND ((toDate(timestamp) = {{day:Date}} AND source_trace_id NOT IN {{kept:Array(String)}})
-       OR (toDate(timestamp) != {{day:Date}} AND source_trace_id IN {{kept:Array(String)}}))
+  AND toDate(timestamp) = {{day:Date}}
+"""
+
+_MOVED_TURNS_SQL = """
+SELECT source_trace_id, timestamp
+FROM {database}.{table} FINAL
+WHERE environment = {{environment:String}}
+  AND toDate(timestamp) != {{day:Date}}
+  AND source_trace_id IN {{ids:Array(String)}}
 """
 
 # The same for the channel's ledger rows: root traces the day no longer has, and
 # older rows of the ones it has under another day.
-_LEDGER_TO_REMOVE_SQL = """
+_DAY_LEDGER_SQL = """
 SELECT day, source_trace_id
 FROM {database}.trace_ledger FINAL
 WHERE environment = {{environment:String}}
   AND channel = {{channel:String}}
-  AND ((day = {{day:Date}} AND source_trace_id NOT IN {{kept:Array(String)}})
-       OR (day != {{day:Date}} AND source_trace_id IN {{kept:Array(String)}}))
+  AND day = {{day:Date}}
 """
+
+_MOVED_LEDGER_SQL = """
+SELECT day, source_trace_id
+FROM {database}.trace_ledger FINAL
+WHERE environment = {{environment:String}}
+  AND channel = {{channel:String}}
+  AND day != {{day:Date}}
+  AND source_trace_id IN {{ids:Array(String)}}
+"""
+
+# Trace ids per query: 1000 stay well under that limit.
+_ID_BATCH = 1000
 
 
 def default_non_turn_traces_path() -> Path:
@@ -628,23 +648,25 @@ def _write_day(
     it no longer finds are marked is_deleted, which FINAL leaves out."""
     removed = [
         (found["source_trace_id"], found["timestamp"])
-        for found in _query(
+        for found in _rows_to_remove(
             writer,
-            _TURNS_TO_REMOVE_SQL.format(database=DATABASE, table=f"{table}_turns"),
+            _DAY_TURNS_SQL.format(database=DATABASE, table=f"{table}_turns"),
+            _MOVED_TURNS_SQL.format(database=DATABASE, table=f"{table}_turns"),
+            {row["source_trace_id"] for row in rows},
             environment=environment,
             day=day,
-            kept=[row["source_trace_id"] for row in rows],
         )
     ]
     removed_ledger = [
         (found["day"], found["source_trace_id"])
-        for found in _query(
+        for found in _rows_to_remove(
             writer,
-            _LEDGER_TO_REMOVE_SQL.format(database=DATABASE),
+            _DAY_LEDGER_SQL.format(database=DATABASE),
+            _MOVED_LEDGER_SQL.format(database=DATABASE),
+            {entry[3] for entry in ledger},
             environment=environment,
             channel=table,
             day=day,
-            kept=[entry[3] for entry in ledger],
         )
     ]
     if rows:
@@ -685,6 +707,17 @@ def _write_day(
         database=DATABASE,
     )
     return len(removed)
+
+
+def _rows_to_remove(
+    writer: ClickHouseWriter, day_sql: str, moved_sql: str, kept: set[str], **parameters: Any
+) -> list[dict[str, Any]]:
+    """The day's rows whose trace it no longer keeps, and rows of the kept traces under another day."""
+    found = [row for row in _query(writer, day_sql, **parameters) if row["source_trace_id"] not in kept]
+    ids = sorted(kept)
+    for index in range(0, len(ids), _ID_BATCH):
+        found += _query(writer, moved_sql, ids=ids[index : index + _ID_BATCH], **parameters)
+    return found
 
 
 def _query(writer: ClickHouseWriter, sql: str, **parameters: Any) -> list[dict[str, Any]]:

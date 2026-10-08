@@ -13,6 +13,7 @@ import pytest
 
 chdb_session = pytest.importorskip("chdb.session")
 
+from app.services import telemetry_import  # noqa: E402
 from app.services.telemetry_era_adapters import load_chat_mappings  # noqa: E402
 from app.services.telemetry_era_registry import TelemetryEraRegistry, default_era_registry_path  # noqa: E402
 from app.services.telemetry_import import IMPORT_DAY_COLUMNS, CallerKey, import_chat_days, import_voice_days  # noqa: E402
@@ -278,6 +279,37 @@ def test_a_reimport_leaves_other_days_and_environments_alone(clickhouse):
 
     assert clickhouse.turns() == [("C", "2026-09-21")]
     assert clickhouse.turns("voice-production") == [("P", "2026-09-20")]
+
+
+def test_a_busy_day_sends_its_trace_ids_in_batches(clickhouse, monkeypatch):
+    # A busy day has more ids than ClickHouse takes in one HTTP parameter (128 KiB):
+    # sent as one list, the import of that day fails.
+    monkeypatch.setattr(telemetry_import, "_ID_BATCH", 2)
+    sent = []
+    query = clickhouse.query
+
+    def recording(sql, parameters=None):
+        if "FROM telemetry." in sql:
+            sent.extend(len(value) for value in (parameters or {}).values() if isinstance(value, list))
+        return query(sql, parameters)
+
+    monkeypatch.setattr(clickhouse, "query", recording)
+    for hour, trace_id in enumerate("ABCDE", start=10):
+        clickhouse.langfuse_trace(trace_id, f"2026-09-20 {hour}:00:00")
+    clickhouse.langfuse_trace("M", "2026-09-20 23:59:00")
+    clickhouse.import_day(SEP_20)
+
+    clickhouse.langfuse_trace("B", "2026-09-20 11:00:00", is_deleted=1)
+    clickhouse.langfuse_trace("M", "2026-09-21 00:01:00")
+    clickhouse.import_day(date(2026, 9, 21))
+    report = clickhouse.import_day(SEP_20)
+
+    assert clickhouse.turns() == [
+        ("A", "2026-09-20"), ("C", "2026-09-20"), ("D", "2026-09-20"), ("E", "2026-09-20"), ("M", "2026-09-21"),
+    ]
+    assert [entry[:2] for entry in clickhouse.ledger()] == clickhouse.turns()
+    assert report.removed == 1
+    assert sent and max(sent) == 2
 
 
 def test_removed_turns_stay_removed_once_clickhouse_merges_the_table(clickhouse):
