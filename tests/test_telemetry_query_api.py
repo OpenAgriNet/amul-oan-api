@@ -222,7 +222,7 @@ def test_stats_counts_distinct_sessions_and_hashed_users(monkeypatch, api, confi
     _get(api, "/api/telemetry/stats")
 
     for sql in clickhouse.sql("totals"):
-        assert "uniq(session_id) AS sessions" in sql and "uniq(user_id_hash) AS users" in sql
+        assert "uniqExact(session_id) AS sessions" in sql and "uniqExact(user_id_hash) AS users" in sql
 
 
 def test_a_new_user_is_first_seen_in_the_range(monkeypatch, api, configured):
@@ -269,7 +269,7 @@ def test_graph_gives_each_channels_days_in_order(monkeypatch, api, configured):
     }
     for sql in clickhouse.sql("graph"):
         assert "SELECT toDate(timestamp) AS start" in sql
-        assert "uniq(session_id) AS sessions" in sql and "uniq(user_id_hash) AS users" in sql
+        assert "uniqExact(session_id) AS sessions" in sql and "uniqExact(user_id_hash) AS users" in sql
         assert "countIf(outcome_class = 'failed') AS failed" in sql
         assert "GROUP BY start" in sql and "ORDER BY start" in sql
     assert clickhouse.closed

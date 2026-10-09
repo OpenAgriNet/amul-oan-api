@@ -199,6 +199,14 @@ WHERE environment = {{environment:String}}
 # Trace ids per query: 1000 stay well under that limit.
 _ID_BATCH = 1000
 
+# Whether an earlier import left rows for a day: its turns or its ledger.
+_DAY_IMPORTED_SQL = """
+SELECT (SELECT count() FROM {database}.{table}_turns FINAL
+        WHERE environment = {{environment:String}} AND toDate(timestamp) = {{day:Date}})
+     + (SELECT count() FROM {database}.trace_ledger FINAL
+        WHERE environment = {{environment:String}} AND channel = {{channel:String}} AND day = {{day:Date}}) AS rows
+"""
+
 
 def default_non_turn_traces_path() -> Path:
     return Path(__file__).resolve().parents[2] / "telemetry" / "non_turn_traces.yaml"
@@ -271,6 +279,8 @@ class ImportReport:
     not_turns: Counter = field(default_factory=Counter)
     # Turns from an earlier import that this one removed.
     removed: int = 0
+    # Days Langfuse has nothing for that an earlier import wrote: left as they were.
+    kept_days: list = field(default_factory=list)
 
     def add(self, turn: CanonicalVoiceTurn) -> None:
         self.turns += 1
@@ -289,6 +299,11 @@ class ImportReport:
         lines += [f"  {count}  {name}: {reason}" for (name, reason), count in self.rejected.most_common()]
         if self.written:
             lines.append(f"removed      {self.removed}")
+        if self.kept_days:
+            lines.append(
+                f"kept         {len(self.kept_days)} days Langfuse has no traces for, left as an earlier import wrote them: "
+                + ", ".join(str(day) for day in self.kept_days)
+            )
         lines += ["every root trace, by what became of it"]
         lines += [f"  {count}  {disposition}" for disposition, count in self.ledger.most_common()]
         if self.not_turns:
@@ -515,6 +530,12 @@ def _import_days(
         report.traces += traces
         report.rejected.update(rejected)
         if writer is not None:
+            if not ledger and _imported_before(writer, table, environment, day):
+                # Langfuse has no root trace at all for a day an earlier import
+                # wrote. It has most likely dropped the day (retention), and
+                # removing the day's rows would lose them for good.
+                report.kept_days.append(day)
+                continue
             report.removed += _write_day(
                 writer, table, columns, environment, day, imported_at, rows, rejected, traces, ledger
             )
@@ -718,6 +739,12 @@ def _rows_to_remove(
     for index in range(0, len(ids), _ID_BATCH):
         found += _query(writer, moved_sql, ids=ids[index : index + _ID_BATCH], **parameters)
     return found
+
+
+def _imported_before(writer: ClickHouseWriter, table: str, environment: str, day: date) -> bool:
+    sql = _DAY_IMPORTED_SQL.format(database=DATABASE, table=table)
+    rows = _query(writer, sql, environment=environment, channel=table, day=day)
+    return bool(rows and int(rows[0]["rows"]))
 
 
 def _query(writer: ClickHouseWriter, sql: str, **parameters: Any) -> list[dict[str, Any]]:

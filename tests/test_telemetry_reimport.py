@@ -17,6 +17,7 @@ from app.services import telemetry_import  # noqa: E402
 from app.services.telemetry_era_adapters import load_chat_mappings  # noqa: E402
 from app.services.telemetry_era_registry import TelemetryEraRegistry, default_era_registry_path  # noqa: E402
 from app.services.telemetry_import import IMPORT_DAY_COLUMNS, CallerKey, import_chat_days, import_voice_days  # noqa: E402
+from app.services import telemetry_query  # noqa: E402
 from app.services.telemetry_query import _LAST_IMPORT_SQL  # noqa: E402
 from app.services.telemetry_voice_era_adapters import VoiceOutcomeVocabulary, load_voice_mappings  # noqa: E402
 
@@ -132,6 +133,7 @@ class ClickHouse:
 class _Result:
     def __init__(self, rows):
         self._rows = rows
+        self.result_rows = [tuple(row.values()) for row in rows]
 
     def named_results(self):
         return iter(self._rows)
@@ -269,6 +271,7 @@ def test_an_unchanged_day_reimports_to_the_same_turns(clickhouse):
 
 def test_a_reimport_leaves_other_days_and_environments_alone(clickhouse):
     clickhouse.langfuse_trace("A", "2026-09-20 10:00:00")
+    clickhouse.langfuse_trace("B", "2026-09-20 11:00:00")
     clickhouse.langfuse_trace("C", "2026-09-21 10:00:00")
     clickhouse.langfuse_trace("P", "2026-09-20 10:00:00", environment="voice-production")
     clickhouse.import_day(SEP_20, date(2026, 9, 21))
@@ -277,7 +280,7 @@ def test_a_reimport_leaves_other_days_and_environments_alone(clickhouse):
     clickhouse.langfuse_trace("A", "2026-09-20 10:00:00", is_deleted=1)
     clickhouse.import_day(SEP_20)
 
-    assert clickhouse.turns() == [("C", "2026-09-21")]
+    assert clickhouse.turns() == [("B", "2026-09-20"), ("C", "2026-09-21")]
     assert clickhouse.turns("voice-production") == [("P", "2026-09-20")]
 
 
@@ -419,3 +422,100 @@ def test_a_reimport_under_a_new_caller_key_moves_the_day_to_it(clickhouse):
 
     [row] = clickhouse.query("SELECT user_id_hash, user_id_hash_key FROM telemetry.voice_turns FINAL").named_results()
     assert (row["user_id_hash"], row["user_id_hash_key"]) == (new_key.pseudonym("0" * 64), new_key.key_id)
+
+
+def _drop_from_langfuse(clickhouse, day):
+    """Langfuse's retention: the day's rows are gone, not marked deleted."""
+    clickhouse.session.query(f"ALTER TABLE default.traces DELETE WHERE toDate(timestamp) = '{day}' SETTINGS mutations_sync = 1")
+
+
+def test_a_day_langfuse_has_dropped_is_left_as_it_was(clickhouse):
+    clickhouse.langfuse_trace("A", "2026-09-20 10:00:00")
+    clickhouse.langfuse_trace("S", "2026-09-20 10:01:00", name="suggestions")
+    clickhouse.langfuse_trace("C", "2026-09-21 10:00:00")
+    clickhouse.import_day(SEP_20, date(2026, 9, 21))
+    turns, ledger, imported_at = clickhouse.turns(), clickhouse.ledger(), _imported_at(clickhouse, SEP_20)
+
+    _drop_from_langfuse(clickhouse, SEP_20)
+    report = clickhouse.import_day(SEP_20, date(2026, 9, 21))
+
+    assert report.kept_days == [SEP_20]
+    assert report.removed == 0
+    assert any(line.startswith("kept         1 days") and "2026-09-20" in line for line in report.lines())
+    assert (clickhouse.turns(), clickhouse.ledger()) == (turns, ledger)
+    assert _imported_at(clickhouse, SEP_20) == imported_at
+    assert _imported_at(clickhouse, date(2026, 9, 21)) > imported_at
+
+
+def test_a_chat_day_langfuse_has_dropped_is_left_as_it_was(clickhouse):
+    clickhouse.chat_trace("A", "2026-09-20 10:00:00")
+    clickhouse.import_chat_day(SEP_20)
+    turns = clickhouse.turns(table="chat_turns")
+
+    _drop_from_langfuse(clickhouse, SEP_20)
+    report = clickhouse.import_chat_day(SEP_20)
+
+    assert report.kept_days == [SEP_20]
+    assert clickhouse.turns(table="chat_turns") == turns == [("A", "2026-09-20")]
+
+
+def test_a_day_that_still_has_other_traces_loses_its_deleted_turn(clickhouse):
+    clickhouse.langfuse_trace("A", "2026-09-20 10:00:00")
+    clickhouse.langfuse_trace("S", "2026-09-20 10:01:00", name="suggestions")
+    clickhouse.import_day(SEP_20)
+
+    clickhouse.langfuse_trace("A", "2026-09-20 10:00:00", is_deleted=1)
+    report = clickhouse.import_day(SEP_20)
+
+    assert (report.kept_days, report.removed, clickhouse.turns()) == ([], 1, [])
+
+
+def test_a_day_with_only_activities_is_kept_when_langfuse_drops_it(clickhouse):
+    clickhouse.langfuse_trace("S", "2026-09-20 10:01:00", name="suggestions")
+    clickhouse.import_day(SEP_20)
+    ledger = clickhouse.ledger()
+
+    _drop_from_langfuse(clickhouse, SEP_20)
+    report = clickhouse.import_day(SEP_20)
+
+    assert report.kept_days == [SEP_20]
+    assert clickhouse.ledger() == ledger == [("S", "2026-09-20", "activity")]
+
+
+def test_a_day_with_turns_from_before_the_ledger_is_kept_too(clickhouse):
+    clickhouse.session.query(
+        "INSERT INTO telemetry.voice_turns (source_trace_id, timestamp, environment, schema_version, source_era, "
+        "source_schema_version, source_trace_name, imported_at, is_deleted) "
+        f"VALUES ('A', '2026-09-20 10:00:00', '{ENV}', 'voice.turn.v1', 'voice.v4', '', 'agent_journey', now64(3), 0)"
+    )
+
+    report = clickhouse.import_day(SEP_20)
+
+    assert report.kept_days == [SEP_20]
+    assert clickhouse.turns() == [("A", "2026-09-20")]
+
+
+def test_a_day_with_no_traces_and_no_earlier_import_is_still_recorded(clickhouse):
+    report = clickhouse.import_day(SEP_20)
+
+    assert report.kept_days == []
+    [row] = clickhouse.query(
+        "SELECT traces, turns FROM telemetry.voice_import_days FINAL WHERE day = {day:Date}", {"day": SEP_20}
+    ).named_results()
+    assert (row["traces"], row["turns"]) == (0, 0)
+
+
+def test_users_and_sessions_are_counted_exactly_past_uniqs_threshold(clickhouse):
+    # uniq() estimates above 65,536 values; a month of chat users is past that.
+    callers = 70_000
+    clickhouse.session.query(
+        "INSERT INTO telemetry.voice_turns (source_trace_id, timestamp, environment, schema_version, source_era, "
+        "source_schema_version, source_trace_name, session_id, user_id_hash, imported_at, is_deleted) "
+        "SELECT toString(number), toDateTime64('2026-09-20 10:00:00', 3, 'UTC'), 'voice-production', 'voice.turn.v1', "
+        "'voice.v4', '', 'agent_journey', concat('s', toString(number)), concat('u', toString(number)), now64(3), 0 "
+        f"FROM numbers({callers})"
+    )
+
+    voice = telemetry_query.totals(clickhouse, first_day=SEP_20, last_day=SEP_20)["voice"]
+
+    assert (voice.questions, voice.sessions, voice.users) == (callers, callers, callers)
