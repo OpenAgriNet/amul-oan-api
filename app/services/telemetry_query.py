@@ -29,7 +29,9 @@ BUCKETS = {
 
 _QUESTIONS = "countIf(outcome_class IS NULL OR outcome_class != 'non_question')"
 
-_COUNTS = f"{_QUESTIONS} AS questions, uniq(session_id) AS sessions, uniq(user_id_hash) AS users"
+# Exact counts: plain uniq() estimates above 65,536 values, about 0.5% off at a
+# month of chat users.
+_COUNTS = f"{_QUESTIONS} AS questions, uniqExact(session_id) AS sessions, uniqExact(user_id_hash) AS users"
 
 _IN_RANGE = """environment = {{environment:String}}
   AND toDate(timestamp) BETWEEN {{first_day:Date}} AND {{last_day:Date}}"""
@@ -78,7 +80,7 @@ FROM (
 
 _OUTCOMES_SQL = f"""
 SELECT ifNull(outcome_class, 'not_recorded') AS outcome, count() AS turns,
-       uniq(session_id) AS sessions, uniq(user_id_hash) AS users
+       uniqExact(session_id) AS sessions, uniqExact(user_id_hash) AS users
 FROM {{table}} FINAL
 WHERE {_IN_RANGE}
 GROUP BY outcome
@@ -241,10 +243,10 @@ _METRICS = """count() AS turns,
     countIf(outcome_class = 'non_question') AS non_question,
     countIf(field_availability['outcome'] != 'recorded') AS outcome_not_recorded,
     countIf(field_availability['outcome'] = 'recorded' AND outcome_class != 'non_question') AS rated,
-    uniq(session_id) AS sessions,
-    uniq(user_id_hash) AS known_users,
+    uniqExact(session_id) AS sessions,
+    uniqExact(user_id_hash) AS known_users,
     countIf(user_id_hash IS NULL) AS anonymous_turns,
-    uniqIf(session_id, user_id_hash IS NULL) AS anonymous_sessions,
+    uniqExactIf(session_id, user_id_hash IS NULL) AS anonymous_sessions,
     quantiles(0.5, 0.95)(full_turn_latency_ms) AS latency_ms"""
 
 _OVERVIEW_SQL = "SELECT {metrics} FROM {table} FINAL WHERE {where}"

@@ -1053,5 +1053,19 @@ def test_the_script_writes_with_the_caller_key_and_dry_runs_without_one(monkeypa
 
 
 class _NoLines:
+    kept_days = []
+
     def lines(self):
         return []
+
+
+@pytest.mark.parametrize("kept_days, code", [([], 0), ([date(2026, 9, 20)], 1)])
+def test_the_script_fails_when_it_kept_a_day_langfuse_has_dropped(monkeypatch, kept_days, code):
+    script = _script()
+    monkeypatch.setattr(script, "_client", lambda role, *, database: role)
+    monkeypatch.setattr(script, "_caller_key", lambda: KEY)
+    report = _NoLines()
+    report.kept_days = kept_days
+    monkeypatch.setattr(script, "import_voice_days", lambda reader, writer, **kw: report)
+
+    assert script.main(["--env", "voice-production"]) == code

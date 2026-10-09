@@ -60,7 +60,8 @@ def main(argv: list[str] | None = None) -> int:
             caller_key=caller_key,
         )
     print("\n".join(report.lines()))
-    return 0
+    # A day kept because Langfuse had nothing for it needs a look.
+    return 1 if report.kept_days else 0
 
 
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:

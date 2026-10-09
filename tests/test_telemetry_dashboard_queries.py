@@ -303,7 +303,7 @@ def test_the_rate_counts_only_questions_with_an_outcome(monkeypatch, api, config
 
     for sql, _ in clickhouse.of("overview"):
         assert "countIf(field_availability['outcome'] = 'recorded' AND outcome_class != 'non_question') AS rated" in sql
-        assert "uniq(user_id_hash) AS known_users" in sql
+        assert "uniqExact(user_id_hash) AS known_users" in sql
         assert "countIf(user_id_hash IS NULL) AS anonymous_turns" in sql
 
 

@@ -173,7 +173,10 @@ import of the day would write. Its rows are replaced, not doubled, and a turn
 the re-import no longer finds gets a row with `is_deleted = 1`: a trace deleted
 in Langfuse, one that is now rejected, or one whose timestamp moved to another
 day (up to a day away). The channel's `trace_ledger` rows are kept the same way.
-So re-importing a day after Langfuse has dropped its traces empties it.
+
+A day Langfuse has no traces for at all, but an earlier import wrote, is left as
+it was: Langfuse has most likely dropped it (retention), and replacing it would
+empty it. The report lists it under `kept` and the script exits with 1.
 
 ## Caller key
 
@@ -185,8 +188,8 @@ To rotate the key, on a schedule or because it leaked:
 
 1. Put the new key where the import reads it.
 2. Re-import every day Langfuse still has. Each day's rows are replaced under
-   the new key. Days Langfuse has dropped can't be re-keyed (re-importing them
-   would empty them), so they keep the old key's id.
+   the new key. Days Langfuse has dropped can't be re-keyed (the import leaves
+   them as they were), so they keep the old key's id.
 3. If the old key leaked, blank what's still under it, as the ClickHouse admin,
    here and the same in `telemetry.chat_turns`:
    `ALTER TABLE telemetry.voice_turns UPDATE user_id_hash = NULL, user_id_hash_key = NULL WHERE user_id_hash_key = '<old id>'`.
@@ -213,7 +216,8 @@ Langfuse's own.
 - A rate only counts turns that had the field:
   `WHERE field_availability['outcome'] = 'recorded'`. Voice had no outcome before
   v3, and that is not the same as success.
-- Unique callers are `uniq(user_id_hash)`. Anonymous callers have no hash, so
+- Unique callers are `uniqExact(user_id_hash)`: plain `uniq` estimates above
+  65,536 values. Anonymous callers have no hash, so
   they're left out; count them with `countIf(user_id_hash IS NULL)`. Voice and
   chat hashes use different salts and can't be joined.
 - Mapped extras are text: `attributes['farmer_type']`, and
@@ -223,7 +227,7 @@ Langfuse's own.
 ```sql
 SELECT toDate(timestamp) AS day,
        count() AS turns,
-       uniq(user_id_hash) AS callers,
+       uniqExact(user_id_hash) AS callers,
        countIf(outcome_class = 'delivered') / countIf(field_availability['outcome'] = 'recorded') AS delivered_rate
 FROM telemetry.voice_turns FINAL
 WHERE environment = 'voice-production'
