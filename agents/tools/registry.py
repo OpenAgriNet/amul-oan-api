@@ -2,7 +2,6 @@
 from pydantic_ai import Tool
 
 from agents.tools.ai_call import create_ai_call, prepare_create_ai_call
-from agents.tools.health_call import create_health_call
 from agents.tools.milk_collection import (
     get_farmer_milk_collection_details,
     prepare_get_farmer_milk_collection_details,
@@ -52,14 +51,6 @@ TOOLS = [
         require_parameter_descriptions=True,
         prepare=prepare_create_ai_call,  # hidden unless a farmer record was resolved
     ),
-
-    Tool(
-        create_health_call,
-        takes_ctx=True,  # needs ctx.deps.session_id for the booking idempotency guard
-        docstring_format='auto',
-        require_parameter_descriptions=True,
-    ),
-
 
     Tool(
         get_farmer_milk_collection_details,

@@ -5,8 +5,8 @@ Voice rendered "no record exists" and "we have not resolved this caller yet"
 identically — as an empty farmer block — while still exposing every
 identity-taking tool. The model filled the required code slots with `MISSING`,
 `UNKNOWN`, `F12345`, `UNION_CODE_FROM_CONTEXT` and farmer names. Measured
-2026-09-01..09-14 on voice-production: create_health_call 20.2%, create_ai_call
-10.4%, get_farmer_milk_collection_details 10.2%.
+2026-09-01..09-14 on voice-production: create_ai_call 10.4% and
+get_farmer_milk_collection_details 10.2%.
 
 The prompt already told the model to stop (see the create_ai_call docstring and
 voice_system_translation_pipeline_en.md), and that instruction is exactly what
@@ -85,7 +85,7 @@ def test_tool_is_withheld_when_identity_is_not_found(state):
 def test_tool_is_withheld_when_found_but_no_complete_account():
     """_collect_farmer_accounts drops records missing any of the three codes, so
     a "found" caller can still have nothing to book with."""
-    tool_def = SimpleNamespace(name="create_health_call")
+    tool_def = SimpleNamespace(name="get_farmer_milk_collection_details")
     ctx = SimpleNamespace(deps=_deps(fi.FOUND, []))
     assert asyncio.run(fi.prepare_requires_farmer_identity(ctx, tool_def)) is None
 

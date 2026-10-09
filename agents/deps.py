@@ -38,7 +38,7 @@ class FarmerContext(BaseModel):
         process_id: The process ID for tracking and hold messages (voice).
     """
     query: str = Field(description="The user's question.")
-    session_id: Optional[str] = Field(default=None, description="Session id, used for booking-tool idempotency guards (e.g. one AI/health call per session) and the voice session.")
+    session_id: Optional[str] = Field(default=None, description="Session id, used for the AI-call booking idempotency guard and the voice session.")
     lang_code: str = Field(description="The language code of the user's question.", default='gu')
     target_lang: str = Field(description="The target language for the response (gu=Gujarati, en=English).", default='gu')
     provider: Optional[Literal['RAYA']] = Field(default=None, description="The provider for the voice service - can be RAYA or None.")

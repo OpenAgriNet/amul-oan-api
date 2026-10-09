@@ -188,7 +188,7 @@ def test_first_non_empty_label_wins_within_a_society():
 
 
 def test_the_do_not_ask_line_is_scoped_to_ai_booking():
-    """A vet visit is also a booking; the health flow deliberately still asks."""
+    """The farmer-selection instruction must remain explicitly scoped to AI booking."""
     out = _build_compact_farmer_summary(_env([
         _rec("0554", "Patel Asvinbhai"), _rec("0192", "Patel Nuruben"),
     ]))

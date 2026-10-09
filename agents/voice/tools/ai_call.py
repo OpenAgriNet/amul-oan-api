@@ -43,9 +43,8 @@ def _invalid_booking_identifier(
 ) -> Optional[str]:
     """Name of the first identifier that cannot be real, else None.
 
-    The code rules are shared with create_health_call so the two cannot drift;
-    only the technician id is specific to AI booking. `accounts` cross-checks the
-    triple against the caller's own accounts when they are known.
+    The technician id is specific to AI booking. `accounts` cross-checks the
+    code triple against the caller's own accounts when they are known.
     """
     invalid_field = invalid_identity_code_field(
         union_code, society_code, farmer_code, accounts

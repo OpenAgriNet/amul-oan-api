@@ -17,16 +17,13 @@ import pytest
 from agents.tools import ai_call as chat_ai_call
 from agents.tools.beckn import network as beckn_network
 from agents.voice.tools import ai_call as ai_mod
-from agents.voice.tools import health_call as hc_mod
 from agents.voice.models.ai_call import AISpecies
-from agents.voice.models.health_call import HealthCaseType
 from app.core import cache as cache_mod
 
 # create_ai_call rejects identifiers that cannot be real; 24 base64 chars is the
 # shape of every real prod technician id.
 TECH_ID = "YWl0LXRlY2gtMDAwMDAwMQ=="
 SPECIES = next(iter(AISpecies))
-CASE_TYPE = next(iter(HealthCaseType))
 
 
 def _ctx(session_id, tool_call_id=None):
@@ -112,12 +109,6 @@ def _book_ai(session_id="s1", tool_call_id=None):
     )
 
 
-def _book_health(session_id="s1", remark="fever"):
-    return asyncio.run(
-        hc_mod.create_health_call(_ctx(session_id), "159", "00002", "5058", SPECIES, CASE_TYPE, remark)
-    )
-
-
 def test_ai_call_idempotent_on_rerun(monkeypatch, store):
     calls = _confirms(monkeypatch, [_booked(), _booked("T2")])
 
@@ -138,30 +129,6 @@ def test_ai_call_sends_the_callers_codes_and_tool_call_id(monkeypatch, store):
     (args, kwargs), = calls
     assert args == ("159", "00002", "5058", TECH_ID, SPECIES.value)
     assert kwargs == {"session_id": "s1", "tool_call_id": "call-7"}
-
-
-def test_health_call_sends_the_callers_codes_and_tool_call_id(monkeypatch, store):
-    calls = _confirms(monkeypatch, [_booked("H1")], name="network_create_health_call_result")
-
-    asyncio.run(hc_mod.create_health_call(
-        _ctx("s1", "call-9"), "159", "00002", "5058", SPECIES, CASE_TYPE, "fever"
-    ))
-
-    (args, kwargs), = calls
-    assert args == ("159", "00002", "5058", SPECIES.value, CASE_TYPE.value, "fever")
-    assert kwargs == {"session_id": "s1", "tool_call_id": "call-9"}
-
-
-def test_health_call_idempotent_on_rerun(monkeypatch, store):
-    calls = _confirms(monkeypatch, [_booked("H1"), _booked("H2")], name="network_create_health_call_result")
-
-    # remark differs across the re-run (model output varies) — session key still dedupes
-    r1 = _book_health(remark="remark v1")
-    r2 = _book_health(remark="remark v2")
-
-    assert len(calls) == 1
-    assert "booked successfully" in r1.lower()
-    assert "already" in r2.lower()
 
 
 def test_ai_call_concurrent_submits_book_once(monkeypatch, store):
@@ -216,29 +183,4 @@ def test_ai_call_booking_that_provably_did_not_happen_can_be_retried(monkeypatch
 
     assert len(calls) == 2
     assert "booked successfully" not in first.lower()
-    assert "booked successfully" in second.lower()
-
-
-def test_health_call_unconfirmed_booking_keeps_the_reservation(monkeypatch, store):
-    calls = _confirms(
-        monkeypatch, [_pending(), _booked("H1")], name="network_create_health_call_result"
-    )
-
-    first = _book_health()
-    second = _book_health()
-
-    assert len(calls) == 1
-    assert "booked successfully" not in first.lower()
-    assert "already" in second.lower()
-
-
-def test_health_call_nack_can_be_retried(monkeypatch, store):
-    calls = _confirms(
-        monkeypatch, [_nack(), _booked("H1")], name="network_create_health_call_result"
-    )
-
-    _book_health()
-    second = _book_health()
-
-    assert len(calls) == 2
     assert "booked successfully" in second.lower()

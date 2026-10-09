@@ -17,9 +17,7 @@ from agents.tools.beckn import network as beckn_network
 from agents.tools.beckn.amul import AITechnicianRecord
 from agents.tools.models.farmer_transport import FarmerDataEnvelope, FarmerRecord
 from agents.voice.models.ai_call import AISpecies
-from agents.voice.models.health_call import HealthCaseType
 from agents.voice.tools import ai_call as ai_mod
-from agents.voice.tools import health_call as hc_mod
 from app.core.cache import ReservationOutcome
 from app.voice.models.union import UNION_BANNED_MESSAGE, UNION_BANNED_MESSAGES
 from app.voice.farmer import _build_ai_technician_summary
@@ -397,20 +395,6 @@ def test_moderation_block_runs_before_union_ban(monkeypatch):
     assert calls["n"] == 0
 
 
-def test_health_call_still_books_for_kutch_union(monkeypatch):
-    calls = {"n": 0, "reserve": 0}
-    _patch_booking(monkeypatch, calls, name="network_create_health_call_result")
-    out = asyncio.run(
-        hc_mod.create_health_call(
-            _booking_ctx(session_id=None, unions=["kutch"]),
-            "159", "00002", "5058", SPECIES, next(iter(HealthCaseType)), "fever",
-        )
-    )
-    assert calls["n"] == 1
-    assert "booked successfully" in out.lower()
-    assert UNION_BANNED_MESSAGE not in out
-
-
 # ── canned caller copy ────────────────────────────────────────────────────────
 
 @pytest.mark.parametrize("lang,expected", [
@@ -430,4 +414,3 @@ def test_canned_union_ban_gujarati_survives_voice_cleanup():
     spoken = _prepare_voice_output(UNION_BANNED_MESSAGES["gu"], "gu")
     assert "દૂધ મંડળી" in spoken
     assert spoken.strip() == UNION_BANNED_MESSAGES["gu"].strip()
-

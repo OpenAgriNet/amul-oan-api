@@ -6,7 +6,7 @@ whether one exists" identically — as an empty farmer block — while still
 offering every identity-taking tool. The model, handed a required `farmer_code`
 slot and nothing to fill it from, invented one: `MISSING`, `UNKNOWN`, `F12345`,
 `UNION_CODE_FROM_CONTEXT`, farmer names in `farmerCode`. Measured 2026-09-01..09-14
-on voice-production: create_health_call 20.2%, create_ai_call 10.4%,
+on voice-production: create_ai_call 10.4% and
 get_farmer_milk_collection_details 10.2%. Every observed failure ran on a prompt
 with no farmer block, and no booking has ever succeeded from one.
 
@@ -97,7 +97,6 @@ def no_profile_spoken_line(state: FarmerIdentityState) -> Optional[str]:
 # test_farmer_identity_gate.py.
 _GATED_CAPABILITY_NAMES = (
     "AI call booking",
-    "health call booking",
     "milk collection lookup",
 )
 
@@ -105,7 +104,6 @@ _GATED_CAPABILITY_NAMES = (
 # also carry `prepare=prepare_requires_farmer_identity` in agents/tools/__init__.py.
 IDENTITY_GATED_TOOLS = (
     "create_ai_call",
-    "create_health_call",
     "get_farmer_milk_collection_details",
 )
 

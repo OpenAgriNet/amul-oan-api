@@ -96,9 +96,8 @@ async def reserve(key: str, namespace: str, ttl: int) -> ReservationOutcome:
 async def try_reserve(key: str, namespace: str, ttl: int) -> bool:
     """Bool view of :func:`reserve`: True = proceed, False = already reserved.
 
-    Behaviour is byte-identical to before, so health_call.py's contract is
-    unchanged. Prefer `reserve` in any caller that may release: only ACQUIRED
-    entitles you to delete the key, and this view cannot tell you that.
+    Prefer `reserve` in any caller that may release: only ACQUIRED entitles you
+    to delete the key, and this view cannot tell you that.
     """
     return await reserve(key, namespace, ttl) is not ReservationOutcome.TAKEN
 
