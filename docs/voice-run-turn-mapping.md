@@ -103,14 +103,14 @@ Found while mapping; each changes what the port has to do.
 The same names exist on both sides, but the implementations have diverged:
 
 - **Voice** (`agents/tools/__init__.py`): `search_terms`, `search_documents`, `create_ai_call`,
-  `get_farmer_milk_collection_details`, `create_health_call`, `signal_conversation_state`,
+  `get_farmer_milk_collection_details`, `signal_conversation_state`,
   `find_nearby_vet_offices`, `check_loan_eligibility`; signed-in: `get_union_scheme_data`,
   `get_farmer_bonus_amount`. Every tool except `signal_conversation_state` is wrapped in
   `_with_nudge_signal`, which is how a tool call triggers the nudge.
-- **Chat** (`agents/tools/registry.py`): the eight shared names plus the four Vistaar tools, and
-  no `search_terms` or `signal_conversation_state`.
+- **Chat** (`agents/tools/registry.py`): the corresponding shared tools plus the four Vistaar
+  tools, and no `search_terms` or `signal_conversation_state`.
 - Diff size between the two repos on shared tool files: `search.py` 500 lines, `ai_call.py` 481,
-  `milk_collection.py` 381, `health_call.py` 254, `bonus.py` 155, `union_schemes.py` 113.
+  `milk_collection.py` 381, `bonus.py` 155, `union_schemes.py` 113.
 
 ## What is shared and what is not
 

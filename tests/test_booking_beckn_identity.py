@@ -3,10 +3,9 @@ from types import SimpleNamespace
 import pytest
 
 from agents.tools.beckn import amul as beckn_amul
-from agents.tools import ai_call, health_call
+from agents.tools import ai_call
 from agents.tools.beckn import network as beckn_network
 from agents.tools.models.ai_call import AISpecies
-from agents.tools.models.health_call import HealthCaseType
 
 # create_ai_call rejects identifiers that cannot be real; every real prod
 # technician id is 24 base64 chars ending "==".
@@ -88,33 +87,3 @@ async def test_ai_confirm_is_not_sent_for_unowned_account(monkeypatch):
     )
 
     assert "does not belong" in result
-
-
-@pytest.mark.asyncio
-async def test_health_confirm_uses_canonical_owned_account(monkeypatch):
-    _callback_mode(monkeypatch, health_call)
-    account = beckn_amul.AuthenticatedFarmerAccount("CANON-U", "CANON-S", "CANON-F")
-
-    async def resolve(*args, **kwargs):
-        return account
-
-    captured = {}
-    async def confirm(*args, **kwargs):
-        captured["args"] = args
-        return beckn_network.NetworkBookingResult(True, "HEALTH-1", "booked successfully")
-
-    monkeypatch.setattr(beckn_amul, "resolve_authenticated_account", resolve)
-    monkeypatch.setattr(beckn_network, "network_create_health_call_result", confirm)
-
-    result = await health_call.create_health_call(
-        _ctx(),
-        "MODEL-U",
-        "MODEL-S",
-        "MODEL-F",
-        AISpecies.BUFFALO,
-        HealthCaseType.NORMAL,
-        "not eating",
-    )
-
-    assert "booked successfully" in result
-    assert captured["args"][:3] == ("CANON-U", "CANON-S", "CANON-F")

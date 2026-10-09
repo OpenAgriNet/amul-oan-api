@@ -240,7 +240,6 @@ async def create_ai_call(
     # so no duplicate booking and no duplicate SMS. Cost: a legitimate second
     # booking inside the TTL is refused. amul-prod has historically run this way.
     #
-    # See health_call.py, which keeps an unconditional guard for a different contract.
     #
     # Both protections below run before the Beckn booking operation.
 

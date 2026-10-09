@@ -47,7 +47,6 @@ LIVE_TOOLS = [
     "search_documents",
     "search_terms",
     "create_ai_call",
-    "create_health_call",
     "get_farmer_milk_collection_details",
     "get_farmer_bonus_amount",
     "get_union_scheme_data",

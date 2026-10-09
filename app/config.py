@@ -650,8 +650,6 @@ class Settings(BaseSettings):
     # guard is on. Shorter = a farmer can legitimately re-book sooner; longer =
     # wider protection against a delayed fallback re-fire.
     ai_call_cooldown_ttl_seconds: int = int(os.getenv("AI_CALL_COOLDOWN_TTL_SECONDS", str(60 * 30)))
-    # Health-call booking idempotency TTL.
-    health_call_cooldown_ttl_seconds: int = Field(default=60 * 30, validation_alias="HEALTH_CALL_COOLDOWN_TTL_SECONDS")
     # Per-check toggles. A disabled check is BYPASSED (treated as pass) so product
     # can test the end-to-end flow without real Amul submissions / bank-list rows.
     loan_check_bank_list_enabled: bool = os.getenv("LOAN_CHECK_BANK_LIST_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
@@ -791,7 +789,6 @@ class Settings(BaseSettings):
         "scheme_ocr_max_output_tokens": ("SCHEME_OCR_MAX_OUTPUT_TOKENS", 12284, 1, None),
         "scheme_ocr_concurrency": ("SCHEME_OCR_CONCURRENCY", 4, 1, 8),
         "scheme_ocr_page_batch_size": ("SCHEME_OCR_PAGE_BATCH_SIZE", 4, 1, 8),
-        "health_call_cooldown_ttl_seconds": ("HEALTH_CALL_COOLDOWN_TTL_SECONDS", 60 * 30, 1, None),
         "vistaar_max_items": ("VISTAAR_MAX_ITEMS", 20, 1, None),
         "farmer_refresh_lock_ttl_seconds": ("FARMER_REFRESH_LOCK_TTL_SECONDS", 60 * 5, 1, None),
         "farmer_refresh_queue_batch_size": ("FARMER_REFRESH_QUEUE_BATCH_SIZE", 20, 1, None),
@@ -826,7 +823,6 @@ class Settings(BaseSettings):
         "scheme_ocr_max_output_tokens",
         "scheme_ocr_concurrency",
         "scheme_ocr_page_batch_size",
-        "health_call_cooldown_ttl_seconds",
         "vistaar_max_items",
         "farmer_refresh_lock_ttl_seconds",
         "farmer_refresh_queue_batch_size",
