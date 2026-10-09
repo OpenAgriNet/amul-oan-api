@@ -7,6 +7,7 @@ rather than asserted. A change here is a real behaviour change and needs to be
 argued for, not absorbed.
 """
 import asyncio
+from contextlib import nullcontext
 import os
 from types import SimpleNamespace
 
@@ -83,9 +84,11 @@ class _Run:
 
 
 def _drive(monkeypatch, *, source_lang="gu", target_lang="gu",
-           fallback_enabled=False, moderation_action="allow",
+           fallback_enabled=False, use_translation_pipeline=True,
+           moderation_action="allow",
            moderation_category="valid_agricultural", user_info=None,
-           requested_persona=None):
+           requested_persona=None, request_user_id="+919876543210",
+           trace_capture=None, memory_capture=None):
     """Run one turn with every stage instrumented, and return the stage order."""
     seen: list[str] = []
 
@@ -95,7 +98,16 @@ def _drive(monkeypatch, *, source_lang="gu", target_lang="gu",
         return _mark
 
     monkeypatch.setattr(chat_service.settings, "fallback_enabled", fallback_enabled)
-    monkeypatch.setattr(chat_service, "propagate_attributes", None)
+    if trace_capture is None:
+        monkeypatch.setattr(chat_service, "propagate_attributes", None)
+    else:
+        def _capture_trace_attributes(**kwargs):
+            trace_capture.update(kwargs)
+            return nullcontext()
+
+        monkeypatch.setattr(
+            chat_service, "propagate_attributes", _capture_trace_attributes
+        )
     monkeypatch.setattr(chat_service, "get_langfuse_client", None)
     monkeypatch.setattr(chat_service, "cache", _Cache())
     monkeypatch.setattr(chat_service, "trim_history", lambda *_a, **_kw: [])
@@ -132,6 +144,14 @@ def _drive(monkeypatch, *, source_lang="gu", target_lang="gu",
         seen.append("farmer_context")
         return "farmer data", [], {}
 
+    async def _memory_context(farmer_id, _query):
+        if memory_capture is not None:
+            memory_capture.append(farmer_id)
+        return ""
+
+    async def _shc_context(_session_id, _mobile):
+        return ""
+
     async def _translate_stream(text, *_a, **_kw):
         seen.append("output_translation")
         yield "રોજ સ્વચ્છ પાણી આપો."
@@ -148,6 +168,8 @@ def _drive(monkeypatch, *, source_lang="gu", target_lang="gu",
     monkeypatch.setattr(chat_service.agrinet_agent, "iter", _agent_iter)
     monkeypatch.setattr(chat_service.doctor_agent, "iter", _doctor_agent_iter)
     monkeypatch.setattr(chat_service, "get_farmer_context_bundle_by_mobile", _farmer_context)
+    monkeypatch.setattr(chat_service, "fetch_memory_context", _memory_context)
+    monkeypatch.setattr(chat_service, "get_session_shc_context", _shc_context)
     monkeypatch.setattr(chat_service, "translate_text_stream_fast", _translate_stream)
     monkeypatch.setattr(chat_service, "update_message_history", _history)
     monkeypatch.setattr(chat_service, "set_cache", _set_cache)
@@ -161,11 +183,11 @@ def _drive(monkeypatch, *, source_lang="gu", target_lang="gu",
             source_lang=source_lang,
             target_lang=target_lang,
             channel="web",
-            user_id="+919876543210",
+            user_id=request_user_id,
             history=[],
             user_info=user_info or {},
             background_tasks=BackgroundTasks(),
-            use_translation_pipeline=True,
+            use_translation_pipeline=use_translation_pipeline,
             pipeline_profile="managed",
             requested_persona=requested_persona,
         ):
@@ -266,3 +288,103 @@ def test_disabled_doctor_gate_routes_doctor_jwt_through_farmer_path(monkeypatch)
     assert "farmer_context" in stages
     assert "doctor_agent" not in stages
     assert "doctor_moderation" not in stages
+
+
+@pytest.mark.parametrize("auth_type", ["jwt", "api_key"])
+def test_translation_trace_uses_authenticated_farmer_memory_id(monkeypatch, auth_type):
+    trace = {}
+    memory_ids = []
+
+    output, _ = _drive(
+        monkeypatch,
+        source_lang="en",
+        target_lang="en",
+        user_info={"phone": "+91 98765 43210", "auth_type": auth_type},
+        request_user_id="request-controlled-id",
+        trace_capture=trace,
+        memory_capture=memory_ids,
+    )
+
+    assert output
+    assert trace["metadata"]["memory_farmer_id"] == "9876543210"
+    assert memory_ids == ["9876543210"]
+    # The existing generic Langfuse identity remains unchanged and separate.
+    assert trace["user_id"] == "+91 98765 43210"
+    assert trace["metadata"]["user_id"] == "+91 98765 43210"
+
+
+def test_default_trace_omits_memory_id_without_changing_memory_lookup(monkeypatch):
+    trace = {}
+    memory_ids = []
+
+    output, _ = _drive(
+        monkeypatch,
+        source_lang="en",
+        target_lang="en",
+        use_translation_pipeline=False,
+        user_info={"phone": "919876543210", "auth_type": "jwt"},
+        trace_capture=trace,
+        memory_capture=memory_ids,
+    )
+
+    assert output
+    assert trace["metadata"]["pipeline"] == "default"
+    assert "memory_farmer_id" not in trace["metadata"]
+    assert memory_ids == ["9876543210"]
+
+
+@pytest.mark.parametrize(
+    "user_info",
+    [
+        {"sub": "9876543210", "auth_type": "jwt"},
+        {"phone": "anonymous", "sub": "9876543210", "auth_type": "jwt"},
+        {
+            "phone": "550e8400-e29b-41d4-a716-446655440000",
+            "sub": "9876543210",
+            "auth_type": "jwt",
+        },
+        {"phone": "not-a-phone", "sub": "9876543210", "auth_type": "jwt"},
+    ],
+)
+def test_memory_id_never_falls_back_to_sub_or_request_user_id(monkeypatch, user_info):
+    trace = {}
+    memory_ids = []
+
+    output, _ = _drive(
+        monkeypatch,
+        source_lang="en",
+        target_lang="en",
+        user_info=user_info,
+        request_user_id="9123456789",
+        trace_capture=trace,
+        memory_capture=memory_ids,
+    )
+
+    assert output
+    assert "memory_farmer_id" not in trace["metadata"]
+    assert memory_ids == [None]
+
+
+def test_doctor_translation_trace_omits_memory_farmer_id(monkeypatch):
+    monkeypatch.setattr(chat_service.settings, "doctor_persona_enabled", True)
+    trace = {}
+    memory_ids = []
+
+    output, stages = _drive(
+        monkeypatch,
+        source_lang="en",
+        target_lang="en",
+        user_info={
+            "phone": "9876543210",
+            "user_type": "doctor",
+            "auth_type": "jwt",
+        },
+        trace_capture=trace,
+        memory_capture=memory_ids,
+    )
+
+    assert output
+    assert "doctor_agent" in stages
+    assert trace["metadata"]["persona"] == "doctor"
+    assert "memory_farmer_id" not in trace["metadata"]
+    assert memory_ids == []

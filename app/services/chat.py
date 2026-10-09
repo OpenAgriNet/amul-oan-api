@@ -299,9 +299,17 @@ async def stream_chat_messages(
     request_model_name = agent_tier.model_name
     moderation_model = _llm_resolver.primary_handle(_LlmStep.MODERATION, pipeline_profile)
     # Langfuse: propagate session_id, metadata, and tags for dashboard filtering (max 200 chars per value)
+    # Keep the memory subject tied to the authenticated farmer identity. This is
+    # deliberately independent of Langfuse's generic user_id, which may fall back
+    # to the request-provided identifier and is not safe for memory ownership.
+    memory_farmer_id = (
+        normalize_phone_to_mobile(user_info.get("phone"))
+        if persona == "farmer" and user_info and user_info.get("phone")
+        else None
+    )
     session_id_safe = (session_id or "")[:200]
     pipeline_name = "translation" if use_translation_pipeline else "default"
-    # Prefer phone from JWT (weburl-minted tokens) over the query-param user_id
+    # Prefer the authenticated phone (JWT or trusted API key) over query-param user_id.
     effective_user_id = (
         (user_info.get("phone") or user_info.get("sub")) if user_info else None
     ) or user_id or "anonymous"
@@ -315,6 +323,8 @@ async def stream_chat_messages(
         "pipeline_profile": pipeline_profile,
         "persona": persona,
     }
+    if pipeline_name == "translation" and memory_farmer_id:
+        langfuse_metadata["memory_farmer_id"] = memory_farmer_id
     langfuse_tags = [
         f"pipeline:{pipeline_name}",
         f"pipeline_profile:{pipeline_profile}",
@@ -585,13 +595,9 @@ async def stream_chat_messages(
                 # Agent responds in English; response will be translated to target_lang downstream
                 processing_lang = "en"
 
-            # Normalized caller phone — the micro-loan tool reads this from deps so it
-            # never has to trust an LLM-supplied number. None for anonymous sessions.
-            loan_mobile = (
-                normalize_phone_to_mobile(user_info['phone'])
-                if persona == "farmer" and user_info and user_info.get('phone')
-                else None
-            )
+            # Canonical authenticated farmer phone shared by memory retrieval and
+            # mobile-aware tools. None for anonymous or non-farmer sessions.
+            loan_mobile = memory_farmer_id
 
             deps = FarmerContext(
                 query=processing_query,
