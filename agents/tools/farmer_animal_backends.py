@@ -1,7 +1,7 @@
 """
 Internal backends for farmer and animal data from the PashuGPT APIs.
 - amulpashudhan.com (PASHUGPT_TOKEN): GetFarmerDetailsByMobile, GetAnimalDetailsByTagNo,
-  FarmerMilkCollectionDetails, GetFarmerBonusAmount, CreateAICall, CreateHealthCall
+  FarmerMilkCollectionDetails, GetFarmerBonusAmount, CreateAICall
 
 Used by farmer.py and animal.py to provide cohesive tools with merged output.
 """
@@ -22,7 +22,6 @@ from app.core.cache import (
     set_cached_api_response,
 )
 from app.models.ai_call import AICallRequestModel, AICallResponseModel
-from app.models.health_call import HealthCallRequestModel, HealthCallResponseModel
 from app.models.bonus import (
     FarmerBonusAmountRecordModel,
     FarmerBonusAmountRequestModel,
@@ -514,86 +513,6 @@ async def create_ai_call_api(
             exc_info=True,
         )
 
-
-async def create_health_call_api(
-    request: HealthCallRequestModel, token: str
-) -> HealthCallResponseModel | None:
-    """Creates a health call and returns the ticket number details."""
-    api_url = f"{BASE_AMULPASHUDHAN}/CreateHealthCall"
-    _health_obs_input = {
-        "union_code": request.union_code,
-        "society_code": request.society_code,
-        "farmer_code": request.farmer_code,
-        "species": request.species.value,
-        "case_type": request.case_type.value,
-        "api_url": api_url,
-    }
-
-    try:
-        with start_observation(
-            "create_health_call_api",
-            as_type="generation",
-            input=_health_obs_input,
-            metadata={"tool_backend": "amulpashudhan", "endpoint": "CreateHealthCall"},
-        ) as health_obs:
-            async with httpx.AsyncClient(timeout=FARMER_BACKEND_HTTP_TIMEOUT_SECONDS) as client:
-                response = await client.post(
-                    api_url,
-                    params=request.to_query_params(),
-                    headers={"Authorization": f"Bearer {token}"},
-                )
-                # Trace the response (PII-safe) BEFORE raising, so failed bookings
-                # (5xx) are captured in Langfuse, not just successes.
-                _record_api_trace(health_obs, response, provider="amulpashudhan", url=api_url)
-                response.raise_for_status()
-                logger.info(
-                    "[CreateHealthCall(%s,%s,%s,%s,%s)] :: Response successfully recieved.",
-                    request.union_code,
-                    request.society_code,
-                    request.farmer_code,
-                    request.species.value,
-                    request.case_type.value,
-                )
-        response_json = response.json()
-        if not isinstance(response_json, dict):
-            raise Exception("Not a valid dict provided in the response.")
-        return HealthCallResponseModel.model_validate(
-            response_json
-        )
-    except httpx.HTTPStatusError as e:
-        logger.error(
-            "[CreateHealthCall(%s,%s,%s,%s,%s)] :: Request failed with status code %s, and message = %s",
-            request.union_code,
-            request.society_code,
-            request.farmer_code,
-            request.species.value,
-            request.case_type.value,
-            e.response.status_code,
-            e.response.text,
-            exc_info=True,
-        )
-    except json.JSONDecodeError as e:
-        logger.error(
-            "[CreateHealthCall(%s,%s,%s,%s,%s)] :: Response didn't gave a valid json, failed due to decoding error %s",
-            request.union_code,
-            request.society_code,
-            request.farmer_code,
-            request.species.value,
-            request.case_type.value,
-            str(e),
-            exc_info=True,
-        )
-    except Exception as e:
-        logger.error(
-            "[CreateHealthCall(%s,%s,%s,%s,%s)] :: Request failed, due to error %s",
-            request.union_code,
-            request.society_code,
-            request.farmer_code,
-            request.species.value,
-            request.case_type.value,
-            str(e),
-            exc_info=True,
-        )
 
 async def get_farmer_milk_collection_details_api(
     request: FarmerMilkCollectionRequestModel, token: str

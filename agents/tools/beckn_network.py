@@ -325,7 +325,6 @@ async def network_create_ai_call_result(
     """
     if settings.beckn_callback_transactions_enabled:
         return await _network_callback_booking_result(
-            service="ai-call",
             union_code=union_code,
             society_code=society_code,
             farmer_code=farmer_code,
@@ -408,62 +407,29 @@ async def network_create_ai_call_result(
     )
 
 
-async def network_create_health_call_result(
-    union_code: str,
-    society_code: str,
-    farmer_code: str,
-    species: str,
-    case_type: str,
-    remark: Optional[str],
-    *,
-    session_id: Optional[str] = None,
-    tool_call_id: Optional[str] = None,
-) -> NetworkBookingResult:
-    """Health-call booking through the durable confirm/on_confirm facade."""
-    if not settings.beckn_callback_transactions_enabled:
-        raise RuntimeError("Health-call Beckn callbacks are not enabled")
-    return await _network_callback_booking_result(
-        service="health-call",
-        union_code=union_code,
-        society_code=society_code,
-        farmer_code=farmer_code,
-        species=species,
-        session_id=session_id,
-        tool_call_id=tool_call_id,
-        case_type=case_type,
-        remark=remark,
-    )
-
-
 async def _network_callback_booking_result(
     *,
-    service: str,
     union_code: str,
     society_code: str,
     farmer_code: str,
     species: str,
     session_id: Optional[str],
     tool_call_id: Optional[str],
-    technician_id: Optional[str] = None,
-    case_type: Optional[str] = None,
-    remark: Optional[str] = None,
+    technician_id: str,
 ) -> NetworkBookingResult:
     from app.services.beckn_operations import OperationState, get_beckn_operation_client
 
     action_result = await get_beckn_operation_client().confirm_booking(
-        service=service,
         union_code=union_code,
         society_code=society_code,
         farmer_code=farmer_code,
         species=species,
+        technician_id=technician_id,
         session_id=session_id,
         tool_call_id=tool_call_id,
-        technician_id=technician_id,
-        case_type=case_type,
-        remark=remark,
     )
     operation = action_result.operation
-    label = "Artificial insemination call" if service == "ai-call" else "Health call"
+    label = "Artificial insemination call"
 
     if operation.state is OperationState.NACKED:
         error = (action_result.payload or {}).get("error") or {}

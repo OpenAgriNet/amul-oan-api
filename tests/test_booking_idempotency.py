@@ -11,15 +11,13 @@ from types import SimpleNamespace
 import pytest
 
 from agents.tools import ai_call as ai_mod
-from agents.tools import health_call as hc_mod
 from app.models.ai_call import AISpecies
-from app.models.health_call import HealthCaseType
 
 
 async def _in_scope():
     # Chat-path semantics: ensure_in_scope() returns True when no moderation task
     # is attached (deps.ensure_in_scope, agents/deps.py). Booking tools now gate on
-    # it (ai_call/health_call), so the deps stub must provide it.
+    # it (ai_call), so the deps stub must provide it.
     return True
 
 
@@ -80,27 +78,6 @@ def test_ai_call_idempotent_on_rerun(monkeypatch):
     assert calls["n"] == 1                 # booking API hit exactly once across the re-run
     assert "booked successfully" in r1
     assert "already" in r2.lower()         # second call short-circuited
-
-
-def test_health_call_idempotent_on_rerun(monkeypatch):
-    _patch_cache(monkeypatch, hc_mod)
-    calls = {"n": 0}
-
-    async def fake_api(request, token):
-        calls["n"] += 1
-        return SimpleNamespace(ticket_number="H1")
-
-    monkeypatch.setattr(hc_mod, "create_health_call_api", fake_api)
-    species = next(iter(AISpecies))
-    case_type = next(iter(HealthCaseType))
-
-    r1 = asyncio.run(hc_mod.create_health_call(_ctx("s1"), "U", "S", "F", species, case_type, "remark v1"))
-    # re-run: model may even produce a different remark; session key still dedupes
-    r2 = asyncio.run(hc_mod.create_health_call(_ctx("s1"), "U", "S", "F", species, case_type, "remark v2"))
-
-    assert calls["n"] == 1
-    assert "booked successfully" in r1
-    assert "already" in r2.lower()
 
 
 def test_ai_call_concurrent_submits_book_once(monkeypatch):
@@ -199,20 +176,3 @@ def test_ai_call_annotates_its_own_span_and_never_the_turn(monkeypatch):
     # farmer's question with the booking parameters and their answer with a
     # status dict, on 100% of bookings, for five days in production.
     assert trace_io["n"] == 0
-
-
-def test_health_call_annotates_its_own_span_and_never_the_turn(monkeypatch):
-    _patch_cache(monkeypatch, hc_mod)
-    obs_names, trace_io = _patch_obs(monkeypatch, hc_mod)
-
-    async def fake_api(request, token):
-        return SimpleNamespace(ticket_number="H1")
-
-    monkeypatch.setattr(hc_mod, "create_health_call_api", fake_api)
-    species = next(iter(AISpecies))
-    case_type = next(iter(HealthCaseType))
-
-    r = asyncio.run(hc_mod.create_health_call(_ctx("obsh1"), "U", "S", "F", species, case_type, "r"))
-    assert "booked successfully" in r
-    assert obs_names == ["health_call_booking"]
-    assert trace_io["n"] == 0   # #212 — see the AI-call test above
