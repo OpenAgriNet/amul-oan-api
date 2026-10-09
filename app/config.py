@@ -700,6 +700,14 @@ class Settings(BaseSettings):
     amul_network_timeout_s: float = float(os.getenv("AMUL_NETWORK_TIMEOUT_S", "35"))
     # SHC retains its own product gate because it exposes a private rich report.
     vistaar_shc_enabled: bool = _get_bool_env("VISTAAR_SHC_ENABLED", default=False)
+    # PM-KISAN is separately gated because it handles an OTP and beneficiary data.
+    vistaar_pmkisan_enabled: bool = _get_bool_env("VISTAAR_PMKISAN_ENABLED", default=False)
+    vistaar_pmkisan_session_ttl_seconds: int = Field(
+        default=10 * 60, validation_alias="VISTAAR_PMKISAN_SESSION_TTL_SECONDS"
+    )
+    vistaar_pmkisan_max_otp_attempts: int = Field(
+        default=3, validation_alias="VISTAAR_PMKISAN_MAX_OTP_ATTEMPTS"
+    )
     # Private transaction-bridge base (for example https://bridge/transactions).
     # The client appends the Beckn action, such as /search, /init, or /confirm.
     beckn_bap_caller_url: str = os.getenv("BECKN_BAP_CALLER_URL", "").rstrip("/")
@@ -806,6 +814,12 @@ class Settings(BaseSettings):
         "beckn_callback_max_body_bytes": ("BECKN_CALLBACK_MAX_BODY_BYTES", 2 * 1024 * 1024, 1024, 5 * 1024 * 1024),
         "shc_html_max_bytes": ("SHC_HTML_MAX_BYTES", 1024 * 1024, 1024, 2 * 1024 * 1024),
         "shc_artifact_ttl_seconds": ("SHC_ARTIFACT_TTL_SECONDS", 10 * 60, 60, 60 * 60),
+        "vistaar_pmkisan_session_ttl_seconds": (
+            "VISTAAR_PMKISAN_SESSION_TTL_SECONDS", 10 * 60, 60, 60 * 60
+        ),
+        "vistaar_pmkisan_max_otp_attempts": (
+            "VISTAAR_PMKISAN_MAX_OTP_ATTEMPTS", 3, 1, 10
+        ),
         "beckn_forward_connect_attempts": ("BECKN_FORWARD_CONNECT_ATTEMPTS", 2, 1, 5),
     }
     _SAFE_FLOAT_FIELDS: ClassVar[dict[str, tuple[str, float, float | None, float | None]]] = {
@@ -841,6 +855,8 @@ class Settings(BaseSettings):
         "beckn_callback_max_body_bytes",
         "shc_html_max_bytes",
         "shc_artifact_ttl_seconds",
+        "vistaar_pmkisan_session_ttl_seconds",
+        "vistaar_pmkisan_max_otp_attempts",
         "beckn_forward_connect_attempts",
         mode="before",
     )
