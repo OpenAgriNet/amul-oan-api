@@ -5,6 +5,7 @@ from pydantic import BaseModel, Field, field_validator
 from rapidfuzz import fuzz
 import re
 from helpers.utils import get_logger
+from helpers.glossary_validation import validate_glossary_assets
 
 logger = get_logger(__name__)
 
@@ -56,21 +57,7 @@ def _load_gu_term_policy() -> dict:
 
 
 GU_TERM_POLICY = _load_gu_term_policy()
-PREFERRED_GU_BY_EN = {
-    str(k).strip().lower(): str(v).strip()
-    for k, v in (GU_TERM_POLICY.get("preferred", {}) if isinstance(GU_TERM_POLICY, dict) else {}).items()
-    if str(k).strip() and str(v).strip()
-}
-ALLOWED_ALIASES_BY_EN = {
-    str(k).strip().lower(): [str(v).strip() for v in vals if str(v).strip()]
-    for k, vals in (GU_TERM_POLICY.get("allowed_aliases", {}) if isinstance(GU_TERM_POLICY, dict) else {}).items()
-    if str(k).strip() and isinstance(vals, list)
-}
-INPUT_ALIASES_BY_EN = {
-    str(k).strip().lower(): [str(v).strip() for v in vals if str(v).strip()]
-    for k, vals in (GU_TERM_POLICY.get("input_aliases", {}) if isinstance(GU_TERM_POLICY, dict) else {}).items()
-    if str(k).strip() and isinstance(vals, list)
-}
+validate_glossary_assets(term_pairs, GU_TERM_POLICY)
 
 class Language(str, Enum):
     ENGLISH = "en"
@@ -85,6 +72,16 @@ class TermPair(BaseModel):
     bn: str = Field(default="", description="Bengali term")
     pa: str = Field(default="", description="Punjabi term")
     transliteration: str = Field(description="Transliteration of Gujarati term to English")
+    en_input_aliases: list[str] = Field(default_factory=list, description="English input variants")
+    gu_input_aliases: list[str] = Field(default_factory=list, description="Gujarati input variants")
+    transliteration_input_aliases: list[str] = Field(
+        default_factory=list,
+        description="Romanized input variants",
+    )
+    gu_output_aliases: list[str] = Field(
+        default_factory=list,
+        description="Accepted Gujarati output variants",
+    )
     # Also the legacy alias that the ``glossary_terms.json`` loader below maps onto
     # ``gu`` for files that predate the mr->gu rename.
     mr: str = Field(default="", description="Marathi term")
@@ -99,9 +96,6 @@ for pair in term_pairs:
     # If 'gu' is not present but 'mr' is, use 'mr' as 'gu'
     if 'gu' not in pair and 'mr' in pair:
         pair['gu'] = pair['mr']
-    en_key = str(pair.get("en", "")).strip().lower()
-    if en_key in PREFERRED_GU_BY_EN:
-        pair["gu"] = PREFERRED_GU_BY_EN[en_key]
     TERM_PAIRS.append(TermPair(**pair))
 
 HI_TERM_PAIRS = []
@@ -189,13 +183,19 @@ async def search_terms(
         
         # Check English term if no language specified or language is English
         if language in [None, Language.ENGLISH]:
-            en_score = fuzz.ratio(term, term_pair.en.lower()) / 100.0
-            max_score = max(max_score, en_score)
+            en_scores = [
+                fuzz.ratio(term, candidate.lower()) / 100.0
+                for candidate in [term_pair.en, *term_pair.en_input_aliases]
+            ]
+            max_score = max(max_score, *en_scores)
             
         # Check Gujarati term if no language specified or language is Gujarati    
         if language in [None, Language.GUJARATI]:
-            gu_score = fuzz.ratio(term, term_pair.gu.lower()) / 100.0
-            max_score = max(max_score, gu_score)
+            gu_scores = [
+                fuzz.ratio(term, candidate.lower()) / 100.0
+                for candidate in [term_pair.gu, *term_pair.gu_input_aliases]
+            ]
+            max_score = max(max_score, *gu_scores)
 
         # Check Hindi term if no language specified or language is Hindi
         if language in [None, Language.HINDI]:
@@ -204,8 +204,14 @@ async def search_terms(
             
         # Check transliteration if no language specified or language is transliteration
         if language in [None, Language.TRANSLITERATION]:
-            tr_score = fuzz.ratio(term, term_pair.transliteration.lower()) / 100.0
-            max_score = max(max_score, tr_score)
+            transliteration_scores = [
+                fuzz.ratio(term, candidate.lower()) / 100.0
+                for candidate in [
+                    term_pair.transliteration,
+                    *term_pair.transliteration_input_aliases,
+                ]
+            ]
+            max_score = max(max_score, *transliteration_scores)
             
         if max_score >= threshold:
             matches.append((term_pair, max_score))
@@ -246,34 +252,17 @@ def _normalize_lookup_key(text: str) -> str:
     return text.strip()
 
 
-def _strip_parenthetical_suffix(text: str) -> str:
-    return re.sub(r"\s*\([^)]*\)\s*$", "", _normalize_lookup_key(text)).strip()
-
-
-def _canonical_display_term(canonical_en: str) -> str:
-    for tp in TERM_PAIRS:
-        if _normalize_lookup_key(tp.en) == canonical_en:
-            return tp.en
-    return canonical_en.title()
-
-
 def _build_canonical_alias_map() -> tuple[dict[str, tuple[str, str]], dict[str, str]]:
     canonical_terms: dict[str, tuple[str, str]] = {}
     alias_to_canonical: dict[str, str] = {}
 
-    for canonical_en, preferred_gu in PREFERRED_GU_BY_EN.items():
-        canonical_terms[canonical_en] = (_canonical_display_term(canonical_en), preferred_gu)
+    for term_pair in TERM_PAIRS:
+        canonical_en = _normalize_lookup_key(term_pair.en)
+        canonical_terms[canonical_en] = (term_pair.en, term_pair.gu)
         aliases = {canonical_en}
-        aliases.update(_normalize_lookup_key(alias) for alias in INPUT_ALIASES_BY_EN.get(canonical_en, []))
-        aliases.update(_normalize_lookup_key(alias) for alias in ALLOWED_ALIASES_BY_EN.get(canonical_en, []))
-
-        for tp in TERM_PAIRS:
-            norm_en = _normalize_lookup_key(tp.en)
-            stripped_en = _strip_parenthetical_suffix(tp.en)
-            if not norm_en:
-                continue
-            if norm_en == canonical_en or stripped_en == canonical_en or tp.gu == preferred_gu:
-                aliases.add(norm_en)
+        aliases.update(
+            _normalize_lookup_key(alias) for alias in term_pair.en_input_aliases
+        )
 
         for alias in aliases:
             if alias:
@@ -322,8 +311,10 @@ def build_glossary_pattern(terms):
     escaped = [re.escape(t) for t in sorted_terms]
     return r"\b(" + "|".join(escaped) + r")\b"
 
-# Precompile regex pattern once
-GLOSSARY_PATTERN = re.compile(build_glossary_pattern(EN_TERMS), flags=re.IGNORECASE)
+# Precompile regex pattern once, including English input aliases.
+GLOSSARY_PATTERN = re.compile(
+    build_glossary_pattern(CANONICAL_ALIAS_TERMS), flags=re.IGNORECASE
+)
 
 def normalize_text_with_glossary(text: str, threshold=97):
     """
@@ -420,6 +411,25 @@ def get_mini_glossary_for_text(
     # Dedupe by canonical English term (lowercase key)
     term_to_target: dict[str, tuple[str, str]] = {}  # en_lower -> (en_display, target_term)
     seen_phrases: set[str] = set()
+
+    # Preserve exact long concepts and aliases before checking 1-4 word fuzzy
+    # windows. This also supports punctuation-bearing aliases such as ``a.i.``.
+    normalized_text = _normalize_lookup_key(text)
+    for alias in sorted(CANONICAL_ALIAS_TERMS, key=len, reverse=True):
+        if not re.search(rf"(?<!\w){re.escape(alias)}(?!\w)", normalized_text):
+            continue
+        canonical_en = ALIAS_TO_CANONICAL_EN[alias]
+        target_pair = target_en_index.get(canonical_en)
+        if not target_pair:
+            continue
+        target_value = getattr(target_pair, target_value_field, "").strip()
+        if not target_value:
+            continue
+        term_to_target.setdefault(
+            canonical_en, (target_pair.en, target_value)
+        )
+        if len(term_to_target) >= max_terms:
+            break
 
     # Longer phrases first so we match "Milk Production" before "Milk"
     for n in range(min(4, len(words)), 0, -1):
