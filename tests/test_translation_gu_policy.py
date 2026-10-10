@@ -7,8 +7,6 @@ import os
 
 os.environ.setdefault("OPENAI_API_KEY", "test-key")
 
-import re
-
 import pytest
 
 from app.services.translation import (
@@ -17,9 +15,8 @@ from app.services.translation import (
     _buffered_protected_stream,
     _protected_output_triggers,
     _post_normalize_gu_translation,
-    _build_gu_policy_replacements,
     GU_TERM_POLICY,
-    GU_POLICY_REPLACEMENTS,
+    GU_TERM_REPLACEMENTS,
     translation_channel,
 )
 
@@ -47,7 +44,7 @@ def test_base_red_colour_scaffolding_removed():
 
 
 def test_policy_loaded_nonempty():
-    assert len(GU_POLICY_REPLACEMENTS) > 0
+    assert len(GU_TERM_REPLACEMENTS) > 0
     assert isinstance(GU_TERM_POLICY.get("forbidden"), dict)
 
 
@@ -82,11 +79,9 @@ def test_voice_channel_does_not_force_chat_only_organic_normalization():
     assert "જૈવિક" not in out
 
 
-def test_build_replacements_orders_longer_keys_first():
-    # phrase-level replacements must win before single-word ones
-    reps = _build_gu_policy_replacements({"forbidden": {"aa": "X", "aaaa": "Y"}})
-    patterns = [p for p, _ in reps]
-    assert patterns[0] == re.escape("aaaa")
+def test_term_replacements_are_ordered_longest_first():
+    lengths = [len(source) for source, _, _, _ in GU_TERM_REPLACEMENTS]
+    assert lengths == sorted(lengths, reverse=True)
 
 
 def test_strip_outer_trims_whitespace():
@@ -126,15 +121,26 @@ def test_insemination_correction_is_source_gated_and_bare_ai_is_ignored():
 
 
 @pytest.mark.asyncio
-async def test_source_gated_bull_correction_is_stream_boundary_safe():
-    async def chunks():
-        yield "બ"
-        yield "ળદને સારવાર"
+@pytest.mark.parametrize(
+    ("source", "input_chunks", "expected"),
+    [
+        ("The bull needs treatment", ["બ", "ળદને સારવાર"], "બુલને સારવાર"),
+        ("The bullock needs treatment", ["બ", "ળદને સારવાર"], "બળદને સારવાર"),
+        ("Artificial insemination service", ["ગર્ભા", "ધાન સેવા"], "બીજદાન સેવા"),
+        ("Amul AI helpline", ["અમૂલ એ.", "આઈ. હેલ્પલાઇન"], "અમૂલ એ.આઈ. હેલ્પલાઇન"),
+    ],
+)
+async def test_source_gated_corrections_are_stream_boundary_safe(
+    source, input_chunks, expected
+):
+    async def source_chunks():
+        for chunk in input_chunks:
+            yield chunk
 
     stream = _buffered_protected_stream(
-        chunks(), _protected_output_triggers("The bull needs treatment", "gu")
+        source_chunks(), _protected_output_triggers(source, "gu")
     )
-    assert "".join([chunk async for chunk in stream]) == "બુલને સારવાર"
+    assert "".join([chunk async for chunk in stream]) == expected
 
 
 def test_meaning_first_terms_are_not_globally_rewritten():
