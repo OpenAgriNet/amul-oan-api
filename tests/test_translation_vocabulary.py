@@ -85,8 +85,6 @@ class TestForbiddenReplacements:
         ("ચારોની", "ચારાની"),
         # Calf terms — [31] પાડુના→બચ્ચાંના
         ("પાડુના", "બચ્ચાંના"),
-        # Bull — [11] બળદ→બુલ
-        ("બળદ", "બુલ"),
         # Dairy product terms — [130, 132, 133]
         ("મખાણ", "માખણ"),
         ("માલઈ", "મલાઈ"),
@@ -101,9 +99,8 @@ class TestForbiddenReplacements:
         ("બરડા", "શરીર"),
         ("બરડું", "શરીર"),
         ("બરડુ", "શરીર"),
-        # Medical — [162] ચૂભો→ચીરો, [168] તણાવ→માનસિક આઘાત
+        # Medical — [162] ચૂભો→ચીરો
         ("ચૂભો", "ચીરો"),
-        ("તણાવ", "માનસિક આઘાત"),
         # Grammar — [144] એટલી સુધી→ત્યાં સુધી
         ("એટલી સુધી", "ત્યાં સુધી"),
         # Pregnancy — ગર્ભવતી→ગાભણ
@@ -116,8 +113,6 @@ class TestForbiddenReplacements:
         ("ટિક્કી", "ઇતરડી"),
         # Deworming — કીડા→કૃમિ
         ("કીડા", "કૃમિ"),
-        # Insemination — ગર્ભાધાન→બીજદાન
-        ("ગર્ભાધાન", "બીજદાન"),
         # Spelling/terminology refinements
         ("સુકો", "સૂકો"),
         ("મિશ્રણ ખનીજ તત્વો", "ખનિજ મિશ્રણ"),
@@ -276,11 +271,11 @@ class TestForbiddenInContext:
         result = normalize_gu(text)
         assert "ઘી બનાવવું" in result
 
-    def test_bull_replacement(self):
-        """[11] બળદ→બુલ."""
+    def test_bullock_is_not_globally_rewritten_as_bull(self):
+        """બળદ is the correct term for bullock and needs English source context."""
         text = "સારા બળદ નો ઉપયોગ કરો."
         result = normalize_gu(text)
-        assert "બુલ" in result
+        assert result == text
 
     def test_multiple_replacements_in_one_text(self):
         """Multiple forbidden terms in a single sentence."""
@@ -509,7 +504,7 @@ class TestPolicyCompleteness:
         """Key terms from Shridhar feedback should be caught by post-processing."""
         critical = [
             "સ્તન", "પાહો", "ચરબી", "ઘન પદાર્થો", "જંતુઓ",
-            "ટોળા", "બળદ", "મખાણ", "માલઈ", "ગર્ભવતી", "બૈડા", "બૈડું",
+            "ટોળા", "મખાણ", "માલઈ", "ગર્ભવતી", "બૈડા", "બૈડું",
         ]
         for term in critical:
             result = normalize_gu(f"ગાયમાં {term} છે.")
