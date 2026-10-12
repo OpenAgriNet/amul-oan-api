@@ -1,8 +1,7 @@
 import asyncio
 import json
 from dataclasses import dataclass, field
-from types import CoroutineType
-from typing import Any
+from typing import Any, Awaitable, TypeVar
 
 from agents.tools.farmer import normalize_phone_to_mobile
 from agents.tools.beckn.amul import (
@@ -29,12 +28,14 @@ from agents.tools.models.farmer import FarmerModel
 from agents.tools.models.union import (
     UNION_BANNED_MESSAGE,
     UnionName,
+    canonical_union_name,
     is_ai_call_banned_union,
 )
-from helpers.utils import get_logger, is_from_union
+from helpers.utils import get_logger
 
 
 logger = get_logger(__name__)
+_LookupResult = TypeVar("_LookupResult")
 
 
 def _format_value(value: Any) -> str:
@@ -216,7 +217,7 @@ async def _get_ai_technicians_for_farmer(
 
     unique_technicians: dict[str, str] = {}
     for technician in technicians:
-        display_name = getattr(technician, "display_full_name", None) or technician.fullName
+        display_name = technician.display_full_name or technician.fullName
         key = technician.userId or f"{display_name}|{technician.mobileNumber}"
         if key in unique_technicians:
             continue
@@ -253,10 +254,6 @@ async def _append_ai_technicians_markdown(lines: list[str], farmer: FarmerModel)
         lines.append("- No AI technicians were found for this society.")
         return
 
-    if not technician_lines:
-        lines.append("- AI technician details are unavailable.")
-        return
-
     lines.append(
         "- Use these details when the user wants to book an AI call. Show only name and mobile number to the user, but use the mapped `user_id` when calling `create_ai_call`."
     )
@@ -285,10 +282,15 @@ def _not_found_context(mobile: str) -> FarmerContextBundle:
     )
 
 
-async def _get_farmer_context_bundle_beckn(
+async def get_farmer_context_bundle_by_mobile(
     mobile_number: str,
 ) -> FarmerContextBundle:
-    """Build farmer context through Beckn operations."""
+    """Return prompt markdown, union names, structured location and ``found``.
+
+    ``location`` is {district, village, state} (possibly empty) and exists
+    so tools can read the farmer's location. It is deliberately NOT parsed back
+    out of the markdown: the markdown is a prompt, not an API.
+    """
     mobile = normalize_phone_to_mobile(mobile_number) or mobile_number
     farmers = await fetch_authenticated_farmers(mobile)
 
@@ -315,8 +317,9 @@ async def _get_farmer_context_bundle_beckn(
         await _append_ai_technicians_markdown(lines, farmer)
 
         tags = farmer.animal_tags or []
-        include_banas_visit = is_from_union([farmer], UnionName.BANAS)
-        include_cvcc_health = is_from_union([farmer], UnionName.KAIRA)
+        canonical_union = canonical_union_name(farmer.union_name)
+        include_banas_visit = canonical_union == UnionName.BANAS.value
+        include_cvcc_health = canonical_union == UnionName.KAIRA.value
         lines.append("")
         lines.append("### Animal tags")
         if not tags:
@@ -345,21 +348,6 @@ async def _get_farmer_context_bundle_beckn(
         location=farmer_location,
         found=True,
     )
-
-async def get_farmer_context_bundle_by_mobile(
-    mobile_number: str,
-) -> FarmerContextBundle:
-    """Return prompt markdown, union names, structured location and ``found``.
-
-    ``location`` is {district, village, state} (possibly empty) and exists
-    so tools can read the farmer's location. It is deliberately NOT parsed back
-    out of the markdown: the markdown is a prompt, not an API.
-    """
-    return await _get_farmer_context_bundle_beckn(mobile_number)
-
-
-async def get_farmer_full_data_by_mobile(mobile_number: str) -> str:
-    return (await get_farmer_context_bundle_by_mobile(mobile_number)).markdown
 
 
 def _format_medicines(medicines: list[BanasMedicineModel] | None) -> str | None:
@@ -591,6 +579,27 @@ def _append_animal_markdown(
     _append_cvcc_health_markdown(lines, cvcc_health)
 
 
+async def _fetch_or_none(
+    label: str,
+    union_name: str | None,
+    coro: Awaitable[_LookupResult],
+) -> _LookupResult | None:
+    try:
+        return await coro
+    except Exception as exc:
+        logger.warning(
+            "Beckn %s lookup failed while building farmer context union=%s: %s",
+            label,
+            union_name,
+            exc,
+        )
+        return None
+
+
+async def _no_extra_animal_record() -> None:
+    return None
+
+
 async def _get_animal_context_bundle(
     tag: str,
     include_banas_visit: bool,
@@ -603,40 +612,25 @@ async def _get_animal_context_bundle(
     list[BanasOperatedVisitModel] | None,
     CvccHealthResponseModel | None,
 ]:
-    tasks: list[CoroutineType[Any, Any, AnimalModel | list[BanasOperatedVisitModel] | CvccHealthResponseModel | None]] = [
-        fetch_animal_profile(tag, union_code=union_code)
-    ]
-    task_labels = ["animal profile"]
-    if include_banas_visit and union_code:
-        tasks.append(fetch_banas_visits(tag, union_code=union_code))
-        task_labels.append("Banas operated visits")
-    else:
-        include_banas_visit = False
-    if include_cvcc_health and union_code:
-        tasks.append(fetch_cvcc_health(tag, union_code=union_code))
-        task_labels.append("CVCC health history")
-    else:
-        include_cvcc_health = False
-
-    results = await asyncio.gather(*tasks, return_exceptions=True)
-    for index, result in enumerate(results):
-        if isinstance(result, asyncio.CancelledError):
-            raise result
-        if isinstance(result, Exception):
-            logger.warning(
-                "Beckn %s lookup failed while building farmer context union=%s: %s",
-                task_labels[index],
-                union_name,
-                result,
-            )
-            results[index] = None
-    animal = results[0]
-    result_index = 1
-    banas_visits = None
-    if include_banas_visit:
-        banas_visits = results[result_index]
-        result_index += 1
-    cvcc_health = None
-    if include_cvcc_health:
-        cvcc_health = results[result_index]
-    return tag, animal, banas_visits, cvcc_health  # ty: ignore
+    animal, banas_visits, cvcc_health = await asyncio.gather(
+        _fetch_or_none(
+            "animal profile",
+            union_name,
+            fetch_animal_profile(tag, union_code=union_code),
+        ),
+        _fetch_or_none(
+            "Banas operated visits",
+            union_name,
+            fetch_banas_visits(tag, union_code=union_code),
+        )
+        if include_banas_visit and union_code
+        else _no_extra_animal_record(),
+        _fetch_or_none(
+            "CVCC health history",
+            union_name,
+            fetch_cvcc_health(tag, union_code=union_code),
+        )
+        if include_cvcc_health and union_code
+        else _no_extra_animal_record(),
+    )
+    return tag, animal, banas_visits, cvcc_health
