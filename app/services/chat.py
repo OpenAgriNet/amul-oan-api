@@ -208,6 +208,9 @@ GENERIC_UNAVAILABLE_MESSAGE_GU = (
 GENERIC_UNAVAILABLE_MESSAGE_BN = (
     "এই মুহূর্তে আমি আপনার অনুরোধটি প্রক্রিয়া করতে পারছি না। অনুগ্রহ করে কিছুক্ষণ পরে আবার চেষ্টা করুন।"
 )
+GENERIC_UNAVAILABLE_MESSAGE_HI = (
+    "इस समय मैं आपके अनुरोध को पूरा नहीं कर पा रही हूँ। कृपया थोड़ी देर बाद फिर से प्रयास करें।"
+)
 GENERIC_UNAVAILABLE_MESSAGE_PA = (
     "ਇਸ ਸਮੇਂ ਮੈਂ ਤੁਹਾਡੀ ਬੇਨਤੀ ਤੇ ਕਾਰਵਾਈ ਨਹੀਂ ਕਰ ਸਕਦੀ। ਕਿਰਪਾ ਕਰਕੇ ਥੋੜ੍ਹੇ ਸਮੇਂ ਬਾਅਦ ਦੁਬਾਰਾ ਕੋਸ਼ਿਸ਼ ਕਰੋ।"
 )
@@ -219,6 +222,8 @@ GENERIC_UNAVAILABLE_MESSAGE_MR = (
 _UNAVAILABLE_MESSAGE_BY_LANG = {
     "gu": GENERIC_UNAVAILABLE_MESSAGE_GU,
     "gujarati": GENERIC_UNAVAILABLE_MESSAGE_GU,
+    "hi": GENERIC_UNAVAILABLE_MESSAGE_HI,
+    "hindi": GENERIC_UNAVAILABLE_MESSAGE_HI,
     "bn": GENERIC_UNAVAILABLE_MESSAGE_BN,
     "bengali": GENERIC_UNAVAILABLE_MESSAGE_BN,
     "pa": GENERIC_UNAVAILABLE_MESSAGE_PA,
