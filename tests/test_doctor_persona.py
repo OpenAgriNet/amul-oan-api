@@ -53,7 +53,7 @@ def test_doctor_prompt_requires_evidence_and_explicit_corpus_gaps():
     assert "Use `search_documents(query, top_k)` before answering" in prompt
     assert "Not covered in the current document corpus." in prompt
     assert "Never invent, infer, extrapolate" in prompt
-    assert "Do not offer or initiate a health call" in prompt
+    assert "Do not offer or initiate farmer services" in prompt
 
 
 def test_doctor_treatment_prompt_requires_completeness_searches():

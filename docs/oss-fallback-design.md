@@ -426,7 +426,7 @@ Notes:
 - For a **legacy** session each chain is a single `[managed]` tier (no OSS, no
   fallback). With `FALLBACK_ENABLED=false` every chain collapses to one tier =
   today's exact behavior.
-- Booking tools (`create_ai_call` / `create_health_call`) are idempotency-guarded
+- The booking tool (`create_ai_call`) is idempotency-guarded
   so the agent re-run on a fallback can't double-book (see Tool re-run safety).
 - Every fallback emits an `oss_fallback` event → the `fallback_rate` metric.
 - amul (chat) is the same shape minus the voice-specific deferred-gate/nudge
@@ -476,7 +476,7 @@ flipping it on safe. Do it in **staging** on a host/tunnel that can reach the OS
 - [ ] **Moderation fail-closed** verified (both): when OSS + managed both fail,
       the turn is blocked (not passed through). Voice no longer fails open.
 - [ ] **Booking idempotency** verified: an induced fallback re-run does **not**
-      create a duplicate `CreateAICall` / `CreateHealthCall` booking.
+      create a duplicate `CreateAICall` booking.
 - [ ] **Prod enable + ramp:** set `FALLBACK_ENABLED=true` in prod, then ramp /
       confirm `OSS_PIPELINE_PCT` while watching `fallback_rate` by
       `pipeline × reason × endpoint`. Kill-switch (`FALLBACK_ENABLED=false`)
@@ -571,16 +571,15 @@ These were open during design and have been decided (2026-06-01):
 First-token-commit fallback **re-runs the whole agent on the managed model** if
 OSS fails before the first text token. Because the agent executes tool-calls
 *before* producing final text, a re-run re-executes any tools already called —
-including **side-effecting write tools**. An audit found the write tools
-`create_ai_call` (`POST /CreateAICall`) and `create_health_call`
-(`POST /CreateHealthCall`) could **double-book** on a fallback re-run:
+including **side-effecting write tools**. An audit found the write tool
+`create_ai_call` (`POST /CreateAICall`) could **double-book** on a fallback re-run:
 
-- **amul**: both were unguarded (and took no session context). Fixed by plumbing
+- **amul**: it was unguarded (and took no session context). Fixed by plumbing
   `session_id` into `FarmerContext` and reserving per session.
-- **voice**: `create_ai_call` had a check-then-set cooldown; `create_health_call`
-  had none. Both brought onto the same reservation.
+- **voice**: it had a check-then-set cooldown and was brought onto the same
+  atomic reservation.
 
-**Guard = atomic reservation, not check-then-set.** Each booking tool calls
+**Guard = atomic reservation, not check-then-set.** The AI booking tool calls
 `cache.try_reserve(session_id, ns, ttl)` — a Redis **SET NX** (via `aiocache.add`)
 immediately before the write. First caller wins; a fallback re-run **or a
 concurrent duplicate submit** (double-tap / client retry / SSE reconnect — chat
@@ -588,7 +587,7 @@ turns aren't serialized server-side) short-circuits with "already booked".
 `release_reservation` is called if the booking API itself fails, so a genuine
 retry can re-book. Because the reservation lives in **shared Redis**, this holds
 across multiple backend containers. Fail-open on a cache blip (a booking must not
-be blocked by a Redis hiccup). Namespaces: `ai_call_booked` / `health_call_booked`.
+be blocked by a Redis hiccup). Namespace: `ai_call_booked`.
 
 This is a **prerequisite for enabling `FALLBACK_ENABLED`** on any path that runs
 the chat agent — now satisfied in both services. Any *future* write tool must use
@@ -607,7 +606,7 @@ Automated (pytest; voice async needs `-o asyncio_mode=auto`):
 - **Suggestions wiring** (amul `test_suggestions_fallback.py`) — routes through
   the chain, degrades to `[]`.
 - **Booking idempotency** — amul + voice `test_booking_idempotency.py`
-  (`create_ai_call`/`create_health_call` hit the API once across a re-run).
+  (`create_ai_call` hits the API once across a re-run).
 - **Fault-injection integration** (`test_fallback_integration.py`, both,
   **skip-by-default**) — with the OSS endpoint dead, a real moderation run
   (unary) and core-chat `run_stream` (streaming, pre-first-token swap) fall back

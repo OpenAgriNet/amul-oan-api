@@ -172,7 +172,7 @@ class TestAITechnicianGujaratiFields:
                 "mobileNumber": "9216541600",
             }
         )
-        assert tech.gujaratiFullName == "રોશનાઈ "
+        assert tech.gujaratiFullName == "રોશનાઈ"
         assert tech.display_full_name == "રોશનાઈ"
 
     def test_parses_correct_gujarati_spelling(self):
@@ -194,7 +194,13 @@ class TestAITechnicianGujaratiFields:
                 "mobileNumber": "9000000001",
             }
         )
-        assert tech.display_full_name == "Switi-Ait-Ait"
+        assert tech.display_full_name == "Switi Ait Ait"
+
+    def test_partner_name_codes_and_caps_are_normalised(self):
+        tech = AITechnicianRecord.model_validate(
+            {"userId": "abc==", "fullName": "1712 ULPESHPURI-KODARPURI-GOSHVAMI"}
+        )
+        assert tech.display_full_name == "Ulpeshpuri Kodarpuri Goshvami"
 
     def test_model_dump_roundtrip_keeps_gujarati_for_cache(self):
         tech = AITechnicianRecord.model_validate(

@@ -301,7 +301,6 @@ async def test_confirm_builds_directed_core_order_and_correlates_fast_callback(m
     http_client = CallbackDuringPostClient(store)
     client = BecknOperationClient(store, http_client=http_client)
     result = await client.confirm_booking(
-        service="ai-call",
         union_code="U",
         society_code="S",
         farmer_code="F",
@@ -321,39 +320,6 @@ async def test_confirm_builds_directed_core_order_and_correlates_fast_callback(m
     assert "fulfillment" not in sent["message"]["order"]
     assert json.loads(json.dumps(sent))["message"]["order"]["items"][0]["id"] == "ait:TECH-1"
     assert http_client.headers == {"Authorization": f"Bearer {module.settings.beckn_transaction_bridge_token}"}
-
-
-@pytest.mark.asyncio
-async def test_health_confirm_uses_health_provider_and_veterinary_fulfillment(monkeypatch):
-    from agents.tools.beckn import operations as module
-
-    monkeypatch.setattr(module.settings, "beckn_bap_caller_url", "http://onix/bap/caller")
-    monkeypatch.setattr(module.settings, "beckn_transaction_bridge_token", "transaction-secret")
-    monkeypatch.setattr(module.settings, "beckn_bap_uri", "https://bap.example/bap/receiver")
-    monkeypatch.setattr(module.settings, "beckn_amul_bpp_uri", "https://bpp.example/bpp/receiver")
-    monkeypatch.setattr(module.settings, "beckn_callback_wait_seconds", 0.2)
-
-    store = BecknOperationStore(MemoryRedis(), ttl_seconds=3600)
-    http_client = CallbackDuringPostClient(store)
-    client = BecknOperationClient(store, http_client=http_client)
-    result = await client.confirm_booking(
-        service="health-call",
-        union_code="U",
-        society_code="S",
-        farmer_code="F",
-        species="buffalo",
-        session_id="session-1",
-        tool_call_id="tool-call-2",
-        case_type="emergency",
-        remark="not eating",
-    )
-
-    assert result.ok
-    order = http_client.payload["message"]["order"]
-    assert order["provider"]["id"] == "amul-animal-health-service"
-    assert order["items"] == [{"id": "health-call"}]
-    assert order["fulfillments"][0]["type"] == "VETERINARY_VISIT"
-    assert order["fulfillments"][0]["tags"][0]["descriptor"]["code"] == "health-call-details"
 
 
 @pytest.mark.asyncio

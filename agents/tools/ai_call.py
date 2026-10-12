@@ -5,6 +5,7 @@ import re
 
 import httpx
 from pydantic_ai import RunContext
+from pydantic_ai.tools import ToolDefinition
 
 from agents.deps import FarmerContext
 from app.config import settings
@@ -40,6 +41,13 @@ OUT_OF_SCOPE_MESSAGE = "This helpline only handles dairy farming and animal husb
 # successful booking — is what is checked strictly.
 _CODE_PATTERN = re.compile(r"^[A-Za-z0-9/-]{1,12}$")
 _TECHNICIAN_ID_PATTERN = re.compile(r"^[A-Za-z0-9+/]{22}==$")
+# Farmer-facing line when no farmer record was resolved. Also rendered into the
+# system prompt so the agent can say it without first trying the (hidden) tool.
+NO_FARMER_PROFILE_MESSAGE = (
+    "Artificial insemination (AI) visit booking is not available because we "
+    "could not fetch your farmer profile details. You can still ask me general "
+    "questions about animal health, breeding, feeding and dairy farming."
+)
 INVALID_IDENTIFIERS_MESSAGE = (
     "Artificial insemination call booking failed.\n\n"
     "The farmer or technician details are not available."
@@ -73,7 +81,7 @@ UNCONFIRMED_MESSAGE = (
 )
 
 
-async def _reserve_booking_slot(session_id: str | None) -> tuple[bool, bool]:
+async def _reserve_booking_slot(session_id: str | None, guard: bool | None = None) -> tuple[bool, bool]:
     """Atomic per-session reservation, taken immediately before a write.
 
     First caller wins; a concurrent submit OR a fallback re-run for the same
@@ -90,10 +98,13 @@ async def _reserve_booking_slot(session_id: str | None) -> tuple[bool, bool]:
     fail-open itself is unchanged (both routes have always proceeded when the
     cache is down); only the bogus release is gone.
 
-    Flag-gated (see the trade-off note in create_ai_call). With the guard off,
-    or with no session id, this is a no-op that allows the booking.
+    Flag-gated (see the trade-off note in create_ai_call) unless ``guard`` is
+    passed. With the guard off, or with no session id, this is a no-op that
+    allows the booking.
     """
-    if not (settings.ai_call_booking_guard_enabled and session_id):
+    if guard is None:
+        guard = settings.ai_call_booking_guard_enabled
+    if not (guard and session_id):
         return True, False
     outcome = await reserve(session_id, AI_CALL_CACHE_NAMESPACE, settings.ai_call_cooldown_ttl_seconds)
     if outcome is ReservationOutcome.TAKEN:
@@ -133,9 +144,13 @@ def _is_provably_pre_send(exc: BaseException) -> bool:
     )
 
 
-async def _mark_session_booked(session_id: str | None, ticket: str | None, species_value: str) -> None:
+async def _mark_session_booked(
+    session_id: str | None, ticket: str | None, species_value: str, guard: bool | None = None
+) -> None:
     """Mark this session as booked so a re-run (or retry) does not double-book."""
-    if settings.ai_call_booking_guard_enabled and session_id:
+    if guard is None:
+        guard = settings.ai_call_booking_guard_enabled
+    if guard and session_id:
         try:
             await cache.set(
                 session_id,
@@ -145,6 +160,32 @@ async def _mark_session_booked(session_id: str | None, ticket: str | None, speci
             )
         except Exception as e:
             logger.warning("Failed to set AI call cooldown: %s", e)
+
+
+def _has_farmer_profile(deps) -> bool:
+    return (
+        getattr(deps, "farmer_profile_status", None) == "found"
+        and bool((getattr(deps, "mobile", None) or "").strip())
+    )
+
+
+async def prepare_create_ai_call(
+    ctx: RunContext[FarmerContext], tool_def: ToolDefinition
+) -> ToolDefinition | None:
+    """Hide create_ai_call unless a farmer record was resolved this turn.
+
+    Every booking identifier and technician option comes from the resolved
+    farmer context. Without it the model invents codes (see the note on
+    _CODE_PATTERN), so the tool is withheld from the schema instead and the
+    prompt tells the agent booking is unavailable.
+    """
+    if _has_farmer_profile(ctx.deps):
+        return tool_def
+    logger.info(
+        "Hiding create_ai_call tool because farmer_profile_status=%s",
+        ctx.deps.farmer_profile_status,
+    )
+    return None
 
 
 async def create_ai_call(
@@ -199,7 +240,6 @@ async def create_ai_call(
     # so no duplicate booking and no duplicate SMS. Cost: a legitimate second
     # booking inside the TTL is refused. amul-prod has historically run this way.
     #
-    # See health_call.py, which keeps an unconditional guard for a different contract.
     #
     # Both protections below run before the Beckn booking operation.
 
@@ -223,6 +263,16 @@ async def create_ai_call(
         )
         lang_code = getattr(ctx.deps, "lang_code", None) if ctx and ctx.deps else None
         return union_banned_message(lang_code)
+
+    # Defense in depth for the prepare gate: no resolved farmer means no
+    # account or technician lookup against the upstream APIs.
+    if not _has_farmer_profile(ctx.deps if ctx else None):
+        logger.info(
+            "AI call blocked: no farmer profile status=%s session=%s",
+            getattr(ctx.deps, "farmer_profile_status", None) if ctx else None,
+            session_id,
+        )
+        return NO_FARMER_PROFILE_MESSAGE
 
     # An invented identifier cannot be resolved or booked.
     invalid_field = _invalid_booking_identifier(union_code, society_code, farmer_code, user_id)
@@ -308,8 +358,13 @@ async def _book_via_network(
     session_id: str | None,
     _ai_tool_input: dict,
     tool_call_id: str | None = None,
+    guard: bool | None = None,
 ) -> str:
-    """Book via the Amul Beckn network with moderation and idempotency guards."""
+    """Book via the Amul Beckn network with moderation and idempotency guards.
+
+    ``guard`` overrides AI_CALL_BOOKING_GUARD_ENABLED. Voice passes True: it
+    allows one booking per call.
+    """
     from agents.tools.beckn.network import network_create_ai_call_result
 
     logger.info(
@@ -325,7 +380,7 @@ async def _book_via_network(
         metadata={"tool_name": "create_ai_call", "route": "beckn_network"},
     ) as ai_tool_obs:
         # Atomic reservation immediately before the irreversible write.
-        _allowed, _owned = await _reserve_booking_slot(session_id)
+        _allowed, _owned = await _reserve_booking_slot(session_id, guard)
         if not _allowed:
             return ALREADY_BOOKED_MESSAGE
 
@@ -407,7 +462,7 @@ async def _book_via_network(
             return result.message
 
         # Mark this session as booked so a re-run (or retry) does not double-book.
-        await _mark_session_booked(session_id, result.ticket, species.value)
+        await _mark_session_booked(session_id, result.ticket, species.value, guard)
 
         logger.info(
             "Network AI call succeeded for union=%s society=%s farmer=%s species=%s ticket=%s",

@@ -1,0 +1,18 @@
+# Root traces that are not farmer turns. The importer records each one in
+# telemetry.trace_ledger as an `activity` and never attaches it to a turn: there
+# is no parent id to join on, and a session holds many questions, so the nearest
+# turn would often be the wrong one. The reasons per family are in
+# telemetry/non_turn_trace_inventory.md.
+#
+# A root trace that is neither a turn nor listed here is still recorded, as
+# `unrecognised`, so a new family shows up in the import report instead of
+# disappearing. List it here once someone has looked at it.
+
+names:
+  - suggestions                  # amul-oan-api app/tasks/suggestions.py, after the response
+  - farmer_background_refresh    # farmer cache refresh worker, both repos, no session
+  # PashuGPT call from voice-oan-api's loan eligibility and milk collection tools.
+  # Inside a turn it is a child span; these ran with no turn around them.
+  - get_farmer_milk_collection_details_api
+prefixes:
+  - frontend.                    # frontend telemetry writer: question, response, error, feedback

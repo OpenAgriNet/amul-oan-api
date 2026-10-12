@@ -29,10 +29,32 @@ jobs:
           tags: |
             type=ref,event=tag
 
-      - name: Build and push Docker image
+      - name: Build Docker image
+        uses: docker/build-push-action@v4
+        with:
+          context: .
+          load: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # .git is left out of the image, so the release stamp reads this.
+          build-args: |
+            GIT_SHA=${{ github.sha }}
+
+      # Nothing is pushed unless the image stamps traces with the commit it was built from.
+      - name: Check the image's release stamp
+        env:
+          IMAGE: ${{ fromJSON(steps.meta.outputs.json).tags[0] }}
+        run: |
+          release=$(docker run --rm --entrypoint python "$IMAGE" -c "from app.services.telemetry_stamps import chat_telemetry_release; print(chat_telemetry_release())")
+          echo "release stamp: $release"
+          test "$release" = "$GITHUB_SHA"
+
+      - name: Push Docker image
         uses: docker/build-push-action@v4
         with:
           context: .
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            GIT_SHA=${{ github.sha }}

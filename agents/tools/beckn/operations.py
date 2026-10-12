@@ -722,20 +722,15 @@ class BecknOperationClient:
     async def confirm_booking(
         self,
         *,
-        service: str,
         union_code: str,
         society_code: str,
         farmer_code: str,
         species: str,
+        technician_id: str,
         session_id: Optional[str],
         tool_call_id: Optional[str],
-        technician_id: Optional[str] = None,
-        case_type: Optional[str] = None,
-        remark: Optional[str] = None,
     ) -> BecknActionResult:
         self._validate_configuration()
-        if service not in {"ai-call", "health-call"}:
-            raise ValueError(f"Unsupported booking service: {service}")
         operation_id = str(uuid.uuid4())
         transaction_id = str(uuid.uuid4())
         message_id = str(uuid.uuid4())
@@ -743,35 +738,26 @@ class BecknOperationClient:
         # invocation.  A missing id deliberately gets a fresh nonce so two
         # legitimate identical bookings are not collapsed.
         invocation_id = tool_call_id or secrets.token_urlsafe(18)
-        idempotency_key = f"{session_id or 'no-session'}:{invocation_id}:{service}"
-        is_ai_call = service == "ai-call"
-        item_id = f"ait:{technician_id}" if is_ai_call else "health-call"
-        provider_id = "amul-ai-service" if is_ai_call else "amul-animal-health-service"
-        fulfillment_type = "TECHNICIAN_VISIT" if is_ai_call else "VETERINARY_VISIT"
-        tag_group_code = "booking-details" if is_ai_call else "health-call-details"
+        idempotency_key = f"{session_id or 'no-session'}:{invocation_id}:ai-call"
+        item_id = f"ait:{technician_id}"
 
         private_tags = [
             {"descriptor": {"code": "farmer_code"}, "value": farmer_code},
             {"descriptor": {"code": "union_code"}, "value": union_code},
             {"descriptor": {"code": "species"}, "value": species},
         ]
-        if case_type:
-            private_tags.append({"descriptor": {"code": "case_type"}, "value": case_type})
-        if remark:
-            private_tags.append({"descriptor": {"code": "remark"}, "value": remark})
-
         order = {
-            "provider": {"id": provider_id},
+            "provider": {"id": "amul-ai-service"},
             "items": [{"id": item_id}],
             "fulfillments": [
                 {
                     "id": "fulfillment-1",
-                    "type": fulfillment_type,
+                    "type": "TECHNICIAN_VISIT",
                     "customer": {"person": {"id": f"farmer:{farmer_code}"}},
                     "stops": [{"location": {"descriptor": {"code": f"society:{society_code}"}}}],
                     "tags": [
                         {
-                            "descriptor": {"code": tag_group_code},
+                            "descriptor": {"code": "booking-details"},
                             "list": private_tags,
                         }
                     ],

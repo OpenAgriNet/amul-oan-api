@@ -346,6 +346,16 @@ class Settings(BaseSettings):
     telemetry_ingest_max_feedback_text_len: int = 4000
     telemetry_ingest_max_error_text_len: int = 2000
 
+    # Telemetry database, read by the dashboard query API (docs/TELEMETRY_PIPELINE.md).
+    # The host and port are the ones scripts/telemetry_import.py uses. Without the
+    # password and the API key the query endpoints answer 503.
+    telemetry_clickhouse_host: str = "localhost"
+    telemetry_clickhouse_port: int = 8123
+    telemetry_dashboard_password: Optional[str] = None
+    telemetry_query_api_key: Optional[str] = None
+    telemetry_query_voice_environment: str = "voice-production"
+    telemetry_query_chat_environment: str = "chat-production"
+
     # External Service URLs
     telemetry_api_url: str = "https://vistaar.kenpath.ai/observability-service/action/data/v3/telemetry"
     bhashini_api_url: str = "https://dhruva-api.bhashini.gov.in/services/inference/pipeline"
@@ -359,6 +369,53 @@ class Settings(BaseSettings):
     # it folds in (voice is served by voice-oan-api today).
     nudge_api_url: str = os.getenv("NUDGE_API_URL", "https://vistaar.getraya.app/api/nudge-user")
     nudge_timeout_seconds: float = float(os.getenv("NUDGE_TIMEOUT_SECONDS", "3.0"))
+    enable_voice_nudges: bool = _get_bool_env("ENABLE_VOICE_NUDGES", default=True)
+    # Voice's pre-turn classifiers (app/voice/classifiers.py) — also inert on the
+    # chat path. Same names and defaults as voice-oan-api.
+    stt_signal_retry_ceiling: int = int(os.getenv("STT_SIGNAL_RETRY_CEILING", "3"))
+    voice_profile_creation_date_words: str = os.getenv(
+        "VOICE_PROFILE_CREATION_DATE_WORDS",
+        "eleventh February two thousand twenty six",
+    )
+    # Voice's non-meaningful and outbound consent checks (app/voice/), inert on the
+    # chat path too. Same names and defaults as voice-oan-api.
+    voice_non_meaningful_timeout_seconds: float = float(os.getenv("VOICE_NON_MEANINGFUL_TIMEOUT_SECONDS", "0.60"))
+    # How long voice's gate waits on the non-meaningful check before letting the turn through.
+    voice_non_meaningful_gate_timeout_seconds: float = float(os.getenv("VOICE_NON_MEANINGFUL_GATE_TIMEOUT_SECONDS", "0.50"))
+    voice_outbound_consent_timeout_seconds: float = float(
+        os.getenv("VOICE_OUTBOUND_CONSENT_TIMEOUT_SECONDS", "0.60")
+    )
+    # Serves voice at /voice/ from this repo (app/routers/voice.py). Off until the
+    # cutover: voice-oan-api serves the calls until then.
+    voice_route_enabled: bool = _get_bool_env("VOICE_ROUTE_ENABLED", default=False)
+    # Voice's trace (app/voice/trace.py). Same names and defaults as voice-oan-api.
+    enable_voice_tracing: bool = _get_bool_env("ENABLE_VOICE_TRACING", default=True)
+    voice_trace_text_mode: str = os.getenv("VOICE_TRACE_TEXT_MODE", "none")
+    voice_trace_preview_chars: int = int(os.getenv("VOICE_TRACE_PREVIEW_CHARS", "120"))
+    voice_trace_log_summary: bool = _get_bool_env("VOICE_TRACE_LOG_SUMMARY", default=True)
+    # Voice's agent and its farmer data (agents/voice/), inert on the chat path.
+    # Same names and defaults as voice-oan-api.
+    voice_profile_service_channels: str = os.getenv(
+        "VOICE_PROFILE_SERVICE_CHANNELS",
+        "chat, voice call, and WhatsApp",
+    )
+    voice_profile_helpline_number_words: str = os.getenv(
+        "VOICE_PROFILE_HELPLINE_NUMBER_WORDS",
+        "zero eight zero three five four five three five four five",
+    )
+    # Farmer API traces carry a PII-safe summary; the raw body only when this is
+    # on, capped at FARMER_API_TRACE_BODY_CHARS.
+    farmer_api_trace_body: bool = _get_bool_env("FARMER_API_TRACE_BODY", default=False)
+    farmer_api_trace_body_chars: int = int(os.getenv("FARMER_API_TRACE_BODY_CHARS", "8000"))
+    # Outbound calls (app/voice/outbound.py): the consent gate and the milk readout
+    # only run for calls the telephony provider stamps outbound, once this is on.
+    outbound_intro_enabled: bool = _get_bool_env("OUTBOUND_INTRO_ENABLED", default=False)
+    outbound_milk_window_days: int = int(os.getenv("OUTBOUND_MILK_WINDOW_DAYS", "7"))
+    # Bounded so a hung upstream can never keep a prefetch task alive across the
+    # whole call; the caller's reply arrives long before this.
+    outbound_milk_prefetch_timeout_seconds: float = float(
+        os.getenv("OUTBOUND_MILK_PREFETCH_TIMEOUT_SECONDS", "25.0")
+    )
     # Kill switch for Hindi chat. Default ON: hi/hindi requests use the full
     # src->en->agent->hi translation pipeline. Set HINDI_CHAT_ENABLED=false to
     # disable Hindi independently (hi/hindi then bypass the pipeline and are
@@ -545,6 +602,14 @@ class Settings(BaseSettings):
         default="https://sabardairy.org/for-our-milk-producers/",
         validation_alias="SABAR_SCHEME_SOURCE_URL",
     )
+    dudhdhara_scheme_source_url: str = Field(
+        default="https://www.dudhdharadairy.in/for_our_milk_producers",
+        validation_alias="DUDHDHARA_SCHEME_SOURCE_URL",
+    )
+    madhur_scheme_source_url: str = Field(
+        default="http://www.madhurdairy.org/forourmilkproducers?name=for-our-milk-producers",
+        validation_alias="MADHUR_SCHEME_SOURCE_URL",
+    )
     # PDF pages are rendered locally and sent one page per request to a stock
     # Chandra OpenAI-compatible endpoint.
     scheme_ocr_endpoint_url: Optional[str] = os.getenv("SCHEME_OCR_ENDPOINT_URL")
@@ -585,8 +650,6 @@ class Settings(BaseSettings):
     # guard is on. Shorter = a farmer can legitimately re-book sooner; longer =
     # wider protection against a delayed fallback re-fire.
     ai_call_cooldown_ttl_seconds: int = int(os.getenv("AI_CALL_COOLDOWN_TTL_SECONDS", str(60 * 30)))
-    # Health-call booking idempotency TTL.
-    health_call_cooldown_ttl_seconds: int = Field(default=60 * 30, validation_alias="HEALTH_CALL_COOLDOWN_TTL_SECONDS")
     # Per-check toggles. A disabled check is BYPASSED (treated as pass) so product
     # can test the end-to-end flow without real Amul submissions / bank-list rows.
     loan_check_bank_list_enabled: bool = os.getenv("LOAN_CHECK_BANK_LIST_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
@@ -726,7 +789,6 @@ class Settings(BaseSettings):
         "scheme_ocr_max_output_tokens": ("SCHEME_OCR_MAX_OUTPUT_TOKENS", 12284, 1, None),
         "scheme_ocr_concurrency": ("SCHEME_OCR_CONCURRENCY", 4, 1, 8),
         "scheme_ocr_page_batch_size": ("SCHEME_OCR_PAGE_BATCH_SIZE", 4, 1, 8),
-        "health_call_cooldown_ttl_seconds": ("HEALTH_CALL_COOLDOWN_TTL_SECONDS", 60 * 30, 1, None),
         "vistaar_max_items": ("VISTAAR_MAX_ITEMS", 20, 1, None),
         "farmer_refresh_lock_ttl_seconds": ("FARMER_REFRESH_LOCK_TTL_SECONDS", 60 * 5, 1, None),
         "farmer_refresh_queue_batch_size": ("FARMER_REFRESH_QUEUE_BATCH_SIZE", 20, 1, None),
@@ -761,7 +823,6 @@ class Settings(BaseSettings):
         "scheme_ocr_max_output_tokens",
         "scheme_ocr_concurrency",
         "scheme_ocr_page_batch_size",
-        "health_call_cooldown_ttl_seconds",
         "vistaar_max_items",
         "farmer_refresh_lock_ttl_seconds",
         "farmer_refresh_queue_batch_size",
@@ -822,6 +883,7 @@ class Settings(BaseSettings):
         "sumul_scheme_source_url",
         "sursagar_scheme_source_url",
         "sabar_scheme_source_url",
+        "dudhdhara_scheme_source_url",
         mode="before",
     )
     @classmethod
