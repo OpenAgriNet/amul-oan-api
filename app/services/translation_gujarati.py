@@ -6,6 +6,8 @@ import re
 from contextlib import contextmanager
 from contextvars import ContextVar
 
+import regex as partial_regex
+
 from agents.tools.terms import GU_TERM_POLICY
 from helpers.utils import normalize_voice_output
 
@@ -101,8 +103,8 @@ GU_POST_REPLACEMENTS_BASE = [
     # ordered rules below so it can be recognized across streaming chunks.
     # TranslateGemma confuses the digit ૫ with the letter પ. Adjacency to a
     # Gujarati digit disambiguates: "૧પ" is 15, not "1p".
-    (r"(?<=[૦-૯])પ", "૫"),
-    (r"પ(?=[૦-૯])", "૫"),
+    (r"([૦-૯])પ", r"\g<1>૫"),
+    (r"પ([૦-૯])", r"૫\g<1>"),
 ]
 CHAT_ONLY_GU_POST_REPLACEMENTS = [
     # Preserve malformed organic typo cleanup. Canonical English/Gujarati
@@ -160,10 +162,10 @@ def _term_rule_pattern(
     return pattern
 
 
-def _term_rules_for_current_channel() -> list[tuple[str, str, bool, bool]]:
+def _term_rules_for_channel(channel: str) -> list[tuple[str, str, bool, bool]]:
     channel_rules = (
         _GU_VOICE_TERM_REPLACEMENTS
-        if _is_voice_channel()
+        if channel == "voice"
         else _GU_CHAT_TERM_REPLACEMENTS
     )
     return sorted(
@@ -171,6 +173,10 @@ def _term_rules_for_current_channel() -> list[tuple[str, str, bool, bool]]:
         key=lambda item: len(item[0]),
         reverse=True,
     )
+
+
+def _term_rules_for_current_channel() -> list[tuple[str, str, bool, bool]]:
+    return _term_rules_for_channel("voice" if _is_voice_channel() else "chat")
 
 
 def _term_replacement_patterns(
@@ -212,9 +218,12 @@ def _is_word_char(char: str) -> bool:
 class _StreamingGujaratiTermNormalizer:
     """Incrementally apply ordered literal rules with minimal prefix buffering."""
 
-    def __init__(self, target_lang: str):
+    def __init__(self, target_lang: str, *, channel: str | None = None):
         self._enabled = target_lang.lower() in ("gujarati", "gu")
-        self._rules = _term_rules_for_current_channel() if self._enabled else []
+        self._channel = channel or ("voice" if _is_voice_channel() else "chat")
+        self._rules = (
+            _term_rules_for_channel(self._channel) if self._enabled else []
+        )
         self._pending = ""
         self._previous_input_char = ""
 
@@ -278,6 +287,137 @@ class _StreamingGujaratiTermNormalizer:
             self._previous_input_char = self._pending[0]
             self._pending = self._pending[1:]
 
+        return "".join(emitted)
+
+
+# Must be rejected by every start-anchored rule. A colon cannot begin either a
+# feminine "હું" clause or a voice ``Label: value`` scaffold.
+_STREAM_START_SENTINEL = ":"
+
+
+class _StreamingRegexReplacer:
+    """Apply one regex incrementally, retaining only an unfinished suffix."""
+
+    def __init__(
+        self,
+        pattern: str,
+        replacement,
+        *,
+        flags: int = 0,
+        start_mode: str | None = None,
+        max_pending: int | None = None,
+    ):
+        self._pattern = partial_regex.compile(pattern, flags)
+        self._replacement = replacement
+        self._start_mode = start_mode
+        self._max_pending = max_pending
+        self._pending = ""
+        self._absolute_start = True
+        self._line_start = True
+
+    def feed(self, chunk: str) -> str:
+        self._pending += chunk
+        return self._drain(final=False)
+
+    def flush(self) -> str:
+        return self._drain(final=True)
+
+    def _start_is_available(self) -> bool:
+        if self._start_mode == "absolute":
+            return self._absolute_start
+        if self._start_mode == "line":
+            return self._line_start
+        return True
+
+    def _consume(self, raw: str) -> None:
+        if not raw:
+            return
+        self._absolute_start = False
+        self._line_start = raw.endswith("\n")
+
+    def _drain(self, *, final: bool) -> str:
+        emitted: list[str] = []
+        while self._pending:
+            guard = "" if self._start_is_available() else _STREAM_START_SENTINEL
+            searchable = guard + self._pending
+            match = self._pattern.search(searchable, partial=not final)
+            if match is None:
+                emitted.append(self._pending)
+                self._consume(self._pending)
+                self._pending = ""
+                break
+
+            offset = len(guard)
+            start = max(0, match.start() - offset)
+            end = max(0, match.end() - offset)
+            prefix = self._pending[:start]
+            if prefix:
+                emitted.append(prefix)
+                self._consume(prefix)
+                self._pending = self._pending[start:]
+
+            if match.partial:
+                if self._trim_pending(emitted):
+                    continue
+                break
+
+            # A complete match at the current end may still grow or lose an
+            # end-boundary assertion when the next provider chunk arrives.
+            if not final and match.end() == len(searchable):
+                if self._trim_pending(emitted):
+                    continue
+                break
+
+            matched_length = end - start
+            if matched_length <= 0:
+                # None of the configured rules are intentionally zero-width.
+                # Avoid an infinite loop if a future rule accidentally is.
+                emitted.append(self._pending[0])
+                self._consume(self._pending[0])
+                self._pending = self._pending[1:]
+                continue
+
+            raw_match = self._pending[:matched_length]
+            replacement = (
+                self._replacement(match)
+                if callable(self._replacement)
+                else match.expand(self._replacement)
+            )
+            emitted.append(replacement)
+            self._consume(raw_match)
+            self._pending = self._pending[matched_length:]
+
+        return "".join(emitted)
+
+    def _trim_pending(self, emitted: list[str]) -> bool:
+        if self._max_pending is None or len(self._pending) <= self._max_pending:
+            return False
+        emit_length = len(self._pending) - self._max_pending
+        stable = self._pending[:emit_length]
+        emitted.append(stable)
+        self._consume(stable)
+        self._pending = self._pending[emit_length:]
+        return True
+
+
+class _StreamingNormalizerPipeline:
+    def __init__(self, stages):
+        self._stages = list(stages)
+
+    def feed(self, chunk: str) -> str:
+        out = chunk
+        for stage in self._stages:
+            out = stage.feed(out)
+        return out
+
+    def flush(self) -> str:
+        emitted: list[str] = []
+        for index, stage in enumerate(self._stages):
+            out = stage.flush()
+            for downstream in self._stages[index + 1 :]:
+                out = downstream.feed(out)
+            if out:
+                emitted.append(out)
         return "".join(emitted)
 
 
@@ -419,17 +559,8 @@ async def _buffered_protected_stream(stream, triggers):
         yield buf
 
 
-# ── Voice-only context-aware body-slang normalization (§14 channel-aware) ──────
-# Chat maps all body slang -> શરીર uniformly via the shared gu_term_policy.json.
-# Voice additionally distinguishes back/flank context (-> પીઠ) from general body
-# context (-> શરીર), matching voice's live telephony behavior. Gated on the voice
-# channel; the stream-safe rule set mirrors these longer contextual matches before
-# the policy's generic body mapping.
-GU_WORD_BOUNDARY_START = r"(?<![઀-૿])"
-GU_WORD_BOUNDARY_END = r"(?![઀-૿])"
-GU_BODY_SLANG_VARIANTS = rf"(?:{'|'.join(map(re.escape, _GU_BODY_SLANG_TERMS))})"
-GU_BODY_BACK_SUFFIXES = r"(?:માં|મા|પર)"
-GU_BODY_BACK_POSTPOSITIONS = r"(?:પર|માં|મા|પાછળ)"
+# Voice body meaning is handled by the same ordered terminology rules for unary
+# and streaming output. Only the grammatical agreement cleanup remains here.
 GU_BODY_AGREEMENT_FIXES = [
     (r"શરીર\s+ઠંડા\s+લાગે\s+છે", "શરીર ઠંડું લાગે છે"),
     (r"શરીર\s+ઠંડી\s+લાગે\s+છે", "શરીર ઠંડું લાગે છે"),
@@ -440,88 +571,36 @@ GU_BODY_AGREEMENT_FIXES = [
 _GU_PLACEHOLDER_RE = r"(?:[-–—]{1,3}|[‐‑‒―])"
 
 
-def _normalize_gu_body_terms(text: str) -> str:
-    """Normalize slang Gujarati body terms with contextual mapping (voice only)."""
-    out = text
+# Feminine self-reference guard (§14). A single alternation keeps the existing
+# six forms on one bounded streaming stage instead of multiplying the carry.
+_GU_FEMININE_STREAM_PATTERN = (
+    r"(^|[,।.!?]\s+)\s*હું(?:"
+    r"(?P<body>[^.!?\n]{0,80}?)(?P<ending>"
+    r"શકું\s+ન(?:થી|હીં|હિ)|શકું\s+છું|કરું|આવું\s+છું)"
+    r"|(?P<body>[^,।.!?\n]{0,80}?)(?P<ending>"
+    r"શકતો\s+ન(?:થી|હીં|હિ)|શકતો\s+છું)"
+    r")(?=\s|[,।.!?]|$)"
+)
 
-    # Back/flank context: slang + attached locative suffix.
-    out = re.sub(
-        rf"{GU_WORD_BOUNDARY_START}(?P<lemma>{GU_BODY_SLANG_VARIANTS})(?P<suffix>{GU_BODY_BACK_SUFFIXES}){GU_WORD_BOUNDARY_END}",
-        lambda m: f"પીઠ{m.group('suffix')}",
-        out,
+
+def _feminine_stream_replacement(match) -> str:
+    ending = match.group("ending")
+    if ending.startswith(("શકું ન", "શકતો ન")):
+        replacement = "શકતી નથી"
+    elif ending.startswith(("શકું", "શકતો")):
+        replacement = "શકતી છું"
+    elif ending == "કરું":
+        replacement = "કરૂં"
+    else:
+        replacement = "આવી છું"
+    return f"{match.group(1)}હું{match.group('body')}{replacement}"
+
+
+GU_FEMININE_SELF_REFERENCE_REPLACEMENTS = [
+    (
+        partial_regex.compile(_GU_FEMININE_STREAM_PATTERN),
+        _feminine_stream_replacement,
     )
-
-    # Back/flank context: slang + spaced postposition/phrase.
-    out = re.sub(
-        rf"{GU_WORD_BOUNDARY_START}(?P<lemma>{GU_BODY_SLANG_VARIANTS})\s+(?P<post>{GU_BODY_BACK_POSTPOSITIONS}){GU_WORD_BOUNDARY_END}",
-        lambda m: f"પીઠ {m.group('post')}",
-        out,
-    )
-    out = re.sub(
-        rf"{GU_WORD_BOUNDARY_START}(?P<lemma>{GU_BODY_SLANG_VARIANTS})\s+ની\s+બાજુ{GU_WORD_BOUNDARY_END}",
-        "પીઠની બાજુ",
-        out,
-    )
-    out = re.sub(
-        rf"{GU_WORD_BOUNDARY_START}(?P<lemma>{GU_BODY_SLANG_VARIANTS})\s+ના\s+ભાગ(?P<post>{GU_BODY_BACK_SUFFIXES}){GU_WORD_BOUNDARY_END}",
-        lambda m: f"પીઠના ભાગ{m.group('post')}",
-        out,
-    )
-
-    # Default: generic body context.
-    out = re.sub(
-        rf"{GU_WORD_BOUNDARY_START}(?P<lemma>{GU_BODY_SLANG_VARIANTS})(?P<suffix>ના|ની|નું|નો|ને|થી)?{GU_WORD_BOUNDARY_END}",
-        lambda m: f"શરીર{m.group('suffix') or ''}",
-        out,
-    )
-
-    for pat, repl in GU_BODY_AGREEMENT_FIXES:
-        out = re.sub(pat, repl, out)
-
-    return out
-
-
-# Feminine self-reference guard (§14). The assistant persona is female,
-# so first-person verb forms must use the feminine conjugation. Deterministic safety
-# net BEYOND the prompt rule. Boundary-aware; only rewrites the verb ending
-# after "હું" so it applies to assistant self-reference.
-GU_FEMININE_SELF_REFERENCE_REPLACEMENTS: list[tuple[re.Pattern, str]] = [
-    (
-        re.compile(
-            r"(^|[,।.!?]\s+)\s*હું(?P<body>[^.!?\n]{0,80}?)શકું\s+ન(?:થી|હીં|હિ)(?=\s|[,।.!?]|$)"
-        ),
-        r"\1હું\g<body>શકતી નથી",
-    ),
-    (
-        re.compile(
-            r"(^|[,।.!?]\s+)\s*હું(?P<body>[^.!?\n]{0,80}?)શકું\s+છું(?=\s|[,।.!?]|$)"
-        ),
-        r"\1હું\g<body>શકતી છું",
-    ),
-    (
-        re.compile(
-            r"(^|[,।.!?]\s+)\s*હું(?P<body>[^,।.!?\n]{0,80}?)શકતો\s+ન(?:થી|હીં|હિ)(?=\s|[,।.!?]|$)"
-        ),
-        r"\1હું\g<body>શકતી નથી",
-    ),
-    (
-        re.compile(
-            r"(^|[,।.!?]\s+)\s*હું(?P<body>[^,।.!?\n]{0,80}?)શકતો\s+છું(?=\s|[,।.!?]|$)"
-        ),
-        r"\1હું\g<body>શકતી છું",
-    ),
-    (
-        re.compile(
-            r"(^|[,।.!?]\s+)\s*હું(?P<body>[^.!?\n]{0,80}?)કરું(?=\s|[,।.!?]|$)"
-        ),
-        r"\1હું\g<body>કરૂં",
-    ),
-    (
-        re.compile(
-            r"(^|[,।.!?]\s+)\s*હું(?P<body>[^.!?\n]{0,80}?)આવું\s+છું(?=\s|[,।.!?]|$)"
-        ),
-        r"\1હું\g<body>આવી છું",
-    ),
 ]
 
 
@@ -538,75 +617,158 @@ def _fix_dandas(text: str, target_lang: str = "gu") -> str:
     return text.replace("।", ".")
 
 
+def _regex_replacement_stages(channel: str):
+    stages = []
+    feminine_pattern, feminine_replacement = (
+        GU_FEMININE_SELF_REFERENCE_REPLACEMENTS[0]
+    )
+
+    if channel == "chat":
+        stages.extend(
+            _StreamingRegexReplacer(pattern, replacement)
+            for pattern, replacement in CHAT_ONLY_GU_POST_REPLACEMENTS
+        )
+
+    stages.extend(
+        _StreamingRegexReplacer(pattern, replacement)
+        for pattern, replacement in GU_POST_REPLACEMENTS_BASE
+    )
+    stages.append(_StreamingGujaratiTermNormalizer("gu", channel=channel))
+
+    if channel == "voice":
+        stages.extend(
+            _StreamingRegexReplacer(pattern, replacement)
+            for pattern, replacement in GU_BODY_AGREEMENT_FIXES
+        )
+
+    stages.append(
+        _StreamingRegexReplacer(
+            feminine_pattern.pattern,
+            feminine_replacement,
+            flags=feminine_pattern.flags,
+            start_mode="absolute",
+            # 80 body chars plus the boundary, pronoun, and longest verb form.
+            max_pending=112,
+        )
+    )
+
+    if channel == "voice":
+        stages.extend(
+            (
+                _StreamingRegexReplacer(
+                    rf"([:：]\s*){_GU_PLACEHOLDER_RE}(?=\s|$)",
+                    r"\1",
+                ),
+                _StreamingRegexReplacer(
+                    r"(?m)^\s*[^\s:।.!?\n]{1,20}\s*:\s*",
+                    ", ",
+                    start_mode="line",
+                ),
+                _StreamingRegexReplacer(
+                    r"^\s*,\s*",
+                    "",
+                    start_mode="absolute",
+                ),
+                _StreamingRegexReplacer("\u00A0", " "),
+                _StreamingRegexReplacer("\u200D", ""),
+                _StreamingRegexReplacer("\u200C", ""),
+                _StreamingRegexReplacer(r"\s+([,।.!?])", r"\1"),
+            )
+        )
+
+    stages.extend(
+        (
+            _StreamingRegexReplacer(r"[ \t]{2,}", " "),
+            _StreamingRegexReplacer(r"\n{3,}", "\n\n"),
+        )
+    )
+    return stages
+
+
+class _StreamingGujaratiPostNormalizer:
+    """Incrementally apply every Gujarati-owned post-translation rule."""
+
+    def __init__(self, target_lang: str, *, channel: str | None = None):
+        self.target_lang = target_lang
+        self.enabled = target_lang.lower() in ("gujarati", "gu")
+        self.channel = channel or ("voice" if _is_voice_channel() else "chat")
+        self.is_voice = self.enabled and self.channel == "voice"
+        self._voice_output_whitespace = ""
+        self._pipeline = (
+            _StreamingNormalizerPipeline(_regex_replacement_stages(self.channel))
+            if self.enabled
+            else None
+        )
+
+    def feed(self, chunk: str) -> str:
+        if not self.enabled:
+            return chunk
+        return self._pipeline.feed(_fix_dandas(chunk, self.target_lang))
+
+    def flush(self) -> str:
+        if not self.enabled:
+            return ""
+        return self._pipeline.flush()
+
+    def finish_stream_fragment(self, text: str, *, final: bool = False) -> str:
+        if not self.is_voice:
+            return text
+        out = normalize_voice_output(
+            self._voice_output_whitespace + text,
+            self.target_lang,
+            replace_slash=False,
+        )
+        self._voice_output_whitespace = ""
+        out = re.sub(r"[ \t]{2,}", " ", out)
+        if not final:
+            trailing = re.search(r"[ \t]+$", out)
+            if trailing:
+                self._voice_output_whitespace = trailing.group(0)
+                out = out[: trailing.start()]
+        return out
+
+
+def _finish_streaming_translation_chunk(
+    normalizer: _StreamingGujaratiPostNormalizer,
+    text: str,
+    *,
+    final: bool = False,
+) -> str:
+    return normalizer.finish_stream_fragment(text, final=final)
+
+
 def _post_normalize_gu_translation(
     text: str,
     target_lang: str,
     *,
     strip_outer: bool = False,
-    apply_term_replacements: bool = True,
 ) -> str:
     if target_lang.lower() not in ("gujarati", "gu"):
         return text
-    out = text
-    # Voice resolves body slang contextually (બૈડા પર -> પીઠ પર) BEFORE the shared
-    # policy runs; chat keeps the uniform gu_term_policy.json mapping (-> શરીર).
-    if _is_voice_channel():
-        out = _normalize_gu_body_terms(out)
-    else:
-        for pat, repl in CHAT_ONLY_GU_POST_REPLACEMENTS:
-            out = re.sub(pat, repl, out)
-    for pat, repl in GU_POST_REPLACEMENTS_BASE:
-        out = re.sub(pat, repl, out)
-    if apply_term_replacements:
-        out = _apply_gu_term_replacements(out)
-    # Keep assistant first-person Gujarati conjugation feminine on all channels.
-    for pat, repl in GU_FEMININE_SELF_REFERENCE_REPLACEMENTS:
-        out = pat.sub(repl, out)
-    if _is_voice_channel():
-        # Remove placeholder dashes without inventing a quantity (voice parity).
-        out = re.sub(rf"([:：]\s*){_GU_PLACEHOLDER_RE}(?=\s|$)", r"\1", out)
-
-        # Voice-only scaffold collapse: "Label: value" line prefixes become spoken flow.
-        out = re.sub(r"(?m)^\s*[^\s:।.!?\n]{1,20}\s*:\s*", ", ", out)
-        out = re.sub(r"^\s*,\s*", "", out)
-
-        # Voice-only Unicode noise cleanup.
-        out = out.replace("\u00A0", " ")  # NBSP -> regular space
-        out = out.replace("\u200D", "")   # ZWJ -> removed
-        out = out.replace("\u200C", "")   # ZWNJ -> removed
-        out = re.sub(r"\s+([,।.!?])", r"\1", out)  # no space before punctuation
-
-        # Voice parity: apply final output normalization here with slash retention.
+    normalizer = _StreamingGujaratiPostNormalizer(target_lang)
+    out = normalizer.feed(text) + normalizer.flush()
+    if normalizer.is_voice:
+        # Generic TTS cleanup remains a whole-response operation for unary calls.
         out = normalize_voice_output(out, target_lang, replace_slash=False)
-
-    # collapse extra spaces introduced by removals
-    out = re.sub(r"[ \t]{2,}", " ", out)
-    out = re.sub(r"\n{3,}", "\n\n", out)
     return out.strip() if strip_outer else out
 
 
-def _finish_streaming_translation_chunk(text: str, target_lang: str) -> str:
-    if not text:
-        return ""
-    return _post_normalize_gu_translation(
-        text,
-        target_lang,
-        strip_outer=False,
-        apply_term_replacements=False,
-    )
-
-
 def _normalize_streaming_translation_chunk(
-    normalizer: _StreamingGujaratiTermNormalizer,
+    normalizer: _StreamingGujaratiPostNormalizer,
     content: str,
     target_lang: str,
 ) -> str:
-    safe_text = normalizer.feed(_fix_dandas(content, target_lang))
-    return _finish_streaming_translation_chunk(safe_text, target_lang)
+    del target_lang  # Kept for compatibility with existing call sites.
+    return _finish_streaming_translation_chunk(normalizer, normalizer.feed(content))
 
 
 def _flush_streaming_translation(
-    normalizer: _StreamingGujaratiTermNormalizer,
+    normalizer: _StreamingGujaratiPostNormalizer,
     target_lang: str,
 ) -> str:
-    return _finish_streaming_translation_chunk(normalizer.flush(), target_lang)
+    del target_lang  # Kept for compatibility with existing call sites.
+    return _finish_streaming_translation_chunk(
+        normalizer,
+        normalizer.flush(),
+        final=True,
+    )

@@ -26,6 +26,7 @@ from app.services.translation_gujarati import (
     GU_TERM_POLICY,
     GU_TERM_REPLACEMENTS,
     VOICE_GU_PREFERRED_TRANSLATION_RULES,
+    _StreamingGujaratiPostNormalizer,
     _StreamingGujaratiTermNormalizer,
     _apply_gu_term_replacements,
     _apply_protected_output,
@@ -219,8 +220,7 @@ def _canned_union_ban_translation(text: str, target_lang: str) -> str | None:
 # POST_TRANSLATION chain: [TranslateGemma(LB), managed-LLM overflow]. Per tier the
 # handle is a TGDescriptor (aiohttp text-completion) or an AsyncOpenAI client
 # (chat.completions). The SAME instruction (glossary Rules + GU style rules + length
-# rule, channel-aware) and the SAME per-chunk transform pipeline
-# (``_fix_dandas -> _post_normalize_gu_translation(strip_outer=False)``) apply to
+# rule, channel-aware) and the SAME incremental Gujarati post-normalizer apply to
 # BOTH tiers. llm_core owns tier selection, first-token commit, fallback and
 # telemetry; this module only adapts each selected model protocol.
 def _prepare_translation_inputs(text, source_lang, target_lang, max_output_chars):
@@ -248,10 +248,10 @@ def _prepare_translation_inputs(text, source_lang, target_lang, max_output_chars
 async def _translategemma_stream(descriptor, prompt, source_lang, target_lang, text, temperature, max_tokens):
     """VERBATIM TranslateGemma streaming SSE decode (aiohttp), incl. the
     ``stream_translation`` Langfuse observation and its ``if not langfuse:`` branch.
-    Both provider branches use the same incremental terminology normalizer."""
+    Both provider branches use the same incremental Gujarati post-normalizer."""
     translated_parts: list[str] = []
     langfuse = _get_langfuse()
-    normalizer = _StreamingGujaratiTermNormalizer(target_lang)
+    normalizer = _StreamingGujaratiPostNormalizer(target_lang)
 
     if not langfuse:
         async with aiohttp.ClientSession() as session:
@@ -399,9 +399,9 @@ async def _llm_translation_stream(
     client, model_name, instruction, source_lang, target_lang, text, temperature,
     max_tokens, *, provider="openai",
 ):
-    """Translate through a provider-native client with stream-safe terminology."""
+    """Translate through a provider-native client with stream-safe Gujarati cleanup."""
     langfuse = _get_langfuse()
-    normalizer = _StreamingGujaratiTermNormalizer(target_lang)
+    normalizer = _StreamingGujaratiPostNormalizer(target_lang)
     observation = (
         langfuse.start_as_current_observation(
             name="stream_translation",
@@ -589,7 +589,7 @@ async def translate_text(
 ) -> str:
     """Translate text via the post-translation tier chain.
 
-    Chain = [TranslateGemma(LB), managed-LLM overflow]. Guards / prompt / per-chunk
+    Chain = [TranslateGemma(LB), managed-LLM overflow]. Guards / prompt / incremental
     transforms are byte-identical to the prior TranslateGemma-only path; the only
     additions are the cross-provider overflow (chat.completions with the SAME
     instruction) when TranslateGemma fails, and config-driven endpoint/model
@@ -783,7 +783,7 @@ async def translate_text_stream_fast(
     First-token-commit semantics: if TranslateGemma fails BEFORE the first chunk on a
     fallbackable reason, the managed-LLM overflow tier transparently serves; a failure
     AFTER the first chunk propagates (the caller-side degrade net yields the English
-    batch). Guards, prompt, and the per-chunk transform pipeline are unchanged."""
+    batch). Guards, prompt, and the incremental transform pipeline are unchanged."""
     if not text or not text.strip():
         return
 
