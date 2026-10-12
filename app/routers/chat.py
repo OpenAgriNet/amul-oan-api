@@ -1,5 +1,9 @@
+from contextlib import aclosing
+
+import anyio
 from fastapi import APIRouter, Depends, BackgroundTasks
 from fastapi.responses import JSONResponse, StreamingResponse
+from starlette.types import Send
 from app.auth.jwt_auth import get_chat_user
 from app.services.chat import stream_chat_messages
 from app.utils import _get_message_history
@@ -11,6 +15,30 @@ import uuid
 logger = get_logger(__name__)
 
 router = APIRouter(prefix="/chat", tags=["chat"])
+
+
+class ClosingStreamingResponse(StreamingResponse):
+    """A StreamingResponse that always closes its body iterator.
+
+    Starlette leaves the iterator suspended when the client goes away: on ASGI
+    2.4 ``send`` raises out of the streaming loop, and on older servers the
+    stream task is cancelled mid-``send``. The chat turn would then stay open —
+    root span not exited, no outcome recorded — until the event loop finalised
+    the generator, after the response's background tasks had already run inside
+    that span. Closing it here records the hang-up as "cancelled" immediately.
+    """
+
+    async def stream_response(self, send: Send) -> None:
+        try:
+            await super().stream_response(send)
+        finally:
+            aclose = getattr(self.body_iterator, "aclose", None)
+            if aclose is not None:
+                # Shielded: on the cancellation path this runs inside a cancelled
+                # scope, and the close must still complete.
+                with anyio.CancelScope(shield=True):
+                    await aclose()
+
 
 @router.get("/")
 async def chat_endpoint(
@@ -55,7 +83,8 @@ async def chat_endpoint(
     )
 
     if request.stream is False:
-        full_response = "".join([chunk async for chunk in message_stream])
+        async with aclosing(message_stream) as stream:
+            full_response = "".join([chunk async for chunk in stream])
         return JSONResponse(
             content={
                 "session_id": session_id,
@@ -65,4 +94,4 @@ async def chat_endpoint(
             }
         )
 
-    return StreamingResponse(message_stream, media_type='text/event-stream')
+    return ClosingStreamingResponse(message_stream, media_type='text/event-stream')

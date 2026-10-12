@@ -5,6 +5,26 @@
     "transliteration": "6 months (age/duration)"
   },
   {
+    "en": "organic",
+    "gu": "જૈવિક",
+    "transliteration": "jaivik"
+  },
+  {
+    "en": "organic farming",
+    "gu": "જૈવિક ખેતી",
+    "transliteration": "jaivik kheti"
+  },
+  {
+    "en": "organic manure",
+    "gu": "જૈવિક ખાતર",
+    "transliteration": "jaivik khatar"
+  },
+  {
+    "en": "organic compost",
+    "gu": "જૈવિક કમ્પોસ્ટ",
+    "transliteration": "jaivik compost"
+  },
+  {
     "en": "ABCESS",
     "gu": "ગુમડું ઘા ખરજવું",
     "transliteration": "gumdu , gha , kharjavu"
@@ -3933,5 +3953,25 @@
     "en": "Sabarkantha",
     "gu": "સાબરકાંઠા",
     "transliteration": "Sabarkantha"
+  },
+  {
+    "en": "bonus",
+    "gu": "બોનસ",
+    "transliteration": "bonus"
+  },
+  {
+    "en": "supplies more milk",
+    "gu": "વધુ દૂધ પુરુ પાડે છે",
+    "transliteration": "vadhu dudh puru pade chhe"
+  },
+  {
+    "en": "supply more milk",
+    "gu": "વધુ દૂધ પુરુ પાડે છે",
+    "transliteration": "vadhu dudh puru pade chhe"
+  },
+  {
+    "en": "provide more milk",
+    "gu": "વધુ દૂધ પુરુ પાડે છે",
+    "transliteration": "vadhu dudh puru pade chhe"
   }
 ]

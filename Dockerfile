@@ -19,6 +19,12 @@ COPY requirements.txt .
 # Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Commit being built, for the release stamp on chat traces:
+# --build-arg GIT_SHA=$(git rev-parse HEAD). A mounted checkout's .git wins over it.
+# Declared after the installs, so a new commit doesn't rebuild those layers.
+ARG GIT_SHA
+ENV GIT_SHA=${GIT_SHA}
+
 # Copy application code
 COPY . .
 

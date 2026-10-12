@@ -52,7 +52,7 @@ def test_model_facing_signature_has_only_ctx():
 
 
 def test_tools_registry_includes_bonus_with_prepare():
-    from agents.tools import TOOLS
+    from agents.tools.registry import TOOLS
     from agents.tools.bonus import (
         get_farmer_bonus_amount,
         prepare_get_farmer_bonus_amount,

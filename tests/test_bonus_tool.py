@@ -2,8 +2,8 @@ import asyncio
 from types import SimpleNamespace
 
 from agents.tools import bonus as bonus_tool
-from app.models.bonus import FarmerBonusAmountRecordModel
-from app.models.farmer import FarmerModel
+from agents.tools.models.bonus import FarmerBonusAmountRecordModel
+from agents.tools.models.farmer import FarmerModel
 
 
 def _ctx():
