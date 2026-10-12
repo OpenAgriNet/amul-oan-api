@@ -13,13 +13,35 @@ import os
 
 os.environ.setdefault("OPENAI_API_KEY", "test-key")
 
-from app.services.translation import _post_normalize_gu_translation, translation_channel
+from app.services.translation import (
+    _StreamingGujaratiPostNormalizer,
+    _flush_streaming_translation,
+    _normalize_streaming_translation_chunk,
+    _post_normalize_gu_translation,
+    translation_channel,
+)
 from helpers.gujarati_numbers import normalize_numbers_for_tts
 
 
 def _norm(text: str, channel: str) -> str:
     with translation_channel(channel):
         return _post_normalize_gu_translation(text, target_lang="gu", strip_outer=True)
+
+
+def _stream_norm(text: str, channel: str, split_at: int) -> str:
+    with translation_channel(channel):
+        normalizer = _StreamingGujaratiPostNormalizer("gu")
+        return "".join(
+            (
+                _normalize_streaming_translation_chunk(
+                    normalizer, text[:split_at], "gu"
+                ),
+                _normalize_streaming_translation_chunk(
+                    normalizer, text[split_at:], "gu"
+                ),
+                _flush_streaming_translation(normalizer, "gu"),
+            )
+        )
 
 
 # ── G2: names keep their honorific (voice removed the address stripping) ─────
@@ -127,3 +149,31 @@ def test_shakto_guard_does_not_feminize_third_person_across_comma():
     out = _norm("હું સંમત છું, પણ આ બળદ દોડી શકતો નથી.", "chat")
     assert "દોડી શકતો નથી" in out
     assert "શકતી નથી" not in out
+
+
+def test_voice_cleanup_matches_unary_at_every_split_point():
+    samples = (
+        "લીલો ચારો: – માત્રા",
+        "ચારો: લીલો\nદાણ: પૂરતું",
+        "તમારી\u00A0ગાય\u200D સારું\u200C છે",
+        "બૈડા પર દુખે છે",
+        "બૈડામાં દુખે છે",
+        "પીઠ ઠંડું લાગે છે",
+        "હું કોઈ ચોક્કસ ડોઝ જણાવી શકતો નથી.",
+        "તમારી ગાય   સારી છે   .",
+    )
+    for text in samples:
+        expected = _norm(text, "voice")
+        for split_at in range(len(text) + 1):
+            assert _stream_norm(text, "voice", split_at).strip() == expected, (
+                text,
+                split_at,
+            )
+
+
+def test_stream_captures_voice_channel_at_creation():
+    with translation_channel("voice"):
+        normalizer = _StreamingGujaratiPostNormalizer("gu")
+
+    assert normalizer.channel == "voice"
+    assert normalizer.is_voice
