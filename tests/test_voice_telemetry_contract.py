@@ -33,7 +33,7 @@ NEW_VERSION = (
     f"{VOICE_TELEMETRY_SCHEMA_VERSION} can't change once released, so this needs a new schema version "
     "in voice-oan-api and here: bump VOICE_TELEMETRY_SCHEMA_VERSION in app/services/telemetry_stamps.py, "
     f"copy {CONTRACT_NAME} to the new version's file and make the change there, and add the new version "
-    f"to telemetry/mappings/voice.yaml (it can extend {VOICE_TELEMETRY_SCHEMA_VERSION})."
+    f"to telemetry/mappings/voice.yaml in amul-telemetry (it can extend {VOICE_TELEMETRY_SCHEMA_VERSION})."
 )
 
 # The same fingerprints as voice-oan-api's. Key order, spacing and the "note"
@@ -449,7 +449,7 @@ def test_outcomes_match_the_contract():
 
     assert found <= listed, (
         f"New outcomes {sorted(found - listed)}. {NEW_VERSION} Also give each one a bucket in "
-        "voice_outcome_vocabulary in telemetry/eras.yaml, or the adapters count it as unclassified."
+        "voice_outcome_vocabulary in telemetry/eras.yaml in amul-telemetry, or the adapters count it as unclassified."
     )
     assert listed <= found, f"Outcomes no longer emitted: {sorted(listed - found)}. {NEW_VERSION}"
 
