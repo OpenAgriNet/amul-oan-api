@@ -3,6 +3,7 @@ from contextlib import contextmanager
 from typing import Any, Iterator
 
 from app.config import settings
+from app.services.telemetry_stamps import chat_telemetry_release
 
 logger = logging.getLogger(__name__)
 
@@ -16,11 +17,10 @@ langfuse_client = None
 
 if langfuse_public_key and langfuse_secret_key:
     try:
-        # Labels for Langfuse: identify all traces as from this service.
-        release = (
-            settings.langfuse_release
-            or "voice-oan-api"
-        )
+        # Labels for Langfuse. The release is the build that served the trace:
+        # LANGFUSE_RELEASE if the deployment sets it, else the running commit,
+        # the same value as the amul.release stamp.
+        release = settings.langfuse_release or chat_telemetry_release()
         environment = (
             settings.langfuse_tracing_environment
             or settings.environment
