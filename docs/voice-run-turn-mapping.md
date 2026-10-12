@@ -70,7 +70,7 @@ Found while mapping; each changes what the port has to do.
   consumer at a `yield`, so a `SideChannelEmission` yielded by `run_turn` would arrive after the
   moment it was needed. See decision 1.
 - **One process, one Langfuse environment.** Chat traces go to `chat-production` and voice
-  traces to `voice-production` (`telemetry/eras.yaml`), set per process through
+  traces to `voice-production` (`telemetry/eras.yaml` in amul-telemetry), set per process through
   `LANGFUSE_TRACING_ENVIRONMENT`. The telemetry import selects by environment. Voice served from
   the chat process would land in the chat environment and drop out of `voice_turns`.
 
@@ -336,7 +336,7 @@ reads it. So a slot lands in the same PR as the code that reads it, never ahead 
    `VOICE_ROUTE_ENABLED=true` and `HISTORY_CACHE_TTL_SECONDS=86400` (voice keeps history for 24
    hours, this repo's default is 2), the telephony
    provider pointed at it, voice-oan-api kept deployable for rollback, and a new era in
-   `telemetry/eras.yaml`. The voice deployment boots from `PIPELINE_CONFIG_PATH` with voice's
+   amul-telemetry's `telemetry/eras.yaml`. The voice deployment boots from `PIPELINE_CONFIG_PATH` with voice's
    steps; the live `llm_pipeline_config:voice` key can override it after that. With
    `VOICE_ROUTE_ENABLED` the app refuses to start, and rejects a live config, unless
    `PIPELINE_CHANNEL=voice` and every profile calls are routed to has moderation,

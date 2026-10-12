@@ -21,7 +21,7 @@ NEW_VERSION = (
     f"{CHAT_TELEMETRY_SCHEMA_VERSION} can't change once released, so this needs a new schema version: "
     "bump CHAT_TELEMETRY_SCHEMA_VERSION in app/services/telemetry_stamps.py, copy "
     f"telemetry/contracts/{CHAT_TELEMETRY_SCHEMA_VERSION}.json to the new version's file and make the change "
-    f"there, and add the new version to telemetry/mappings/chat.yaml (it can extend {CHAT_TELEMETRY_SCHEMA_VERSION})."
+    f"there, and add the new version to telemetry/mappings/chat.yaml in amul-telemetry (it can extend {CHAT_TELEMETRY_SCHEMA_VERSION})."
 )
 
 # Key order, spacing and a "note" don't count.
@@ -91,6 +91,33 @@ def test_chat_turn_v1_contract_matches_what_chat_py_sends():
         f"chat.py's trace input keys don't match the contract. {NEW_VERSION}"
     )
     assert CHAT_TELEMETRY_SERVICE == "amul-oan-api"
+
+
+def _score_names_in_chat_py():
+    """Names chat.py gives its Langfuse scores, e.g. score_current_trace(name="turn_outcome")."""
+    chat_source = Path(__file__).resolve().parents[1] / "app" / "services" / "chat.py"
+    return {
+        keyword.value.value
+        for node in ast.walk(ast.parse(chat_source.read_text(encoding="utf-8")))
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr in {"score_current_trace", "score_current_span", "create_score"}
+        for keyword in node.keywords
+        if keyword.arg == "name" and isinstance(keyword.value, ast.Constant) and isinstance(keyword.value.value, str)
+    }
+
+
+def test_chat_scores_match_the_contract():
+    contract = json.loads(CONTRACT.read_text(encoding="utf-8"))
+    listed = {name for names in contract["scores"].values() for name in names}
+    found = _score_names_in_chat_py()
+
+    assert found == listed, (
+        f"chat.py sends the scores {sorted(found)}, but {CHAT_TELEMETRY_SCHEMA_VERSION} lists {sorted(listed)}. "
+        "A score added, renamed or removed is a new schema version: bump CHAT_TELEMETRY_SCHEMA_VERSION, add "
+        "telemetry/contracts/chat.turn.vN.json with the change, and add the version to telemetry/mappings/chat.yaml "
+        "in amul-telemetry."
+    )
 
 
 def test_released_contracts_never_change():
