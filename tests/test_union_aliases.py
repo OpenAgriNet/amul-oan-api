@@ -47,6 +47,13 @@ import agents.tools.union_schemes as us
     ("mehsana", "mehsana"),
     ("sursagar", "surendranagar"),
     ("Sursagar", "surendranagar"),
+    ("Dudhdhara", "bharuch"),
+    ("  DUDH DHARA ", "bharuch"),
+    ("bharuch", "bharuch"),
+    ("madhur", "gandhinagar"),
+    ("Madhur Dairy", "gandhinagar"),
+    ("  GANDHINAGAR DAIRY  ", "gandhinagar"),
+    ("gandhinagar", "gandhinagar"),
     ("sumul", "sumul"),
     ("kaira", "kaira"),   # no alias -> unchanged
     ("", ""),
@@ -277,6 +284,13 @@ def test_prepare_hides_tool_for_unsupported_union():
     assert prepared is None
 
 
+@pytest.mark.parametrize("union_name", ["dudhdhara", "dudh dhara", "madhur", "madhur dairy", "gandhinagar dairy"])
+def test_prepare_exposes_tool_for_new_scheme_union_aliases(union_name):
+    sentinel = object()
+    prepared = asyncio.run(us.prepare_get_union_scheme_data(_ctx([union_name]), sentinel))
+    assert prepared is sentinel
+
+
 def test_scheme_support_sets_stay_aligned_with_ingestion_map():
     """Tool gating, farmer-context index, and ingestion sources must agree."""
     from agents.farmer_context import SUPPORTED_SCHEME_CONTEXT_UNIONS
@@ -285,3 +299,5 @@ def test_scheme_support_sets_stay_aligned_with_ingestion_map():
     assert us.SUPPORTED_SCHEME_UNIONS == SUPPORTED_SCHEME_CONTEXT_UNIONS
     assert us.SUPPORTED_SCHEME_UNIONS == set(SUPPORTED_UNION_SOURCE_MAP)
     assert UnionName.SABAR.value in us.SUPPORTED_SCHEME_UNIONS
+    assert UnionName.BHARUCH.value in us.SUPPORTED_SCHEME_UNIONS
+    assert UnionName.GANDHINAGAR.value in us.SUPPORTED_SCHEME_UNIONS

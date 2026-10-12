@@ -563,7 +563,15 @@ class Settings(BaseSettings):
         default="https://sursagardairy.com/Farmer/MilkProducers",
         validation_alias="SURSAGAR_SCHEME_SOURCE_URL",
     )
-    # Banas/Sumul/Sursagar/Sabar scheme PDF ingestion via stock Chandra vLLM
+    dudhdhara_scheme_source_url: str = Field(
+        default="https://www.dudhdharadairy.in/for_our_milk_producers",
+        validation_alias="DUDHDHARA_SCHEME_SOURCE_URL",
+    )
+    madhur_scheme_source_url: str = Field(
+        default="http://www.madhurdairy.org/forourmilkproducers?name=for-our-milk-producers",
+        validation_alias="MADHUR_SCHEME_SOURCE_URL",
+    )
+    # PDF-backed scheme ingestion via stock Chandra vLLM
     # (OpenAI-compatible /v1/chat/completions; see scheme_ingestion.py).
     # Base URL e.g. http://10.185.25.197:8011 (optional trailing /v1 is stripped).
     scheme_ocr_endpoint_url: Optional[str] = os.getenv("SCHEME_OCR_ENDPOINT_URL")
@@ -898,6 +906,8 @@ class Settings(BaseSettings):
         "sarhad_scheme_source_url",
         "sumul_scheme_source_url",
         "sursagar_scheme_source_url",
+        "dudhdhara_scheme_source_url",
+        "madhur_scheme_source_url",
         mode="before",
     )
     @classmethod

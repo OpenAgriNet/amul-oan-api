@@ -1,5 +1,9 @@
 import asyncio
 import base64
+import os
+import subprocess
+import sys
+from pathlib import Path
 from types import SimpleNamespace
 
 import httpx
@@ -26,19 +30,33 @@ def test_scheme_sources_read_urls_from_settings():
     assert si.SARHAD_SOURCE.source_url == si.settings.sarhad_scheme_source_url
     assert si.SUMUL_SOURCE.source_url == si.settings.sumul_scheme_source_url
     assert si.SURSAGAR_SOURCE.source_url == si.settings.sursagar_scheme_source_url
+    assert si.DUDHDHARA_SOURCE.source_url == si.settings.dudhdhara_scheme_source_url
+    assert si.MADHUR_SOURCE.source_url == si.settings.madhur_scheme_source_url
 
 
 def test_scheme_site_origins_derive_from_configured_source_urls(monkeypatch):
     monkeypatch.setattr(si, "SUMUL_SITE_ORIGIN", "https://sumul-custom.test")
     monkeypatch.setattr(si, "SURSAGAR_SITE_ORIGIN", "https://sursagar-custom.test")
+    monkeypatch.setattr(si, "DUDHDHARA_SITE_ORIGIN", "https://dudhdhara-custom.test")
+    monkeypatch.setattr(si, "MADHUR_SITE_ORIGIN", "http://madhur-custom.test")
 
     sumul_records = si.parse_sumul_scheme_links('<a href="files/a.pdf">Download</a>')
     sursagar_records = si.parse_sursagar_scheme_links(
         '<a href="/Farmer/DownloadMilkProducerFile?file=test.pdf" class="btn">view</a>'
     )
+    dudhdhara_records = si.parse_dudhdhara_scheme_links(
+        '<table><tr><td>Scheme</td><td><a href="assets/image/custom.pdf">Download</a></td></tr></table>'
+    )
+    madhur_records = si.parse_madhur_scheme_links(
+        '<div class="producer-card"><h4>Scheme</h4>'
+        '<a href="/ForOurMilkProducers/DownloadPdf?fileName=files/custom.pdf">Download</a>'
+        '</div>'
+    )
 
     assert sumul_records[0]["scheme_url"] == "https://sumul-custom.test/files/a.pdf"
     assert sursagar_records[0]["scheme_url"] == "https://sursagar-custom.test/Farmer/DownloadMilkProducerFile?file=test.pdf"
+    assert dudhdhara_records[0]["scheme_url"] == "https://dudhdhara-custom.test/assets/image/custom.pdf"
+    assert madhur_records[0]["scheme_url"] == "http://madhur-custom.test/ForOurMilkProducers/DownloadPdf?fileName=files/custom.pdf"
 
 
 class _FakePixmap:
@@ -1619,3 +1637,145 @@ def test_ingest_sabar_source_raises_when_coverage_too_low(monkeypatch):
 
     with pytest.raises(si.SchemeParseError, match="insufficient sabar ingestion coverage"):
         asyncio.run(si._ingest_sabar_source(si.SABAR_SOURCE, SimpleNamespace()))
+
+
+# ---------------------------------------------------------------------------
+# Dudhdhara (Bharuch) and Madhur (Gandhinagar)
+# ---------------------------------------------------------------------------
+
+_DUDHDHARA_NAV_HTML = """
+<ul><li><a href="assets/image/supplier_pdf.pdf">Suppliers Invited</a></li></ul>
+"""
+
+_DUDHDHARA_HTML = _DUDHDHARA_NAV_HTML + """
+<table class="table table-bordered">
+  <tr><th>Sr.no</th><th>Title</th><th>Downloads</th></tr>
+  <tr><th scope="row">01</th><td>Gobardhan Yojana Pripatra</td>
+      <td><a href="assets/image/gobar_dhan_yojana.pdf">Download</a></td></tr>
+</table>
+"""
+
+_MADHUR_UNRELATED_HTML = """
+<nav><a href="/ForOurMilkProducers/DownloadPdf?fileName=files/unrelated.pdf">Other PDF</a></nav>
+"""
+
+_MADHUR_HTML = _MADHUR_UNRELATED_HTML + """
+<div class="producer-card"><h4>Cattle Group Insurance for Milk Producers</h4>
+  <a href="/ForOurMilkProducers/DownloadPdf?fileName=files/group-insurance.pdf">DOWNLOAD</a>
+</div>
+<div class="producer-card"><h4>CATTLE INSURANCE PARIPATRA</h4>
+  <a href="/ForOurMilkProducers/DownloadPdf?fileName=files/cattle.pdf">DOWNLOAD</a>
+  <a href="/ForOurMilkProducers/DownloadPdf?fileName=files/cattle.pdf">DOWNLOAD AGAIN</a>
+</div>
+"""
+
+
+@pytest.mark.parametrize(
+    "env_name,env_value,source_name,expected_origin",
+    [
+        ("DUDHDHARA_SCHEME_SOURCE_URL", "https://dudhdhara-env.test/schemes/", "DUDHDHARA_SOURCE", "https://dudhdhara-env.test"),
+        ("MADHUR_SCHEME_SOURCE_URL", "http://madhur-env.test/schemes?page=milk", "MADHUR_SOURCE", "http://madhur-env.test"),
+    ],
+)
+def test_new_scheme_source_urls_are_configurable_via_env(env_name, env_value, source_name, expected_origin):
+    origin_name = source_name.replace("_SOURCE", "_SITE_ORIGIN")
+    env = {**os.environ, env_name: env_value}
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            f"import app.services.scheme_ingestion as si; print(si.{source_name}.source_url); print(si.{origin_name})",
+        ],
+        cwd=Path(__file__).resolve().parents[1],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert result.stdout.splitlines()[-2:] == [env_value.rstrip("/"), expected_origin]
+
+
+def test_parse_dudhdhara_scheme_links_reads_table_rows_only():
+    assert si.parse_dudhdhara_scheme_links(_DUDHDHARA_HTML) == [
+        {
+            "scheme_title": "Gobardhan Yojana Pripatra",
+            "scheme_url": "https://www.dudhdharadairy.in/assets/image/gobar_dhan_yojana.pdf",
+        }
+    ]
+
+
+def test_parse_dudhdhara_scheme_links_has_no_page_wide_fallback():
+    assert si.parse_dudhdhara_scheme_links(_DUDHDHARA_NAV_HTML) == []
+
+
+def test_parse_madhur_scheme_links_reads_cards_and_deduplicates():
+    assert si.parse_madhur_scheme_links(_MADHUR_HTML) == [
+        {
+            "scheme_title": "Cattle Group Insurance for Milk Producers",
+            "scheme_url": "http://www.madhurdairy.org/ForOurMilkProducers/DownloadPdf?fileName=files/group-insurance.pdf",
+        },
+        {
+            "scheme_title": "CATTLE INSURANCE PARIPATRA",
+            "scheme_url": "http://www.madhurdairy.org/ForOurMilkProducers/DownloadPdf?fileName=files/cattle.pdf",
+        },
+    ]
+
+
+def test_parse_madhur_scheme_links_has_no_page_wide_fallback():
+    assert si.parse_madhur_scheme_links(_MADHUR_UNRELATED_HTML) == []
+
+
+@pytest.mark.parametrize(
+    "source,html,expected_union,expected_title",
+    [
+        (si.DUDHDHARA_SOURCE, _DUDHDHARA_HTML, "bharuch", "Gobardhan Yojana Pripatra"),
+        (si.MADHUR_SOURCE, _MADHUR_HTML, "gandhinagar", "Cattle Group Insurance for Milk Producers"),
+    ],
+)
+def test_refresh_new_scheme_source_dispatches_and_caches(monkeypatch, source, html, expected_union, expected_title):
+    async def fake_acquire(_cache_key, redis_client=None):
+        return "token"
+
+    async def fake_lock_noop(_cache_key, _token, redis_client=None):
+        return None
+
+    async def fake_fetch_html(_client, url):
+        assert url == source.source_url
+        return html
+
+    async def fake_build(**kwargs):
+        return {
+            "union_name": kwargs["source"].union_name,
+            "scheme_title": kwargs["scheme_title"],
+            "scheme_url": kwargs["scheme_url"],
+        }
+
+    cached = {}
+
+    async def fake_cache(cache_key, records, redis_client=None):
+        cached[cache_key] = records
+
+    _stub_empty_prior_pdf_cache(monkeypatch)
+    monkeypatch.setattr(si, "acquire_refresh_lock", fake_acquire)
+    monkeypatch.setattr(si, "extend_refresh_lock", fake_lock_noop)
+    monkeypatch.setattr(si, "release_refresh_lock", fake_lock_noop)
+    monkeypatch.setattr(si, "fetch_html", fake_fetch_html)
+    monkeypatch.setattr(si, "_build_pdf_record", fake_build)
+    monkeypatch.setattr(si, "cache_source_records", fake_cache)
+
+    assert asyncio.run(si.refresh_scheme_source(source, client=SimpleNamespace())) is True
+    assert cached[source.cache_key][0]["union_name"] == expected_union
+    assert cached[source.cache_key][0]["scheme_title"] == expected_title
+
+
+@pytest.mark.parametrize(
+    "ingest_fn,source",
+    [(si._ingest_dudhdhara_source, si.DUDHDHARA_SOURCE), (si._ingest_madhur_source, si.MADHUR_SOURCE)],
+)
+def test_new_scheme_source_rejects_layout_without_expected_records(monkeypatch, ingest_fn, source):
+    async def fake_fetch_html(_client, _url):
+        return "<html><a href='unrelated.pdf'>unrelated</a></html>"
+
+    monkeypatch.setattr(si, "fetch_html", fake_fetch_html)
+    with pytest.raises(si.SchemeParseError, match=f"no {source.source_name} scheme links parsed"):
+        asyncio.run(ingest_fn(source, SimpleNamespace()))

@@ -58,6 +58,8 @@ SUPPORTED_SCHEME_CONTEXT_UNIONS = {
     UnionName.SUMUL.value,
     UnionName.SURENDRANAGAR.value,
     UnionName.SABAR.value,
+    UnionName.BHARUCH.value,
+    UnionName.GANDHINAGAR.value,
 }
 
 
