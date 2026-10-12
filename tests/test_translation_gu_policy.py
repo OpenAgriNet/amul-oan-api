@@ -12,6 +12,10 @@ import re
 import pytest
 
 from app.services.translation import (
+    VOICE_GU_PREFERRED_TRANSLATION_RULES,
+    _apply_protected_output,
+    _buffered_protected_stream,
+    _protected_output_triggers,
     _post_normalize_gu_translation,
     _build_gu_policy_replacements,
     GU_TERM_POLICY,
@@ -94,3 +98,59 @@ def test_collapses_extra_spaces_after_removal():
     # red-colour removal leaves double spaces; they should collapse to one
     out = _post_normalize_gu_translation("ગાય  red colour  દૂધ", "gujarati")
     assert "  " not in out
+
+
+def _apply_source_gated(source: str, output: str) -> str:
+    triggers = _protected_output_triggers(source, "gu")
+    return _apply_protected_output(output, triggers)
+
+
+def test_bull_correction_is_source_gated_without_rewriting_bullock():
+    assert _apply_source_gated("The bull needs treatment", "બળદને સારવાર જોઈએ") == (
+        "બુલને સારવાર જોઈએ"
+    )
+    assert _apply_source_gated("The bullock needs treatment", "બળદને સારવાર જોઈએ") == (
+        "બળદને સારવાર જોઈએ"
+    )
+    assert _apply_source_gated("The bull and bullock", "બળદ અને બળદ") == "બળદ અને બળદ"
+
+
+def test_insemination_correction_is_source_gated_and_bare_ai_is_ignored():
+    assert _apply_source_gated("Artificial insemination service", "ગર્ભાધાન સેવા") == (
+        "બીજદાન સેવા"
+    )
+    assert _apply_source_gated("Conception after insemination", "ગર્ભાધાન") == "ગર્ભાધાન"
+    assert _apply_source_gated("Amul AI helpline", "અમૂલ એ.આઈ. હેલ્પલાઇન") == (
+        "અમૂલ એ.આઈ. હેલ્પલાઇન"
+    )
+
+
+@pytest.mark.asyncio
+async def test_source_gated_bull_correction_is_stream_boundary_safe():
+    async def chunks():
+        yield "બ"
+        yield "ળદને સારવાર"
+
+    stream = _buffered_protected_stream(
+        chunks(), _protected_output_triggers("The bull needs treatment", "gu")
+    )
+    assert "".join([chunk async for chunk in stream]) == "બુલને સારવાર"
+
+
+def test_meaning_first_terms_are_not_globally_rewritten():
+    text = "બળદ ગર્ભાધાન પછી તણાવમાં છે. પોટેશિયમ પરમેંગેનેટ વાપરો."
+    assert _post_normalize_gu_translation(text, "gu") == text
+
+
+def test_mastitis_and_tdn_outputs_are_still_canonicalized():
+    out = _post_normalize_gu_translation(
+        "આઉનો/બાવલાનો સોજો માટે ટીડીએન આપો", "gu"
+    )
+    assert "આંચળનો સોજો" in out
+    assert "કુલ પાચ્ય પોષક તત્વ (ટીડીએન)" in out
+
+
+def test_voice_prompt_distinguishes_stress_from_trauma():
+    joined = "\n".join(VOICE_GU_PREFERRED_TRANSLATION_RULES)
+    assert "'તણાવ' for stress" in joined
+    assert "'માનસિક આઘાત' only for explicit mental trauma" in joined

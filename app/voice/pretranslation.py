@@ -190,16 +190,23 @@ def _get_glossary_hints_for_gu_query(text: str, max_results: int = 7) -> str:
 
     for tp in TERM_PAIRS:
         scores: list[float] = []
-        gu_lower = (tp.gu or "").lower().strip()
-        translit_lower = (tp.transliteration or "").lower().strip()
+        candidates = [
+            tp.gu,
+            *tp.gu_input_aliases,
+            tp.transliteration,
+            *tp.transliteration_input_aliases,
+        ]
 
-        # Check substring containment first (fast path), ignoring empty fields.
-        if gu_lower:
-            scores.append(100.0 if gu_lower in text_lower else _fuzz.partial_ratio(gu_lower, text_lower))
-        if translit_lower:
-            scores.append(
-                100.0 if translit_lower in text_lower else _fuzz.partial_ratio(translit_lower, text_lower)
-            )
+        # Check substring containment first (fast path), including historical
+        # Gujarati and romanized variants now owned by the glossary row.
+        for candidate in candidates:
+            candidate_lower = (candidate or "").lower().strip()
+            if candidate_lower:
+                scores.append(
+                    100.0
+                    if candidate_lower in text_lower
+                    else _fuzz.partial_ratio(candidate_lower, text_lower)
+                )
         if not scores:
             continue
         best = max(scores)
@@ -236,24 +243,31 @@ def _apply_exact_glossary_transliteration_replacements(source_text: str, transla
     cleaned = translation
 
     for tp in TERM_PAIRS:
-        gu_term = (tp.gu or "").strip()
-        transliteration = (tp.transliteration or "").strip()
         english_label = (tp.en or "").strip()
-        if not gu_term or not transliteration or not english_label:
+        source_terms = [tp.gu, *tp.gu_input_aliases]
+        transliterations = [
+            tp.transliteration,
+            *tp.transliteration_input_aliases,
+        ]
+        if not english_label:
             continue
-        if len(transliteration) < 3 or transliteration.lower() == english_label.lower():
-            continue
-        if gu_term.lower() not in source_lower:
+        if not any(
+            term and term.strip().lower() in source_lower for term in source_terms
+        ):
             continue
         if re.search(_whole_ascii_token_pattern(english_label), cleaned, flags=re.IGNORECASE):
             continue
 
-        cleaned = re.sub(
-            _whole_ascii_token_pattern(transliteration),
-            english_label,
-            cleaned,
-            flags=re.IGNORECASE,
-        )
+        for transliteration in transliterations:
+            transliteration = (transliteration or "").strip()
+            if len(transliteration) < 3 or transliteration.lower() == english_label.lower():
+                continue
+            cleaned = re.sub(
+                _whole_ascii_token_pattern(transliteration),
+                english_label,
+                cleaned,
+                flags=re.IGNORECASE,
+            )
 
     return cleaned
 
