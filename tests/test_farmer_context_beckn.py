@@ -72,9 +72,8 @@ async def test_chat_context_uses_directed_beckn_farmer_animal_and_banas_callback
     monkeypatch.setattr(farmer_context, "fetch_banas_visits", visits)
     monkeypatch.setattr(farmer_context, "search_ai_technicians", technicians)
 
-    markdown, unions, _location = (
-        await farmer_context.get_farmer_context_bundle_by_mobile("9000000000")
-    )
+    bundle = await farmer_context.get_farmer_context_bundle_by_mobile("9000000000")
+    markdown, unions, _location = bundle.markdown, bundle.unions, bundle.location
 
     assert unions == ["banas"]
     assert "TAG-OWNED" in markdown
@@ -94,9 +93,8 @@ async def test_chat_context_reports_explicit_farmer_not_found(monkeypatch):
 
     monkeypatch.setattr(farmer_context, "fetch_authenticated_farmers", farmers)
 
-    markdown, unions, location = (
-        await farmer_context.get_farmer_context_bundle_by_mobile("9000000000")
-    )
+    bundle = await farmer_context.get_farmer_context_bundle_by_mobile("9000000000")
+    markdown, unions, location = bundle.markdown, bundle.unions, bundle.location
 
     assert "No farmer information found" in markdown
     assert unions == []
@@ -130,9 +128,8 @@ async def test_chat_context_preserves_farmer_and_animal_when_visit_lookup_fails(
     monkeypatch.setattr(farmer_context, "fetch_banas_visits", visits)
     monkeypatch.setattr(farmer_context, "search_ai_technicians", technicians)
 
-    markdown, unions, location = (
-        await farmer_context.get_farmer_context_bundle_by_mobile("9000000000")
-    )
+    bundle = await farmer_context.get_farmer_context_bundle_by_mobile("9000000000")
+    markdown, unions, location = bundle.markdown, bundle.unions, bundle.location
 
     assert "farmer one" in markdown
     assert "gir" in markdown

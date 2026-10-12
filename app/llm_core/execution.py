@@ -709,10 +709,26 @@ class ExecutionContext:
             )
         return plan
 
-    def _target(self, step: Step, tier: Tier) -> ExecutionTarget:
+    def _target(
+        self, step: Step, tier: Tier, client_kind: Optional[StepClientKind] = None
+    ) -> ExecutionTarget:
         from app.llm_core.factory import STEP_CLIENT_KIND, tier_client_kind
 
-        return ExecutionTarget(tier, tier_client_kind(STEP_CLIENT_KIND[step], tier))
+        return ExecutionTarget(
+            tier, tier_client_kind(client_kind or STEP_CLIENT_KIND[step], tier)
+        )
+
+    def target(
+        self, step: Step, *, client_kind: Optional[StepClientKind] = None
+    ) -> ExecutionTarget:
+        """The step's primary tier for this turn's profile. Its client is built
+        on first use of ``handle``.
+
+        ``client_kind`` overrides how the tier is built, for a caller that uses a
+        step differently from chat: voice runs moderation as a bare
+        ``chat.completions`` call, not through a pydantic-ai agent.
+        """
+        return self._target(step, self._step_plan(step).tiers[0], client_kind)
 
     def info(self, step: Step) -> ModelInfo:
         target = self._target(step, self._step_plan(step).tiers[0])
@@ -735,7 +751,9 @@ class ExecutionContext:
         object.__setattr__(self, "_trace_state", current)
         return current
 
-    async def _chain(self, step: Step) -> list[ExecutionTarget]:
+    async def _chain(
+        self, step: Step, client_kind: Optional[StepClientKind] = None
+    ) -> list[ExecutionTarget]:
         from app.llm_core import split
 
         return await split.resolve_chain(
@@ -743,6 +761,7 @@ class ExecutionContext:
             step,
             self.config,
             profile_name=self.profile_name,
+            client_kind=client_kind,
         )
 
     def _record_direct_success(self, step: Step, target: ExecutionTarget) -> None:
@@ -757,9 +776,11 @@ class ExecutionContext:
         self,
         step: Step,
         invoke: Callable[[ExecutionTarget], Awaitable[Any]],
+        *,
+        client_kind: Optional[StepClientKind] = None,
     ) -> Any:
         if not self.config.fallback_enabled:
-            target = self._target(step, self._step_plan(step).tiers[0])
+            target = self._target(step, self._step_plan(step).tiers[0], client_kind)
             result = await invoke(target)
             self._record_direct_success(step, target)
             return result
@@ -767,7 +788,7 @@ class ExecutionContext:
             step=step,
             session_id=self.session_id[:200],
             run=invoke,
-            chain=await self._chain(step),
+            chain=await self._chain(step, client_kind),
             trace_state=self._trace_state,
         )
 
@@ -806,6 +827,7 @@ class ExecutionContext:
         message_history: list,
         deps: Any,
         new_messages: list,
+        usage_limits: Any = None,
     ) -> AsyncIterator[str]:
         """Stream Agent text, committing on its first model activity event."""
 
@@ -815,6 +837,7 @@ class ExecutionContext:
                 user_prompt=prompt,
                 message_history=message_history,
                 deps=deps,
+                usage_limits=usage_limits,
                 model=tier.handle,
             ) as agent_run:
                 async for node in agent_run:

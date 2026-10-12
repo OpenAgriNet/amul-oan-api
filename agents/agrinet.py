@@ -5,6 +5,7 @@ from agents.tools.registry import TOOLS
 from agents.tools.terms import get_ambiguity_hints_for_query
 from pydantic_ai.settings import ModelSettings
 from agents.deps import FarmerContext
+from agents.tools.ai_call import NO_FARMER_PROFILE_MESSAGE
 
 
 def _agrinet_max_output_tokens() -> int:
@@ -46,7 +47,16 @@ def get_agrinet_instructions(ctx: RunContext):
 
     context = {
         'today_date': get_today_date_str(),
-        'farmer_context': farmer_context if farmer_context else None,
+        # Only a resolved record renders as a profile; the not-found markdown
+        # is replaced by the "what is not available" block below.
+        'farmer_context': (
+            farmer_context
+            if farmer_context and ctx.deps.farmer_profile_status == 'found'
+            else None
+        ),
+        'ai_call_available': ctx.deps.has_farmer_profile(),
+        'farmer_profile_status': ctx.deps.farmer_profile_status,
+        'no_farmer_profile_message': NO_FARMER_PROFILE_MESSAGE,
         'ambiguity_hints': ambiguity_hints if ambiguity_hints else None,
         'response_max_chars': ctx.deps.get_response_max_chars(),
         'loan_max_amount': f"{int(settings.loan_max_amount):,}",

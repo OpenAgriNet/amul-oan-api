@@ -1,5 +1,6 @@
 import asyncio
 import json
+from dataclasses import dataclass, field
 from typing import Any, Awaitable, TypeVar
 
 from agents.tools.farmer import normalize_phone_to_mobile
@@ -259,21 +260,34 @@ async def _append_ai_technicians_markdown(lines: list[str], farmer: FarmerModel)
     lines.extend(technician_lines)
 
 
-def _not_found_context(mobile: str) -> tuple[str, list[str], dict[str, str]]:
-    return (
-        "# Farmer Context\n\n"
-        f"No farmer information found for mobile number `{mobile}`.",
-        [],
-        {},
+@dataclass(frozen=True)
+class FarmerContextBundle:
+    """Prompt markdown plus the structured facts tools and gates read.
+
+    ``found`` is False when the mobile resolved to no farmer record; callers
+    use it to hide farmer-only tools and tell the agent what it cannot do.
+    """
+    markdown: str
+    unions: list[str] = field(default_factory=list)
+    location: dict[str, str] = field(default_factory=dict)
+    found: bool = False
+
+
+def _not_found_context(mobile: str) -> FarmerContextBundle:
+    return FarmerContextBundle(
+        markdown=(
+            "# Farmer Context\n\n"
+            f"No farmer information found for mobile number `{mobile}`."
+        ),
     )
 
 
 async def get_farmer_context_bundle_by_mobile(
     mobile_number: str,
-) -> tuple[str, list[str], dict[str, str]]:
-    """Return (prompt markdown, union names, structured location).
+) -> FarmerContextBundle:
+    """Return prompt markdown, union names, structured location and ``found``.
 
-    The third element is {district, village, state} (possibly empty) and exists
+    ``location`` is {district, village, state} (possibly empty) and exists
     so tools can read the farmer's location. It is deliberately NOT parsed back
     out of the markdown: the markdown is a prompt, not an API.
     """
@@ -328,7 +342,12 @@ async def get_farmer_context_bundle_by_mobile(
         for tag, animal, banas_visits, cvcc_health in animal_contexts:
             _append_animal_markdown(lines, tag, animal, banas_visits, cvcc_health)
 
-    return "\n".join(lines), farmer_unions, farmer_location
+    return FarmerContextBundle(
+        markdown="\n".join(lines),
+        unions=farmer_unions,
+        location=farmer_location,
+        found=True,
+    )
 
 
 def _format_medicines(medicines: list[BanasMedicineModel] | None) -> str | None:

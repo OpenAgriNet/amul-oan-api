@@ -1,7 +1,7 @@
 # Farmer and animal Beckn operations
 
 Farmer profile, animal profile, Banas visits, CVCC health, AI technicians, milk
-collection, and veterinary bookings are accessed only through the Beckn adapters
+collection, and artificial-insemination bookings are accessed only through the Beckn adapters
 under `agents/tools/beckn/`.
 
 The agent layer passes identifiers obtained from the authenticated farmer

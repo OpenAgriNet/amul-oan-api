@@ -55,18 +55,19 @@ class TestFarmerLocationCollection:
         assert FarmerContext(query="q", farmer_district="").get_farmer_district() is None
 
     @pytest.mark.asyncio
-    async def test_the_bundle_returns_the_location_as_its_third_element(self, monkeypatch):
+    async def test_the_bundle_returns_the_location(self, monkeypatch):
         import agents.farmer_context as fc
 
         async def _fake_get(mobile, **kwargs):
             return [FarmerModel(district="Banas Kantha", village="Dama", state="Gujarat")]
 
         monkeypatch.setattr(fc, "fetch_authenticated_farmers", _fake_get)
-        _, _, location = await fc.get_farmer_context_bundle_by_mobile("9876543210")
-        assert location["district"] == "banas kantha"
+        bundle = await fc.get_farmer_context_bundle_by_mobile("9876543210")
+        assert bundle.location["district"] == "banas kantha"
+        assert bundle.found is True
 
     @pytest.mark.asyncio
-    async def test_an_unknown_mobile_still_returns_three_elements(self, monkeypatch):
+    async def test_an_unknown_mobile_returns_an_empty_not_found_bundle(self, monkeypatch):
         # The no-farmer early return is a separate code path and has silently
         # skipped new fields before.
         import agents.farmer_context as fc
@@ -75,9 +76,10 @@ class TestFarmerLocationCollection:
             return None
 
         monkeypatch.setattr(fc, "fetch_authenticated_farmers", _fake_get)
-        markdown, unions, location = await fc.get_farmer_context_bundle_by_mobile("1")
-        assert unions == [] and location == {}
-        assert "No farmer information found" in markdown
+        bundle = await fc.get_farmer_context_bundle_by_mobile("1")
+        assert bundle.unions == [] and bundle.location == {}
+        assert bundle.found is False
+        assert "No farmer information found" in bundle.markdown
 
 
 class TestPromptGuidance:

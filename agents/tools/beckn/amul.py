@@ -12,12 +12,13 @@ import json
 from dataclasses import dataclass
 from typing import Any, Iterable, Mapping, Optional
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
 
 from agents.tools.models.animal import AnimalModel
 from agents.tools.models.banas_visit import BanasOperatedVisitModel
 from agents.tools.models.cvcc import CvccHealthResponseModel
 from agents.tools.models.farmer import FarmerModel
+from agents.tools.models.local_names import speakable_name
 from agents.tools.models.milk_collection import FarmerMilkCollectionResponseModel
 from agents.tools.response_cache import (
     AI_TECHNICIAN_CACHE_POLICY,
@@ -66,6 +67,11 @@ class AITechnicianRecord(BaseModel):
         ),
     )
     mobileNumber: Optional[str] = None
+
+    @field_validator("fullName", "gujaratiFullName", mode="before")
+    @classmethod
+    def _speakable(cls, value: Optional[str]) -> Optional[str]:
+        return speakable_name(value)
 
     @property
     def display_full_name(self) -> Optional[str]:

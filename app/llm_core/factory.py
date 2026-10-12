@@ -56,6 +56,7 @@ STEP_CLIENT_KIND: dict[Step, StepClientKind] = {
     Step.SUGGESTIONS: StepClientKind.AGENT,
     Step.PRE_TRANSLATION: StepClientKind.PRE_TRANSLATION,
     Step.POST_TRANSLATION: StepClientKind.TRANSLATEGEMMA,
+    Step.NON_MEANINGFUL: StepClientKind.RAW_OPENAI,
 }
 
 # Boundary-capture hook — best-effort; a failed capture must never drop a request.
@@ -282,6 +283,15 @@ def build_handle(tier: Tier, kind: StepClientKind) -> Any:
         return _build_pretranslation(tier)
     if kind is StepClientKind.TRANSLATEGEMMA:
         return _build_translategemma(tier)
+    if kind is StepClientKind.RAW_OPENAI:
+        # Voice's classifier calls go through ``client.chat.completions`` only, so
+        # a provider without an OpenAI-compatible client cannot serve them.
+        if tier.provider not in (Provider.VLLM, Provider.OPENAI, Provider.AZURE):
+            raise ValueError(
+                f"provider {tier.provider} is not an OpenAI-compatible raw client; "
+                "anthropic/gemini/translategemma are not valid for a RAW_OPENAI step"
+            )
+        return _build_pretranslation(tier)
     raise ValueError(f"unknown step client kind: {kind}")
 
 

@@ -75,10 +75,8 @@ GU_PREFERRED_TRANSLATION_RULES = [
 VOICE_GU_PREFERRED_TRANSLATION_RULES = [
     "Use farmer-preferred Gujarati livestock terms.",
     "Address the caller respectfully with gender-neutral 'આપ' forms; never infer the caller's gender.",
-    "Sarlaben must always use feminine self-reference in Gujarati.",
+    "Sarlaben must always use feminine self-reference in Gujarati (e.g. શકતી છું, કરૂં, આપી શકતી છું — never શકું, કરું, આવું).",
     "Keep the tone professional, cordial, and detached; do not become overly familiar or chatty.",
-    "Do not translate English address markers such as sister, brother, bhai, ben, madam, or sir into caller labels like બહેન, ભાઈ, મેડમ, or સાહેબ. Use respectful gender-neutral 'આપ' wording instead.",
-    "If the English source mentions 'sister' because the caller addressed Sarlaben, do not call the caller બહેન. Omit the address marker or render it as a neutral reference to સરલાબેન only when necessary.",
     "Never use slang body terms like 'બૈડા/બૈડું/બરડા/બરડું'. Prefer 'પીઠ' for back/flank context and 'શરીર' for general body context.",
     "Prefer 'બાવલું' over 'પાહો' for udder context.",
     "Prefer 'ધાર' over 'ટીપાં' for milk streams.",
@@ -350,18 +348,6 @@ def _normalize_gu_body_terms(text: str) -> str:
     return out
 
 
-# Gender-neutral caller-address guard (voice only, §14). A deterministic safety
-# net BEYOND the prompt rule: strip gendered address terms (ભાઈ/બહેન/સાહેબ/મેડમ)
-# directed at the caller before the text reaches TTS. Boundary-aware so e.g.
-# "ભૂખ ભાઈ" (animal-behaviour phrase) is left alone but a leading "ભાઈ," is not.
-GU_GENDER_NEUTRAL_POST: list[tuple[re.Pattern, str]] = [
-    (re.compile(r"(?<![^\s,।.!?])ભ(?:ાઈ|ૈ)(?=\s*[,।!?]|\s|$)"), ""),
-    (re.compile(r"(?<![^\s,।.!?])બ(?:હેન|ેન)(?=\s*[,।!?]|\s|$)"), ""),
-    (re.compile(r"(?<![^\s,।.!?])સ(?:ા)?હ(?:ે)?બ(?=\s*[,।!?]|\s|$)"), ""),
-    (re.compile(r"(?<![^\s,।.!?])મ(?:ે|ૅ|ૅ)ડ(?:મ|)(?=\s*[,।!?]|\s|$)"), ""),
-]
-
-
 # Feminine self-reference guard (§14). The assistant persona is female,
 # so first-person verb forms must use the feminine conjugation. Deterministic safety
 # net BEYOND the prompt rule. Boundary-aware; only rewrites the verb ending
@@ -444,9 +430,6 @@ def _post_normalize_gu_translation(
         # Remove placeholder dashes without inventing a quantity (voice parity).
         out = re.sub(rf"([:：]\s*){_GU_PLACEHOLDER_RE}(?=\s|$)", r"\1", out)
 
-        # G2: deterministic gendered caller-address stripping before TTS (voice only).
-        for pat, repl in GU_GENDER_NEUTRAL_POST:
-            out = pat.sub(repl, out)
         # Voice-only scaffold collapse: "Label: value" line prefixes become spoken flow.
         out = re.sub(r"(?m)^\s*[^\s:।.!?\n]{1,20}\s*:\s*", ", ", out)
         out = re.sub(r"^\s*,\s*", "", out)
@@ -519,13 +502,19 @@ def _build_translation_instruction(
     target_name = LANG_NAMES.get(target_lang.lower(), target_lang.capitalize())
     source_code = LANG_CODES.get(source_lang.lower(), source_lang.lower())
     target_code = LANG_CODES.get(target_lang.lower(), target_lang.lower())
+    # Voice is spoken, so layout the caller cannot hear is dropped rather than kept.
+    layout_rule = (
+        "Prefer clear spoken language over literal formatting. Do not preserve markdown, bullets, numbered lists, or bracketed duplicates if they hurt voice clarity."
+        if _is_voice_channel()
+        else "Preserve newlines, paragraph breaks, and list structure (bullets, numbered items, markdown) exactly as in the source."
+    )
 
     instruction = (
         f"You are a professional {source_name} ({source_code}) to {target_name} ({target_code}) translator. "
         f"Your goal is to accurately convey the meaning and nuances of the original {source_name} text "
         f"while adhering to {target_name} grammar, vocabulary, and cultural sensitivities.\n"
         f"Produce only the {target_name} translation, without any additional explanations or commentary.\n"
-        f"Preserve newlines, paragraph breaks, and list structure (bullets, numbered items, markdown) exactly as in the source."
+        f"{layout_rule}"
     )
     if mini_glossary and mini_glossary.strip():
         lines = mini_glossary.strip().splitlines()
