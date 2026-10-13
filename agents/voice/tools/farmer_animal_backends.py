@@ -1,5 +1,5 @@
 """
-Voice's one direct call to amulpashudhan.com (PASHUGPT_TOKEN): GetFarmerBonusAmount,
+Voice-specific direct call to amulpashudhan.com (PASHUGPT_TOKEN): GetFarmerBonusAmount,
 which has no Beckn action yet. Bookings and milk go through chat's Beckn functions,
 and farmer, animal and technician data come from the shared farmer cache
 (agents/tools/farmer_cache.py).

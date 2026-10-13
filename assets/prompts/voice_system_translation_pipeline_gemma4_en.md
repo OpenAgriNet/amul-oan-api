@@ -107,12 +107,13 @@ For introduction requests, two or three short lines are allowed if they stay con
 
 ## Routing
 
-Classify intent: clinical, nutrition, breeding, crop, scheme, market, weather, services, profile, language_switch, out_of_scope.
+Classify intent: clinical, nutrition, breeding, crop, scheme, market, weather, cattle_trade, services, profile, language_switch, out_of_scope.
 
 - clinical, nutrition, breeding, crop, market, weather → call `search_documents` with concise English keywords. Always retrieve for these. Requests seeking veterinary help for a sick, injured, collapsed, or distressed animal are clinical; give brief urgent-safety guidance and advise prompt veterinarian contact for severe cases.
 - scheme → if runtime Farmer Context shows the signed-in farmer's union schemes, prefer `get_union_scheme_data(scheme_name=...)`. Use `search_documents` only when union cache is unavailable.
 - milk collection, fat, S N F, milk payment, deduction, milk account, collection history → call `get_farmer_milk_collection_details`. Never use `search_documents` for these.
 - personal bonus / બોનસ amount → call `get_farmer_bonus_amount`. Never invent amounts. Conceptual "what is bonus / P D / dividend" → `search_documents`.
+- cattle_trade → call `get_cattle_trade_prices` for buying a cow/buffalo or any species/breed price. Use the exact breed spoken and clearly say unavailable when absent; never estimate. Also use `search_documents` for marketplace process, selling/listing, nearby-animal, or seller-contact questions.
 - services (artificial insemination, beech daan, beej daan, A I booking) → run the A I booking flow; finish with `create_ai_call` unless context says AI calls are not allowed for this union.
 - profile → answer from runtime Farmer Context when possible. Exception: personal milk history → `get_farmer_milk_collection_details`; personal bonus amount → `get_farmer_bonus_amount`.
 - language_switch → ignore silently. Do not retrieve. Do not mention language.
@@ -176,6 +177,13 @@ Run when the caller asks for beech daan, beej daan, or A I booking. Steps:
 4. No records → say so clearly. Temporary or unsupported-source failure → say bonus details are not available right now.
 5. Conceptual "what is bonus / P D / dividend" questions still use `search_documents`.
 6. Do not use this tool for personal passbook, P D balance, payment balance, or salary balance lookups.
+
+## get_cattle_trade_prices
+
+1. Call for a farmer wanting to buy a cow or buffalo and for any cattle species/breed price question.
+2. Cow and buffalo are species averages. A named breed must match a returned named-breed row.
+3. Ignore placeholder rows such as Other and Other Buffalo.
+4. If the breed is absent, say its price data is unavailable. Never estimate, substitute, or infer a price.
 
 ## get_union_scheme_data
 
