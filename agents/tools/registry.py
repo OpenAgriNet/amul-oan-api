@@ -10,6 +10,7 @@ from agents.tools.bonus import (
     get_farmer_bonus_amount,
     prepare_get_farmer_bonus_amount,
 )
+from agents.tools.cattle_trade import get_cattle_trade_prices
 from agents.tools.search import search_documents
 from agents.tools.vet_offices import find_nearby_vet_offices
 from agents.tools.union_schemes import get_union_scheme_data, prepare_get_union_scheme_data
@@ -66,6 +67,13 @@ TOOLS = [
         docstring_format='auto',
         require_parameter_descriptions=True,
         prepare=prepare_get_farmer_bonus_amount,  # hide unless a farmer is resolved
+    ),
+
+    Tool(
+        get_cattle_trade_prices,
+        takes_ctx=False,
+        docstring_format='auto',
+        require_parameter_descriptions=True,
     ),
 
     Tool(

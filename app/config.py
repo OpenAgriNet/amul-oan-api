@@ -752,7 +752,7 @@ class Settings(BaseSettings):
     vistaar_max_items: int = Field(default=20, validation_alias="VISTAAR_MAX_ITEMS")
     mandi_max_candidates: int = 3
     mandi_location_ttl_s: int = 3600
-    # Bonus is the sole direct provider integration; all supported tools use Beckn.
+    # Direct PashuGPT integrations used by bonus and cattle trade price tools.
     amulpashudhan_base_url: str = Field(
         default="https://api.amulpashudhan.com/configman/v1/PashuGPT",
         validation_alias="AMULPASHUDHAN_BASE_URL",
