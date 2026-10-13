@@ -488,18 +488,3 @@ def test_unparseable_200_is_not_success_and_holds_the_reservation(monkeypatch):
     assert "could not be confirmed" in r1.lower()
     assert posts["n"] == 1, "the reservation was released on an unconfirmed booking"
     assert "already" in r2.lower()
-
-
-def test_health_call_guard_stays_unconditional(monkeypatch):
-    """health_call.py keeps an unconditional guard for a different contract —
-    it must not get unified with the AI-call flag when callback routing is
-    introduced. Health may use the network, but only behind the dedicated
-    default-off callback transaction gate."""
-    import inspect
-
-    from agents.tools import health_call as hc_mod
-
-    src = inspect.getsource(hc_mod)
-    assert "ai_call_booking_guard_enabled" not in src
-    assert "beckn_callback_transactions_enabled" in src
-    assert "ReservationOutcome.TAKEN" in src

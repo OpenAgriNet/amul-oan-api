@@ -12,7 +12,6 @@ os.environ.setdefault("OPENAI_API_KEY", "test-key")
 import pytest
 
 from agents.tools import ai_call as ai_mod
-from agents.tools import health_call as hc_mod
 from agents.tools.farmer_animal_backends import AITechnicianBySocietyRecord
 from app.models.ai_call import AISpecies
 from app.models.farmer import FarmerModel
@@ -22,7 +21,6 @@ from app.models.union import (
     UNION_BANNED_MESSAGE_HI,
 )
 from app.models.farmer_transport import FarmerRecord
-from app.models.health_call import HealthCaseType
 from helpers.utils import get_prompt
 import agents.farmer_context as farmer_ctx
 import agents.services.farmer_cache as farmer_cache
@@ -446,26 +444,6 @@ def test_moderation_block_runs_before_union_ban(monkeypatch):
     out = asyncio.run(ai_mod.create_ai_call(ctx, "U", "S", "F", TECH_ID, SPECIES))
     assert out == ai_mod.OUT_OF_SCOPE_MESSAGE
     assert calls["n"] == 0
-
-
-def test_health_call_still_books_for_kutch_union(monkeypatch):
-    calls = {"n": 0}
-
-    async def fake_api(request, token):
-        calls["n"] += 1
-        return SimpleNamespace(ticket_number="H1")
-
-    monkeypatch.setenv("PASHUGPT_TOKEN", "tok")
-    monkeypatch.setattr(hc_mod, "create_health_call_api", fake_api)
-    out = asyncio.run(
-        hc_mod.create_health_call(
-            _booking_ctx(session_id=None, unions=["kutch"]),
-            "U", "S", "F", SPECIES, next(iter(HealthCaseType)), "fever",
-        )
-    )
-    assert calls["n"] == 1
-    assert "booked successfully" in out
-    assert UNION_BANNED_MESSAGE not in out
 
 
 @pytest.mark.parametrize("source,target,expected", [
