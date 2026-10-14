@@ -13,7 +13,8 @@ logger = get_logger(__name__)
 # Provider breedName (as a match key) -> (farmer-facing name, species, other spellings).
 # The provider has no species field and misspells some names (Jursy, Kakrej), and the
 # pre-translation glossary emits others (Mehsani, Kankrej Cow, Banni Buffalo, crossbreed),
-# so every spelling a farmer or the glossary uses is listed here.
+# so every spelling a farmer or the glossary uses is listed here. Names are the forms the
+# Gujarati translator renders cleanly: "Mehsana" came out as મેસાના and "Shankar" as શંકર.
 _KNOWN_BREEDS: dict[str, tuple[str, str, tuple[str, ...]]] = {
     "gir": ("Gir", "cow", ("gyr",)),
     "kakrej": ("Kankrej", "cow", ("kankrej", "kankreji", "kakreji", "kankraj")),
@@ -24,10 +25,10 @@ _KNOWN_BREEDS: dict[str, tuple[str, str, tuple[str, ...]]] = {
         "cow",
         ("jerseycross", "jerseycrossbred", "jerseycrossbreed", "jerseyshankar", "jarsisankar"),
     ),
-    "shankar": ("Crossbred (Shankar)", "cow", ("sankar", "crossbred", "crossbreed", "cross")),
+    "shankar": ("Crossbred", "cow", ("sankar", "crossbred", "crossbreed", "cross")),
     "banni": ("Banni", "buffalo", ("bani", "kutchi", "kachchhi")),
     "jaffrabadi": ("Jafarabadi", "buffalo", ("jafarabadi", "jafrabadi", "jaffarabadi")),
-    "mehsana": ("Mehsana", "buffalo", ("mehsani", "mahesani", "mahesana", "mehasana")),
+    "mehsana": ("Mehsani", "buffalo", ("mehsani", "mahesani", "mahesana", "mehasana")),
     "murrah": ("Murrah", "buffalo", ("murra", "mura")),
     "surti": ("Surti", "buffalo", ("surati",)),
 }
@@ -143,8 +144,8 @@ async def get_cattle_trade_prices(
     Get Amul Pashudhan's current average rate, in rupees per animal, for cows, buffaloes and named breeds.
 
     Use it for any question about what a cow or buffalo costs or would sell for, including
-    when the farmer wants to buy or sell one. Rates exist only for cows and buffaloes (no bulls,
-    bullocks or other animals). It is not for milk or fat rates, and not for mandi crop prices.
+    when the farmer wants to buy or sell one. Rates exist only for cows and buffaloes. It is not
+    for milk or fat rates, and not for mandi crop prices.
 
     Args:
         species: "cow" or "buffalo" to get that species' average and its breed rates. Leave empty for all rates.
@@ -207,8 +208,8 @@ async def get_cattle_trade_prices(
 
     if (species or "").strip() and _match_key(species) not in _ANY_SPECIES_WORDS:
         return (
-            f'Amul Pashudhan average rates cover only cows and buffaloes; there is no rate for "{species.strip()}". '
-            "Say so. Do not estimate or invent a price."
+            "Amul Pashudhan average rates are available only for cows and buffaloes. Say only "
+            "that, without naming other animals, and do not estimate or invent a price."
         )
 
     return "\n".join([*_full_listing(rates, breeds), _CAVEAT])

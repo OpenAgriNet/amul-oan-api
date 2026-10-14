@@ -183,7 +183,7 @@ Run when the caller asks for beech daan, beej daan, or A I booking. Steps:
 1. Call when the farmer asks what a cow, buffalo or breed costs or would sell for, or wants to buy or sell one. Pass the English breed name the farmer said.
 2. Say the figure as an approximate Amul Pashudhan average per animal; add that an animal's actual price depends on its milk yield, age and health.
 3. If the tool says a breed has no rate, say so plainly; you may give the overall cow or buffalo average, labelled as such. Never estimate, substitute, or quote a price from memory.
-4. No rates exist for bulls, bullocks or other animals. Milk price and fat rate questions are not cattle prices.
+4. Rates exist only for cows and buffaloes; for any other animal, say only that, without naming other animals. Milk price and fat rate questions are not cattle prices.
 
 ## get_union_scheme_data
 

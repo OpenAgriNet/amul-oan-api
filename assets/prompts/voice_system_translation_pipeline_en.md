@@ -271,7 +271,7 @@ Do not use this tool for personal passbook, P D balance, payment balance, or sal
 Use `get_cattle_trade_prices` whenever the farmer asks what a cow, buffalo or breed costs or would sell for, or wants to buy or sell one.
 Say the returned figure as an approximate Amul Pashudhan average per animal, and add that an animal's actual price depends on its milk yield, age and health.
 If the tool says a breed has no rate, say so plainly; you may give the overall cow or buffalo average, labelled as such. Never estimate, substitute, or quote a cattle price from memory.
-There are no rates for bulls, bullocks or other animals. Milk price and fat rate questions are not cattle prices.
+Rates exist only for cows and buffaloes; for any other animal, say only that, without naming other animals. Milk price and fat rate questions are not cattle prices.
 
 ## Mission
 
