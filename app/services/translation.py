@@ -12,7 +12,7 @@ import aiohttp
 from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar
 from pathlib import Path
-from typing import Literal, Optional
+from typing import Literal, NamedTuple, Optional
 from helpers.utils import get_logger, normalize_voice_output
 from agents.tools.models.union import UNION_BANNED_MESSAGE_VARIANTS, union_banned_message
 from agents.tools.terms import get_mini_glossary_for_text, get_ambiguity_hints_for_query
@@ -652,10 +652,19 @@ _CHAT_SYMBOLS = re.escape(string.punctuation).replace("/", r"\/") + "₹°•–
 def _chat_script_grammar(letters: str) -> str:
     return (
         "start: (LEAD | URL) (TEXT | URL)* <[1,106]>\n"
-        f"LEAD: /[{letters}0-9*#>\\-\\[(\"“‘₹]/\n"
+        f"LEAD: /[{letters}0-9*#>\\-\\[(\"“‘₹|]/\n"
         f"TEXT: /[{letters}0-9{_CHAT_SYMBOLS} \\n]+/\n"
         "URL: /https?:\\/\\/[A-Za-z0-9._~:\\/?#@!$&'()*+,;=%\\-]+/\n"
     )
+
+
+# A chat source with Latin that must be copied as written ($...$ math, `code`,
+# a bare domain like pmkisan.gov.in) is translated with the strict prompt but no
+# grammar: under the grammar it is unwritable and the model degrades, and
+# letting Latin into the grammar for it lets the model leave the script anywhere.
+_LATIN_VERBATIM_RE = re.compile(
+    r"\$[^$\n]*\\[A-Za-z]|`[^`\n]+`|(?<![/\w.])(?:www\.)?[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.(?:gov\.in|co\.in|in|com|org|net)\b"
+)
 
 
 CHAT_SCRIPT_GRAMMARS = {code: _chat_script_grammar(letters) for code, letters in _CHAT_SCRIPT_LETTERS.items()}
@@ -670,6 +679,15 @@ _CHAT_STRICT_TRANSLATION_CONTRACT = (
     "Glossary and style rules guide wording only; they must not change the source meaning or add content.\n"
     "Output ONLY the {lang} translation, with no notes, reasoning, headings, preamble, or extra sentences."
 )
+_CHAT_PERSONA_RULES = {
+    # Chat streams small chunks, so the sentence-level feminine guard below rarely
+    # sees a whole "હું ... શકતો નથી"; the prompt has to carry it.
+    "gu": (
+        "The assistant is Sarlaben, a woman: where the source speaks in the first person (I, me, my), "
+        "use feminine Gujarati verb forms (શકતી, શકી, રહી છું, ગઈ), never masculine ones (શકતો, શક્યો, રહ્યો છું, ગયો). "
+        "Do not add a first person that the source does not have."
+    ),
+}
 _CHAT_GLOSSARY_OPTION_RULE = (
     "Glossary options joined with OR are alternatives. Choose exactly ONE contextually appropriate expression "
     "for each occurrence of the English term, adjusting its grammar to fit the sentence. "
@@ -704,23 +722,36 @@ def _strict_instruction(instruction: str, contract: str, rules: list[str]) -> st
     )
 
 
-def _script_only_request(tier, instruction: str, target_lang: str) -> tuple[str, Optional[str]]:
-    """(prompt, grammar) for this tier. A script-only tier gets the strict prompt
-    and the grammar for its channel and target; any other tier, or a target with
-    no grammar, gets the shared instruction and no grammar."""
-    if not tier.tier.target_script_only:
-        return instruction, None
+class _TierRequest(NamedTuple):
+    prompt: str
+    grammar: Optional[str]
+    max_tokens: int
+
+
+def _script_only_request(tier, instruction: str, text: str, target_lang: str, max_tokens: int) -> _TierRequest:
+    """Prompt, grammar and output cap for this tier. A script-only tier gets the
+    strict prompt, the grammar for its channel and target, and an output cap of
+    twice the source (so a degenerate stream ends in seconds) up to 4096 (so a
+    long table is not cut at 2048 tokens, about 2,500 Gujarati characters). Any
+    other tier, or a target with no grammar, gets the shared instruction as is."""
     code = LANG_CODES.get(target_lang.lower())
+    if not tier.tier.target_script_only:
+        return _TierRequest(instruction, None, max_tokens)
+    cap = min(4096, 2 * len(text) + 64)
     if _is_voice_channel():
         if code != "gu":
-            return instruction, None
+            return _TierRequest(instruction, None, max_tokens)
         rules = [_GU_NUMBER_WORDS_RULE, _GU_GLOSSARY_OPTION_RULE]
-        return _strict_instruction(instruction, _GU_STRICT_TRANSLATION_CONTRACT, rules), GU_SCRIPT_ONLY_GRAMMAR
+        return _TierRequest(_strict_instruction(instruction, _GU_STRICT_TRANSLATION_CONTRACT, rules), GU_SCRIPT_ONLY_GRAMMAR, cap)
     grammar = CHAT_SCRIPT_GRAMMARS.get(code)
     if grammar is None:
-        return instruction, None
+        return _TierRequest(instruction, None, max_tokens)
     contract = _CHAT_STRICT_TRANSLATION_CONTRACT.format(lang=LANG_NAMES[code])
-    return _strict_instruction(instruction, contract, [_CHAT_GLOSSARY_OPTION_RULE]), grammar
+    rules = [_CHAT_GLOSSARY_OPTION_RULE] + ([_CHAT_PERSONA_RULES[code]] if code in _CHAT_PERSONA_RULES else [])
+    if _LATIN_VERBATIM_RE.search(text):
+        grammar = None
+    return _TierRequest(_strict_instruction(instruction, contract, rules), grammar, cap)
+
 
 
 def _grammar_extra_body(grammar: Optional[str]) -> Optional[dict]:
@@ -1166,11 +1197,11 @@ async def translate_text(
             return await _translategemma_unary(
                 tier.handle, tg_prompt, source_lang, target_lang, text, temperature, max_tokens
             )
-        prompt, grammar = _script_only_request(tier, instruction, target_lang)
+        req = _script_only_request(tier, instruction, text, target_lang, max_tokens)
         return await _llm_translation_unary(
-            tier.handle, tier.model_name, prompt,
-            source_lang, target_lang, text, temperature, max_tokens,
-            provider=tier.provider, grammar=grammar,
+            tier.handle, tier.model_name, req.prompt,
+            source_lang, target_lang, text, temperature, req.max_tokens,
+            provider=tier.provider, grammar=req.grammar,
         )
 
     execution = execution or await llm_core.context("-")
@@ -1360,11 +1391,11 @@ async def translate_text_stream_fast(
             return _translategemma_stream(
                 tier.handle, tg_prompt, source_lang, target_lang, text, temperature, max_tokens
             )
-        prompt, grammar = _script_only_request(tier, instruction, target_lang)
+        req = _script_only_request(tier, instruction, text, target_lang, max_tokens)
         return _llm_translation_stream(
-            tier.handle, tier.model_name, prompt,
-            source_lang, target_lang, text, temperature, max_tokens,
-            provider=tier.provider, grammar=grammar,
+            tier.handle, tier.model_name, req.prompt,
+            source_lang, target_lang, text, temperature, req.max_tokens,
+            provider=tier.provider, grammar=req.grammar,
         )
 
     try:
