@@ -5,7 +5,7 @@ from decimal import Decimal
 
 import httpx
 
-from app.models.cattle_trade import CattleTradeRatesModel
+from agents.tools.models.cattle_trade import CattleTradeRatesModel
 from app.config import settings
 from app.observability import start_observation
 from helpers.utils import get_logger

@@ -4,7 +4,7 @@ import re
 from decimal import ROUND_HALF_UP, Decimal
 
 from agents.tools.cattle_trade_backend import get_cattle_trade_rates_api
-from app.models.cattle_trade import CattleTradeRatesModel
+from agents.tools.models.cattle_trade import CattleTradeRatesModel
 from app.config import get_config_value
 from helpers.utils import get_logger
 

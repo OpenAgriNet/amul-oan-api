@@ -14,7 +14,7 @@ from pydantic_ai.tools import ToolDefinition
 from agents.deps import FarmerContext
 from agents.tools.session_shc import set_session_shc_context
 from app.config import settings
-from app.services.beckn_operations import OperationState, get_beckn_operation_client
+from agents.tools.beckn.operations import OperationState, get_beckn_operation_client
 from helpers.utils import get_logger
 
 logger = get_logger(__name__)

@@ -16,6 +16,7 @@ os.environ.setdefault("OPENAI_API_KEY", "test-key")
 
 from fastapi import BackgroundTasks
 
+from agents.farmer_context import FarmerContextBundle
 from app.services import chat as chat_service
 
 
@@ -129,7 +130,7 @@ def _drive(monkeypatch, *, source_lang="gu", target_lang="gu",
 
     async def _farmer_context(_phone):
         seen.append("farmer_context")
-        return "farmer data", [], {}
+        return FarmerContextBundle(markdown="farmer data", found=True)
 
     async def _translate_stream(text, *_a, **_kw):
         seen.append("output_translation")

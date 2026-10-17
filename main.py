@@ -26,6 +26,11 @@ async def lifespan(app: FastAPI):
     print(f"📍 Environment: {settings.environment}")
     print(f"🔧 Debug mode: {settings.debug}")
     print(f"🌐 CORS origins: {settings.allowed_origins}")
+    # Every supported private-data and booking tool now requires the callback
+    # bridge. Refuse a superficially healthy deployment that cannot complete a
+    # tool transaction.
+    from agents.tools.beckn.operations import validate_beckn_startup_configuration
+    validate_beckn_startup_configuration()
     # Load prompt templates into memory (no disk I/O at request time)
     from helpers.utils import load_prompt_templates
     load_prompt_templates(settings.base_dir / "assets" / "prompts")
@@ -106,3 +111,9 @@ app.include_router(beckn.router, prefix=settings.api_prefix)
 # Keep telemetry path compatible with existing frontend calls:
 # /observability-service/action/data/v3/telemetry
 app.include_router(telemetry.router)
+
+if settings.voice_route_enabled:
+    # Imported only when on, so a chat deployment never loads the voice stack.
+    from app.routers import voice
+
+    app.include_router(voice.router, prefix=settings.api_prefix)

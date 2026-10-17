@@ -25,7 +25,7 @@ def _run(village=None, district=None, taluka=""):
 
 class TestAsset:
     def test_lookup_is_registered_for_the_chat_agent(self):
-        from agents.tools import TOOLS
+        from agents.tools.registry import TOOLS
 
         registered = {tool.name: tool for tool in TOOLS}
         assert registered["find_nearby_vet_offices"].takes_ctx is True

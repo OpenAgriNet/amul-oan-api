@@ -9,6 +9,12 @@ This folder contains the maintained, repo-specific documentation set.
 - `WEBVIEW_URL_API.md`: integration guide for the webview URL endpoint.
 - `REPOSITORY_REVIEW_2026-03-10.md`: codebase review notes, cleanup findings, and follow-up recommendations.
 
+Telemetry: this repo sends it. What a chat or voice turn sends is in
+`telemetry/contracts/`, and the tests check the code against it. Reading it
+(eras, mappings, adapters, the import and the query API), and the rules and
+steps for changing what is sent (`docs/STANDARD.md`, `docs/CHANGES.md`), are in
+OpenAgriNet/amul-telemetry.
+
 ## Documentation Policy
 
 - Keep docs repository-specific and current.

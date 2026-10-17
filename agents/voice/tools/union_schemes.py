@@ -1,0 +1,103 @@
+"""Tool for reading cached union scheme data from Redis."""
+
+import json
+from typing import Any
+
+from pydantic_ai import RunContext
+from pydantic_ai.tools import ToolDefinition
+
+from agents.deps import FarmerContext
+from app.voice.models.union import UnionName, resolve_supported_unions
+from app.voice.scheme_ingestion import (
+    SUPPORTED_SCHEME_UNIONS,
+    SchemeCacheError,
+    SchemeDependencyError,
+    get_cached_scheme_records_for_union,
+)
+from helpers.utils import get_logger
+
+logger = get_logger(__name__)
+
+
+async def prepare_get_union_scheme_data(
+    ctx: RunContext[FarmerContext], tool_def: ToolDefinition
+) -> ToolDefinition | None:
+    """Hide get_union_scheme_data from the LLM unless the farmer is in a supported union.
+
+    Prevents wasted tool calls and the misleading "union could not be determined"
+    bail-out for farmers from unions whose scheme catalog isn't ingested
+    (e.g., dudhsagar). The LLM won't see the tool in its schema this turn, so it can't call it.
+    """
+    farmer_unions = [u for u in (ctx.deps.farmer_unions or []) if u]
+    supported_farmer_unions = resolve_supported_unions(farmer_unions, SUPPORTED_SCHEME_UNIONS)
+    if supported_farmer_unions:
+        return tool_def
+    logger.info(
+        "Hiding get_union_scheme_data tool because farmer_unions=%s resolved_supported_unions=%s has no supported union",
+        farmer_unions,
+        supported_farmer_unions,
+    )
+    return None
+
+
+def _filter_scheme_records(records: list[dict[str, Any]], scheme_name: str) -> list[dict[str, Any]]:
+    normalized_filter = scheme_name.strip().casefold()
+    if not normalized_filter:
+        return records
+    return [
+        record
+        for record in records
+        if normalized_filter in str(record.get("scheme_title") or "").casefold()
+    ]
+
+
+async def get_union_scheme_data(ctx: RunContext[FarmerContext], scheme_name: str | None = None) -> str:
+    """
+    Get cached milk producer scheme data for the union inferred from farmer context.
+
+    Args:
+        scheme_name: Optional scheme title filter. Use this when the user asks about a specific scheme.
+
+    Returns:
+        A JSON-formatted string of cached scheme records, or a clear no-data message.
+    """
+    farmer_unions = [union_name for union_name in (ctx.deps.farmer_unions or []) if union_name]
+    supported_farmer_unions = resolve_supported_unions(farmer_unions, SUPPORTED_SCHEME_UNIONS)
+    normalized_union_name = supported_farmer_unions[0] if supported_farmer_unions else None
+    normalized_scheme_name = scheme_name.strip() if scheme_name else None
+    logger.info(
+        "Union scheme tool invoked farmer_unions=%s resolved_supported_unions=%s selected_union=%s scheme_name=%s",
+        farmer_unions,
+        supported_farmer_unions,
+        normalized_union_name,
+        normalized_scheme_name,
+    )
+    if not normalized_union_name:
+        return "Scheme data is unavailable because the farmer union could not be determined from the current farmer context."
+
+    try:
+        UnionName(normalized_union_name)
+    except ValueError:
+        return f"Scheme data is only available for supported unions: {', '.join(sorted(SUPPORTED_SCHEME_UNIONS))}."
+
+    try:
+        records = await get_cached_scheme_records_for_union(normalized_union_name)
+    except SchemeDependencyError:
+        logger.exception("Union scheme tool failed because Redis dependency is unavailable")
+        return "Scheme data is temporarily unavailable because the cache dependency is not installed."
+    except SchemeCacheError:
+        logger.exception("Union scheme tool failed because scheme cache access failed")
+        return "Scheme data is temporarily unavailable because the cache could not be read."
+    except Exception:
+        logger.exception("Union scheme tool failed due to unexpected error for union=%s", normalized_union_name)
+        return "Scheme data is temporarily unavailable due to an unexpected error."
+
+    if normalized_scheme_name:
+        records = _filter_scheme_records(records, normalized_scheme_name)
+
+    if not records:
+        if normalized_scheme_name:
+            return f"Scheme data for '{normalized_scheme_name}' is not available yet for union '{normalized_union_name}'."
+        return f"Scheme data is not available yet for union '{normalized_union_name}'."
+
+    return json.dumps(records, indent=2, ensure_ascii=False)

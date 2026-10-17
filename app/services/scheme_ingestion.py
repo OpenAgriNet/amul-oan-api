@@ -19,7 +19,7 @@ from urllib.parse import urljoin, urlsplit
 import httpx
 
 from app.config import settings
-from app.models.union import UnionName
+from agents.tools.models.union import UnionName
 from helpers.utils import get_logger
 
 logger = get_logger(__name__)
@@ -130,7 +130,6 @@ class SchemeSource:
 
 
 BANAS_SCHEME_SECTION = "schemes"
-SABAR_SITE_ORIGIN = "https://sabardairy.org"
 
 
 def _url_origin(url: str, fallback: str) -> str:
@@ -148,6 +147,7 @@ BANAS_DOCUMENTS_API_URL = (
 )
 SUMUL_SITE_ORIGIN = _url_origin(settings.sumul_scheme_source_url, "https://www.sumul.com")
 SURSAGAR_SITE_ORIGIN = _url_origin(settings.sursagar_scheme_source_url, "https://sursagardairy.com")
+SABAR_SITE_ORIGIN = _url_origin(settings.sabar_scheme_source_url, "https://sabardairy.org")
 DUDHDHARA_SITE_ORIGIN = _url_origin(settings.dudhdhara_scheme_source_url, "https://www.dudhdharadairy.in")
 MADHUR_SITE_ORIGIN = _url_origin(settings.madhur_scheme_source_url, "http://www.madhurdairy.org")
 
@@ -188,7 +188,7 @@ SURSAGAR_SOURCE = SchemeSource(
 SABAR_SOURCE = SchemeSource(
     source_name="sabar",
     union_name=UnionName.SABAR.value,
-    source_url="https://sabardairy.org/for-our-milk-producers/",
+    source_url=str(settings.sabar_scheme_source_url or "").strip() or "https://sabardairy.org/for-our-milk-producers/",
     cache_key="sabardairy.org/for-our-milk-producers",
     # Page lists scheme cards with PDF application-form downloads (same pattern as
     # Sumul/Sursagar).
@@ -1023,7 +1023,14 @@ def parse_sabar_scheme_links(html: str) -> list[dict[str, str]]:
 
 
 def parse_dudhdhara_scheme_links(html: str) -> list[dict[str, str]]:
-    """Extract scheme PDFs from Dudhdhara milk-producer table rows only."""
+    """Extract PDF links and titles from the Dudhdhara milk-producers table.
+
+    Each ``<tr>`` holds a serial-number ``<th>``, a title ``<td>`` and a
+    ``<td>`` with a ``Download`` anchor to a relative ``assets/image/...pdf``.
+    Only table rows are scanned: the site navigation also links unrelated PDFs
+    (e.g. the "Suppliers Invited" tender notice), so there is no page-wide
+    anchor fallback.
+    """
     logger.info("Parsing Dudhdhara scheme links from HTML content_length=%s", len(html))
 
     tables = re.findall(r"<table\b[^>]*>(.*?)</table>", html, flags=re.IGNORECASE | re.DOTALL)
@@ -1062,17 +1069,19 @@ def parse_dudhdhara_scheme_links(html: str) -> list[dict[str, str]]:
             records.append({"scheme_title": title, "scheme_url": scheme_url})
 
     if not records:
-        logger.warning(
-            "No Dudhdhara scheme table rows with PDF links found tables=%s rows=%s",
-            len(tables),
-            len(rows),
-        )
+        logger.warning("No Dudhdhara scheme table rows with PDF links found tables=%s rows=%s", len(tables), len(rows))
+
     logger.info("Parsed Dudhdhara scheme links deduplicated_count=%s", len(records))
     return records
 
 
 def parse_madhur_scheme_links(html: str) -> list[dict[str, str]]:
-    """Extract scheme PDFs from Madhur producer cards only."""
+    """Extract PDF links and titles from Madhur Dairy producer cards.
+
+    Only ``producer-card`` blocks are scanned because the page includes other
+    navigation links that are not milk-producer schemes. A layout change
+    therefore fails closed and leaves the previous cache intact.
+    """
     logger.info("Parsing Madhur scheme links from HTML content_length=%s", len(html))
 
     card_chunks = re.split(
@@ -1091,7 +1100,11 @@ def parse_madhur_scheme_links(html: str) -> list[dict[str, str]]:
     for card_html in cards:
         headings = re.findall(r"<h4\b[^>]*>(.*?)</h4>", card_html, flags=re.IGNORECASE | re.DOTALL)
         scheme_title = next(
-            (normalized for heading in headings if (normalized := _normalize_title(_strip_html(heading)))),
+            (
+                normalized
+                for heading in headings
+                if (normalized := _normalize_title(_strip_html(heading)))
+            ),
             "",
         )
         if not scheme_title:
@@ -1112,6 +1125,7 @@ def parse_madhur_scheme_links(html: str) -> list[dict[str, str]]:
 
     if not records:
         logger.warning("No Madhur producer cards with PDF links found cards=%s", len(cards))
+
     logger.info("Parsed Madhur scheme links deduplicated_count=%s", len(records))
     return records
 
