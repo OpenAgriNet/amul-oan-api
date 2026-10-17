@@ -154,6 +154,25 @@ def test_voice_reads_chats_failed_technician_lookup_as_a_failure(shared):
     assert redis.queued() == set()
 
 
+def _legacy_voice_lookup_failed(raw: dict) -> bool:
+    """voice-oan-api amul-prod's check, copied: _has_failed_technician_lookup in
+    agents/services/farmer_cache.py, and the prompt wording in
+    app/services/voice.py. It reads ``lookupFailed`` only."""
+    return any(group.get("lookupFailed") for group in (raw.get("aiTechnicians") or []))
+
+
+@pytest.mark.parametrize("technicians_fail", [True, False])
+def test_voice_oan_api_reads_chats_technician_lookup_outcome(shared, technicians_fail):
+    """voice-oan-api reads the record chat writes until voice moves here."""
+    redis, beckn = shared
+    beckn.technicians_fail = technicians_fail
+
+    asyncio.run(fc.refresh_farmer_data(PHONE, background=True))
+    raw = redis.kv[build_cache_key(fc._cache_key(PHONE), fc.FARMER_CACHE_NAMESPACE)]
+
+    assert _legacy_voice_lookup_failed(raw) is technicians_fail
+
+
 def test_cold_fetch_on_a_turn_leaves_the_animals_to_the_worker(shared, monkeypatch):
     redis, beckn = shared
     lock_key = fc._refresh_lock_key(PHONE)
