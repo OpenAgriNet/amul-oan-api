@@ -16,11 +16,13 @@ os.environ.setdefault("OPENAI_API_KEY", "test-key")
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, UserPromptPart
+from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, ToolCallPart, UserPromptPart
 
 from agents.voice import agent as voice_agents
 from app.auth.jwt_auth import get_current_user
 from app.config import settings
+from app.llm_core import runtime
+from app.llm_core.config_model import NamedProfile, PipelineConfig, Provider, Step, StepConfig, Tier
 from app.routers import voice as voice_router
 from app.services import chat as chat_service
 from app.services import voice as voice_service
@@ -39,6 +41,7 @@ from app.voice.classifiers import _GREETING_RESPONSES
 from app.voice.liveness import CallStaleness, RayaNudgeSender
 from app.voice.moderation import ModerationVerdict
 from app.voice.non_meaningful import NonMeaningfulVerdict
+from app.voice import sink as voice_sink
 from app.voice.sink import _prepare_voice_output
 from app.voice.telemetry import RouteTimings, VoiceTelemetry
 from tests.test_chat_turn_contract import patch_turn
@@ -162,6 +165,86 @@ def test_the_hang_up_token_reaches_the_provider_exactly(world):
 
     assert response.text == "Goodbye."
     assert world["released"] == [_OWNER]
+
+
+# ── an answer that fails ────────────────────────────────────────────────────
+
+
+def _outcomes(monkeypatch):
+    """How each turn ended, as the route's telemetry recorded it."""
+    seen = []
+    record = VoiceTelemetry.record_outcome
+
+    def _record(self, outcome):
+        seen.append(outcome)
+        record(self, outcome)
+
+    monkeypatch.setattr(VoiceTelemetry, "record_outcome", _record)
+    return seen
+
+
+def test_a_closing_answer_whose_translation_fails_still_hangs_up_and_is_saved(world, monkeypatch):
+    outcomes = _outcomes(monkeypatch)
+    answer = "Give her water. Keep her in the shade."
+    closing = [
+        ModelRequest(parts=[UserPromptPart(content="My cow has fever")]),
+        ModelResponse(parts=[
+            TextPart(content=answer),
+            ToolCallPart(tool_name="signal_conversation_state", args={"state": "conversation_closing"}),
+        ]),
+    ]
+    monkeypatch.setattr(voice_agents.voice_agent, "iter", lambda **_kw: _Run([answer], closing))
+    asked = []
+
+    async def _translate(text, *_a, **_kw):
+        asked.append(text)
+        if len(asked) == 2:
+            raise RuntimeError("translategemma down")
+        yield "ગાયને પાણી આપો."
+
+    monkeypatch.setattr(voice_sink, "translate_text_stream_fast", _translate)
+
+    response = _get(query="My cow has fever", source_lang="en", target_lang="gu")
+
+    trouble = voice_sink.TRANSLATION_TROUBLE_MESSAGE["gu"]
+    assert response.text.startswith("ગાયને પાણી આપો.")
+    # The trouble line, then the raw hang-up token, so the provider still ends the call.
+    assert response.text.endswith(f"{trouble} Goodbye.")
+    ((key, messages),) = world["history_writes"]
+    assert key == "call-1" and messages == closing
+    assert outcomes == ["error"]
+
+
+@pytest.mark.parametrize("fallback", [True, False])
+def test_an_agent_that_fails_is_answered_with_the_trouble_line_and_history_kept(world, monkeypatch, fallback):
+    outcomes = _outcomes(monkeypatch)
+    earlier = [ModelRequest(parts=[UserPromptPart(content="earlier")]), ModelResponse(parts=[TextPart(content="Hello.")])]
+    tiers = [Tier(provider=Provider.OPENAI, model="gpt-a"), Tier(provider=Provider.OPENAI, model="gpt-b")]
+    config = PipelineConfig(
+        profiles=[NamedProfile(name="managed", weight=100, steps={Step.AGENT: StepConfig(tiers=tiers)})],
+        fallback_enabled=fallback,
+    )
+    runs = []
+
+    async def _history(_key):
+        return list(earlier)
+
+    def _dies(**kw):
+        runs.append(kw)
+        raise RuntimeError("agent down")
+
+    monkeypatch.setattr(runtime, "get_pipeline", lambda: config)
+    monkeypatch.setattr(voice_router, "_get_message_history", _history)
+    monkeypatch.setattr(voice_agents.voice_agent, "iter", _dies)
+
+    response = _get(query="My cow has fever", source_lang="en", target_lang="en")
+
+    assert response.text == voice_sink.TRANSLATION_TROUBLE_MESSAGE["en"]
+    # Every tier failed before its first token: the next one is tried only with fallback on.
+    assert len(runs) == (2 if fallback else 1)
+    # The agent left no messages and said nothing about closing: history stays as it was.
+    assert world["history_writes"] == [("call-1", earlier)]
+    assert outcomes == ["error"]
 
 
 def test_a_request_without_a_session_gets_one(world):
