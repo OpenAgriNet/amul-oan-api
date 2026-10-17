@@ -1383,7 +1383,8 @@ async def run_turn(
                     if liveness is not None and _out.strip():
                         await liveness.stop()
                         liveness = None
-                    yield TextEmission(_out)
+                    # Raw: the sink has already prepared it for the surface.
+                    yield TextEmission(_out, raw=True)
                 logger.info(f"Streaming complete for session {session_id}")
                 if agent_input.after_run is not None:
                     agent_input.after_run(new_messages)

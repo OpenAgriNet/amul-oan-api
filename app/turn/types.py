@@ -119,7 +119,9 @@ class TextEmission:
     text: str
     #: Bypass the surface's output normalizer. Chat has none, so its adapter
     #: ignores this; voice's hangup line ``"Goodbye."`` must skip the Gujarati
-    #: allow-list normalizer or it is spoken as ``"."``.
+    #: allow-list normalizer or it is spoken as ``"."``. The sink's text is raw
+    #: too: the sink has already normalized it, and a second pass is not
+    #: harmless (voice's "મિલી" became "મિલીલીટરલીટર").
     raw: bool = False
 
 

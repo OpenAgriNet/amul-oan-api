@@ -128,20 +128,50 @@ def _load_gu_term_policy() -> dict:
     return {}
 
 
-def _build_gu_policy_replacements(policy: dict) -> list[tuple[str, str]]:
+def _gu_policy_pattern(src: str, dst: str) -> str:
+    """The regex for one forbidden term.
+
+    A replacement that contains its own term would rewrite text that already
+    says it, and its own output on every later pass: "પોટેશિયમ પરમેંગેનેટ" ->
+    "પોટેશિયમ પરમેંગેનેટના દ્રાવણ" turned "પોટેશિયમ પરમેંગેનેટનું દ્રાવણ" into
+    "પોટેશિયમ પરમેંગેનેટના દ્રાવણનું દ્રાવણ". So the term is left alone where the
+    words the replacement adds are already beside it. What is glued to the term
+    (a case ending such as ના, or a bracket voice strips) may differ.
+    """
+    pattern = re.escape(src)
+    at = dst.find(src)
+    if at < 0:
+        return pattern
+    before = dst[:at]
+    words_before = re.sub(r"\S*$", "", before)
+    words_after = re.sub(r"^\S*", "", dst[at + len(src):]).strip()
+    alternatives = []
+    if words_before.strip():
+        alternatives.append(f"(?<!{re.escape(before)})(?<!{re.escape(words_before)}){pattern}")
+    if words_after:
+        alternatives.append(rf"{pattern}(?!\S*\s*{re.escape(words_after)})")
+    return "(?:" + "|".join(alternatives) + ")" if alternatives else pattern
+
+
+def _build_gu_policy_replacements(
+    policy: dict, *, skip: frozenset[str] = frozenset()
+) -> list[tuple[str, str]]:
     forbidden = policy.get("forbidden", {}) if isinstance(policy, dict) else {}
     if not isinstance(forbidden, dict):
         return []
     # Longer keys first so phrase-level replacements win before single-word ones.
     items = sorted(
-        [(str(k).strip(), str(v).strip()) for k, v in forbidden.items() if str(k).strip() and str(v).strip()],
+        [
+            (str(k).strip(), str(v).strip())
+            for k, v in forbidden.items()
+            if str(k).strip() and str(v).strip() and str(k).strip() not in skip
+        ],
         key=lambda kv: len(kv[0]),
         reverse=True,
     )
     out: list[tuple[str, str]] = []
     for src, dst in items:
-        pattern = re.escape(src)
-        out.append((pattern, dst))
+        out.append((_gu_policy_pattern(src, dst), dst))
     return out
 
 
@@ -160,6 +190,15 @@ GU_POST_REPLACEMENTS_BASE = [
 GU_TERM_POLICY = _load_gu_term_policy()
 GU_POLICY_REPLACEMENTS = _build_gu_policy_replacements(GU_TERM_POLICY)
 GU_POST_REPLACEMENTS = GU_POST_REPLACEMENTS_BASE + GU_POLICY_REPLACEMENTS
+# Shared policy terms voice leaves as they are, as voice-oan-api does. Voice
+# removed પાડુના -> બચ્ચાંના in c7f4b80 (#158): a buffalo calf stays a buffalo
+# calf when the farmer did not name the species. Voice never had વોડકી -> પાડી
+# (98abd41, chat only): the glossary's own Heifer rows list વોડકી, and પાડી is
+# a female buffalo calf. Chat keeps both.
+VOICE_KEPT_GU_POLICY_TERMS = frozenset({"પાડુના", "વોડકી"})
+VOICE_GU_POST_REPLACEMENTS = GU_POST_REPLACEMENTS_BASE + _build_gu_policy_replacements(
+    GU_TERM_POLICY, skip=VOICE_KEPT_GU_POLICY_TERMS
+)
 CHAT_ONLY_GU_POST_REPLACEMENTS = [
     # Canonicalize organic wording in chat output.
     (r"(?i)\borganic\b", "જૈવિક"),
@@ -421,7 +460,7 @@ def _post_normalize_gu_translation(
     else:
         for pat, repl in CHAT_ONLY_GU_POST_REPLACEMENTS:
             out = re.sub(pat, repl, out)
-    for pat, repl in GU_POST_REPLACEMENTS:
+    for pat, repl in VOICE_GU_POST_REPLACEMENTS if _is_voice_channel() else GU_POST_REPLACEMENTS:
         out = re.sub(pat, repl, out)
     # Keep assistant first-person Gujarati conjugation feminine on all channels.
     for pat, repl in GU_FEMININE_SELF_REFERENCE_REPLACEMENTS:

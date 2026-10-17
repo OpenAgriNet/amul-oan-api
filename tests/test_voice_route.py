@@ -383,11 +383,12 @@ def test_the_routes_timings_open_the_trace(monkeypatch):
     assert trace.started_at == route.started_at
 
 
-# ── the normalizer runs again on what the sink already cleaned ──────────────
+# ── the normalizer runs again on a fixed line render_for_caller cleaned ─────
 
 
 @pytest.mark.parametrize("lang, text", [
     ("gu", "ગાયને 3-4 કિ.ગ્રા. ખોરાક આપો."),
+    ("gu", "૫ મિલી દવા અને ૧૦ ml પાણી આપો."),
     ("gu", " ગાયને પાણી આપો!"),
     ("gu", "**૧. ગાય** (ભેંસ) / બકરી"),
     ("en", "**Give** 5 kg of feed, twice a day."),

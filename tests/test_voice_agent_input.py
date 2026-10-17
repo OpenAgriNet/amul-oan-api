@@ -644,7 +644,7 @@ def test_run_turn_says_nothing_extra_after_an_ordinary_answer(world, monkeypatch
 
     emissions = _run_turn(_english())
 
-    assert all(not e.raw for e in emissions)
+    assert "".join(e.text for e in emissions).strip() == "Give her water."
 
 
 def test_run_turn_hands_the_agent_input_its_staleness_check(world, monkeypatch):
