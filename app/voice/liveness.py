@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import random
 import time
+from contextvars import ContextVar
 from typing import Any, Dict, Optional
 
 import httpx
@@ -144,12 +145,25 @@ async def send_nudge_message_raya(message: str, session_id: str, process_id: str
         )
 
 
+# The turn's nudge while it waits. A decline, a hang-up or the first text stops
+# it where voice did, before the line is rendered, not once run_turn has it.
+_waiting_nudge: ContextVar[Optional[asyncio.Task]] = ContextVar("voice_waiting_nudge", default=None)
+
+
+def stop_nudge() -> None:
+    """Stop the turn's nudge if it has not gone out. ``VoiceLiveness.stop`` reaps it."""
+    task = _waiting_nudge.get()
+    if task is not None and not task.done():
+        task.cancel()
+
+
 def nudge_stopped(reason: str) -> None:
-    """Record why a nudge that was still waiting will not go out.
+    """Stop a nudge that is still waiting, and record why it will not go out.
 
     Voice records it only for a nudge armed and not yet sent, and keeps the
     first reason it records.
     """
+    stop_nudge()
     nudge = current_trace().metadata.get("nudge") or {}
     if nudge.get("armed") and not nudge.get("sent") and "cancel_reason" not in nudge:
         current_trace().set_nudge(cancel_reason=reason)
@@ -253,6 +267,7 @@ class VoiceLiveness:
         set_tool_call_nudge_event(self._tool_call)
         lang = (turn.target_lang or "gu").strip().lower()
         self._task = asyncio.create_task(self._nudge(lang, started_at, send, is_stale))
+        _waiting_nudge.set(self._task)
         logger.info(
             "Nudge initiated; session_id=%s process_id=%s",
             self._session_id,
