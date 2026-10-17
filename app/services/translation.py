@@ -194,8 +194,12 @@ GU_POST_REPLACEMENTS = GU_POST_REPLACEMENTS_BASE + GU_POLICY_REPLACEMENTS
 # removed પાડુના -> બચ્ચાંના in c7f4b80 (#158): a buffalo calf stays a buffalo
 # calf when the farmer did not name the species. Voice never had વોડકી -> પાડી
 # (98abd41, chat only): the glossary's own Heifer rows list વોડકી, and પાડી is
-# a female buffalo calf. Chat keeps both.
-VOICE_KEPT_GU_POLICY_TERMS = frozenset({"પાડુના", "વોડકી"})
+# a female buffalo calf. Nor ટીડીએન -> કુલ પાચ્ય પોષક તત્વ (ટીડીએન) and
+# પોટેશિયમ પરમેંગેનેટ -> પોટેશિયમ પરમેંગેનેટના દ્રાવણ (98abd41 too). These
+# rules run on one streamed chunk at a time, so where the words beside the term
+# came in the chunk before, the term was rewritten all the same:
+# "આ કુલ પાચ્ય પોષક તત્વ (" + "ટીડીએન) છે." said the phrase twice. Chat keeps all four.
+VOICE_KEPT_GU_POLICY_TERMS = frozenset({"પાડુના", "વોડકી", "ટીડીએન", "પોટેશિયમ પરમેંગેનેટ"})
 VOICE_GU_POST_REPLACEMENTS = GU_POST_REPLACEMENTS_BASE + _build_gu_policy_replacements(
     GU_TERM_POLICY, skip=VOICE_KEPT_GU_POLICY_TERMS
 )
