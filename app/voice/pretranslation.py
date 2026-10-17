@@ -475,8 +475,8 @@ async def _translate_to_english_pretranslation(
             translated_text = _extract_translation_from_response(response)
             if not translated_text:
                 logger.warning(
-                    "%s pretranslation returned empty - source_lang=%s query=%r",
-                    label, source_lang, (text or "")[:100],
+                    "%s pretranslation returned empty - source_lang=%s query_chars=%s",
+                    label, source_lang, len(text or ""),
                 )
                 return text
             translated_text = _apply_exact_glossary_transliteration_replacements(text, translated_text)
@@ -508,8 +508,8 @@ async def _translate_to_english_pretranslation(
             translated_text = _extract_translation_from_response(response)
             if not translated_text:
                 logger.warning(
-                    "%s pretranslation returned empty - source_lang=%s query=%r",
-                    label, source_lang, (text or "")[:100],
+                    "%s pretranslation returned empty - source_lang=%s query_chars=%s",
+                    label, source_lang, len(text or ""),
                 )
                 observation.update(output="__EMPTY__")
                 return text
@@ -518,13 +518,12 @@ async def _translate_to_english_pretranslation(
             return translated_text
     except asyncio.TimeoutError as e:
         logger.error(
-            "%s pretranslation timed out - source_lang=%s model=%s timeout_seconds=%.2f query_chars=%s query_preview=%r",
+            "%s pretranslation timed out - source_lang=%s model=%s timeout_seconds=%.2f query_chars=%s",
             label,
             source_lang,
             model,
             settings.openai_pretranslation_timeout_seconds,
             len(text or ""),
-            (text or "")[:160],
         )
         raise TimeoutError(f"{label} pretranslation timed out") from e
 
@@ -713,8 +712,8 @@ async def _voice_pretranslation(
         if declined is not None:
             return declined
         logger.info(
-            "Pretranslation produced no usable text; asking to repeat - session_id=%s process_id=%s query=%r",
-            turn.session_id, process_id, query,
+            "Pretranslation produced no usable text; asking to repeat - session_id=%s process_id=%s query_chars=%s",
+            turn.session_id, process_id, len(query or ""),
         )
         low_conf_resp_for_history = _FRAGMENT_RESPONSES["en"]
         low_conf_resp_for_caller = await _canned_for_caller(

@@ -88,7 +88,7 @@ async def _maybe_resend_sms(session, record, mobile: str) -> Optional[str]:
     if not settings.loan_sms_enabled:
         record.sms_status = "dry_run"
         await session.commit()
-        logger.info("Loan SMS resend dry-run (LOAN_SMS_ENABLED=false) code=%s to=%s", record.code, mobile)
+        logger.info("Loan SMS resend dry-run (LOAN_SMS_ENABLED=false) code=%s", record.code)
         return "dry_run"
     sms = await send_loan_approval_sms(
         mobile, record.farmer_name or "", float(record.loan_amount or settings.loan_max_amount), record.code
@@ -97,7 +97,7 @@ async def _maybe_resend_sms(session, record, mobile: str) -> Optional[str]:
     record.sms_message_id = sms.message_id
     record.sms_error = sms.error
     await session.commit()
-    logger.info("Loan SMS re-sent code=%s to=%s status=%s", record.code, mobile, sms.status)
+    logger.info("Loan SMS re-sent code=%s status=%s", record.code, sms.status)
     return sms.status
 
 
@@ -284,7 +284,7 @@ async def evaluate_and_issue(
 
             # A loan already ISSUED/disbursed at the bank blocks a new one outright.
             if issued is not None:
-                logger.info("Loan already issued for %s (redeemed code %s)", mobile, issued.code)
+                logger.info("Loan already issued; session=%s (redeemed code %s)", session_id, issued.code)
                 return LoanResult(
                     outcome=ALREADY_ISSUED, phone=mobile, code=issued.code,
                     loan_amount=float(issued.loan_amount) if issued.loan_amount else amount,
@@ -299,7 +299,7 @@ async def evaluate_and_issue(
                 if settings.loan_check_bank_list_enabled:
                     elig_row = await _eligibility_row_for_phone(session, mobile)
                     if elig_row is None:
-                        logger.info("Phone %s not in bank eligibility list", mobile)
+                        logger.info("Phone not in bank eligibility list; session=%s", session_id)
                         return LoanResult(outcome=NOT_IN_BANK_LIST, phone=mobile, checks_applied=checks)
                 else:
                     elig_row = await _eligibility_row_for_phone(session, mobile)
@@ -308,7 +308,7 @@ async def evaluate_and_issue(
                     if milk_total is None:
                         return LoanResult(outcome=ERROR, phone=mobile, error="milk_lookup_failed", checks_applied=checks)
                     if milk_total < threshold:
-                        logger.info("Milk %.2f below threshold %.2f for %s", milk_total, threshold, mobile)
+                        logger.info("Milk %.2f below threshold %.2f; session=%s", milk_total, threshold, session_id)
                         return LoanResult(
                             outcome=MILK_BELOW_THRESHOLD, phone=mobile,
                             milk_amount_month=milk_total, milk_threshold=threshold, checks_applied=checks,
@@ -323,7 +323,7 @@ async def evaluate_and_issue(
 
             # OFFER step — eligible but NOT yet confirmed: reveal no code, send no SMS.
             if not confirm:
-                logger.info("Loan OFFER for %s (awaiting confirmation, has_existing=%s)", mobile, existing is not None)
+                logger.info("Loan OFFER; session=%s (awaiting confirmation, has_existing=%s)", session_id, existing is not None)
                 return LoanResult(
                     outcome=ELIGIBLE_OFFER, phone=mobile,
                     loan_amount=float(existing.loan_amount) if existing and existing.loan_amount else amount,
@@ -334,7 +334,7 @@ async def evaluate_and_issue(
             # CONFIRMED. Re-share an existing code (+ optional resend), or mint a new one.
             if existing is not None:
                 resent = await _maybe_resend_sms(session, existing, mobile)
-                logger.info("Loan code re-shared (confirmed) for %s (code %s, sms=%s)", mobile, existing.code, resent)
+                logger.info("Loan code re-shared (confirmed); session=%s (code %s, sms=%s)", session_id, existing.code, resent)
                 return LoanResult(
                     outcome=ELIGIBLE, phone=mobile, code=existing.code,
                     loan_amount=float(existing.loan_amount) if existing.loan_amount else amount,
@@ -376,16 +376,17 @@ async def evaluate_and_issue(
                 record.sms_error = sms.error
             else:
                 record.sms_status = "dry_run"
-                logger.info("Loan SMS dry-run (LOAN_SMS_ENABLED=false) code=%s to=%s", code, mobile)
+                logger.info("Loan SMS dry-run (LOAN_SMS_ENABLED=false) code=%s", code)
 
             await session.commit()
-            logger.info("Loan code issued code=%s phone=%s amount=%s sms=%s channel=%s",
-                        code, mobile, amount, record.sms_status, channel)
+            logger.info("Loan code issued code=%s session=%s amount=%s sms=%s channel=%s",
+                        code, session_id, amount, record.sms_status, channel)
             return LoanResult(
                 outcome=ELIGIBLE, phone=mobile, code=code, loan_amount=amount,
                 milk_amount_month=milk_total, milk_threshold=threshold,
                 farmer_name=name, sms_status=record.sms_status, checks_applied=checks,
             )
     except Exception as e:
-        logger.error("Loan evaluate_and_issue failed for %s: %s", mobile, e)
+        # The error's class only: a database error can quote the phone it was given.
+        logger.error("Loan evaluate_and_issue failed; session=%s error=%s", session_id, type(e).__name__)
         return LoanResult(outcome=ERROR, phone=mobile, error=str(e), checks_applied=checks)

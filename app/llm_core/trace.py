@@ -50,6 +50,11 @@ class StepRecord:
     kind: Optional[str] = None           # primary tier's kind ("oss"/"managed")
     tier_served_route: Optional[str] = None  # provider:model plus optional config label
     tier_served_index: Optional[int] = None  # 0 = primary, 1 = first fallback, ...
+    # Set by the streaming walker, for voice's trace. The tier a stream committed
+    # to (its first model event) holds even when the answer then breaks off,
+    # which tier_served does not; fell_back is whether a tier failed before it.
+    tier_committed: Any = None               # that tier's ExecutionTarget
+    fell_back: bool = False
 
     def to_dict(self) -> dict:
         served = None
@@ -157,6 +162,20 @@ def record_served(
     rec = trace_state.step(name)
     rec.tier_served_route = route
     rec.tier_served_index = index
+
+
+def record_committed(step: Any, target: Any, *, trace_state: Optional[PipelineTrace] = None) -> None:
+    """Record the tier a streamed step committed to: the one that sent its first model event."""
+    if trace_state is None:
+        return
+    trace_state.step(getattr(step, "value", step)).tier_committed = target
+
+
+def record_fell_back(step: Any, *, trace_state: Optional[PipelineTrace] = None) -> None:
+    """Record that a streamed step's tier failed before committing and the next one was tried."""
+    if trace_state is None:
+        return
+    trace_state.step(getattr(step, "value", step)).fell_back = True
 
 
 # ── compact trace-metadata keys (the path that actually lands) ────────────────

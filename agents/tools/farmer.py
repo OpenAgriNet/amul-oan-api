@@ -52,7 +52,8 @@ async def get_farmer_data_by_mobile(mobile_number: str) -> list[FarmerModel] | N
     try:
         records = await fetch_authenticated_farmers(mobile)
     except Exception as e:
-        logger.warning("Beckn farmer profile lookup failed for %s: %s", mobile, e)
+        # The error's class only: a lookup error can quote the mobile it was given.
+        logger.warning("Beckn farmer profile lookup failed: %s", type(e).__name__)
         return None
     return records or None
 
@@ -67,7 +68,7 @@ async def fetch_farmer_info_with_outcome(
     try:
         farmers = await fetch_authenticated_farmers(mobile, force_refresh=True)
     except Exception as exc:
-        logger.warning("Beckn farmer profile lookup failed for %s: %s", mobile, exc)
+        logger.warning("Beckn farmer profile lookup failed: %s", type(exc).__name__)
         return None, FarmerFetchOutcome.ERROR
     if not farmers:
         return None, FarmerFetchOutcome.NOT_FOUND

@@ -13,7 +13,8 @@ signal ends the call.
 
 What voice's trace records along the way is recorded here too: the farmer data
 and scheme summary stages, the consent verdict, the milk readout routes, and the
-agent's run.
+agent's run, with the model that answered and whether it fell back (llm_core
+runs the attempts, so the per-attempt list voice kept is not recorded).
 """
 from __future__ import annotations
 
@@ -241,6 +242,30 @@ def _agent_text(new_messages) -> str:
     ).strip()
 
 
+def _answered_by(execution) -> dict:
+    """What voice-oan-api recorded about the tier that answered: the one the
+    agent's stream committed to ("failed" as actual when none did), and whether
+    an earlier tier failed first."""
+    try:
+        agent = execution.begin_trace().steps.get(Step.AGENT.value)
+    except Exception as exc:  # tracing never breaks the turn
+        logger.debug("Voice agent tier lookup failed: %s", exc)
+        return {}
+    committed = agent.tier_committed if agent is not None else None
+    tier, provider, model = (
+        (committed.kind, committed.provider, committed.model_name) if committed is not None else (None, None, None)
+    )
+    return {
+        "actual_tier": tier or "failed",
+        "actual_provider": provider or "failed",
+        "actual_model": model or "failed",
+        "first_token_committed_tier": tier,
+        "first_token_committed_provider": provider,
+        "first_token_committed_model": model,
+        "fallback_used": bool(agent is not None and agent.fell_back),
+    }
+
+
 class _AgentRun:
     """The voice agent's run as the trace records it: timed from when it starts
     streaming, and what it produced once its answer is out."""
@@ -275,6 +300,7 @@ class _AgentRun:
     def after_run(self, new_messages) -> None:
         trace = current_trace()
         agent = self._execution.info(Step.AGENT)
+        answered_by = _answered_by(self._execution)
         trace.attach_stage_timing(
             "agent",
             (time.monotonic() - self._started_at) * 1000.0,
@@ -284,6 +310,7 @@ class _AgentRun:
             requested_tier=agent.kind,
             requested_model=agent.model_name,
             requested_provider=agent.provider,
+            **answered_by,
         )
         trace.set_agent(
             signed_in=self._signed_in,
@@ -292,6 +319,7 @@ class _AgentRun:
             requested_tier=agent.kind,
             requested_provider=agent.provider,
             requested_model=agent.model_name,
+            **answered_by,
         )
 
 
