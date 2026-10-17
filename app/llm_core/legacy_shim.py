@@ -184,8 +184,27 @@ def _post_translation_tiers(fallback_enabled: bool) -> list[Tier]:
         ttft_ms=_int_env("FALLBACK_POST_TRANSLATION_TG_TTFT_MS", 5000),
         label="translategemma",
     )
+    # TRANSLATION_GEMMA_ENDPOINT puts the Gemma 4 script-only translator in front
+    # of TranslateGemma; unset, the chain is unchanged. With fallback off only the
+    # first tier ever serves, so Gemma then has no TranslateGemma behind it.
+    head = [tg]
+    gemma_endpoint = _env("TRANSLATION_GEMMA_ENDPOINT")
+    if gemma_endpoint:
+        head = [
+            Tier(
+                provider=Provider.VLLM,
+                model=_env("TRANSLATION_GEMMA_MODEL", "gemma-4-31b-it") or "gemma-4-31b-it",
+                endpoint=gemma_endpoint,
+                api_key_env="OSS_INFERENCE_API_KEY",
+                timeout_ms=30000,
+                ttft_ms=_int_env("FALLBACK_POST_TRANSLATION_TG_TTFT_MS", 5000),
+                target_script_only=True,
+                label="gemma-translator",
+            ),
+            tg,
+        ]
     if not fallback_enabled:
-        return [tg]
+        return head[:1]
 
     # Keep same-provider deployments on their configured agent model. A provider
     # switch gets that provider's default unless the operator names a model.
@@ -252,7 +271,7 @@ def _post_translation_tiers(fallback_enabled: bool) -> list[Tier]:
             admission=AdmissionPolicy.MANAGED,
             label="llm-fallback",
         )
-    return [tg, fallback]
+    return head + [fallback]
 
 
 def _oss_configured() -> bool:
