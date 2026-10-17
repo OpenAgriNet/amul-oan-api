@@ -343,7 +343,8 @@ reads it. So a slot lands in the same PR as the code that reads it, never ahead 
    pre_translation, agent and post_translation, with non_meaningful on managed. This repo's env
    synthesis builds chat's steps, not voice's (`VOICE_MODERATION_PROVIDER`,
    `VOICE_NON_MEANINGFUL_PROVIDER`, moderation on the pretranslation models), so it can't boot
-   voice; porting it is the alternative if the deployment has to run from env alone.
+   voice; porting it is the alternative if the deployment has to run from env alone. Dev's file
+   is `pipeline.voice-dev.yaml`; it names its endpoints as `${ENV_VAR}`, filled in at boot.
 
 Each PR is checked the same way: no existing test edited, every existing test's result unchanged,
 a mutation check on what it adds, and a trial merge onto the open telemetry PRs and the earlier
