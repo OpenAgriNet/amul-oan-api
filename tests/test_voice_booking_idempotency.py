@@ -198,6 +198,10 @@ def _nack_body(code):
 _BOOKED = ("ack", {"message": {"order": {"id": "T9", "state": "ACTIVE"}}})
 
 
+def _on_confirm_error(code, message):
+    return ("ack", {"error": {"code": code, "message": message}})
+
+
 class _Bridge:
     """The transaction bridge as the BAP sees it. Each confirm gets the next
     answer: an exception to raise, an (HTTP status, body) pair, or ("ack", the
@@ -278,7 +282,8 @@ def _store_fails(step):
     (None, [httpx.ConnectError("refused"), httpx.ConnectError("refused")]),
     (None, [(401, _nack_body("UNAUTHORIZED_TRANSACTION"))]),
     (None, [(404, _nack_body("UNSUPPORTED_TRANSACTION"))]),
-], ids=["not_configured", "not_recorded", "not_marked_sent", "connect_refused", "bad_bridge_token", "unsupported_action"])
+    (None, [_on_confirm_error("BOOKING_REJECTED", "Invalid Union Code")]),
+], ids=["not_configured", "not_recorded", "not_marked_sent", "connect_refused", "bad_bridge_token", "unsupported_action", "provider_rejected"])
 def test_a_confirm_that_provably_did_not_book_frees_the_call_to_book_again(monkeypatch, network, breaks, first):
     bridge = network.answer(*first, _BOOKED)
     undo = breaks(monkeypatch, network) if breaks else None
@@ -311,3 +316,46 @@ def test_a_confirm_that_may_have_booked_holds_the_call_and_says_it_may_have(netw
     assert len(bridge.posted) == 1
     assert first == chat_ai_call.UNCONFIRMED_MESSAGE
     assert retried == chat_ai_call.ALREADY_REQUESTED_MESSAGE
+
+
+# ── chat's route: the same confirm, guard from AI_CALL_BOOKING_GUARD_ENABLED ──
+
+
+def _book_chat(session_id="s1"):
+    from agents.tools.models.ai_call import AISpecies as ChatSpecies
+
+    return asyncio.run(chat_ai_call._book_via_network(
+        "159", "00002", "5058", TECH_ID, ChatSpecies.COW, session_id, {},
+    ))
+
+
+@pytest.mark.parametrize("reason, told", [
+    ("Invalid Union Code", "The booking system did not accept the request (Invalid Union Code), so no visit was booked."),
+    ("The provider rejected the booking (HTTP 409)", "The booking system did not accept the request, so no visit was booked."),
+    ("See https://example.invalid/e/1", "The booking system did not accept the request, so no visit was booked."),
+], ids=["plain_reason", "status_code_dropped", "url_dropped"])
+def test_chat_a_provider_rejection_says_it_failed_and_frees_the_session(monkeypatch, network, store, reason, told):
+    """PashuGPT answered no: nothing was booked, so the farmer may book again now."""
+    monkeypatch.setattr(chat_ai_call.settings, "ai_call_booking_guard_enabled", True)
+    bridge = network.answer(_on_confirm_error("BOOKING_REJECTED", reason), _BOOKED)
+
+    failed = _book_chat()
+    held_after_failure = ("ai_call_booked", "s1") in store
+    retried = _book_chat()
+
+    assert failed.startswith("Artificial insemination call booking failed.\n\n" + told)
+    assert not held_after_failure
+    assert "booked successfully" in retried.lower()
+    assert len(bridge.posted) == 2
+
+
+def test_chat_any_other_provider_error_still_holds_the_session(monkeypatch, network, store):
+    monkeypatch.setattr(chat_ai_call.settings, "ai_call_booking_guard_enabled", True)
+    bridge = network.answer(_on_confirm_error("BOOKING_UNCONFIRMED", "do not submit a duplicate"), _BOOKED)
+
+    first = _book_chat()
+    retried = _book_chat()
+
+    assert first == chat_ai_call.UNCONFIRMED_MESSAGE
+    assert retried == chat_ai_call.ALREADY_REQUESTED_MESSAGE
+    assert len(bridge.posted) == 1

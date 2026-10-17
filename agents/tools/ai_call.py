@@ -488,9 +488,10 @@ async def _book_via_network(
             return failure_message
 
         if not result.ok:
-            # Release only on an authoritative "I did not book" (a NACK). A
-            # failure the BPP did not vouch for — e.g. a 200 with no order id —
-            # keeps the reservation, same rule as the ambiguous exceptions above.
+            # Release only on an authoritative "I did not book": a NACK, or the
+            # BPP's BOOKING_REJECTED (PashuGPT answered and refused). A failure
+            # the BPP did not vouch for — e.g. a 200 with no order id — keeps
+            # the reservation, same rule as the ambiguous exceptions above.
             if _owned and result.authoritative_no_booking:
                 await release_reservation(session_id, AI_CALL_CACHE_NAMESPACE)
             logger.info(
@@ -503,9 +504,9 @@ async def _book_via_network(
                 result.authoritative_no_booking,
                 "released" if (_owned and result.authoritative_no_booking) else "held",
             )
-            # Only a refusal is told as a failure. A pending confirm, a provider
-            # error after the BPP accepted it, or a callback with no ticket may
-            # all have booked the visit, and the farmer is told so.
+            # Only a refusal is told as a failure. A pending confirm, any other
+            # provider error after the BPP accepted it, or a callback with no
+            # ticket may all have booked the visit, and the farmer is told so.
             told = result.message if result.authoritative_no_booking else UNCONFIRMED_MESSAGE
             if ai_tool_obs is not None:
                 ai_tool_obs.update(
