@@ -110,7 +110,9 @@ async def stream_voice_message(
             query=query,
             session_id=session_id,
             source_lang=source_lang,
-            target_lang=target_lang,
+            # As voice read it: an empty or padded value is still Gujarati,
+            # not a language that turns translation off.
+            target_lang=target,
             user_id=user_id,
             authenticated_user=MappingProxyType(dict(user_info or {})),
             history=tuple(history),

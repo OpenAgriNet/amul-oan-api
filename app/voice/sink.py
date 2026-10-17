@@ -29,7 +29,7 @@ from agents.tools.models.union import UNION_BANNED_MESSAGE, union_banned_message
 from app.services.translation import translate_text, translate_text_stream_fast, translation_channel
 from app.turn.types import StalenessCheck, Turn
 from app.voice.classifiers import _IDENTITY_RESPONSE_EN
-from app.voice.liveness import nudge_stopped
+from app.voice.liveness import nudge_stopped, stop_nudge
 from app.voice.trace import current_trace
 from helpers.utils import get_logger, normalize_voice_output
 
@@ -433,6 +433,9 @@ class VoiceSink:
                 if not self._translating:
                     if not self._first_text_chunk_received and chunk and chunk.strip():
                         self._first_text_chunk_received = True
+                        # Even a chunk the cleanup empties, such as "**": voice
+                        # stopped the nudge on the raw text.
+                        stop_nudge()
                         current_trace().set_nudge(cancel_reason="first_text_chunk_received")
                     cleaned_chunk = _prepare_voice_output(chunk, self._target_lang) if chunk else chunk
                     if await self._stale("before_direct_yield"):

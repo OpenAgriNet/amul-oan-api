@@ -45,6 +45,7 @@ from app.voice import sink as voice_sink
 from app.voice.sink import _prepare_voice_output
 from app.voice.telemetry import RouteTimings, VoiceTelemetry
 from tests.test_chat_turn_contract import patch_turn
+from tests.test_chat_turn_sequence import _delta
 from tests.test_voice_agent_input import _Run
 
 REPO = Path(__file__).resolve().parents[1]
@@ -283,6 +284,106 @@ def test_the_route_times_what_it_does_before_the_turn(world, monkeypatch):
     assert route.history_messages == 1
     assert seen["called_at"] - route.started_at >= 0.05, "the clock starts before the claim"
     assert (seen["call_type"], seen["provider"], seen["process_id"]) == ("outbound", "RAYA", "proc-1")
+
+
+# ── the nudge and the caller's language ─────────────────────────────────────
+
+
+@pytest.fixture
+def nudges(world, monkeypatch):
+    """Nudges on; returns what reached the telephony provider."""
+    sent = []
+
+    async def _send(message, session_id, process_id=None):
+        sent.append(message)
+
+    monkeypatch.setattr(settings, "enable_voice_nudges", True)
+    monkeypatch.setattr(settings, "nudge_timeout_seconds", 0.3)
+    monkeypatch.setattr(lv, "send_nudge_message_raya", _send)
+    return sent
+
+
+def test_a_decline_stops_the_nudge_before_it_is_rendered(world, nudges, monkeypatch):
+    async def _irrelevant(**_kw):
+        return ModerationVerdict(category="irrelevant", reason="not dairy")
+
+    async def _slow_translation(**_kw):
+        # Putting the decline into Gujarati outlasts the nudge's timeout.
+        await asyncio.sleep(settings.nudge_timeout_seconds + 0.3)
+        return "આ હેલ્પલાઇન પશુપાલન માટે છે."
+
+    monkeypatch.setattr(bg, "check_moderation", _irrelevant)
+    monkeypatch.setattr("app.voice.sink.translate_text", _slow_translation)
+
+    response = _get(query="Who won the match", source_lang="en", target_lang="gu")
+
+    assert response.text == _prepare_voice_output("આ હેલ્પલાઇન પશુપાલન માટે છે.", "gu")
+    assert nudges == []
+
+
+class _PausingNode:
+    """The agent's text in two parts, a pause apart."""
+
+    def __init__(self, first, pause, rest):
+        self._parts = (first, pause, rest)
+
+    def stream(self, _ctx):
+        first, pause, rest = self._parts
+
+        class _Events:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_e):
+                return False
+
+            async def __aiter__(self):
+                yield _delta(first)
+                await asyncio.sleep(pause)
+                yield _delta(rest)
+
+        return _Events()
+
+
+_PausingNode.__name__ = "ModelRequestNode"
+
+
+class _PausingRun(_Run):
+    def __init__(self, first, pause, rest, new_messages):
+        super().__init__([first, rest], new_messages)
+        self._node = _PausingNode(first, pause, rest)
+
+    async def __aiter__(self):
+        yield self._node
+
+
+def test_a_first_chunk_the_cleanup_empties_still_stops_the_nudge(world, nudges, monkeypatch):
+    answer = [ModelRequest(parts=[UserPromptPart(content="q")]), ModelResponse(parts=[TextPart(content="**Give her water.")])]
+    monkeypatch.setattr(
+        voice_agents.voice_agent, "iter",
+        lambda **_kw: _PausingRun("**", settings.nudge_timeout_seconds + 0.3, "Give her water.", answer),
+    )
+
+    response = _get(query="My cow has fever", source_lang="en", target_lang="en")
+
+    assert response.text.strip() == "Give her water."
+    assert nudges == []
+
+
+@pytest.mark.parametrize("target_lang", ["", " GU "])
+def test_a_blank_or_padded_target_language_is_answered_in_gujarati(world, monkeypatch, target_lang):
+    asked = []
+
+    async def _translate(text, *_a, **kw):
+        asked.append(kw["target_lang"])
+        yield "ગાયને પાણી આપો."
+
+    monkeypatch.setattr("app.voice.sink.translate_text_stream_fast", _translate)
+
+    response = _get(query="My cow has fever", source_lang="en", target_lang=target_lang)
+
+    assert response.text == "ગાયને પાણી આપો."
+    assert asked == ["gu"]
 
 
 def test_the_route_is_registered_only_when_switched_on():
