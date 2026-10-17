@@ -613,6 +613,14 @@ def _canned_union_ban_translation(text: str, target_lang: str) -> str | None:
 # (``_fix_dandas -> _post_normalize_gu_translation(strip_outer=False)``) apply to
 # BOTH tiers. llm_core owns tier selection, first-token commit, fallback and
 # telemetry; this module only adapts each selected model protocol.
+def _voice_gu_en_index():
+    """Voice's Gujarati glossary rows: the shared ones with voice's own on top.
+    Imported here, on the voice channel only, so chat never loads voice's tools."""
+    from agents.voice.tools.terms import EN_INDEX
+
+    return EN_INDEX
+
+
 def _prepare_translation_inputs(text, source_lang, target_lang, max_output_chars):
     """Mini-glossary fetch + build the translation instruction ONCE (shared by both
     tiers) + the Gemma-wrapped TranslateGemma prompt. Verbatim to the prior inline
@@ -624,6 +632,7 @@ def _prepare_translation_inputs(text, source_lang, target_lang, max_output_chars
             threshold=0.90,
             max_terms=40,
             target_lang=target_lang,
+            gu_en_index=_voice_gu_en_index() if _is_voice_channel() else None,
         )
         if mini_glossary:
             logger.info(f"Translation prompt: injected mini glossary ({len(mini_glossary.splitlines())} terms)")

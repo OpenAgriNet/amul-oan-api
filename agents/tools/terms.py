@@ -367,6 +367,7 @@ def get_mini_glossary_for_text(
     threshold: float = 0.95,
     max_terms: int = 25,
     target_lang: str = "gu",
+    gu_en_index: dict[str, TermPair] | None = None,
 ) -> str:
     """
     Find glossary terms that appear in `text` (exact or fuzzy match with high threshold)
@@ -382,6 +383,8 @@ def get_mini_glossary_for_text(
         target_lang: Target language for glossary values ("gu"/"gujarati", "hi"/"hindi",
             "bn"/"bengali" or "pa"/"punjabi").
             "bn"/"bengali" or "mr"/"marathi").
+        gu_en_index: Gujarati rows by lowercased English term, in place of this
+            glossary's (voice passes its own, which carry voice's rows).
 
     Returns:
         Formatted string like "Mastitis -> <target term>\\nMilk Production -> ..."
@@ -407,8 +410,8 @@ def get_mini_glossary_for_text(
         target_en_terms = MR_EN_TERMS
         target_value_field = "mr"
     else:
-        target_en_index = EN_INDEX
-        target_en_terms = EN_TERMS
+        target_en_index = EN_INDEX if gu_en_index is None else gu_en_index
+        target_en_terms = EN_TERMS if gu_en_index is None else list(gu_en_index)
         target_value_field = "gu"
     if not target_en_terms:
         return ""
