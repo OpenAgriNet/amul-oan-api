@@ -203,6 +203,8 @@ _VOICE = dataclasses.replace(
     liveness=VoiceLiveness,
     pretranslation=voice_pretranslation(_render),
     agent_input=voice_agent_input(_render),
+    # Voice has no prefetch: its background set fetches the farmer data.
+    prefetch=None,
 )
 
 

@@ -1,7 +1,7 @@
 import asyncio
 import json
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, TypeVar
+from typing import Any, Awaitable, Callable, TypeVar
 
 from agents.tools.farmer import normalize_phone_to_mobile
 from agents.tools.beckn.amul import (
@@ -230,7 +230,14 @@ async def _get_ai_technicians_for_farmer(
     return list(unique_technicians.values()), None
 
 
-async def _append_ai_technicians_markdown(lines: list[str], farmer: FarmerModel) -> None:
+_TechnicianLookup = Callable[[FarmerModel], Awaitable[tuple[list[str] | None, str | None]]]
+
+
+async def _append_ai_technicians_markdown(
+    lines: list[str],
+    farmer: FarmerModel,
+    lookup: _TechnicianLookup = _get_ai_technicians_for_farmer,
+) -> None:
     lines.append("")
     if is_ai_call_banned_union(farmer.union_name):
         logger.info(
@@ -245,7 +252,7 @@ async def _append_ai_technicians_markdown(lines: list[str], farmer: FarmerModel)
 
     lines.append("### Available AI technicians")
 
-    technician_lines, error_message = await _get_ai_technicians_for_farmer(farmer)
+    technician_lines, error_message = await lookup(farmer)
     if error_message:
         lines.append(f"- {error_message}")
         return
@@ -258,6 +265,30 @@ async def _append_ai_technicians_markdown(lines: list[str], farmer: FarmerModel)
         "- Use these details when the user wants to book an AI call. Show only name and mobile number to the user, but use the mapped `user_id` when calling `create_ai_call`."
     )
     lines.extend(technician_lines)
+
+
+async def _ai_technician_sections(farmers: list[FarmerModel]) -> list[list[str]]:
+    """Each account's AI-technician markdown, in account order.
+
+    The searches run at once, not one account after another: each is its own
+    Beckn round trip. Accounts on the same union and society (a mobile's cow
+    and buffalo accounts, say) share one search, as one after another the
+    second was normally a response-cache hit.
+    """
+    searches: dict[tuple[str | None, str | None], asyncio.Future] = {}
+
+    def lookup(farmer: FarmerModel) -> asyncio.Future:
+        key = (farmer.union_code, farmer.society_code)
+        if key not in searches:
+            searches[key] = asyncio.ensure_future(_get_ai_technicians_for_farmer(farmer))
+        return searches[key]
+
+    async def section(farmer: FarmerModel) -> list[str]:
+        lines: list[str] = []
+        await _append_ai_technicians_markdown(lines, farmer, lookup)
+        return lines
+
+    return list(await asyncio.gather(*(section(farmer) for farmer in farmers)))
 
 
 @dataclass(frozen=True)
@@ -312,9 +343,10 @@ async def get_farmer_context_bundle_by_mobile(
     # Do not bypass the BPP by preloading the same Redis catalog directly into
     # context; the agent fetches it only when the farmer actually asks.
 
+    technician_sections = await _ai_technician_sections(farmers)
     for index, farmer in enumerate(farmers, start=1):
         _append_farmer_markdown(lines, farmer, index)
-        await _append_ai_technicians_markdown(lines, farmer)
+        lines.extend(technician_sections[index - 1])
 
         tags = farmer.animal_tags or []
         canonical_union = canonical_union_name(farmer.union_name)
