@@ -288,11 +288,27 @@ class Settings(BaseSettings):
     # non-load-bearing (2h is generous slack; voice's old 24h was incidental).
     history_cache_ttl_seconds: int = int(os.getenv("HISTORY_CACHE_TTL_SECONDS", str(60 * 60 * 2)))
     suggestions_cache_ttl: int = 60 * 30    # 30 minutes
-    farmer_animal_api_cache_ttl: int = 60 * 60 * 24 * 17  # 17 days
-    # AI technician list cache: keyed by (union_code, society_code), not per farmer.
-    # Shared across farmer SWR refresh and prompt context; API called only on miss.
-    ai_technician_cache_ttl_seconds: int = int(
-        os.getenv("AI_TECHNICIAN_CACHE_TTL_SECONDS", str(60 * 60 * 24))
+    # Successful Beckn reads used by agent tools. These are deliberately short
+    # absolute TTLs; empty/not-found responses share the shorter negative TTL.
+    agent_ai_technician_cache_ttl_seconds: int = Field(
+        default=60 * 15,
+        validation_alias="AGENT_AI_TECHNICIAN_CACHE_TTL_SECONDS",
+    )
+    agent_farmer_cache_ttl_seconds: int = Field(
+        default=60 * 15,
+        validation_alias="AGENT_FARMER_CACHE_TTL_SECONDS",
+    )
+    agent_animal_cache_ttl_seconds: int = Field(
+        default=60 * 15,
+        validation_alias="AGENT_ANIMAL_CACHE_TTL_SECONDS",
+    )
+    agent_cvcc_cache_ttl_seconds: int = Field(
+        default=60 * 5,
+        validation_alias="AGENT_CVCC_CACHE_TTL_SECONDS",
+    )
+    agent_negative_cache_ttl_seconds: int = Field(
+        default=60,
+        validation_alias="AGENT_NEGATIVE_CACHE_TTL_SECONDS",
     )
     # Session-ownership locking (voice call concurrency) — consumed by app/utils.py
     # once the voice surface folds in; inert on the chat path.
@@ -315,28 +331,6 @@ class Settings(BaseSettings):
     farmer_negative_refresh_interval_seconds: int = int(os.getenv("FARMER_NEGATIVE_REFRESH_INTERVAL_SECONDS", str(60 * 60 * 2)))
     # Hard retention: Redis deletes a farmer record after this idle period.
     farmer_cache_retention_seconds: int = int(os.getenv("FARMER_CACHE_RETENTION_SECONDS", str(60 * 60 * 24 * 7)))
-    # Farmer/animal API tracing records a PII-SAFE structure summary by default
-    # (status, record count, which keys are present/null). Raw response bodies are
-    # only captured when FARMER_API_TRACE_BODY is explicitly enabled (temporary
-    # deep-debug), capped at FARMER_API_TRACE_BODY_CHARS.
-    farmer_api_trace_body: bool = _get_bool_env("FARMER_API_TRACE_BODY", default=False)
-    farmer_api_trace_body_chars: int = int(os.getenv("FARMER_API_TRACE_BODY_CHARS", "8000"))
-    # Farmer cache consolidation rollout (Layer 2-first for farmer-by-mobile).
-    # Defaults preserve current behavior until later steps wire these flags in:
-    #   chat stays on Layer 1; fallback is armed for Phase A; Layer 1 mobile
-    #   cache remains active until Phase C bypass.
-    farmer_layer2_chat_context_enabled: bool = Field(
-        default=False,
-        validation_alias="FARMER_LAYER2_CHAT_CONTEXT_ENABLED",
-    )
-    farmer_layer2_fallback_to_legacy_enabled: bool = Field(
-        default=True,
-        validation_alias="FARMER_LAYER2_FALLBACK_TO_LEGACY_ENABLED",
-    )
-    farmer_layer1_mobile_cache_bypass_enabled: bool = Field(
-        default=False,
-        validation_alias="FARMER_LAYER1_MOBILE_CACHE_BYPASS_ENABLED",
-    )
 
     # Logging Configuration
     log_level: str = "INFO"
@@ -359,7 +353,6 @@ class Settings(BaseSettings):
     telemetry_api_url: str = "https://vistaar.kenpath.ai/observability-service/action/data/v3/telemetry"
     bhashini_api_url: str = "https://dhruva-api.bhashini.gov.in/services/inference/pipeline"
     ollama_endpoint_url: Optional[str] = None
-    marqo_endpoint_url: Optional[str] = None
     inference_endpoint_url: Optional[str] = None
     raya_tts_url: Optional[str] = None
     tts_timeout_seconds: float = 60.0
@@ -369,6 +362,53 @@ class Settings(BaseSettings):
     # it folds in (voice is served by voice-oan-api today).
     nudge_api_url: str = os.getenv("NUDGE_API_URL", "https://vistaar.getraya.app/api/nudge-user")
     nudge_timeout_seconds: float = float(os.getenv("NUDGE_TIMEOUT_SECONDS", "3.0"))
+    enable_voice_nudges: bool = _get_bool_env("ENABLE_VOICE_NUDGES", default=True)
+    # Voice's pre-turn classifiers (app/voice/classifiers.py) — also inert on the
+    # chat path. Same names and defaults as voice-oan-api.
+    stt_signal_retry_ceiling: int = int(os.getenv("STT_SIGNAL_RETRY_CEILING", "3"))
+    voice_profile_creation_date_words: str = os.getenv(
+        "VOICE_PROFILE_CREATION_DATE_WORDS",
+        "eleventh February two thousand twenty six",
+    )
+    # Voice's non-meaningful and outbound consent checks (app/voice/), inert on the
+    # chat path too. Same names and defaults as voice-oan-api.
+    voice_non_meaningful_timeout_seconds: float = float(os.getenv("VOICE_NON_MEANINGFUL_TIMEOUT_SECONDS", "0.60"))
+    # How long voice's gate waits on the non-meaningful check before letting the turn through.
+    voice_non_meaningful_gate_timeout_seconds: float = float(os.getenv("VOICE_NON_MEANINGFUL_GATE_TIMEOUT_SECONDS", "0.50"))
+    voice_outbound_consent_timeout_seconds: float = float(
+        os.getenv("VOICE_OUTBOUND_CONSENT_TIMEOUT_SECONDS", "0.60")
+    )
+    # Serves voice at /voice/ from this repo (app/routers/voice.py). Off until the
+    # cutover: voice-oan-api serves the calls until then.
+    voice_route_enabled: bool = _get_bool_env("VOICE_ROUTE_ENABLED", default=False)
+    # Voice's trace (app/voice/trace.py). Same names and defaults as voice-oan-api.
+    enable_voice_tracing: bool = _get_bool_env("ENABLE_VOICE_TRACING", default=True)
+    voice_trace_text_mode: str = os.getenv("VOICE_TRACE_TEXT_MODE", "none")
+    voice_trace_preview_chars: int = int(os.getenv("VOICE_TRACE_PREVIEW_CHARS", "120"))
+    voice_trace_log_summary: bool = _get_bool_env("VOICE_TRACE_LOG_SUMMARY", default=True)
+    # Voice's agent and its farmer data (agents/voice/), inert on the chat path.
+    # Same names and defaults as voice-oan-api.
+    voice_profile_service_channels: str = os.getenv(
+        "VOICE_PROFILE_SERVICE_CHANNELS",
+        "chat, voice call, and WhatsApp",
+    )
+    voice_profile_helpline_number_words: str = os.getenv(
+        "VOICE_PROFILE_HELPLINE_NUMBER_WORDS",
+        "zero eight zero three five four five three five four five",
+    )
+    # Farmer API traces carry a PII-safe summary; the raw body only when this is
+    # on, capped at FARMER_API_TRACE_BODY_CHARS.
+    farmer_api_trace_body: bool = _get_bool_env("FARMER_API_TRACE_BODY", default=False)
+    farmer_api_trace_body_chars: int = int(os.getenv("FARMER_API_TRACE_BODY_CHARS", "8000"))
+    # Outbound calls (app/voice/outbound.py): the consent gate and the milk readout
+    # only run for calls the telephony provider stamps outbound, once this is on.
+    outbound_intro_enabled: bool = _get_bool_env("OUTBOUND_INTRO_ENABLED", default=False)
+    outbound_milk_window_days: int = int(os.getenv("OUTBOUND_MILK_WINDOW_DAYS", "7"))
+    # Bounded so a hung upstream can never keep a prefetch task alive across the
+    # whole call; the caller's reply arrives long before this.
+    outbound_milk_prefetch_timeout_seconds: float = float(
+        os.getenv("OUTBOUND_MILK_PREFETCH_TIMEOUT_SECONDS", "25.0")
+    )
     # Kill switch for Hindi chat. Default ON: hi/hindi requests use the full
     # src->en->agent->hi translation pipeline. Set HINDI_CHAT_ENABLED=false to
     # disable Hindi independently (hi/hindi then bypass the pipeline and are
@@ -380,16 +420,16 @@ class Settings(BaseSettings):
     # Set BENGALI_CHAT_ENABLED=false to disable Bengali independently (bn/bengali
     # then bypass the pipeline) without touching Gujarati or Hindi.
     bengali_chat_enabled: bool = _get_bool_env("BENGALI_CHAT_ENABLED", default=True)
-    # Kill switch for Marathi chat, same semantics as HINDI_CHAT_ENABLED. Default
-    # ON: mr/marathi requests use the src->en->agent->mr translation pipeline.
-    # Set MARATHI_CHAT_ENABLED=false to disable Marathi independently (mr/marathi
-    # then bypass the pipeline) without touching Gujarati, Hindi or Bengali.
-    marathi_chat_enabled: bool = _get_bool_env("MARATHI_CHAT_ENABLED", default=True)
     # Kill switch for Punjabi chat, same semantics as HINDI_CHAT_ENABLED. Default
     # ON: pa/punjabi requests use the src->en->agent->pa translation pipeline.
     # Set PUNJABI_CHAT_ENABLED=false to disable Punjabi independently (pa/punjabi
     # then bypass the pipeline) without touching Gujarati, Hindi or Bengali.
     punjabi_chat_enabled: bool = _get_bool_env("PUNJABI_CHAT_ENABLED", default=True)
+    # Kill switch for Marathi chat, same semantics as HINDI_CHAT_ENABLED. Default
+    # ON: mr/marathi requests use the src->en->agent->mr translation pipeline.
+    # Set MARATHI_CHAT_ENABLED=false to disable Marathi independently (mr/marathi
+    # then bypass the pipeline) without touching Gujarati, Hindi or Bengali.
+    marathi_chat_enabled: bool = _get_bool_env("MARATHI_CHAT_ENABLED", default=True)
     # Master kill switch for the doctor persona. When false, every chat request
     # is routed through the farmer persona regardless of JWT claims or request
     # overrides. Keep default-off until the doctor experience is approved for
@@ -422,9 +462,7 @@ class Settings(BaseSettings):
     oss_inference_api_key: Optional[str] = None
     gemini_api_key: Optional[str] = None
     mapbox_api_token: Optional[str] = None
-    banas_mobile_api_key: Optional[str] = os.getenv("BANAS_MOBILE_API_KEY")
     pashugpt_token: Optional[str] = None
-    pashugpt_token_2: Optional[str] = None
     raya_tts_api_key: Optional[str] = None
     demo_ui_api_key: Optional[str] = None
 
@@ -468,20 +506,6 @@ class Settings(BaseSettings):
     agrinet_max_tokens_vllm_gemma: int = 2048
     doctor_max_tokens: Optional[int] = None
     doctor_request_limit: int = 10
-    marqo_index_name: Optional[str] = None
-    # Tool retrieval config (search_documents): keep env names/defaults unchanged.
-    marqo_use_e5_query_prefix: bool = Field(default=True, validation_alias="MARQO_USE_E5_QUERY_PREFIX")
-    marqo_exclude_reference: bool = Field(default=True, validation_alias="MARQO_EXCLUDE_REFERENCE")
-    marqo_query_expansion_profile: str = os.getenv("MARQO_QUERY_EXPANSION_PROFILE", "gu-v1")
-    marqo_default_final_chunks: int = Field(default=8, validation_alias="MARQO_DEFAULT_FINAL_CHUNKS")
-    marqo_max_final_chunks: int = Field(default=20, validation_alias="MARQO_MAX_FINAL_CHUNKS")
-    marqo_max_chunks_per_doc: int = Field(default=2, validation_alias="MARQO_MAX_CHUNKS_PER_DOC")
-    marqo_candidate_multiplier: int = Field(default=10, validation_alias="MARQO_CANDIDATE_MULTIPLIER")
-    marqo_candidate_cap: int = Field(default=120, validation_alias="MARQO_CANDIDATE_CAP")
-    marqo_hybrid_alpha: float = Field(default=0.6, validation_alias="MARQO_HYBRID_ALPHA")
-    marqo_hybrid_rrfk: int = Field(default=60, validation_alias="MARQO_HYBRID_RRFK")
-    marqo_search_mode: str = os.getenv("MARQO_SEARCH_MODE", "hybrid")
-    marqo_rerank_mode: str = os.getenv("MARQO_RERANK_MODE", "bm25lite")
 
     # OSS pipeline %-split, sticky TTL and OSS model/endpoint are no longer read
     # via `settings`: they map to llm_core's weighted-profile config, synthesized
@@ -545,7 +569,8 @@ class Settings(BaseSettings):
     scheme_require_union_auth: bool = os.getenv("SCHEME_REQUIRE_UNION_AUTH", "true").strip().lower() in {
         "1", "true", "yes", "on"
     }
-    # Union scheme ingestion source URLs.
+    # Union scheme ingestion source URLs. The scheduler populates the Redis
+    # catalog consumed by the union-scheme Beckn provider.
     banas_scheme_site_origin: str = Field(
         default="https://www.banasdairy.coop",
         validation_alias="BANAS_SCHEME_SITE_ORIGIN",
@@ -566,6 +591,10 @@ class Settings(BaseSettings):
         default="https://sursagardairy.com/Farmer/MilkProducers",
         validation_alias="SURSAGAR_SCHEME_SOURCE_URL",
     )
+    sabar_scheme_source_url: str = Field(
+        default="https://sabardairy.org/for-our-milk-producers/",
+        validation_alias="SABAR_SCHEME_SOURCE_URL",
+    )
     dudhdhara_scheme_source_url: str = Field(
         default="https://www.dudhdharadairy.in/for_our_milk_producers",
         validation_alias="DUDHDHARA_SCHEME_SOURCE_URL",
@@ -574,25 +603,18 @@ class Settings(BaseSettings):
         default="http://www.madhurdairy.org/forourmilkproducers?name=for-our-milk-producers",
         validation_alias="MADHUR_SCHEME_SOURCE_URL",
     )
-    # PDF-backed scheme ingestion via stock Chandra vLLM
-    # (OpenAI-compatible /v1/chat/completions; see scheme_ingestion.py).
-    # Base URL e.g. http://10.185.25.197:8011 (optional trailing /v1 is stripped).
+    # PDF pages are rendered locally and sent one page per request to a stock
+    # Chandra OpenAI-compatible endpoint.
     scheme_ocr_endpoint_url: Optional[str] = os.getenv("SCHEME_OCR_ENDPOINT_URL")
-    # Per-page OCR timeout budget. Each OCR POST is one page via stock Chandra
-    # /v1/chat/completions; HTTP timeout equals this value.
     scheme_ocr_timeout_seconds: float = float(os.getenv("SCHEME_OCR_TIMEOUT_SECONDS", "120"))
     scheme_pdf_render_dpi: int = int(os.getenv("SCHEME_PDF_RENDER_DPI", "200"))
-    # Scheme ingestion operational tunables.
     scheme_lock_ttl_seconds: int = Field(default=60 * 60, validation_alias="SCHEME_LOCK_TTL_SECONDS")
     scheme_http_timeout_seconds: float = Field(default=30.0, validation_alias="SCHEME_HTTP_TIMEOUT_SECONDS")
     scheme_pdf_max_render_pages: int = Field(default=30, validation_alias="SCHEME_PDF_MAX_RENDER_PAGES")
     scheme_ocr_prompt_type: str = os.getenv("SCHEME_OCR_PROMPT_TYPE", "ocr_layout")
     scheme_ocr_max_output_tokens: int = Field(default=12284, validation_alias="SCHEME_OCR_MAX_OUTPUT_TOKENS")
-    # Max in-flight one-page OCR chat-completions requests per PDF (latency knob).
-    # Prefer SCHEME_OCR_CONCURRENCY. When unset, falls back to SCHEME_OCR_PAGE_BATCH_SIZE.
     scheme_ocr_concurrency: int = Field(default=4, validation_alias="SCHEME_OCR_CONCURRENCY")
-    # Deprecated alias for SCHEME_OCR_CONCURRENCY. No longer means "images per HTTP
-    # request" (stock Chandra is always one image per /v1/chat/completions call).
+    # Deprecated compatibility alias; use SCHEME_OCR_CONCURRENCY for new deployments.
     scheme_ocr_page_batch_size: int = Field(default=4, validation_alias="SCHEME_OCR_PAGE_BATCH_SIZE")
     scheme_ocr_max_failed_page_ratio: float = Field(default=0.15, validation_alias="SCHEME_OCR_MAX_FAILED_PAGE_RATIO")
     scheme_banas_min_record_coverage_ratio: float = Field(default=0.85, validation_alias="SCHEME_BANAS_MIN_RECORD_COVERAGE_RATIO")
@@ -663,31 +685,14 @@ class Settings(BaseSettings):
         "પેમેન્ટ મેળવવા માટે આપની KDCC બેંક શાખામાં આ કોડ રજૂ કરો:{code} .",
     )
 
-    # Beckn Network Feature Flag
-    # When enable_network is true, agent tools that have a Beckn equivalent
-    # (vet-KB search, union schemes, AI-call booking) route through the Amul
-    # Beckn network instead of the direct integrations (Marqo / Redis /
-    # PashuGPT). Default false → existing behaviour is unchanged.
-    enable_network: bool = os.getenv("ENABLE_NETWORK", "false").strip().lower() in {"1", "true", "yes", "y", "on"}
-    # Seeker BAP base URL for network discovery (vet KB, union schemes).
+    # Seeker BAP base URL for Beckn discovery (vet KB, union schemes).
     amul_network_url: str = os.getenv("AMUL_NETWORK_URL", "http://amul-bap-seeker:3000")
-    # Booking BPP base URL for network AI-call booking.
-    amul_booking_bpp_url: str = os.getenv("AMUL_BOOKING_BPP_URL", "http://amul-net-bpp-booking:6002")
     # Timeout (seconds) for network calls from the agent tools.
     amul_network_timeout_s: float = float(os.getenv("AMUL_NETWORK_TIMEOUT_S", "35"))
-    # Durable callback-mode transactions. This is a separate, default-off gate:
-    # ENABLE_NETWORK continues to preserve the deployed synchronous booking
-    # adapter until ONIX has directed confirm/on_confirm routes and the booking
-    # BPP has been upgraded to ACK + callback semantics.
-    beckn_callback_transactions_enabled: bool = _get_bool_env(
-        "BECKN_CALLBACK_TRANSACTIONS_ENABLED", default=False
-    )
-    # SHC has its own rollout gate because enabling its init/on_init flow must
-    # not switch unrelated booking tools away from their deployed synchronous
-    # adapters before those BPPs emit durable callbacks.
+    # SHC retains its own product gate because it exposes a private rich report.
     vistaar_shc_enabled: bool = _get_bool_env("VISTAAR_SHC_ENABLED", default=False)
-    # ONIX BAP caller base, e.g. http://amul-onix:3001/bap/caller. The client
-    # appends /confirm/ or /status/.
+    # Private transaction-bridge base (for example https://bridge/transactions).
+    # The client appends the Beckn action, such as /search, /init, or /confirm.
     beckn_bap_caller_url: str = os.getenv("BECKN_BAP_CALLER_URL", "").rstrip("/")
     # Bearer credential for a private transaction bridge. Direct, in-network
     # ONIX callers (including the dev SHC path) do not require this credential.
@@ -750,18 +755,10 @@ class Settings(BaseSettings):
     vistaar_max_items: int = Field(default=20, validation_alias="VISTAAR_MAX_ITEMS")
     mandi_max_candidates: int = 3
     mandi_location_ttl_s: int = 3600
-    # Farmer/animal tool backend URLs and timeout (non-secret, previously hardcoded).
+    # Direct PashuGPT integrations used by bonus and cattle trade price tools.
     amulpashudhan_base_url: str = Field(
         default="https://api.amulpashudhan.com/configman/v1/PashuGPT",
         validation_alias="AMULPASHUDHAN_BASE_URL",
-    )
-    banas_mobile_base_url: str = Field(
-        default="https://banasmobileapi.amnex.com/api/FarmerVisitAPIKOS",
-        validation_alias="BANAS_MOBILE_BASE_URL",
-    )
-    cvcc_base_url: str = Field(
-        default="https://api.amuldairy.com/ai_cattle_dtl.php",
-        validation_alias="CVCC_BASE_URL",
     )
     farmer_backend_http_timeout_seconds: float = Field(default=30.0, validation_alias="FARMER_BACKEND_HTTP_TIMEOUT_SECONDS")
     # Farmer cache SWR worker tunables (tool-adjacent path used by loan checks).
@@ -780,12 +777,6 @@ class Settings(BaseSettings):
     # Config hardening policy: malformed numeric env values warn and fall back to
     # defaults; parseable but out-of-range values are clamped to safe bounds.
     _SAFE_INT_FIELDS: ClassVar[dict[str, tuple[str, int, int | None, int | None]]] = {
-        "marqo_default_final_chunks": ("MARQO_DEFAULT_FINAL_CHUNKS", 8, 1, None),
-        "marqo_max_final_chunks": ("MARQO_MAX_FINAL_CHUNKS", 20, 1, None),
-        "marqo_max_chunks_per_doc": ("MARQO_MAX_CHUNKS_PER_DOC", 2, 1, None),
-        "marqo_candidate_multiplier": ("MARQO_CANDIDATE_MULTIPLIER", 10, 1, None),
-        "marqo_candidate_cap": ("MARQO_CANDIDATE_CAP", 120, 1, None),
-        "marqo_hybrid_rrfk": ("MARQO_HYBRID_RRFK", 60, 1, None),
         "scheme_lock_ttl_seconds": ("SCHEME_LOCK_TTL_SECONDS", 60 * 60, 1, None),
         "scheme_pdf_max_render_pages": ("SCHEME_PDF_MAX_RENDER_PAGES", 30, 1, None),
         "scheme_ocr_max_output_tokens": ("SCHEME_OCR_MAX_OUTPUT_TOKENS", 12284, 1, None),
@@ -796,6 +787,11 @@ class Settings(BaseSettings):
         "farmer_refresh_queue_batch_size": ("FARMER_REFRESH_QUEUE_BATCH_SIZE", 20, 1, None),
         "farmer_refresh_retry_base_seconds": ("FARMER_REFRESH_RETRY_BASE_SECONDS", 60, 1, None),
         "farmer_refresh_retry_max_seconds": ("FARMER_REFRESH_RETRY_MAX_SECONDS", 60 * 60, 1, None),
+        "agent_ai_technician_cache_ttl_seconds": ("AGENT_AI_TECHNICIAN_CACHE_TTL_SECONDS", 60 * 15, 1, None),
+        "agent_farmer_cache_ttl_seconds": ("AGENT_FARMER_CACHE_TTL_SECONDS", 60 * 15, 1, None),
+        "agent_animal_cache_ttl_seconds": ("AGENT_ANIMAL_CACHE_TTL_SECONDS", 60 * 15, 1, None),
+        "agent_cvcc_cache_ttl_seconds": ("AGENT_CVCC_CACHE_TTL_SECONDS", 60 * 5, 1, None),
+        "agent_negative_cache_ttl_seconds": ("AGENT_NEGATIVE_CACHE_TTL_SECONDS", 60, 1, None),
         "beckn_operation_ttl_seconds": ("BECKN_OPERATION_TTL_SECONDS", 60 * 60 * 24, 60, None),
         "beckn_callback_max_body_bytes": ("BECKN_CALLBACK_MAX_BODY_BYTES", 2 * 1024 * 1024, 1024, 5 * 1024 * 1024),
         "shc_html_max_bytes": ("SHC_HTML_MAX_BYTES", 1024 * 1024, 1024, 2 * 1024 * 1024),
@@ -803,7 +799,6 @@ class Settings(BaseSettings):
         "beckn_forward_connect_attempts": ("BECKN_FORWARD_CONNECT_ATTEMPTS", 2, 1, 5),
     }
     _SAFE_FLOAT_FIELDS: ClassVar[dict[str, tuple[str, float, float | None, float | None]]] = {
-        "marqo_hybrid_alpha": ("MARQO_HYBRID_ALPHA", 0.6, 0.0, 1.0),
         "scheme_http_timeout_seconds": ("SCHEME_HTTP_TIMEOUT_SECONDS", 30.0, 0.001, None),
         "scheme_ocr_max_failed_page_ratio": ("SCHEME_OCR_MAX_FAILED_PAGE_RATIO", 0.15, 0.0, 1.0),
         "scheme_banas_min_record_coverage_ratio": ("SCHEME_BANAS_MIN_RECORD_COVERAGE_RATIO", 0.85, 0.0, 1.0),
@@ -815,34 +810,7 @@ class Settings(BaseSettings):
         "beckn_callback_poll_interval_seconds": ("BECKN_CALLBACK_POLL_INTERVAL_SECONDS", 0.1, 0.01, 5.0),
         "beckn_forward_retry_delay_seconds": ("BECKN_FORWARD_RETRY_DELAY_SECONDS", 0.2, 0.0, 5.0),
     }
-    _SAFE_BOOL_FIELDS: ClassVar[dict[str, tuple[str, bool]]] = {
-        "marqo_use_e5_query_prefix": ("MARQO_USE_E5_QUERY_PREFIX", True),
-        "marqo_exclude_reference": ("MARQO_EXCLUDE_REFERENCE", True),
-        "farmer_layer2_chat_context_enabled": ("FARMER_LAYER2_CHAT_CONTEXT_ENABLED", False),
-        "farmer_layer2_fallback_to_legacy_enabled": ("FARMER_LAYER2_FALLBACK_TO_LEGACY_ENABLED", True),
-        "farmer_layer1_mobile_cache_bypass_enabled": ("FARMER_LAYER1_MOBILE_CACHE_BYPASS_ENABLED", False),
-    }
-
     @field_validator(
-        "marqo_use_e5_query_prefix",
-        "marqo_exclude_reference",
-        "farmer_layer2_chat_context_enabled",
-        "farmer_layer2_fallback_to_legacy_enabled",
-        "farmer_layer1_mobile_cache_bypass_enabled",
-        mode="before",
-    )
-    @classmethod
-    def _validate_safe_bool_fields(cls, value: object, info: ValidationInfo) -> bool:
-        env_name, default = cls._SAFE_BOOL_FIELDS[info.field_name]
-        return _safe_bool_env_value(value, env_name=env_name, default=default)
-
-    @field_validator(
-        "marqo_default_final_chunks",
-        "marqo_max_final_chunks",
-        "marqo_max_chunks_per_doc",
-        "marqo_candidate_multiplier",
-        "marqo_candidate_cap",
-        "marqo_hybrid_rrfk",
         "scheme_lock_ttl_seconds",
         "scheme_pdf_max_render_pages",
         "scheme_ocr_max_output_tokens",
@@ -853,6 +821,11 @@ class Settings(BaseSettings):
         "farmer_refresh_queue_batch_size",
         "farmer_refresh_retry_base_seconds",
         "farmer_refresh_retry_max_seconds",
+        "agent_ai_technician_cache_ttl_seconds",
+        "agent_farmer_cache_ttl_seconds",
+        "agent_animal_cache_ttl_seconds",
+        "agent_cvcc_cache_ttl_seconds",
+        "agent_negative_cache_ttl_seconds",
         "beckn_operation_ttl_seconds",
         "beckn_callback_max_body_bytes",
         "shc_html_max_bytes",
@@ -872,7 +845,6 @@ class Settings(BaseSettings):
         )
 
     @field_validator(
-        "marqo_hybrid_alpha",
         "scheme_http_timeout_seconds",
         "scheme_ocr_max_failed_page_ratio",
         "scheme_banas_min_record_coverage_ratio",
@@ -898,13 +870,12 @@ class Settings(BaseSettings):
 
     @field_validator(
         "amulpashudhan_base_url",
-        "banas_mobile_base_url",
-        "cvcc_base_url",
         "banas_scheme_site_origin",
         "banas_scheme_documents_api_url",
         "sarhad_scheme_source_url",
         "sumul_scheme_source_url",
         "sursagar_scheme_source_url",
+        "sabar_scheme_source_url",
         "dudhdhara_scheme_source_url",
         "madhur_scheme_source_url",
         mode="before",
@@ -917,49 +888,25 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def _resolve_scheme_ocr_concurrency(self):
-        """Prefer SCHEME_OCR_CONCURRENCY; else alias from deprecated PAGE_BATCH_SIZE."""
+        """Prefer SCHEME_OCR_CONCURRENCY; retain the old batching env as an alias."""
         global _scheme_ocr_page_batch_size_deprecation_logged
         concurrency_raw = os.getenv("SCHEME_OCR_CONCURRENCY")
-        concurrency_explicit = concurrency_raw is not None and str(concurrency_raw).strip() != ""
-        if concurrency_explicit:
+        if concurrency_raw is not None and str(concurrency_raw).strip():
             return self
 
-        # Unset concurrency → use (already clamped) page_batch_size as concurrency.
         self.scheme_ocr_concurrency = self.scheme_ocr_page_batch_size
         batch_raw = os.getenv("SCHEME_OCR_PAGE_BATCH_SIZE")
-        batch_explicit = batch_raw is not None and str(batch_raw).strip() != ""
-        if batch_explicit and not _scheme_ocr_page_batch_size_deprecation_logged:
+        if (
+            batch_raw is not None
+            and str(batch_raw).strip()
+            and not _scheme_ocr_page_batch_size_deprecation_logged
+        ):
             _config_logger.warning(
-                "SCHEME_OCR_PAGE_BATCH_SIZE is deprecated for OCR transport batching; "
-                "use SCHEME_OCR_CONCURRENCY=%s instead (aliased for now)",
+                "SCHEME_OCR_PAGE_BATCH_SIZE is deprecated; use "
+                "SCHEME_OCR_CONCURRENCY=%s instead (aliased for now)",
                 self.scheme_ocr_concurrency,
             )
             _scheme_ocr_page_batch_size_deprecation_logged = True
-        return self
-
-    @model_validator(mode="after")
-    def _require_beckn_transport_credentials_when_enabled(self):
-        if not (self.beckn_callback_transactions_enabled or self.vistaar_shc_enabled):
-            return self
-        required = {
-            "BECKN_BAP_CALLER_URL": self.beckn_bap_caller_url,
-            "BECKN_BAP_URI": self.beckn_bap_uri,
-        }
-        if self.beckn_callback_transactions_enabled:
-            required.update(
-                {
-                    "BECKN_TRANSACTION_BRIDGE_TOKEN": self.beckn_transaction_bridge_token,
-                    "BECKN_CALLBACK_TOKEN": self.beckn_callback_token,
-                    "BECKN_AMUL_BPP_ID": self.beckn_amul_bpp_id,
-                    "BECKN_AMUL_BPP_URI": self.beckn_amul_bpp_uri,
-                }
-            )
-        missing = [name for name, value in required.items() if not str(value or "").strip()]
-        if missing:
-            raise ValueError(
-                "Beckn callback transactions require non-empty transport settings: "
-                + ", ".join(missing)
-            )
         return self
 
 settings = Settings()

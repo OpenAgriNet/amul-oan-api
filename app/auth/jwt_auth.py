@@ -93,12 +93,8 @@ public_key = _load_public_key()
 if public_key is None:
     logger.warning("JWT Public Key not loaded (no JWT_PUBLIC_KEY value and path not found or invalid)")
 
-async def get_current_user(token: str | None = Depends(oauth2_scheme)):
-    """
-    FastAPI dependency to get current authenticated user from JWT token.
-    This replaces the Django middleware approach.
-    Bypasses authentication in development environment.
-    """
+
+async def _decode_jwt_token(token: str) -> dict:
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Could not validate credentials",
@@ -107,9 +103,6 @@ async def get_current_user(token: str | None = Depends(oauth2_scheme)):
     
     if public_key is None:
         logger.error("JWT Public Key is not loaded, cannot verify tokens.")
-        raise credentials_exception
-
-    if token is None:
         raise credentials_exception
 
     try:
@@ -127,9 +120,7 @@ async def get_current_user(token: str | None = Depends(oauth2_scheme)):
         )
 
         logger.info(f"Decoded token: {decoded_token}")
-        
         return decoded_token
-        
     except jwt.ExpiredSignatureError:
         logger.warning("Token has expired")
         raise HTTPException(
@@ -137,7 +128,6 @@ async def get_current_user(token: str | None = Depends(oauth2_scheme)):
             detail="Token has expired",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    
     except jwt.InvalidTokenError as e:
         logger.warning(f"Invalid token error: {str(e)}")
         raise HTTPException(
@@ -145,7 +135,6 @@ async def get_current_user(token: str | None = Depends(oauth2_scheme)):
             detail=f"Invalid token: {str(e)}",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    
     except Exception as e:
         logger.error(f"Unexpected error during token verification: {str(e)}")
         raise HTTPException(
@@ -153,6 +142,24 @@ async def get_current_user(token: str | None = Depends(oauth2_scheme)):
             detail="Token verification failed",
             headers={"WWW-Authenticate": "Bearer"},
         )
+
+
+async def get_current_user(token: str | None = Depends(oauth2_scheme)):
+    """
+    FastAPI dependency to get current authenticated user from JWT token.
+    In development, oauth2_scheme may return None when Authorization is absent.
+    In that case this dependency still rejects with 401.
+    """
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+
+    if token is None:
+        raise credentials_exception
+
+    return await _decode_jwt_token(token)
 
 
 async def get_chat_user(request: Request, token: str | None = Depends(chat_oauth2_scheme)):
@@ -164,7 +171,7 @@ async def get_chat_user(request: Request, token: str | None = Depends(chat_oauth
     2. X-API-Key + X-User-Phone for trusted server-side integrations like WhatsApp.
     """
     if token:
-        return await get_current_user(token)
+        return await _decode_jwt_token(token)
 
     api_key_identity = _validate_chat_api_key(request)
     if api_key_identity:

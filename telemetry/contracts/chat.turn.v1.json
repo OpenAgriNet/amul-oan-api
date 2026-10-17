@@ -1,0 +1,25 @@
+{
+  "schema_version": "chat.turn.v1",
+  "root": "chat.translation",
+  "trace_input": {
+    "required": ["query", "channel", "source_lang", "target_lang", "persona"]
+  },
+  "metadata": {
+    "required": [
+      "amul.schema_version",
+      "service",
+      "release",
+      "pipeline",
+      "channel",
+      "source_lang",
+      "target_lang",
+      "user_id",
+      "pipeline_profile",
+      "persona"
+    ],
+    "optional": ["pipeline_flags", "pc_<step>"]
+  },
+  "scores": {
+    "categorical": ["pipeline_profile", "turn_outcome", "served_tier"]
+  }
+}

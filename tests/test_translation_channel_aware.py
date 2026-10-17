@@ -30,7 +30,7 @@ def test_voice_channel_uses_voice_rules():
     with translation_channel("voice"):
         prompt = _format_translation_prompt("hi", "english", "gujarati")
     assert _VOICE_ONLY in prompt
-    assert "do not call the caller બહેન" in prompt   # voice telephony addressing rule
+    assert "Prefer clear spoken language over literal formatting" in prompt   # voice's spoken-language rule
 
 
 def test_channel_resets_after_context_block():

@@ -7,15 +7,12 @@ from pydantic_ai import RunContext
 from pydantic_ai.tools import ToolDefinition
 
 from agents.deps import FarmerContext
-from agents.services.beckn_amul import (
+from agents.tools.beckn.amul import (
     authenticated_accounts,
     fetch_authenticated_farmers,
     fetch_milk_collection,
 )
-from agents.tools.farmer_animal_backends import get_farmer_milk_collection_details_api
-from agents.tools.farmer import get_farmer_data_by_mobile
-from app.config import get_config_value, settings
-from app.models.milk_collection import FarmerMilkCollectionRequestModel
+from agents.tools.models.milk_collection import FarmerMilkCollectionRequestModel
 from helpers.utils import get_logger
 
 logger = get_logger(__name__)
@@ -193,18 +190,13 @@ async def get_farmer_milk_collection_details(
         )
         return f"Milk collection lookup failed.\n\n{str(exc)}"
 
-    use_amul_bpp = settings.enable_network and settings.beckn_callback_transactions_enabled
     session_id = ctx.deps.session_id if ctx and ctx.deps else None
     tool_call_id = getattr(ctx, "tool_call_id", None)
     try:
-        farmers = (
-            await fetch_authenticated_farmers(
-                mobile,
-                session_id=session_id,
-                tool_call_id=tool_call_id,
-            )
-            if use_amul_bpp
-            else await get_farmer_data_by_mobile(mobile)
+        farmers = await fetch_authenticated_farmers(
+            mobile,
+            session_id=session_id,
+            tool_call_id=tool_call_id,
         )
     except Exception as exc:
         logger.warning("Farmer profile lookup for milk collection failed: %s", exc)
@@ -220,44 +212,22 @@ async def get_farmer_milk_collection_details(
             "No union, society, and farmer account was found for your signed-in mobile."
         )
 
-    if use_amul_bpp:
-        outcomes = await asyncio.gather(
-            *(
-                fetch_milk_collection(
-                    account,
-                    fromdate=fromdate,
-                    todate=todate,
-                    session_id=session_id,
-                    # One tool invocation may fan out across several owned
-                    # accounts. Keep each durable operation distinct without
-                    # putting farmer identifiers into its correlation key.
-                    tool_call_id=(f"{tool_call_id}:account-{index}" if tool_call_id else None),
-                )
-                for index, account in enumerate(accounts)
-            ),
-            return_exceptions=True,
-        )
-    else:
-        token = get_config_value("PASHUGPT_TOKEN")
-        if not token:
-            logger.error("PASHUGPT_TOKEN is not set")
-            return "Milk collection lookup failed.\n\nProvider access is not configured."
-        outcomes = await asyncio.gather(
-            *(
-                get_farmer_milk_collection_details_api(
-                    FarmerMilkCollectionRequestModel(
-                        unionCode=account.union_code,
-                        societyCode=account.society_code,
-                        farmerCode=account.farmer_code,
-                        fromdate=fromdate,
-                        todate=todate,
-                    ),
-                    token,
-                )
-                for account in accounts
-            ),
-            return_exceptions=True,
-        )
+    outcomes = await asyncio.gather(
+        *(
+            fetch_milk_collection(
+                account,
+                fromdate=fromdate,
+                todate=todate,
+                session_id=session_id,
+                # One tool invocation may fan out across several owned
+                # accounts. Keep each durable operation distinct without
+                # putting farmer identifiers into its correlation key.
+                tool_call_id=(f"{tool_call_id}:account-{index}" if tool_call_id else None),
+            )
+            for index, account in enumerate(accounts)
+        ),
+        return_exceptions=True,
+    )
 
     responses = [
         response for response in outcomes
@@ -274,7 +244,7 @@ async def get_farmer_milk_collection_details(
             "Unable to fetch milk collection details at the moment."
         )
 
-    from app.models.milk_collection import FarmerMilkCollectionResponseModel
+    from agents.tools.models.milk_collection import FarmerMilkCollectionResponseModel
 
     response = FarmerMilkCollectionResponseModel(
         result="success",
