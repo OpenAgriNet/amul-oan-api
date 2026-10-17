@@ -5,6 +5,7 @@ This folder contains the maintained, repo-specific documentation set.
 ## Current Docs
 
 - `FARMER_ANIMAL_APIS.md`: backend integration notes for farmer and animal data sources.
+- `HEAT_ALERT_WEBHOOK.md`: partner heat-alert webhook contract, WhatsApp send, retention and deploy checklist.
 - `TRANSLATION_PIPELINE_API.md`: request/response behavior for the translation pipeline.
 - `WEBVIEW_URL_API.md`: integration guide for the webview URL endpoint.
 - `REPOSITORY_REVIEW_2026-03-10.md`: codebase review notes, cleanup findings, and follow-up recommendations.

@@ -10,13 +10,18 @@ from app.tasks.farmer_refresh_worker import start_farmer_refresh_worker, stop_fa
 # P2 health poller: active LB /health probe feeding the per-endpoint breaker.
 # start_/stop_ are no-ops unless HEALTH_POLLER_ENABLED (flag-off boot is untouched).
 from app.tasks.health_poller import start_health_poller, stop_health_poller
+# Heat-alert retention worker: a no-op unless WEBHOOK_DB_URL is set.
+from app.tasks.webhook_cleanup_worker import (
+    start_webhook_cleanup_worker,
+    stop_webhook_cleanup_worker,
+)
 
 # Configure observability (Langfuse + pydantic-ai instrumentation) before router
 # imports that pull in agents, tools, and voice/chat pipelines.
 import app.observability  # noqa: F401, E402
 
 # Import all routers
-from app.routers import chat, transcribe, suggestions, tts, health, auth, user, telemetry, beckn
+from app.routers import chat, transcribe, suggestions, tts, health, auth, user, telemetry, beckn, webhooks
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -48,8 +53,10 @@ async def lifespan(app: FastAPI):
     await start_scheme_scheduler()
     await start_farmer_refresh_worker()
     await start_health_poller()
+    await start_webhook_cleanup_worker()
     yield
     # Shutdown
+    await stop_webhook_cleanup_worker()
     await stop_health_poller()
     await stop_farmer_refresh_worker()
     await stop_scheme_scheduler()
@@ -108,6 +115,9 @@ app.include_router(tts.router, prefix=settings.api_prefix)
 app.include_router(user.router, prefix=settings.api_prefix)
 app.include_router(health.router, prefix=settings.api_prefix)
 app.include_router(beckn.router, prefix=settings.api_prefix)
+# Partner heat-alert ingest (POST /api/webhooks/alerts). Fails closed with 503
+# until WEBHOOK_SHARED_TOKEN and WEBHOOK_DB_URL are set.
+app.include_router(webhooks.router, prefix=settings.api_prefix)
 # Keep telemetry path compatible with existing frontend calls:
 # /observability-service/action/data/v3/telemetry
 app.include_router(telemetry.router)
