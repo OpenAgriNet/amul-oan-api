@@ -48,7 +48,10 @@ defaults:
   non_meaningful:
     tiers:
       - {provider: vllm, model: gemma-4-31b-it, endpoint: "${OSS_INFERENCE_ENDPOINT_URL}", api_key_env: OSS_INFERENCE_API_KEY, label: non-meaningful}
+  # Gemma 4 translates first, constrained to Gujarati script (target_script_only);
+  # TranslateGemma serves when it fails before the first token.
   post_translation:
     tiers:
+      - {provider: vllm, model: gemma-4-31b-it, endpoint: "${TRANSLATION_GEMMA_ENDPOINT}", api_key_env: OSS_INFERENCE_API_KEY, timeout_ms: 30000, ttft_ms: 5000, target_script_only: true, label: gemma-translator}
       - {provider: translategemma, model: translategemma-27b-base, endpoint: "${TRANSLATEGEMMA_27B_BASE_ENDPOINT}", timeout_ms: 60000, ttft_ms: 5000, label: translategemma}
       - {provider: vllm, model: gemma-4-31b-it, endpoint: "${INFERENCE_ENDPOINT_URL}", api_key_env: INFERENCE_API_KEY, timeout_ms: 30000, label: llm-fallback}
