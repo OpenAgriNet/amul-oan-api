@@ -8,7 +8,8 @@ conversation, the glossary and the ambiguity rules, and an exact glossary term
 the model only transliterated is put back as its English label. The ambiguity
 rules are voice's own (``assets/voice_ambiguity_terms.json``): voice's include
 rules chat's do not, such as reading an ASR'd નિદાન as insemination rather than
-diagnosis. The glossary is shared with chat.
+diagnosis. The glossary is chat's with voice's own rows on top
+(``agents/voice/tools/terms.py``), as amul-dev reads abortion and silage.
 
 Each attempt runs on the pretranslation tier ``llm_core`` picks for the turn,
 with that tier's client and model, where voice built them from the environment.
@@ -30,7 +31,7 @@ from typing import Optional, Sequence, Union
 from openai import AsyncOpenAI
 
 from agents.tools import terms as _terms
-from agents.tools.terms import TERM_PAIRS
+from agents.voice.tools.terms import TERM_PAIRS
 from app.config import settings
 from app.llm_core import Step
 from app.llm_core.config_model import StepClientKind
