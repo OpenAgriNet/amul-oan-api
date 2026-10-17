@@ -12,6 +12,7 @@ ENDPOINTS = {
     "OSS_INFERENCE_ENDPOINT_URL": "http://oss.test/v1",
     "INFERENCE_ENDPOINT_URL": "http://inference.test/v1",
     "TRANSLATEGEMMA_27B_BASE_ENDPOINT": "http://tg.test/v1",
+    "TRANSLATION_GEMMA_ENDPOINT": "http://gemma-translator.test/v1",
 }
 
 
