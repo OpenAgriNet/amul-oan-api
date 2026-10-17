@@ -576,10 +576,16 @@ async def _stream_to_client(
         return
 
     async def translate(text: str, label: str):
-        # Sentence batching drops the line break before a list item; restore it.
+        # Sentence batching drops the line break before a list item; restore it,
+        # and the space between two sentences that land in different batches (the
+        # translator strips the English batch's trailing space).
+        previous = next((c for c in reversed(output_chunks) if c), "")
         if output_chunks and _batch_starts_new_line_or_list(text):
             output_chunks.append("\n")
             yield "\n"
+        elif previous and not previous[-1].isspace():
+            output_chunks.append(" ")
+            yield " "
         try:
             async for translated_chunk in translate_text_stream_fast(
                 text=text,

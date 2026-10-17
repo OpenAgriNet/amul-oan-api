@@ -242,3 +242,31 @@ def test_doctor_trace_output_is_sanitised_after_translation(monkeypatch):
 
     assert sink.final_text()
     assert "Sources" not in sink.final_text()
+
+
+def test_translated_sentence_batches_keep_the_space_between_them(monkeypatch):
+    """Each batch is translated on its own and the translator strips the English
+    batch's trailing space, so the sink restores it; a list item still gets its
+    line break instead."""
+
+    async def fake_translate(*, text, **_):
+        yield text.strip().upper()
+
+    async def english():
+        for part in (
+            "The first sentence has exactly six words. ",
+            "The second sentence also has six words. ",
+            "\n* A list item that has six words.",
+        ):
+            yield part
+
+    monkeypatch.setattr(chat_service, "translate_text_stream_fast", fake_translate)
+    out = []
+    streamed = asyncio.run(_collect(chat_service._stream_to_client(
+        english(), translate_to="gu", max_output_chars=None, execution=None, output_chunks=out,
+    )))
+
+    assert "".join(streamed) == (
+        "THE FIRST SENTENCE HAS EXACTLY SIX WORDS. THE SECOND SENTENCE ALSO HAS SIX WORDS."
+        "\n* A LIST ITEM THAT HAS SIX WORDS."
+    )
