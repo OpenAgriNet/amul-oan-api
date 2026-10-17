@@ -306,6 +306,12 @@ class Settings(BaseSettings):
         default=60 * 5,
         validation_alias="AGENT_CVCC_CACHE_TTL_SECONDS",
     )
+    # Banas operated visits. When unset, follows AGENT_ANIMAL_CACHE_TTL_SECONDS
+    # (see _default_banas_cache_ttl_to_animal).
+    agent_banas_cache_ttl_seconds: int = Field(
+        default=60 * 15,
+        validation_alias="AGENT_BANAS_CACHE_TTL_SECONDS",
+    )
     agent_negative_cache_ttl_seconds: int = Field(
         default=60,
         validation_alias="AGENT_NEGATIVE_CACHE_TTL_SECONDS",
@@ -816,6 +822,7 @@ class Settings(BaseSettings):
         "agent_farmer_cache_ttl_seconds": ("AGENT_FARMER_CACHE_TTL_SECONDS", 60 * 15, 1, None),
         "agent_animal_cache_ttl_seconds": ("AGENT_ANIMAL_CACHE_TTL_SECONDS", 60 * 15, 1, None),
         "agent_cvcc_cache_ttl_seconds": ("AGENT_CVCC_CACHE_TTL_SECONDS", 60 * 5, 1, None),
+        "agent_banas_cache_ttl_seconds": ("AGENT_BANAS_CACHE_TTL_SECONDS", 60 * 15, 1, None),
         "agent_negative_cache_ttl_seconds": ("AGENT_NEGATIVE_CACHE_TTL_SECONDS", 60, 1, None),
         "beckn_operation_ttl_seconds": ("BECKN_OPERATION_TTL_SECONDS", 60 * 60 * 24, 60, None),
         "beckn_callback_max_body_bytes": ("BECKN_CALLBACK_MAX_BODY_BYTES", 2 * 1024 * 1024, 1024, 5 * 1024 * 1024),
@@ -850,6 +857,7 @@ class Settings(BaseSettings):
         "agent_farmer_cache_ttl_seconds",
         "agent_animal_cache_ttl_seconds",
         "agent_cvcc_cache_ttl_seconds",
+        "agent_banas_cache_ttl_seconds",
         "agent_negative_cache_ttl_seconds",
         "beckn_operation_ttl_seconds",
         "beckn_callback_max_body_bytes",
@@ -910,6 +918,12 @@ class Settings(BaseSettings):
         if value is None:
             return ""
         return str(value).rstrip("/")
+
+    @model_validator(mode="after")
+    def _default_banas_cache_ttl_to_animal(self):
+        if "agent_banas_cache_ttl_seconds" not in self.model_fields_set:
+            self.agent_banas_cache_ttl_seconds = self.agent_animal_cache_ttl_seconds
+        return self
 
     @model_validator(mode="after")
     def _resolve_scheme_ocr_concurrency(self):

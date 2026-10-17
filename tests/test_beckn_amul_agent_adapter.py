@@ -2,6 +2,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from agents import farmer_context
+from agents.tools import response_cache
 from agents.tools.beckn import amul as adapter
 from agents.tools.beckn.operations import BecknActionResult, OperationState
 
@@ -298,10 +300,6 @@ async def test_banas_children_are_associated_to_their_visit(monkeypatch):
         async def init_animal_profile(self, **kwargs):
             return _result(payload)
 
-    async def unexpected_cache(**kwargs):
-        raise AssertionError("Banas visits must not use the response cache")
-
-    monkeypatch.setattr(adapter, "get_or_load", unexpected_cache)
     monkeypatch.setattr(adapter, "get_beckn_operation_client", lambda: Client())
     visits = await adapter.fetch_banas_visits("TAG", union_code="U1")
 
@@ -310,3 +308,104 @@ async def test_banas_children_are_associated_to_their_visit(monkeypatch):
     assert visits[0].lab_reports[0].sample_name == "Sample A"
     assert visits[1].medicines[0].medicine_name == "Medicine B"
     assert visits[1].lab_reports == []
+
+
+_RESTORED_BANAS_VISIT = {"message": {"order": {"items": [{"tags": [
+    _tag("operated_visit", entries=[
+        _tag("visit_index", "0"),
+        _tag("visit_code", "V-A"),
+        _tag("visit_allocation_date", "2026-01-04 09:00"),
+        _tag("entry_time", "2026-01-04 08:30"),
+        _tag("visit_response_time", "45"),
+        _tag("primary_doctor_name", "Example Doctor"),
+        _tag("doctor_mobile", "0000000001"),
+        _tag("driver_name", "Example Driver"),
+        _tag("payment_mode", "Example mode"),
+        _tag("payment_comment", "Example comment"),
+        _tag("vet_centre_name", "Example Vet Centre"),
+        _tag("report_date", "2026-01-05"),
+    ]),
+    _tag("visit_medicine", entries=[_tag("visit_index", "0"), _tag("medicine_name", "Medicine A")]),
+]}]}}}
+
+
+@pytest.mark.asyncio
+async def test_restored_banas_and_cvcc_fields_reach_farmer_context_as_before(monkeypatch):
+    cvcc = {"message": {"order": {"items": [{"tags": [
+        _tag("animal_profile", entries=[
+            _tag("tag_id", "TAG"),
+            _tag("farmer_id", "TEST-FARMER-1"),
+            _tag("collar_belt", "TEST-BELT-1"),
+        ]),
+    ]}]}}}
+
+    class Client:
+        async def init_animal_profile(self, **kwargs):
+            return _result(_RESTORED_BANAS_VISIT if kwargs["provider_id"] == "banasmobileapi" else cvcc)
+
+    monkeypatch.setattr(adapter, "get_beckn_operation_client", lambda: Client())
+    lines: list[str] = []
+    farmer_context._append_banas_visit_markdown(
+        lines, await adapter.fetch_banas_visits("TAG", union_code="U1")
+    )
+    farmer_context._append_cvcc_health_markdown(
+        lines, await adapter.fetch_cvcc_health("TAG", union_code="U2")
+    )
+
+    # Labels and values as the direct-API implementation (dcdd2d2) rendered them.
+    expected = [
+        "- **Visit allocation date:** 2026-01-04 09:00",
+        "- **Entry time:** 2026-01-04 08:30",
+        "- **Visit response time:** 45",
+        "- **Primary doctor name:** Example Doctor",
+        "- **Doctor mobile:** 0000000001",
+        "- **Driver name:** Example Driver",
+        "- **Payment mode:** Example mode",
+        "- **Payment comment:** Example comment",
+        "- **Vet centre name:** Example Vet Centre",
+        "- **Report date:** 2026-01-05",
+        "- **Farmer id:** TEST-FARMER-1",
+        "- **Collar belt:** TEST-BELT-1",
+    ]
+    assert [line for line in expected if line not in lines] == []
+
+
+@pytest.mark.asyncio
+async def test_banas_visits_are_served_from_cache_within_ttl(monkeypatch):
+    class MemoryCache:
+        def __init__(self):
+            self.values, self.ttls = {}, []
+
+        async def get(self, key, *, namespace):
+            return self.values.get((namespace, key))
+
+        async def set(self, key, value, *, ttl, namespace):
+            self.values[(namespace, key)] = value
+            self.ttls.append(ttl)
+
+    calls = []
+
+    class Client:
+        async def init_animal_profile(self, **kwargs):
+            calls.append(kwargs["tag_id"])
+            if kwargs["tag_id"] == "TAG-NONE":
+                return _result({"message": {"order": {"state": "NOT_FOUND"}}})
+            return _result(_RESTORED_BANAS_VISIT)
+
+    memory = MemoryCache()
+    monkeypatch.setattr(response_cache, "cache", memory)
+    monkeypatch.setattr(adapter, "get_or_load", response_cache.get_or_load)
+    monkeypatch.setattr(adapter, "get_beckn_operation_client", lambda: Client())
+
+    first = await adapter.fetch_banas_visits("TAG", union_code="U1")
+    second = await adapter.fetch_banas_visits("TAG", union_code="U1")
+    assert await adapter.fetch_banas_visits("TAG-NONE", union_code="U1") == []
+
+    assert calls == ["TAG", "TAG-NONE"]
+    assert second == first
+    assert second[0].doctor_mobile == "0000000001"
+    assert second[0].medicines[0].medicine_name == "Medicine A"
+    assert memory.ttls == [
+        adapter.BANAS_CACHE_POLICY.ttl_seconds,
+        adapter.BANAS_CACHE_POLICY.negative_ttl_seconds,
+    ]

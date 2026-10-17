@@ -23,6 +23,7 @@ from agents.tools.models.milk_collection import FarmerMilkCollectionResponseMode
 from agents.tools.response_cache import (
     AI_TECHNICIAN_CACHE_POLICY,
     ANIMAL_CACHE_POLICY,
+    BANAS_CACHE_POLICY,
     CVCC_CACHE_POLICY,
     FARMER_CACHE_POLICY,
     get_or_load,
@@ -489,6 +490,8 @@ async def _fetch_cvcc_health_live(
             "Pregnancy Stage ": profile.get("pregnancy_stage"),
             "Lactation": profile.get("lactation_number"),
             "Milk Yield": profile.get("milk_yield"),
+            "Farmer id": profile.get("farmer_id"),
+            "Coller Belt": profile.get("collar_belt"),
             "Treatment": treatments,
             "Vaccination": vaccinations,
             "Deworming": deworming,
@@ -521,7 +524,7 @@ async def fetch_cvcc_health(
     )
 
 
-async def fetch_banas_visits(
+async def _fetch_banas_visits_live(
     tag_id: str,
     *,
     union_code: str,
@@ -560,6 +563,7 @@ async def fetch_banas_visits(
     visits: list[BanasOperatedVisitModel] = []
     for fallback_index, values in enumerate(map(_values, _groups(tags, "operated_visit"))):
         index = int(values.get("visit_index", fallback_index))
+        response_time = values.get("visit_response_time")
         visits.append(BanasOperatedVisitModel.model_validate({
             "VisitCode": values.get("visit_code"),
             "VisitNoteDate": values.get("visit_date"),
@@ -577,10 +581,45 @@ async def fetch_banas_visits(
             "medicineremarks": values.get("medicine_remarks"),
             "prognosisdetails": values.get("prognosis"),
             "VisitStatus": values.get("visit_status"),
+            "VisitAllocationDate": values.get("visit_allocation_date"),
+            "EntryTime": values.get("entry_time"),
+            "VisitResponseTime": int(float(response_time)) if response_time else None,
+            "primarydoctorname": values.get("primary_doctor_name"),
+            "doctorMobile": values.get("doctor_mobile"),
+            "Drivername": values.get("driver_name"),
+            "PaymentMode": values.get("payment_mode"),
+            "PaymentComment": values.get("payment_comment"),
+            "VetcentreName": values.get("vet_centre_name"),
+            "ReportDate": values.get("report_date"),
             "MedicinesJson": medicines_by_visit.get(index, []),
             "LabReportsJson": reports_by_visit.get(index, []),
         }))
     return visits
+
+
+async def fetch_banas_visits(
+    tag_id: str,
+    *,
+    union_code: str,
+    session_id: Optional[str] = None,
+    tool_call_id: Optional[str] = None,
+    force_refresh: bool = False,
+) -> list[BanasOperatedVisitModel]:
+    """Fetch Banas operated visits, reusing a recent successful response."""
+    return await get_or_load(
+        policy=BANAS_CACHE_POLICY,
+        identity={"tag_id": tag_id, "union_code": union_code},
+        loader=lambda: _fetch_banas_visits_live(
+            tag_id,
+            union_code=union_code,
+            session_id=session_id,
+            tool_call_id=tool_call_id,
+        ),
+        encode=_dump_model_list,
+        decode=lambda value: _load_model_list(value, BanasOperatedVisitModel),
+        is_negative=lambda value: not value,
+        force_refresh=force_refresh,
+    )
 
 
 async def _search_ai_technicians_live(
