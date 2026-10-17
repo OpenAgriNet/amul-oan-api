@@ -312,7 +312,9 @@ reads it. So a slot lands in the same PR as the code that reads it, never ahead 
    called with the agent's new messages: voice's records the agent's run, chat's records
    `served_tier`, which `run_turn` used to send itself and which would have landed on voice
    turns. `TelephonyCall` gets the provider and the call type. Where it differs from voice: a
-   turn cut off mid-answer is `client_disconnected` rather than `success`, a short-circuit that
+   turn cut off mid-answer is `client_disconnected` rather than `success`, a turn whose agent or
+   translation failed (the caller heard the trouble line) is `error` rather than `success`, though
+   it still hangs up on a closing turn and is saved to history as voice's was, a short-circuit that
    goes stale has no route, history writes aren't timed, and the agent's per-attempt tiers
    aren't recorded because `llm_core` runs the attempts. The ownership release timing comes with
    the adapter.
@@ -344,7 +346,8 @@ reads it. So a slot lands in the same PR as the code that reads it, never ahead 
    pre_translation, agent and post_translation, with non_meaningful on managed. This repo's env
    synthesis builds chat's steps, not voice's (`VOICE_MODERATION_PROVIDER`,
    `VOICE_NON_MEANINGFUL_PROVIDER`, moderation on the pretranslation models), so it can't boot
-   voice; porting it is the alternative if the deployment has to run from env alone.
+   voice; porting it is the alternative if the deployment has to run from env alone. Dev's file
+   is `pipeline.voice-dev.yaml`; it names its endpoints as `${ENV_VAR}`, filled in at boot.
 
 Each PR is checked the same way: no existing test edited, every existing test's result unchanged,
 a mutation check on what it adds, and a trial merge onto the open telemetry PRs and the earlier

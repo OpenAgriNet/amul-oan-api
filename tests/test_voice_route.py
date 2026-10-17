@@ -16,11 +16,13 @@ os.environ.setdefault("OPENAI_API_KEY", "test-key")
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, UserPromptPart
+from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, ToolCallPart, UserPromptPart
 
 from agents.voice import agent as voice_agents
 from app.auth.jwt_auth import get_current_user
 from app.config import settings
+from app.llm_core import runtime
+from app.llm_core.config_model import NamedProfile, PipelineConfig, Provider, Step, StepConfig, Tier
 from app.routers import voice as voice_router
 from app.services import chat as chat_service
 from app.services import voice as voice_service
@@ -39,9 +41,11 @@ from app.voice.classifiers import _GREETING_RESPONSES
 from app.voice.liveness import CallStaleness, RayaNudgeSender
 from app.voice.moderation import ModerationVerdict
 from app.voice.non_meaningful import NonMeaningfulVerdict
+from app.voice import sink as voice_sink
 from app.voice.sink import _prepare_voice_output
 from app.voice.telemetry import RouteTimings, VoiceTelemetry
 from tests.test_chat_turn_contract import patch_turn
+from tests.test_chat_turn_sequence import _delta
 from tests.test_voice_agent_input import _Run
 
 REPO = Path(__file__).resolve().parents[1]
@@ -164,6 +168,86 @@ def test_the_hang_up_token_reaches_the_provider_exactly(world):
     assert world["released"] == [_OWNER]
 
 
+# ── an answer that fails ────────────────────────────────────────────────────
+
+
+def _outcomes(monkeypatch):
+    """How each turn ended, as the route's telemetry recorded it."""
+    seen = []
+    record = VoiceTelemetry.record_outcome
+
+    def _record(self, outcome):
+        seen.append(outcome)
+        record(self, outcome)
+
+    monkeypatch.setattr(VoiceTelemetry, "record_outcome", _record)
+    return seen
+
+
+def test_a_closing_answer_whose_translation_fails_still_hangs_up_and_is_saved(world, monkeypatch):
+    outcomes = _outcomes(monkeypatch)
+    answer = "Give her water. Keep her in the shade."
+    closing = [
+        ModelRequest(parts=[UserPromptPart(content="My cow has fever")]),
+        ModelResponse(parts=[
+            TextPart(content=answer),
+            ToolCallPart(tool_name="signal_conversation_state", args={"state": "conversation_closing"}),
+        ]),
+    ]
+    monkeypatch.setattr(voice_agents.voice_agent, "iter", lambda **_kw: _Run([answer], closing))
+    asked = []
+
+    async def _translate(text, *_a, **_kw):
+        asked.append(text)
+        if len(asked) == 2:
+            raise RuntimeError("translategemma down")
+        yield "ગાયને પાણી આપો."
+
+    monkeypatch.setattr(voice_sink, "translate_text_stream_fast", _translate)
+
+    response = _get(query="My cow has fever", source_lang="en", target_lang="gu")
+
+    trouble = voice_sink.TRANSLATION_TROUBLE_MESSAGE["gu"]
+    assert response.text.startswith("ગાયને પાણી આપો.")
+    # The trouble line, then the raw hang-up token, so the provider still ends the call.
+    assert response.text.endswith(f"{trouble} Goodbye.")
+    ((key, messages),) = world["history_writes"]
+    assert key == "call-1" and messages == closing
+    assert outcomes == ["error"]
+
+
+@pytest.mark.parametrize("fallback", [True, False])
+def test_an_agent_that_fails_is_answered_with_the_trouble_line_and_history_kept(world, monkeypatch, fallback):
+    outcomes = _outcomes(monkeypatch)
+    earlier = [ModelRequest(parts=[UserPromptPart(content="earlier")]), ModelResponse(parts=[TextPart(content="Hello.")])]
+    tiers = [Tier(provider=Provider.OPENAI, model="gpt-a"), Tier(provider=Provider.OPENAI, model="gpt-b")]
+    config = PipelineConfig(
+        profiles=[NamedProfile(name="managed", weight=100, steps={Step.AGENT: StepConfig(tiers=tiers)})],
+        fallback_enabled=fallback,
+    )
+    runs = []
+
+    async def _history(_key):
+        return list(earlier)
+
+    def _dies(**kw):
+        runs.append(kw)
+        raise RuntimeError("agent down")
+
+    monkeypatch.setattr(runtime, "get_pipeline", lambda: config)
+    monkeypatch.setattr(voice_router, "_get_message_history", _history)
+    monkeypatch.setattr(voice_agents.voice_agent, "iter", _dies)
+
+    response = _get(query="My cow has fever", source_lang="en", target_lang="en")
+
+    assert response.text == voice_sink.TRANSLATION_TROUBLE_MESSAGE["en"]
+    # Every tier failed before its first token: the next one is tried only with fallback on.
+    assert len(runs) == (2 if fallback else 1)
+    # The agent left no messages and said nothing about closing: history stays as it was.
+    assert world["history_writes"] == [("call-1", earlier)]
+    assert outcomes == ["error"]
+
+
 def test_a_request_without_a_session_gets_one(world):
     _client().get("/voice/", params={"query": "My cow has fever", "source_lang": "en", "target_lang": "en"})
 
@@ -200,6 +284,106 @@ def test_the_route_times_what_it_does_before_the_turn(world, monkeypatch):
     assert route.history_messages == 1
     assert seen["called_at"] - route.started_at >= 0.05, "the clock starts before the claim"
     assert (seen["call_type"], seen["provider"], seen["process_id"]) == ("outbound", "RAYA", "proc-1")
+
+
+# ── the nudge and the caller's language ─────────────────────────────────────
+
+
+@pytest.fixture
+def nudges(world, monkeypatch):
+    """Nudges on; returns what reached the telephony provider."""
+    sent = []
+
+    async def _send(message, session_id, process_id=None):
+        sent.append(message)
+
+    monkeypatch.setattr(settings, "enable_voice_nudges", True)
+    monkeypatch.setattr(settings, "nudge_timeout_seconds", 0.3)
+    monkeypatch.setattr(lv, "send_nudge_message_raya", _send)
+    return sent
+
+
+def test_a_decline_stops_the_nudge_before_it_is_rendered(world, nudges, monkeypatch):
+    async def _irrelevant(**_kw):
+        return ModerationVerdict(category="irrelevant", reason="not dairy")
+
+    async def _slow_translation(**_kw):
+        # Putting the decline into Gujarati outlasts the nudge's timeout.
+        await asyncio.sleep(settings.nudge_timeout_seconds + 0.3)
+        return "આ હેલ્પલાઇન પશુપાલન માટે છે."
+
+    monkeypatch.setattr(bg, "check_moderation", _irrelevant)
+    monkeypatch.setattr("app.voice.sink.translate_text", _slow_translation)
+
+    response = _get(query="Who won the match", source_lang="en", target_lang="gu")
+
+    assert response.text == _prepare_voice_output("આ હેલ્પલાઇન પશુપાલન માટે છે.", "gu")
+    assert nudges == []
+
+
+class _PausingNode:
+    """The agent's text in two parts, a pause apart."""
+
+    def __init__(self, first, pause, rest):
+        self._parts = (first, pause, rest)
+
+    def stream(self, _ctx):
+        first, pause, rest = self._parts
+
+        class _Events:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_e):
+                return False
+
+            async def __aiter__(self):
+                yield _delta(first)
+                await asyncio.sleep(pause)
+                yield _delta(rest)
+
+        return _Events()
+
+
+_PausingNode.__name__ = "ModelRequestNode"
+
+
+class _PausingRun(_Run):
+    def __init__(self, first, pause, rest, new_messages):
+        super().__init__([first, rest], new_messages)
+        self._node = _PausingNode(first, pause, rest)
+
+    async def __aiter__(self):
+        yield self._node
+
+
+def test_a_first_chunk_the_cleanup_empties_still_stops_the_nudge(world, nudges, monkeypatch):
+    answer = [ModelRequest(parts=[UserPromptPart(content="q")]), ModelResponse(parts=[TextPart(content="**Give her water.")])]
+    monkeypatch.setattr(
+        voice_agents.voice_agent, "iter",
+        lambda **_kw: _PausingRun("**", settings.nudge_timeout_seconds + 0.3, "Give her water.", answer),
+    )
+
+    response = _get(query="My cow has fever", source_lang="en", target_lang="en")
+
+    assert response.text.strip() == "Give her water."
+    assert nudges == []
+
+
+@pytest.mark.parametrize("target_lang", ["", " GU "])
+def test_a_blank_or_padded_target_language_is_answered_in_gujarati(world, monkeypatch, target_lang):
+    asked = []
+
+    async def _translate(text, *_a, **kw):
+        asked.append(kw["target_lang"])
+        yield "ગાયને પાણી આપો."
+
+    monkeypatch.setattr("app.voice.sink.translate_text_stream_fast", _translate)
+
+    response = _get(query="My cow has fever", source_lang="en", target_lang=target_lang)
+
+    assert response.text == "ગાયને પાણી આપો."
+    assert asked == ["gu"]
 
 
 def test_the_route_is_registered_only_when_switched_on():

@@ -23,7 +23,7 @@ from app.services import translation
 from app.turn.types import TelephonyCall, TextEmission, Turn
 from app.voice import sink as voice_sink
 from app.voice.classifiers import _IDENTITY_RESPONSE_EN
-from tests.test_chat_turn_contract import patch_turn
+from tests.test_chat_turn_contract import _NEW_MESSAGE, patch_turn
 
 _TROUBLE_GU = voice_sink.TRANSLATION_TROUBLE_MESSAGE["gu"]
 
@@ -547,12 +547,13 @@ def test_an_agent_that_fails_before_its_first_chunk_is_answered_after_the_gate(m
 
     assert log == ["agent", "gate"]
     assert emissions == [TextEmission(_TROUBLE_GU, raw=True)]
-    # The caller heard the trouble line, but the turn failed: no success, no history.
+    # The caller heard the trouble line and the turn failed. The agent left no
+    # messages, so history is saved as it was, as voice saved it.
     assert _Outcomes.seen[-1] == ("outcome", "error")
-    assert seen["history_writes"] == []
+    assert seen["history_writes"] == [("call-1", [])]
 
 
-def test_a_translation_that_fails_mid_answer_ends_the_turn_as_an_error(monkeypatch):
+def test_a_translation_that_fails_mid_answer_is_saved_and_ends_as_an_error(monkeypatch):
     seen = patch_turn(monkeypatch, agent_text="Give clean water daily. Keep the cow in shade.")
     _Translation(monkeypatch, replies=[["ગાયને રોજ પાણી આપો."]], fail_on={2})
 
@@ -561,7 +562,7 @@ def test_a_translation_that_fails_mid_answer_ends_the_turn_as_an_error(monkeypat
     assert emissions[0] == TextEmission("ગાયને રોજ પાણી આપો.", raw=True)
     assert emissions[-1].text.strip() == _TROUBLE_GU
     assert _Outcomes.seen[-1] == ("outcome", "error")
-    assert seen["history_writes"] == []
+    assert seen["history_writes"] == [("call-1", [_NEW_MESSAGE])]
 
 
 def test_a_blank_first_chunk_does_not_stop_the_nudge(monkeypatch):

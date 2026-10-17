@@ -410,8 +410,9 @@ class TurnSink(Protocol):
 
     def outcome(self) -> Optional[str]:
         """How the turn ended, when the sink caught a failure itself and told the
-        caller so; None when the answer went through. ``run_turn`` then records
-        it and keeps the turn out of history."""
+        caller so; None when the answer went through. ``run_turn`` records it in
+        place of ``success``; the closing line and the history write still
+        happen, as they did on voice."""
         ...
 
 

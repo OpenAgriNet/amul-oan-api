@@ -1412,14 +1412,9 @@ async def run_turn(
             if chat_artifacts:
                 yield ArtifactEmission(artifacts=tuple(chat_artifacts))
 
-            if sink_outcome is not None:
-                # The sink caught a failure and told the caller. The turn ends
-                # there: recorded as it is, and nothing half-done goes into history.
-                _turn_outcome = sink_outcome
-                return
-
             # A last raw line after the answer: voice's hang-up token when the
-            # agent said the conversation is closing.
+            # agent said the conversation is closing. Said after the trouble line
+            # too, when the sink caught a failure, so the call still ends.
             closing = agent_input.closing_line(new_messages) if agent_input.closing_line else None
             if closing:
                 stale = await _stale_outcome(is_stale, "before_goodbye")
@@ -1441,7 +1436,10 @@ async def run_turn(
                 return
             logger.info(f"Updating message history for session {session_id} with {len(messages)} messages")
             await update_message_history(message_history_session_id, messages)
-            _turn_outcome = "success"
+            # A turn whose sink caught a failure (voice's trouble line) is saved
+            # like any other, as voice saved it, and recorded as the sink says.
+            # Chat's sink never reports one: it lets a failure propagate.
+            _turn_outcome = sink_outcome or "success"
         except (GeneratorExit, asyncio.CancelledError):
             # Client hung up: GeneratorExit at a yield, CancelledError when the
             # server cancels the stream mid-await (before the first chunk, say).

@@ -10,6 +10,7 @@ from pydantic_ai.tools import ToolDefinition
 from agents.deps import FarmerContext
 from app.config import settings
 from app.core.cache import cache, reserve, ReservationOutcome, release_reservation
+from agents.tools.beckn.operations import BecknNotSentError
 from agents.tools.models.ai_call import AISpecies
 from agents.tools.models.union import any_union_banned_from_ai_calls, union_banned_message
 from app.observability import start_observation
@@ -27,6 +28,13 @@ AI_CALL_CACHE_NAMESPACE = "ai_call_booked"
 ALREADY_BOOKED_MESSAGE = (
     "This session already has an active artificial insemination booking. "
     "Please try again later or contact your society for assistance."
+)
+# A second booking while the session's earlier one is still in flight, or was
+# neither confirmed nor refused: that one may have booked the visit.
+ALREADY_REQUESTED_MESSAGE = (
+    "An artificial insemination call booking was already requested in this session.\n\n"
+    "It may have gone through. If it did, you will get an SMS. If no SMS comes, please "
+    "check with your society or try again later, so you do not get two visits."
 )
 OUT_OF_SCOPE_MESSAGE = "This helpline only handles dairy farming and animal husbandry questions."
 
@@ -76,8 +84,17 @@ def _invalid_booking_identifier(
 # cannot prove the SMS did not go out, so the reservation is held for the TTL.
 UNCONFIRMED_MESSAGE = (
     "The artificial insemination call booking could not be confirmed.\n\n"
-    "It may or may not have gone through. Please check with your society before "
-    "booking again, so you do not get two visits."
+    "It may or may not have gone through. If it did, you will get an SMS. If no SMS "
+    "comes, please check with your society or try again later, so you do not get two visits."
+)
+# Said only when the booking provably did not happen.
+NOT_SENT_MESSAGE = (
+    "Artificial insemination call booking failed.\n\n"
+    "Unable to reach the booking network at the moment."
+)
+REFUSED_MESSAGE = (
+    "Artificial insemination call booking failed.\n\n"
+    "The booking network did not accept the request."
 )
 
 
@@ -124,11 +141,12 @@ def _is_provably_pre_send(exc: BaseException) -> bool:
     """True only when the confirm demonstrably never reached the booking BPP.
 
     DNS failure, connection refused and connect-timeout all fail before a single
-    byte of the request is written, so no booking can have been made and the
-    reservation is safe to release. Everything else — read/write timeout, pool
-    timeout, protocol error, any HTTP status, anything unexpected — happened at
-    or after the send, and the BPP may already have called PashuGPT and texted
-    the farmer. Those are ambiguous by construction and must NOT release.
+    byte of the request is written, as does a confirm that could not be
+    configured or recorded (``BecknNotSentError``), so no booking can have been
+    made and the reservation is safe to release. Everything else — read/write
+    timeout, pool timeout, protocol error, a 5xx, anything unexpected — happened
+    at or after the send, and the BPP may already have called PashuGPT and
+    texted the farmer. Those are ambiguous by construction and must NOT release.
 
     Note httpx.ConnectTimeout is checked before the generic timeout types
     precisely because it is the one timeout that is provably pre-send.
@@ -140,8 +158,40 @@ def _is_provably_pre_send(exc: BaseException) -> bool:
             httpx.ConnectTimeout,     # never established a connection
             httpx.UnsupportedProtocol,
             httpx.InvalidURL,
+            BecknNotSentError,        # not configured, or no operation record
         ),
     )
+
+
+def _is_refused(exc: BaseException) -> bool:
+    """True when the confirm was answered 4xx: refused before the BPP accepted it.
+
+    The transaction bridge answers 401 (bad token) and 404 (unsupported action)
+    before it forwards anything, and otherwise relays ONIX's status unchanged.
+    The booking BPP never answers 4xx (it refuses with a 200 NACK), so a 4xx
+    from ONIX is ONIX refusing the request itself. A 5xx stays ambiguous: the
+    bridge's 502 also covers ONIX timing out after it forwarded, and the BPP's
+    503 can follow a claim its Redis applied but did not acknowledge, which its
+    recovery loop then books.
+    """
+    return isinstance(exc, httpx.HTTPStatusError) and 400 <= exc.response.status_code < 500
+
+
+async def _already_booked_message(session_id: str) -> str:
+    """What a second booking in the session is told.
+
+    Only a confirmed booking leaves its ticket on the reservation. Without one,
+    the earlier booking is still in flight or was never confirmed, and may or may
+    not have booked the visit, so the farmer is not told it is active.
+    """
+    try:
+        marker = await cache.get(session_id, namespace=AI_CALL_CACHE_NAMESPACE)
+    except Exception as e:
+        logger.warning("Failed to read AI call reservation: %s", e)
+        marker = None
+    if isinstance(marker, dict) and marker.get("ticket"):
+        return ALREADY_BOOKED_MESSAGE
+    return ALREADY_REQUESTED_MESSAGE
 
 
 async def _mark_session_booked(
@@ -382,7 +432,7 @@ async def _book_via_network(
         # Atomic reservation immediately before the irreversible write.
         _allowed, _owned = await _reserve_booking_slot(session_id, guard)
         if not _allowed:
-            return ALREADY_BOOKED_MESSAGE
+            return await _already_booked_message(session_id)
 
         try:
             result = await network_create_ai_call_result(
@@ -400,26 +450,27 @@ async def _book_via_network(
             # BAP -> booking BPP -> PashuGPT -> SMS to a real farmer; a read
             # timeout or a mid-chain 502/504 can land AFTER PashuGPT was called
             # and the SMS sent. Only a failure that provably never left us is
-            # safe to release on.
+            # safe to release on, and so is an explicit refusal.
             pre_send = _is_provably_pre_send(e)
-            if _owned and pre_send:
+            refused = _is_refused(e)
+            if _owned and (pre_send or refused):
                 await release_reservation(session_id, AI_CALL_CACHE_NAMESPACE)
             logger.warning(
                 "Network AI call errored for union=%s society=%s farmer=%s species=%s "
-                "pre_send=%s reservation=%s: %r",
+                "pre_send=%s refused=%s reservation=%s: %r",
                 union_code,
                 society_code,
                 farmer_code,
                 species.value,
                 pre_send,
-                "released" if (_owned and pre_send) else "held",
+                refused,
+                "released" if (_owned and (pre_send or refused)) else "held",
                 e,
             )
             if pre_send:
-                failure_message = (
-                    "Artificial insemination call booking failed.\n\n"
-                    "Unable to reach the booking network at the moment."
-                )
+                failure_message = NOT_SENT_MESSAGE
+            elif refused:
+                failure_message = REFUSED_MESSAGE
             else:
                 # Ambiguous: hold the reservation for the TTL. The trade-off is
                 # deliberate — a possible ~30-minute lockout is preferable to a
@@ -430,6 +481,7 @@ async def _book_via_network(
                     output={
                         "success": False,
                         "pre_send_failure": pre_send,
+                        "refused": refused,
                         "message": failure_message,
                     }
                 )
@@ -451,6 +503,10 @@ async def _book_via_network(
                 result.authoritative_no_booking,
                 "released" if (_owned and result.authoritative_no_booking) else "held",
             )
+            # Only a refusal is told as a failure. A pending confirm, a provider
+            # error after the BPP accepted it, or a callback with no ticket may
+            # all have booked the visit, and the farmer is told so.
+            told = result.message if result.authoritative_no_booking else UNCONFIRMED_MESSAGE
             if ai_tool_obs is not None:
                 ai_tool_obs.update(
                     output={
@@ -459,7 +515,7 @@ async def _book_via_network(
                         "message": result.message,
                     }
                 )
-            return result.message
+            return told
 
         # Mark this session as booked so a re-run (or retry) does not double-book.
         await _mark_session_booked(session_id, result.ticket, species.value, guard)
