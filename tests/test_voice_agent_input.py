@@ -566,6 +566,8 @@ def _voice_surface():
         chat_service.CHAT_SURFACE,
         background=bg.voice_background(_render),
         agent_input=ai.voice_agent_input(_render),
+        # Voice has no prefetch: its background set fetches the farmer data.
+        prefetch=None,
     )
 
 
