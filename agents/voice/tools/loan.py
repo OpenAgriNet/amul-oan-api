@@ -151,6 +151,6 @@ async def check_loan_eligibility(ctx: RunContext[FarmerContext], confirmed: bool
         session_id=ctx.deps.session_id,
         confirm=confirmed,
     )
-    logger.info("check_loan_eligibility outcome=%s phone=%s code=%s sms=%s",
-                result.outcome, result.phone, result.code, result.sms_status)
+    logger.info("check_loan_eligibility outcome=%s session=%s code=%s sms=%s",
+                result.outcome, ctx.deps.session_id, result.code, result.sms_status)
     return _message_for(result)

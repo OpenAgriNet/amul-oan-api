@@ -92,16 +92,17 @@ async def send_loan_approval_sms(
         status_val = data.get("status")
         if status_val == _SUCCESS_STATUS or str(status_val) == str(_SUCCESS_STATUS):
             message_id = data.get("messageid") or data.get("messageId")
-            logger.info("Loan SMS submitted to=%s messageid=%s", _to_msisdn(phone), message_id)
+            logger.info("Loan SMS submitted messageid=%s", message_id)
             return SmsResult(ok=True, status="sent", message_id=message_id, raw=data)
 
         # Gateway accepted the request but reported a non-success status.
         err = data.get("description") or f"gateway_status={status_val}"
-        logger.error("Loan SMS rejected to=%s status=%s desc=%s", _to_msisdn(phone), status_val, err)
+        logger.error("Loan SMS rejected status=%s desc=%s", status_val, err)
         return SmsResult(ok=False, status="failed", error=str(err), raw=data)
     except httpx.HTTPStatusError as e:
         logger.error("Loan SMS HTTP %s: %s", e.response.status_code, e.response.text[:200])
         return SmsResult(ok=False, status="failed", error=f"http_{e.response.status_code}")
     except Exception as e:  # network / timeout / unexpected
-        logger.error("Loan SMS send error: %s", e)
+        # The error's class only: its text can hold the request URL, which carries the phone and the gateway key.
+        logger.error("Loan SMS send error: %s", type(e).__name__)
         return SmsResult(ok=False, status="failed", error=str(e))
