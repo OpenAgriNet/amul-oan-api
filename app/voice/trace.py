@@ -1,8 +1,9 @@
 """Voice's trace: the ``agent_journey`` root of a call turn and what it records.
 
 From voice-oan-api (``app/services/voice_trace.py`` at amul-dev ``3b19835``),
-unchanged except for the ``voice.turn.v1`` stamps from voice-oan-api#308. The
-``service`` stamp is this repo's, so turns served from here are told apart.
+unchanged except for the ``voice.turn.v1`` stamps from voice-oan-api#308 and the
+``VOICE_TRACE_USER_ID_MODE`` setting from voice-oan-api#345. The ``service``
+stamp is this repo's, so turns served from here are told apart.
 
 ``current_trace`` is how voice's modules reach the turn's trace. Voice passed its
 trace around by hand; on the seam, ``VoiceTelemetry`` (``app/voice/telemetry.py``)
@@ -26,6 +27,7 @@ from app.services.telemetry_stamps import forward_voice_telemetry_metadata
 logger = logging.getLogger(__name__)
 
 _VALID_TEXT_MODES = {"preview_hash", "full", "none"}
+_VALID_USER_ID_MODES = {"hash", "phone"}
 _HASH_SALT = "voice-oan-api"
 
 
@@ -39,6 +41,17 @@ def _duration_ms(started_at: float) -> float:
 
 def _hash(value: str) -> str:
     return hashlib.sha256(f"{_HASH_SALT}:{value}".encode("utf-8")).hexdigest()
+
+
+def _langfuse_user_id(user_id: Optional[str], user_id_hash: str) -> str:
+    """The caller's hash by default. ``phone`` sends the caller's id as given, so
+    it is only for a Langfuse approved to hold phone numbers."""
+    mode = getattr(settings, "voice_trace_user_id_mode", "hash")
+    if mode not in _VALID_USER_ID_MODES:
+        mode = "hash"
+    if mode == "phone":
+        return (user_id or "anonymous")[:200]
+    return user_id_hash
 
 
 def _safe_update(observation: Any | None, **kwargs: Any) -> None:
@@ -276,8 +289,7 @@ class VoiceTrace:
             )
             stack.enter_context(
                 propagate_attributes(
-                    # The caller's hash, never their phone number.
-                    user_id=self.metadata["user_id_hash"],
+                    user_id=_langfuse_user_id(self.user_id, self.metadata["user_id_hash"]),
                     session_id=(self.session_id or "")[:200] or None,
                     metadata={
                         "process_id": str(self.process_id or "")[:200],
