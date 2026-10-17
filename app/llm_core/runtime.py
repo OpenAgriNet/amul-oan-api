@@ -14,6 +14,7 @@ runtime model selection path.
 from __future__ import annotations
 
 import os
+import re
 from typing import Optional
 
 from helpers.utils import get_logger
@@ -31,12 +32,34 @@ PIPELINE: Optional[PipelineConfig] = None
 BOOT_PIPELINE: Optional[PipelineConfig] = None
 
 
+_ENV_REF = re.compile(r"\$\{([A-Z][A-Z0-9_]*)\}")
+
+
+def _env_ref(match: re.Match) -> str:
+    value = get_config_value(match.group(1))
+    if not value:
+        raise ValueError(f"{match.group(1)} is unset but the pipeline config file refers to it")
+    return value
+
+
+def _substitute_env(value):
+    """Replace each ``${NAME}`` in the file's strings with that setting, so the file
+    can name per-deployment endpoints instead of carrying them."""
+    if isinstance(value, dict):
+        return {k: _substitute_env(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_substitute_env(v) for v in value]
+    if isinstance(value, str):
+        return _ENV_REF.sub(_env_ref, value)
+    return value
+
+
 def _load_from_yaml(path: str) -> PipelineConfig:
     import yaml  # lazy: only needed when a config file is supplied
 
     with open(path, "r", encoding="utf-8") as f:
         data = yaml.safe_load(f)
-    return PipelineConfig(**data)
+    return PipelineConfig(**_substitute_env(data))
 
 
 # Providers with a concrete pretranslation protocol adapter.
