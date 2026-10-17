@@ -667,6 +667,30 @@ class Settings(BaseSettings):
     loan_db_url: Optional[str] = os.getenv("LOAN_DB_URL")
     loan_db_pool_size: int = int(os.getenv("LOAN_DB_POOL_SIZE", "5"))
 
+    # ── Partner heat-alert webhook ───────────────────────────────────────────
+    # Shared secret sent by the partner as Authorization: Bearer. When
+    # unset/empty the webhook endpoint rejects all requests (fail closed).
+    webhook_shared_token: Optional[str] = os.getenv("WEBHOOK_SHARED_TOKEN")
+    # Dedicated Postgres for partner webhook payloads. When unset the endpoint
+    # returns 503 and the retention worker does not start.
+    webhook_db_url: Optional[str] = os.getenv("WEBHOOK_DB_URL")
+    webhook_db_pool_size: int = int(os.getenv("WEBHOOK_DB_POOL_SIZE", "5"))
+    # Retention + cleanup cadence for ephemeral webhook data.
+    webhook_retention_hours: int = int(os.getenv("WEBHOOK_RETENTION_HOURS", "24"))
+    webhook_cleanup_interval_seconds: int = int(
+        os.getenv("WEBHOOK_CLEANUP_INTERVAL_SECONDS", "900")
+    )
+    # Sarlaben WhatsApp API used after a new heat-alert webhook is stored.
+    sarlaben_whatsapp_base_url: str = os.getenv(
+        "SARLABEN_WHATSAPP_BASE_URL", "https://comm.amul.in/sarlaben"
+    )
+    sarlaben_whatsapp_api_key: Optional[str] = os.getenv(
+        "SARLABEN_WHATSAPP_API_KEY"
+    )
+    sarlaben_whatsapp_timeout_seconds: float = float(
+        os.getenv("SARLABEN_WHATSAPP_TIMEOUT_SECONDS", "15")
+    )
+
     # ── Onex-Aura / OneXtel SMS gateway (DLT-approved KDCC micro-loan template) ─
     # When false, SMS is a dry-run: nothing is sent, the code is still issued and
     # stored, and sms_status is recorded as 'dry_run'. Keep OFF while testing.
