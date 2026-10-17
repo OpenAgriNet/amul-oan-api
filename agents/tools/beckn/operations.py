@@ -89,6 +89,14 @@ class CallbackRecordResult:
     message: Optional[str] = None
 
 
+class BecknNotSentError(RuntimeError):
+    """A forward action failed before any of it was sent.
+
+    Missing configuration, or an operation record that could not be written:
+    no receiver saw the request, so a booking cannot have been made.
+    """
+
+
 @dataclass(frozen=True)
 class BecknActionResult:
     operation: BecknOperation
@@ -730,7 +738,10 @@ class BecknOperationClient:
         session_id: Optional[str],
         tool_call_id: Optional[str],
     ) -> BecknActionResult:
-        self._validate_configuration()
+        try:
+            self._validate_configuration()
+        except RuntimeError as exc:
+            raise BecknNotSentError(str(exc)) from exc
         operation_id = str(uuid.uuid4())
         transaction_id = str(uuid.uuid4())
         message_id = str(uuid.uuid4())
@@ -774,20 +785,24 @@ class BecknOperationClient:
             action="confirm", transaction_id=transaction_id, message_id=message_id
         )
         payload = {"context": context, "message": {"order": order}}
-        created = await self.store.create(
-            operation_id=operation_id,
-            transaction_id=transaction_id,
-            message_id=message_id,
-            action="confirm",
-            expected_callback="on_confirm",
-            domain=settings.beckn_booking_domain,
-            bap_id=settings.beckn_bap_id,
-            bpp_id=settings.beckn_amul_bpp_id,
-            request_payload=payload,
-            idempotency_key=idempotency_key,
-            session_id=session_id,
-            tool_call_id=tool_call_id,
-        )
+        try:
+            created = await self.store.create(
+                operation_id=operation_id,
+                transaction_id=transaction_id,
+                message_id=message_id,
+                action="confirm",
+                expected_callback="on_confirm",
+                domain=settings.beckn_booking_domain,
+                bap_id=settings.beckn_bap_id,
+                bpp_id=settings.beckn_amul_bpp_id,
+                request_payload=payload,
+                idempotency_key=idempotency_key,
+                session_id=session_id,
+                tool_call_id=tool_call_id,
+            )
+        except Exception as exc:
+            # The record comes before the send, so no confirm went out.
+            raise BecknNotSentError("Beckn confirm operation could not be recorded") from exc
         operation = created.operation
         if created.created:
             await self._send(operation, payload)
@@ -917,8 +932,11 @@ class BecknOperationClient:
     async def _send(self, operation: BecknOperation, payload: Mapping[str, Any]) -> None:
         token = settings.beckn_transaction_bridge_token
         if operation.domain != "schemes:vistaar" and not token:
-            raise RuntimeError("BECKN_TRANSACTION_BRIDGE_TOKEN is required for Beckn transactions")
-        await self.store.mark_sent(operation)
+            raise BecknNotSentError("BECKN_TRANSACTION_BRIDGE_TOKEN is required for Beckn transactions")
+        try:
+            await self.store.mark_sent(operation)
+        except Exception as exc:
+            raise BecknNotSentError("Beckn operation could not be marked sent") from exc
         # ONIX derives the action from the final path segment. A trailing slash
         # changes that segment to e.g. ``init/`` and fails route matching.
         url = f"{settings.beckn_bap_caller_url.rstrip('/')}/{operation.action}"

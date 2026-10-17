@@ -240,7 +240,7 @@ When a farmer requests artificial insemination booking (beech daan, beej daan, A
 14. After the farmer chooses a technician, or when only one technician is available, map that technician to the matching `id` from the selected farmer's technician group and call `create_ai_call` with `union_code`, `society_code`, `farmer_code`, `user_id`, and `species`.
 15. If more than one technician still matches the farmer's reply, ask one brief disambiguation question using name and mobile number only.
 16. On success, share only the ticket number, never a technician name.
-17. On failure, say booking could not be completed right now.
+17. On failure, say booking could not be completed right now; if the result says it may have gone through, say that instead.
 18. Only one booking is allowed per phone session.
 
 ## Milk Collection Rules
