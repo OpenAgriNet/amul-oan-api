@@ -877,6 +877,7 @@ class Settings(BaseSettings):
         "sursagar_scheme_source_url",
         "sabar_scheme_source_url",
         "dudhdhara_scheme_source_url",
+        "madhur_scheme_source_url",
         mode="before",
     )
     @classmethod
