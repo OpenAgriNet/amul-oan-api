@@ -48,10 +48,21 @@ def _load_gu_term_policy() -> dict:
 
 
 GU_TERM_POLICY = _load_gu_term_policy()
+# Shared preferred terms voice does not take, as voice-oan-api never had them
+# (98abd41, chat only). They rewrote voice's glossary rows: HEIFER became પાડી,
+# a female buffalo calf, where voice says 'વોડકી, ઝોટુ, પાડી', and TDN became
+# the long form voice no longer expands (VOICE_KEPT_GU_POLICY_TERMS in
+# app/services/translation.py). Potassium permanganate has no row by that name;
+# it is left out so voice's term aliases stay voice-oan-api's.
+VOICE_SKIPPED_PREFERRED_TERMS = frozenset({
+    "heifer",
+    "tdn — total digestible nutrients",
+    "potassium permanganate antiseptic solution",
+})
 PREFERRED_GU_BY_EN = {
     str(k).strip().lower(): str(v).strip()
     for k, v in (GU_TERM_POLICY.get("preferred", {}) if isinstance(GU_TERM_POLICY, dict) else {}).items()
-    if str(k).strip() and str(v).strip()
+    if str(k).strip() and str(v).strip() and str(k).strip().lower() not in VOICE_SKIPPED_PREFERRED_TERMS
 }
 ALLOWED_ALIASES_BY_EN = {
     str(k).strip().lower(): [str(v).strip() for v in vals if str(v).strip()]

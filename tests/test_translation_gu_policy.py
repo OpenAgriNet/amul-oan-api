@@ -98,7 +98,8 @@ def test_a_rewrite_is_not_rewritten_again(channel):
 
     said = "પોટેશિયમ પરમેંગેનેટનું દ્રાવણ વાપરો."
     assert normalize(said) == said
-    assert "પોટેશિયમ પરમેંગેનેટના દ્રાવણ" in normalize("પોટેશિયમ પરમેંગેનેટ વાપરો.")
+    if channel == "chat":  # voice keeps the term (VOICE_KEPT_GU_POLICY_TERMS)
+        assert "પોટેશિયમ પરમેંગેનેટના દ્રાવણ" in normalize("પોટેશિયમ પરમેંગેનેટ વાપરો.")
     forbidden = GU_TERM_POLICY["forbidden"]
     grown = [
         text for text in (f"આ {term} છે." for term in [*forbidden, *forbidden.values()])
