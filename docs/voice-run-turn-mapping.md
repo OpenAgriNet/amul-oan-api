@@ -325,8 +325,9 @@ reads it. So a slot lands in the same PR as the code that reads it, never ahead 
    only when `VOICE_ROUTE_ENABLED` is on; with it off the voice code is never imported.
    `stream_voice_message` (`app/services/voice.py`) works out the outbound consent turn from
    the stage in Redis as voice did, wires in `CallStaleness` and `RayaNudgeSender`, runs
-   `VOICE_SURFACE`, sends each emission through voice's output normalizer unless it is raw, and
-   releases the session however the turn ends. The route's ownership claim and history load are
+   `VOICE_SURFACE`, sends each emission through voice's output normalizer unless it is raw (the
+   sink's own text is raw: the sink has cleaned it once, as voice did), and releases the session
+   however the turn ends. The route's ownership claim and history load are
    timed on the trace, from when the request came in. `Turn.channel` is `None` on voice. A
    caller hanging up closes the turn at once, as on chat's route; the ownership release isn't
    timed on the trace, since it runs after the trace has closed.

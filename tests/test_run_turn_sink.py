@@ -97,7 +97,7 @@ def test_run_turn_streams_through_the_surface_sink(monkeypatch):
         chat_service.run_turn(_turn(), _recording_surface(), scheduler=_Scheduler())
     ))
 
-    assert emissions == [TextEmission("GIVE CLEAN WATER.")]
+    assert emissions == [TextEmission("GIVE CLEAN WATER.", raw=True)]
     (sink,) = _RecordingSink.built
     assert sink.kwargs["translate_to"] == "gu"
     assert sink.kwargs["deps"] is seen["deps"][0]

@@ -200,7 +200,10 @@ def _replace_voice_abbreviations(text: str, lang_code: str) -> str:
             (r"(?i)\bcm\b", "સેન્ટીમીટર"),
             (r"(?i)કિ\.?\s*ગ્રા\.?", "કિલોગ્રામ"),
             (r"(?i)(?<!\w)ગ્રા\.?(?!\w)", "ગ્રામ"),
-            (r"(?i)મિ\.?\s*લી\.?", "મિલીલીટર"),
+            # Not where it is already the full word, or at the end of a
+            # streamed chunk, where the rest of the word may come next: its own
+            # output would grow on every pass (મિલીલીટર -> મિલીલીટરલીટર).
+            (r"(?i)મિ\.?\s*લી\.?(?!\.?\s*(?:લ[ીિ]ટર|$))", "મિલીલીટર"),
             (r"(?i)%", " ટકા"),
             (r"(?i)°\s*c", " ડિગ્રી સેલ્સિયસ"),
         ]
