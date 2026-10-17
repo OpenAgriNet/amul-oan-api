@@ -74,11 +74,24 @@ class Tier(BaseModel):
     # ALIVE TG overflows in single-digit seconds instead of blocking a voice turn
     # for the full 60s total. ``None`` -> the consumer falls back to ``timeout_ms``.
     ttft_ms: Optional[int] = None
+    # Post-translation only: constrain this vLLM tier's decoding to the target
+    # language's script (vLLM structured outputs) and give it the strict
+    # translation-only prompt written for that grammar. Gujarati is the only
+    # target with a grammar; other targets translate unconstrained.
+    target_script_only: bool = False
     api_version: Optional[str] = None
     admission: AdmissionPolicy = AdmissionPolicy.AUTO
     label: Optional[str] = None
 
     model_config = {"frozen": True}
+
+    @model_validator(mode="after")
+    def _script_only_needs_vllm(self) -> "Tier":
+        if self.target_script_only and self.provider is not Provider.VLLM:
+            raise ValueError(
+                "target_script_only needs a vllm tier (it sends vLLM structured_outputs)"
+            )
+        return self
 
 
 class ConcurrencyGate(BaseModel):
