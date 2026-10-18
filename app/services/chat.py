@@ -251,6 +251,8 @@ except ImportError:
     propagate_attributes = None
     get_langfuse_client = None
 
+from app.observability import surface_environment
+
 # Per-turn resolved-pipeline-config tracer (tracing-only; no behaviour change).
 from app.llm_core import trace as _pipeline_trace
 from app.channels.chat import profile_for as _profile_for
@@ -718,6 +720,7 @@ class _ChatTelemetry:
         _pipeline_trace.add_compact_metadata(self._pipeline_trace, langfuse_metadata)
         session_ctx = (
             propagate_attributes(
+                environment=surface_environment("chat"),
                 session_id=self._session_id_safe,
                 user_id=effective_user_id,
                 metadata=langfuse_metadata,

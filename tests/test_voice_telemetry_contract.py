@@ -315,7 +315,8 @@ def _score_names_in(nodes):
     }
 
 
-_TRACE_PLUMBING = {"as_type", "end_on_exit", "name", "trace_name", "metadata"}
+# ``environment`` is where the trace lands, not a field of it (OpenAgriNet/amul-infra#107, step 7).
+_TRACE_PLUMBING = {"as_type", "end_on_exit", "name", "trace_name", "metadata", "environment"}
 
 
 def _trace_fields_sent(sent):

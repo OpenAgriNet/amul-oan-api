@@ -259,6 +259,9 @@ class SurfaceSettings(BaseModel):
     #: How long the surface's conversation history is kept after its last turn
     #: (HISTORY_CACHE_TTL_SECONDS).
     history_ttl_seconds: Optional[int] = Field(default=None, gt=0)
+    #: The Langfuse environment the surface's traces land in
+    #: (LANGFUSE_TRACING_ENVIRONMENT).
+    langfuse_environment: Optional[str] = None
 
     model_config = {"frozen": True, "extra": "forbid"}
 

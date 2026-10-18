@@ -10,6 +10,11 @@
 
 fallback_enabled: true
 
+# Chat's own settings (the env var each replaces is in app/llm_core/config_model.py).
+# History retention is left out: chat keeps HISTORY_CACHE_TTL_SECONDS's default.
+settings:
+  langfuse_environment: chat-development
+
 profiles:
   - name: oss
     weight: 0
