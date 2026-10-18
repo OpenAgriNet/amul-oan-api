@@ -703,6 +703,8 @@ class ExecutionContext:
     session_id: str
     config: PipelineConfig
     profile_name: str
+    #: The surface whose config this is ("chat" or "voice").
+    surface: str = "chat"
     _trace_state: Any = field(default=None, init=False, repr=False, compare=False)
 
     @property
@@ -886,10 +888,12 @@ class ExecutionContext:
             yield chunk
 
 
-async def context(session_id: str) -> ExecutionContext:
-    """Snapshot current config and resolve the session profile exactly once."""
+async def context(session_id: str, surface: str = "chat") -> ExecutionContext:
+    """Snapshot the surface's current config and resolve the session profile exactly once."""
     from app.llm_core import runtime, split
 
-    config = runtime.get_pipeline()
+    config = runtime.get_pipeline(surface)
     profile_name = await split.resolve_profile(session_id, config)
-    return ExecutionContext(session_id=session_id, config=config, profile_name=profile_name)
+    return ExecutionContext(
+        session_id=session_id, config=config, profile_name=profile_name, surface=surface
+    )

@@ -1,0 +1,51 @@
+# Pipeline config for dev chat on VM5 (amul_app), loaded as chat.yaml from
+# PIPELINE_CONFIG_DIR. It reproduces what synthesize_from_env builds from dev chat's
+# env today (amul-infra vm5-backends/amul-oan-api/compose.yml): every session on the
+# managed profile, which is gemma-4-31b-it on the INFERENCE_ENDPOINT_URL box; the oss
+# profile at 0%; the Gemma 4 script-only translator ahead of TranslateGemma; the
+# shim's default timeouts.
+#
+# ${NAME} is replaced at boot with that env var, and boot is refused while it is
+# unset. api_key_env names the secret; its value is read only when a tier is called.
+
+fallback_enabled: true
+
+profiles:
+  - name: oss
+    weight: 0
+    capabilities: {history_max_tokens: 10000}
+    steps:
+      agent:
+        tiers:
+          - {provider: vllm, model: gemma-4-31b-it, endpoint: "${OSS_INFERENCE_ENDPOINT_URL}", api_key_env: OSS_INFERENCE_API_KEY, timeout_ms: 8000, label: oss-agent}
+          - &managed_agent {provider: vllm, model: gemma-4-31b-it, endpoint: "${INFERENCE_ENDPOINT_URL}", api_key_env: INFERENCE_API_KEY, timeout_ms: 20000, label: managed-agent}
+        triggers:
+          concurrency_gate: {metrics_url: "${AGENT_CONCURRENCY_METRICS_URL}", max_concurrency: 10}
+      moderation:
+        tiers:
+          - {provider: vllm, model: gemma-4-31b-it, endpoint: "${OSS_INFERENCE_ENDPOINT_URL}", api_key_env: OSS_INFERENCE_API_KEY, timeout_ms: 5000, label: oss-moderation}
+          - *managed_agent
+      suggestions:
+        tiers:
+          - {provider: vllm, model: gemma-4-31b-it, endpoint: "${OSS_INFERENCE_ENDPOINT_URL}", api_key_env: OSS_INFERENCE_API_KEY, timeout_ms: 6000, label: oss-suggestions}
+          - *managed_agent
+      pre_translation:
+        tiers:
+          - {provider: vllm, model: gemma-4-31b-it, endpoint: "${OSS_INFERENCE_ENDPOINT_URL}", api_key_env: OSS_INFERENCE_API_KEY, timeout_ms: 10000, label: oss-pretranslation}
+          - &managed_pretranslation {provider: vllm, model: gemma-4-31b-it, endpoint: "${INFERENCE_ENDPOINT_URL}", api_key_env: INFERENCE_API_KEY, timeout_ms: 20000, label: managed-pretranslation}
+
+  - name: managed
+    weight: 100
+    capabilities: {history_max_tokens: 10000}
+    steps:
+      agent: {tiers: [*managed_agent]}
+      moderation: {tiers: [*managed_agent]}
+      suggestions: {tiers: [*managed_agent]}
+      pre_translation: {tiers: [*managed_pretranslation]}
+
+defaults:
+  post_translation:
+    tiers:
+      - {provider: vllm, model: gemma-4-31b-it, endpoint: "${TRANSLATION_GEMMA_ENDPOINT}", api_key_env: OSS_INFERENCE_API_KEY, timeout_ms: 30000, ttft_ms: 5000, target_script_only: true, label: gemma-translator}
+      - {provider: translategemma, model: translategemma-27b-base, endpoint: "${TRANSLATEGEMMA_27B_BASE_ENDPOINT}", timeout_ms: 60000, ttft_ms: 5000, label: translategemma}
+      - {provider: vllm, model: gemma-4-31b-it, endpoint: "${INFERENCE_ENDPOINT_URL}", api_key_env: INFERENCE_API_KEY, timeout_ms: 30000, label: llm-fallback}

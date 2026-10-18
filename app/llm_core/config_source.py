@@ -16,7 +16,9 @@ Design
   Vault/environment secret provider when a handle is built.
 * **channel** — ``PIPELINE_CHANNEL`` env, defaulting to ``chat``. A voice
   deployment of this image sets it to ``voice``. Chat and voice therefore read
-  DISTINCT keys off a shared Redis.
+  DISTINCT keys off a shared Redis. A process that serves both (runtime's
+  ``PIPELINE_CONFIG_DIR``) names each surface instead: one key, TTL window,
+  last-good and boot config per surface, on the same key names.
 * **TTL** — ``maybe_refresh`` is gated by ``time.monotonic()``: it touches Redis
   at most once per ``PIPELINE_CONFIG_REFRESH_S`` (default 10s; a non-positive value
   degrades to the default so it can never GET-per-request) window. Inside the
@@ -101,6 +103,9 @@ _last_good: Optional[PipelineConfig] = None
 _last_warn_monotonic: float = 0.0
 _redis_client = None                   # lazily built; None until first use
 _redis_init_failed: bool = False       # latch so we don't retry a broken import
+# A named surface's (last refresh, last-good), for a process that serves both
+# surfaces; the two globals above are the deployment's one config otherwise.
+_surfaces: dict[str, tuple[float, Optional[PipelineConfig]]] = {}
 def _truthy(name: str) -> bool:
     v = get_config_value(name)
     return v is not None and v.strip().lower() in {"1", "true", "yes", "on"}
@@ -210,7 +215,7 @@ def _get_redis():
     return _redis_client
 
 
-def _try_load():
+def _try_load(surface: Optional[str] = None):
     """GET + parse + fully validate the live config. Tri-state return (never raises):
 
       * a :class:`PipelineConfig` — a valid, BUILDABLE live config to apply;
@@ -225,7 +230,7 @@ def _try_load():
     client = _get_redis()
     if client is None:
         return None  # no client -> transient; keep last-good
-    k = key()
+    k = key(surface)
     try:
         raw = client.get(k)
     except Exception as e:  # redis down / timeout -> transient; keep last-good
@@ -246,7 +251,7 @@ def _try_load():
     try:
         from app.llm_core import runtime
         cfg = runtime.normalize_config(cfg)
-        runtime.validate_content(cfg)
+        runtime.validate_content(cfg, surface)
     except Exception as e:  # invalid active content -> fail-closed; keep last-good
         _warn("pipeline config: content-invalid live config at %s (%s); keeping last-good", k, e)
         return None
@@ -257,7 +262,7 @@ def _try_load():
     return cfg
 
 
-def maybe_refresh(current: PipelineConfig) -> PipelineConfig:
+def maybe_refresh(current: PipelineConfig, surface: Optional[str] = None) -> PipelineConfig:
     """Return the live config if the source is enabled and a valid one is present,
     else the appropriate fallback. TTL-gated (hits redis at most once per window)
     and fail-safe (never raises).
@@ -272,35 +277,46 @@ def maybe_refresh(current: PipelineConfig) -> PipelineConfig:
             the deploy's boot config — emergency rollback, NOT the last-live config);
           - a transient failure (redis down / invalid / content-invalid) keeps the
             last-good (``current``) serving.
+
+    ``surface`` names a surface's own config in a process that serves both; it
+    then has its own key, window, last-good and boot config.
     """
     global _last_refresh_monotonic, _last_good
     if not enabled():
         return current
 
+    if surface is None:
+        last_refresh, last_good = _last_refresh_monotonic, _last_good
+    else:
+        last_refresh, last_good = _surfaces.get(surface, (0.0, None))
     now = time.monotonic()
-    if _last_refresh_monotonic and (now - _last_refresh_monotonic) < refresh_interval_s():
+    if last_refresh and (now - last_refresh) < refresh_interval_s():
         # TTL not elapsed: cheap no-op. `current` is what runtime last stored.
         return current
 
-    _last_refresh_monotonic = now
-    loaded = _try_load()
+    loaded = _try_load(surface)
 
     if loaded is _KEY_ABSENT:
         # Cleared / never-set -> revert to the BOOT config (NOT the last LIVE one),
         # so `clear` is a true emergency rollback. Guard against BOOT not yet
         # captured (pre-configure) by degrading to `current`.
         from app.llm_core import runtime
-        boot = runtime.BOOT_PIPELINE
+        boot = runtime.BOOT_PIPELINE if surface is None else runtime.BOOT_PIPELINES.get(surface)
         if boot is not None:
-            _last_good = boot
-            return boot
-        return current
-    if loaded is not None:
-        _last_good = loaded
-        return loaded
-    # Transient failure: keep last-good. Prefer our cached last-good over `current`
-    # only if we somehow have a newer one; normally they are the same object.
-    return _last_good if _last_good is not None else current
+            last_good = boot
+        result = boot if boot is not None else current
+    elif loaded is not None:
+        last_good = result = loaded
+    else:
+        # Transient failure: keep last-good. Prefer our cached last-good over `current`
+        # only if we somehow have a newer one; normally they are the same object.
+        result = last_good if last_good is not None else current
+
+    if surface is None:
+        _last_refresh_monotonic, _last_good = now, last_good
+    else:
+        _surfaces[surface] = (now, last_good)
+    return result
 
 
 def reset() -> None:
@@ -314,3 +330,4 @@ def reset() -> None:
     _last_warn_monotonic = 0.0
     _redis_client = None
     _redis_init_failed = False
+    _surfaces.clear()

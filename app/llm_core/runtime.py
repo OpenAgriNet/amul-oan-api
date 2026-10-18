@@ -6,6 +6,10 @@ current env (``legacy_shim``), validates it, then atomically stores it in the
 module global ``PIPELINE``. ``get_pipeline()`` lazily
 configures on first use so request paths and tests never see ``None``.
 
+With ``PIPELINE_CONFIG_DIR`` one process serves chat and voice, each on its own
+file there (``chat.yaml``, ``voice.yaml``), and ``PIPELINES`` / ``BOOT_PIPELINES``
+/ ``SETTINGS`` hold one entry per surface instead.
+
 Provider clients remain lazy and are constructed only when an execution target is
 actually invoked. Agents carry no construction-time model; this module is the only
 runtime model selection path.
@@ -19,7 +23,7 @@ from typing import Optional
 
 from helpers.utils import get_logger
 from app.config import get_config_value
-from app.llm_core.config_model import PipelineConfig, Step
+from app.llm_core.config_model import PipelineConfig, Step, SurfaceSettings, VoiceSettings
 from app.llm_core.legacy_shim import synthesize_from_env
 
 logger = get_logger(__name__)
@@ -30,6 +34,15 @@ PIPELINE: Optional[PipelineConfig] = None
 # THIS (not the last live config) when the live key is cleared/absent, so `clear`
 # is a true emergency rollback to the boot config.
 BOOT_PIPELINE: Optional[PipelineConfig] = None
+
+# With PIPELINE_CONFIG_DIR: each surface's live config, boot config and settings,
+# by surface name. Empty without it, when PIPELINE is the deployment's one config
+# and every surface runs on it.
+CONFIG_DIR_ENV = "PIPELINE_CONFIG_DIR"
+PIPELINES: dict[str, PipelineConfig] = {}
+BOOT_PIPELINES: dict[str, PipelineConfig] = {}
+SETTINGS: dict[str, SurfaceSettings] = {}
+_NO_SETTINGS = {"chat": SurfaceSettings(), "voice": VoiceSettings()}
 
 
 _ENV_REF = re.compile(r"\$\{([A-Z][A-Z0-9_]*)\}")
@@ -54,12 +67,20 @@ def _substitute_env(value):
     return value
 
 
-def _load_from_yaml(path: str) -> PipelineConfig:
+def _settings_model(surface: str) -> type[SurfaceSettings]:
+    return VoiceSettings if surface == "voice" else SurfaceSettings
+
+
+def _load_from_yaml(path: str, surface: str) -> tuple[PipelineConfig, SurfaceSettings]:
+    """The file's PipelineConfig and its ``settings:`` block, validated as
+    ``surface``'s. The two are kept apart: a live (redis) config is a PipelineConfig
+    only, so a live push never changes a surface's settings."""
     import yaml  # lazy: only needed when a config file is supplied
 
     with open(path, "r", encoding="utf-8") as f:
         data = yaml.safe_load(f)
-    return PipelineConfig(**_substitute_env(data))
+    block = data.pop("settings", None) or {}
+    return PipelineConfig(**_substitute_env(data)), _settings_model(surface)(**block)
 
 
 # Providers with a concrete pretranslation protocol adapter.
@@ -72,24 +93,26 @@ _POST_TRANSLATION_OK = {
 }
 
 
-def _built_as_raw_openai(step: Step) -> bool:
-    """Whether this deployment builds the step's tiers as bare OpenAI clients.
+def _built_as_raw_openai(step: Step, surface: Optional[str] = None) -> bool:
+    """Whether this config's step tiers are built as bare OpenAI clients.
 
     ``non_meaningful`` always is. Moderation and pretranslation are on the voice
-    channel, where they are voice's own ``chat.completions`` calls rather than
-    chat's moderation agent and provider-native pretranslation.
+    channel (``surface``, else this deployment's), where they are voice's own
+    ``chat.completions`` calls rather than chat's moderation agent and
+    provider-native pretranslation.
     """
     from app.llm_core import config_source
     from app.llm_core.config_model import StepClientKind
     from app.llm_core.factory import STEP_CLIENT_KIND
 
-    if step in (Step.MODERATION, Step.PRE_TRANSLATION) and config_source.channel() == "voice":
+    if step in (Step.MODERATION, Step.PRE_TRANSLATION) and (surface or config_source.channel()) == "voice":
         return True
     return STEP_CLIENT_KIND[step] is StepClientKind.RAW_OPENAI
 
 
-def validate_config(pipeline: PipelineConfig) -> None:
-    """Structurally validate the normalized tiers that can execute."""
+def validate_config(pipeline: PipelineConfig, surface: Optional[str] = None) -> None:
+    """Structurally validate the normalized tiers that can execute, by ``surface``'s
+    rules (this deployment's channel when left out)."""
     problems: list[str] = []
     for profile in pipeline.profiles:
         if profile.weight > 0 and pipeline.step_plan(profile, Step.AGENT) is None:
@@ -100,7 +123,7 @@ def validate_config(pipeline: PipelineConfig) -> None:
                 continue
             allowed = (
                 _RAW_OPENAI_OK
-                if _built_as_raw_openai(step)
+                if _built_as_raw_openai(step, surface)
                 else _PRETRANSLATION_OK
                 if step is Step.PRE_TRANSLATION
                 else _POST_TRANSLATION_OK
@@ -146,12 +169,19 @@ def validate_config(pipeline: PipelineConfig) -> None:
     raise ValueError(msg)
 
 
-def validate_content(cfg: PipelineConfig) -> None:
-    """Validate active config without constructing or caching provider clients."""
-    validate_config(cfg)
+def validate_content(cfg: PipelineConfig, surface: Optional[str] = None) -> None:
+    """Validate active config without constructing or caching provider clients.
+
+    ``surface`` is the config's own surface when the deployment loads one per
+    surface, and its rules apply. Left out, the config is the deployment's only
+    one, checked by PIPELINE_CHANNEL's rules as before."""
+    validate_config(cfg, surface)
     if _truthy_env("REQUIRE_OVERFLOW_ARMED") and not cfg.fallback_enabled:
         raise ValueError("REQUIRE_OVERFLOW_ARMED=true but fallback_enabled=false")
-    validate_voice(cfg)
+    if surface is None:
+        validate_voice(cfg)
+    elif surface == "voice":
+        validate_voice(cfg, check_channel=False)
 
 
 # What a voice call runs on (app/voice): moderation, pretranslation, the agent and
@@ -160,19 +190,20 @@ def validate_content(cfg: PipelineConfig) -> None:
 _VOICE_PROFILE_STEPS = (Step.MODERATION, Step.PRE_TRANSLATION, Step.AGENT, Step.POST_TRANSLATION)
 
 
-def validate_voice(cfg: PipelineConfig) -> None:
+def validate_voice(cfg: PipelineConfig, *, check_channel: bool = True) -> None:
     """With VOICE_ROUTE_ENABLED, refuse a config voice can't run on.
 
     The route on its own would boot fine on chat's channel and chat's plans, which
     have no non_meaningful step, and voice would then fail open or call the wrong
-    models. Boot and every live config go through this."""
+    models. Boot and every live config go through this. Voice's own file (with
+    PIPELINE_CONFIG_DIR) is voice's by where it is, so ``check_channel`` is off."""
     from app.config import settings
     from app.llm_core import config_source
 
     if not settings.voice_route_enabled:
         return
     problems: list[str] = []
-    if config_source.channel() != "voice":
+    if check_channel and config_source.channel() != "voice":
         problems.append(f"PIPELINE_CHANNEL is {config_source.channel()!r}, voice needs 'voice'")
     for profile in cfg.profiles:
         if profile.weight <= 0:
@@ -269,38 +300,51 @@ def _log_boot_posture(pipeline: PipelineConfig) -> None:
         )
 
 
-def configure() -> PipelineConfig:
-    """Load, normalize, validate, and atomically publish pipeline config."""
-    global PIPELINE, BOOT_PIPELINE
-    try:
-        path = get_config_value("PIPELINE_CONFIG_PATH")
-        if path and os.path.exists(path):
-            logger.info("llm_core: loading pipeline config from %s", path)
-            candidate = _load_from_yaml(path)
-        else:
-            candidate = synthesize_from_env()
-            logger.info(
-                "llm_core: synthesized pipeline config from env (profiles=%s)",
-                [f"{p.name}:{p.weight}" for p in candidate.profiles],
-            )
-        candidate = normalize_config(candidate)
-        validate_content(candidate)
-    except Exception as exc:
-        raise BootRefused(f"llm_core boot config rejected: {exc}") from exc
+def _load(path: Optional[str], surface: Optional[str]) -> tuple[PipelineConfig, SurfaceSettings]:
+    """Load, normalize and validate one config: the file at ``path`` if there is
+    one, else the env shim. ``surface`` is as in ``validate_content``."""
+    from app.llm_core import config_source
 
-    # Publish only after the complete candidate has passed.
-    PIPELINE = candidate
-    # Capture the boot config as the permanent fallback BEFORE any live redis
-    # refresh can override PIPELINE (get_pipeline -> config_source.maybe_refresh).
-    # config_source reverts to THIS on a cleared/absent live key (emergency
-    # rollback), never to a stale last-live config.
-    BOOT_PIPELINE = PIPELINE
+    if path and os.path.exists(path):
+        logger.info("llm_core: loading pipeline config from %s", path)
+        candidate, surface_settings = _load_from_yaml(path, surface or config_source.channel())
+    else:
+        candidate, surface_settings = synthesize_from_env(), SurfaceSettings()
+        logger.info(
+            "llm_core: synthesized pipeline config from env (profiles=%s)",
+            [f"{p.name}:{p.weight}" for p in candidate.profiles],
+        )
+    candidate = normalize_config(candidate)
+    validate_content(candidate, surface)
+    return candidate, surface_settings
+
+
+def _load_surfaces(config_dir: str) -> dict[str, tuple[PipelineConfig, SurfaceSettings]]:
+    """Chat's and voice's configs from PIPELINE_CONFIG_DIR. Chat's file is optional
+    (the env shim builds it); voice's is required while the voice route is on."""
+    from app.config import settings
+    from app.llm_core import config_source
+
+    if get_config_value("PIPELINE_CONFIG_PATH") or get_config_value(config_source.CHANNEL_ENV):
+        raise ValueError(f"{CONFIG_DIR_ENV} replaces PIPELINE_CONFIG_PATH and PIPELINE_CHANNEL; unset them")
+    voice_path = os.path.join(config_dir, "voice.yaml")
+    if settings.voice_route_enabled and not os.path.exists(voice_path):
+        raise ValueError(f"VOICE_ROUTE_ENABLED but {voice_path} is missing")
+    loaded = {"chat": _load(os.path.join(config_dir, "chat.yaml"), "chat")}
+    if os.path.exists(voice_path):
+        loaded["voice"] = _load(voice_path, "voice")
+    return loaded
+
+
+def _log_boot(pipeline: PipelineConfig, surface: Optional[str]) -> None:
     # Tracing-only: dump the COMPLETE loaded config (all profiles, step tiers,
     # triggers) as one structured boot log line so the full wiring is greppable
     # in logs even before any turn arrives (`grep llm_core.full_config`).
     from app.llm_core import trace as _trace
-    _trace.log_full_config(PIPELINE)
-    _log_boot_posture(PIPELINE)
+    if surface is not None:
+        logger.info("llm_core: boot config for the %s surface", surface)
+    _trace.log_full_config(pipeline)
+    _log_boot_posture(pipeline)
     # M2: note whether the live redis-backed config source is enabled (default OFF).
     # When on, weight changes PUT to the channel key take effect within the TTL with
     # no redeploy; when off, get_pipeline() serves the boot config only.
@@ -309,26 +353,85 @@ def configure() -> PipelineConfig:
         logger.info(
             "llm_core: live redis config source ENABLED (channel=%s key=%s refresh=%ss) "
             "— weight changes PUT to that key take effect within the TTL, no redeploy",
-            config_source.channel(), config_source.key(), config_source.refresh_interval_s(),
+            surface or config_source.channel(), config_source.key(surface), config_source.refresh_interval_s(),
         )
     else:
         logger.info(
             "llm_core: live redis config source disabled (%s unset) — serving boot config only",
             config_source.ENABLED_ENV,
         )
+
+
+def configure() -> PipelineConfig:
+    """Load, normalize, validate, and atomically publish pipeline config.
+
+    With PIPELINE_CONFIG_DIR, one config per surface, each checked by its own
+    surface's rules and published with its settings; returns chat's. Without it,
+    the deployment's one config, as before."""
+    global PIPELINE, BOOT_PIPELINE, PIPELINES, BOOT_PIPELINES, SETTINGS
+    config_dir = get_config_value(CONFIG_DIR_ENV)
+    try:
+        if config_dir:
+            loaded = _load_surfaces(config_dir)
+        else:
+            candidate, _ = _load(get_config_value("PIPELINE_CONFIG_PATH"), None)
+    except Exception as exc:
+        raise BootRefused(f"llm_core boot config rejected: {exc}") from exc
+
+    # Publish only after every candidate has passed.
+    if config_dir:
+        PIPELINES = {surface: cfg for surface, (cfg, _) in loaded.items()}
+        BOOT_PIPELINES = dict(PIPELINES)
+        SETTINGS = {surface: surface_settings for surface, (_, surface_settings) in loaded.items()}
+        PIPELINE = BOOT_PIPELINE = None
+        for surface, cfg in PIPELINES.items():
+            _log_boot(cfg, surface)
+        return PIPELINES["chat"]
+    PIPELINES, BOOT_PIPELINES, SETTINGS = {}, {}, {}
+    PIPELINE = candidate
+    # Capture the boot config as the permanent fallback BEFORE any live redis
+    # refresh can override PIPELINE (get_pipeline -> config_source.maybe_refresh).
+    # config_source reverts to THIS on a cleared/absent live key (emergency
+    # rollback), never to a stale last-live config.
+    BOOT_PIPELINE = PIPELINE
+    _log_boot(PIPELINE, None)
     return PIPELINE
 
 
-def get_pipeline() -> PipelineConfig:
+def get_pipeline(surface: str = "chat") -> PipelineConfig:
+    """The config ``surface``'s turns run on: its own with PIPELINE_CONFIG_DIR (chat's
+    for a surface without a file), else the deployment's one."""
     global PIPELINE
-    if PIPELINE is None:
+    if PIPELINE is None and not PIPELINES:
         configure()
-    assert PIPELINE is not None
     # M2 (live config): consult the redis-backed source. TTL-gated (hits redis at
     # most once per PIPELINE_CONFIG_REFRESH_S window) and fail-safe (any error ->
     # returns the last-good PIPELINE unchanged, never raises). When
     # PIPELINE_CONFIG_REDIS_ENABLED is unset/false this is an immediate identity
     # no-op, so behaviour is byte-identical to boot-config-only.
     from app.llm_core import config_source
+    if PIPELINES:
+        surface = surface if surface in PIPELINES else "chat"
+        PIPELINES[surface] = config_source.maybe_refresh(PIPELINES[surface], surface)
+        return PIPELINES[surface]
+    assert PIPELINE is not None
     PIPELINE = config_source.maybe_refresh(PIPELINE)
     return PIPELINE
+
+
+def surfaces() -> tuple[str, ...]:
+    """The surfaces with a config of their own; just chat without PIPELINE_CONFIG_DIR."""
+    return tuple(PIPELINES) or ("chat",)
+
+
+def surface_settings(surface: str) -> SurfaceSettings:
+    """The ``settings:`` block of the surface's file; all unset without
+    PIPELINE_CONFIG_DIR, so every reader falls back to its env setting."""
+    return SETTINGS.get(surface) or _NO_SETTINGS.get(surface) or SurfaceSettings()
+
+
+def surface_setting(surface: str, name: str, fallback):
+    """One of the surface's settings, or ``fallback`` (its env setting) when the
+    file leaves it out."""
+    value = getattr(surface_settings(surface), name)
+    return fallback if value is None else value

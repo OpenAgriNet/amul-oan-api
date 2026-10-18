@@ -33,7 +33,7 @@ from agents.tools.farmer_cache import (
     get_farmer_data_cached_only,
     should_refresh_farmer_data,
 )
-from agents.voice.agent import voice_agent, voice_agent_signed_in
+from agents.voice.agent import voice_agents
 from agents.voice.services.farmer_identity import (
     has_usable_farmer_identity,
     identity_state_for_envelope,
@@ -43,10 +43,10 @@ from agents.voice.services.farmer_identity import (
 )
 from agents.voice.tools.terms import get_ambiguity_hints_for_query
 from app.config import settings
-from app.llm_core import Step
+from app.llm_core import Step, runtime
 from app.model_boundary_capture import boundary_capture_context
 from app.turn.types import AgentInput, AgentInputStep, ClassifierResult, Pretranslated, StalenessCheck, Turn
-from app.utils import trim_history, update_message_history
+from app.utils import history_ttl, trim_history, update_message_history
 from app.voice import outbound as _outbound
 from app.voice.classifiers import TELEPHONY_TERMINATE_CALL_TOKEN, RenderForCaller, _canned_for_caller
 from app.voice.farmer import (
@@ -519,7 +519,7 @@ async def _voice_agent_input(
     if len(cleaned_history) != len(history):
         logger.warning(f"Cleaned {len(history) - len(cleaned_history)} orphaned tool calls from history")
         if is_stale is None or await is_stale("before_cleaned_history_write") is None:
-            await update_message_history(turn.history_session_id, cleaned_history)
+            await update_message_history(turn.history_session_id, cleaned_history, **history_ttl("voice"))
         history = cleaned_history
 
     trimmed_history = trim_history(
@@ -545,6 +545,7 @@ async def _voice_agent_input(
                 "Hints for the current user query:\n" + outbound_milk_hint
             ))])
         )
+    voice_agent, voice_agent_signed_in = voice_agents(runtime.surface_settings("voice").agent_prompt_version)
     active_agent = voice_agent_signed_in if (signed_in and mobile) else voice_agent
     usage_limits = UsageLimits(request_limit=6 if (signed_in and mobile) else 4)
     run = _AgentRun(

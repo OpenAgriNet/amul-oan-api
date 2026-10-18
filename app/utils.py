@@ -1,6 +1,6 @@
 import uuid
 from dataclasses import dataclass
-from typing import List
+from typing import List, Optional
 from app.core.cache import cache, redis_client, build_cache_key  # Import cache instance from core
 from app.config import settings
 from helpers.utils import get_logger, count_tokens_for_part
@@ -178,9 +178,18 @@ async def _get_message_history(session_id: str) -> List[ModelMessage]:
         )
         return []
 
-async def update_message_history(session_id: str, all_messages: List[ModelMessage]):
-    """Update message history."""
-    await set_cache(f"{session_id}_{HISTORY_SUFFIX}", to_jsonable_python(all_messages), ttl=DEFAULT_CACHE_TTL)
+async def update_message_history(session_id: str, all_messages: List[ModelMessage], ttl: Optional[int] = None):
+    """Update message history. ``ttl`` is the surface's own retention (``history_ttl``)."""
+    await set_cache(f"{session_id}_{HISTORY_SUFFIX}", to_jsonable_python(all_messages), ttl=ttl or DEFAULT_CACHE_TTL)
+
+
+def history_ttl(surface: str) -> dict:
+    """``update_message_history``'s ``ttl`` when the surface's pipeline file sets
+    its history retention; empty otherwise, so the write is as before."""
+    from app.llm_core import runtime
+
+    ttl = runtime.surface_settings(surface).history_ttl_seconds
+    return {} if ttl is None else {"ttl": ttl}
 
 
 def get_message_pairs(history: List[ModelMessage], limit: int = None) -> List[List]:

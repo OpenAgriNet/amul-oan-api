@@ -26,6 +26,7 @@ from typing import Literal, Optional
 from openai import AsyncOpenAI
 
 from app.config import settings
+from app.llm_core import runtime
 from app.llm_core.config_model import Step, StepClientKind
 from app.llm_core.execution import ExecutionContext, classify
 from app.services.translation import _get_langfuse
@@ -278,7 +279,14 @@ async def _create_moderation_response(
             max_completion_tokens=200,
             response_format={"type": "json_object"},
         ),
-        timeout=settings.openai_pretranslation_timeout_seconds,
+        timeout=pretranslation_timeout_s(),
+    )
+
+
+def pretranslation_timeout_s() -> float:
+    """The timeout of voice's moderation and pretranslation calls."""
+    return runtime.surface_setting(
+        "voice", "pretranslation_timeout_seconds", settings.openai_pretranslation_timeout_seconds
     )
 
 
@@ -524,7 +532,7 @@ async def _check_moderation_legacy(
             "Moderation timed out - source_lang=%s model=%s timeout=%.2fs query_chars=%s",
             source_lang,
             model,
-            settings.openai_pretranslation_timeout_seconds,
+            pretranslation_timeout_s(),
             len(text),
         )
         attempts[0]["status"] = "error"

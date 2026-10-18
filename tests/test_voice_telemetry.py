@@ -574,7 +574,7 @@ def test_the_agent_block_names_the_model_that_answered_as_voice_did(lf, call, mo
 
 def test_with_fallback_off_the_agent_block_names_the_primary_that_answered(lf, call, monkeypatch):
     pipeline = llm_runtime.get_pipeline()
-    monkeypatch.setattr(llm_runtime, "get_pipeline", lambda: pipeline.model_copy(update={"fallback_enabled": False}))
+    monkeypatch.setattr(llm_runtime, "get_pipeline", lambda surface="chat": pipeline.model_copy(update={"fallback_enabled": False}))
     monkeypatch.setattr(ExecutionTarget, "handle", property(lambda _target: "up"))
     monkeypatch.setattr(voice_agents.voice_agent_signed_in, "iter", lambda **kw: _RUNS[kw["model"]]())
 
