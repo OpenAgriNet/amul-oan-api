@@ -29,7 +29,7 @@ from app.services import chat as chat_service
 from app.services import voice as voice_service
 from app.tasks import health_poller
 from app.turn.types import AgentInput, ClassifierResult, Pretranslated, Surface, SurfaceProfile, Turn
-from app.voice import liveness, moderation, trace
+from app.voice import classifiers, liveness, moderation, trace
 from tests.test_chat_turn_contract import _Run
 from tests.test_config_source import FakeRedis
 from tests.test_voice_agent_input import _ORPHANED, _agent_input, world  # noqa: F401 (world is a fixture)
@@ -75,6 +75,8 @@ def test_each_surface_runs_on_its_own_file_and_settings(boot):
     assert (execution.config, execution.surface) == (voice, "voice")
     # The voice classifiers move a turn's context to the managed profile with replace().
     assert dataclasses.replace(execution, profile_name="managed").surface == "voice"
+    # Voice's classifiers answer on voice's config too (its non-meaningful step).
+    assert asyncio.run(classifiers._session_execution(_voice_turn())).config is voice
     assert runtime.surface_settings("voice").history_ttl_seconds == 86400
     assert runtime.surface_settings("chat").history_ttl_seconds is None
 
