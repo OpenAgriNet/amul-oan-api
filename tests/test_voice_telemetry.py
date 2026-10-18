@@ -485,22 +485,28 @@ def test_the_turns_trace_is_current_only_inside_its_root(lf):
     assert after is not inside
 
 
-def test_a_voice_turn_sends_no_served_tier_and_a_chat_turn_still_does(lf, call, monkeypatch):
-    monkeypatch.setattr(chat_service._pipeline_trace, "served_summary", lambda _pt: "agent=vllm:gemma[0]")
-
+def test_a_voice_turn_sends_no_served_tier_and_a_chat_turn_records_its_own_as_metadata(lf, call, monkeypatch):
     _run(_turn(history=_PRIOR))
     assert [score["name"] for score in lf.scores] == ["pipeline_profile"]
 
+    # Chat (turn.v1): the agent's tier is amul.served_tier on the root, written when the
+    # root closes, and no longer a score.
     seen = patch_turn(monkeypatch)
+    monkeypatch.setattr(chat_service, "_agent_served_tier", lambda _pt: "vllm:gemma[0]")
+    propagated = []
+
+    @contextlib.contextmanager
+    def _propagate(**kwargs):
+        propagated.append(kwargs)
+        yield
+
+    monkeypatch.setattr(chat_service, "propagate_attributes", _propagate)
     chat_turn = dataclasses.replace(_turn(history=_PRIOR), call=None, user_id="anonymous")
     asyncio.run(_collect(chat_service.run_turn(
         chat_turn, chat_service.CHAT_SURFACE, scheduler=SimpleNamespace(schedule=lambda *_a: None)
     )))
-    served = [
-        c.kwargs["value"] for c in seen["langfuse"].score_current_trace.call_args_list
-        if c.kwargs.get("name") == "served_tier"
-    ]
-    assert served == ["agent=vllm:gemma[0]"]
+    assert propagated[-1]["metadata"]["amul.served_tier"] == "vllm:gemma[0]"
+    assert "served_tier" not in {c.kwargs.get("name") for c in seen["langfuse"].score_current_trace.call_args_list}
 
 
 async def _collect(agen):

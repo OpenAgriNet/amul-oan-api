@@ -1,8 +1,8 @@
 import asyncio
-from contextlib import aclosing, contextmanager, nullcontext
+from contextlib import ExitStack, aclosing, contextmanager, nullcontext
 from types import MappingProxyType
 from typing import Any, AsyncGenerator, Mapping, Optional
-from functools import lru_cache, partial
+from functools import lru_cache
 import regex
 import re
 import time
@@ -41,7 +41,7 @@ from app.services.identity_profile import (
 )
 from app.personas import ChatPersona
 from app.chat_artifacts import encode_chat_artifacts
-from app.services.telemetry_stamps import CHAT_TURN_V1_ROOT, chat_turn_v1_input, chat_turn_v1_metadata
+from app.services.telemetry_stamps import TURN_ROOT, turn_v1_fields, turn_v1_metadata
 from app.channels.base import ChannelProfile
 from app.turn.types import (
     AgentActivityEmission,
@@ -196,10 +196,6 @@ async def _sanitize_doctor_stream(source):
 
 logger = get_logger(__name__)
 SUGGESTIONS_PENDING_TTL = 30
-# The Gemma pre/post-translation pipeline is the only chat execution path.
-# Kept as a named constant purely so existing Langfuse trace names, tags and
-# metadata keep the value dashboards already filter on.
-_PIPELINE_NAME = "translation"
 GENERIC_UNAVAILABLE_MESSAGE_EN = (
     "I am unable to process your request right now. Please try again later."
 )
@@ -671,11 +667,24 @@ class _ChatSink:
         return None
 
 
-class _ChatTelemetry:
-    """Chat's turn telemetry: one chat.turn.v1 root, its input, and how the turn ended.
+# turn.v1 names the delivery medium a pipeline (amul-telemetry telemetry/turn.v1.yaml).
+_PIPELINE_BY_CHANNEL = {"web": "webapp", "whatsapp": "whatsapp"}
 
-    The metadata and input shapes are built in this module on purpose: the
-    chat.turn.v1 contract test reads them from these calls in chat.py.
+
+class _ChatTelemetry:
+    """Chat's turn telemetry: one turn.v1 root, named ``turn``, and how the turn went.
+
+    Trace-level fields live on the root span only. ``propagate_attributes`` sets
+    them on the current span and on every span opened inside its context, so it
+    is entered and left before any step opens: a step that carried them would be
+    a trace-level event, and a late one would rewrite the turn (amul-telemetry
+    docs/TRANSFORM.md). The surface's Langfuse environment is the one thing
+    propagated to every span (#422); it is not a trace-level field.
+
+    What is known only at the end (the answer, the outcome, the tier that served)
+    is written when the root closes, with the root as the current span again. The
+    metadata and field names are built in this module on purpose: the turn.v1
+    contract test reads them from these calls.
     """
 
     def __init__(self, turn: Turn, *, pipeline_profile: str, pipeline_trace) -> None:
@@ -683,113 +692,108 @@ class _ChatTelemetry:
         self._pipeline_profile = pipeline_profile
         self._pipeline_trace = pipeline_trace
         self._session_id_safe = (turn.session_id or "")[:200]
+        self._output: str | None = None
+        self._outcome: str | None = None
 
     @contextmanager
     def root(self):
         turn = self._turn
         user_info = turn.authenticated_user
         channel = turn.channel.channel.value
-        pipeline_profile = self._pipeline_profile
-        persona = turn.persona
-        # Langfuse: propagate session_id, metadata, and tags for dashboard filtering (max 200 chars per value)
-        # Prefer phone from JWT (weburl-minted tokens) over the query-param user_id
+        # Prefer the phone from the JWT (weburl-minted tokens) over the query-param user_id.
         effective_user_id = (
             (user_info.get("phone") or user_info.get("sub")) if user_info else None
         ) or turn.user_id or "anonymous"
         effective_user_id = effective_user_id[:200]
-        langfuse_metadata = chat_turn_v1_metadata(
-            pipeline=_PIPELINE_NAME,
-            channel=(channel or "web")[:200],
-            source_lang=(turn.source_lang or "unknown").lower()[:200],
-            target_lang=(turn.target_lang or "unknown").lower()[:200],
-            user_id=effective_user_id,
-            pipeline_profile=pipeline_profile,
-            persona=persona,
+        source_lang = (turn.source_lang or "unknown").lower()[:200]
+        target_lang = (turn.target_lang or "unknown").lower()[:200]
+        metadata = turn_v1_metadata(
+            pipeline=_PIPELINE_BY_CHANNEL.get(channel, channel),
+            direction="inbound",
+            source_lang=source_lang,
+            target_lang=target_lang,
+            translation_mode="translated" if _translates_output(target_lang) else "direct",
+            pipeline_profile=self._pipeline_profile,
+            persona=turn.persona,
+            # A farmer id is a phone; an anonymous or UUID user has none.
+            farmer_id=normalize_phone_to_mobile(effective_user_id),
         )
-        langfuse_tags = [
-            f"pipeline:{_PIPELINE_NAME}",
-            f"pipeline_profile:{pipeline_profile}",
-            f"persona:{persona}",
-        ]
-        # Serialize the resolved pipeline config into COMPACT flat keys and merge them
-        # into the same langfuse_metadata dict propagate_attributes lands on OTEL span
-        # attributes (a big nested blob is size-capped/dropped; this SDK has no
-        # update_current_trace). Adds `pipeline_profile`, `pipeline_flags`, and one
-        # `pc_<step>` per step (~50 chars each). Full static config is in the
-        # `llm_core.full_config` boot log. Best-effort — never breaks the turn.
-        _pipeline_trace.add_compact_metadata(self._pipeline_trace, langfuse_metadata)
-        session_ctx = (
-            propagate_attributes(
-                environment=surface_environment("chat"),
-                session_id=self._session_id_safe,
-                user_id=effective_user_id,
-                metadata=langfuse_metadata,
-                tags=langfuse_tags,
-            )
-            if propagate_attributes
-            else nullcontext()
-        )
-
-        # THE TURN ROOT SPAN. Without it, propagate_attributes leaves no active span,
-        # so every observation opened during the turn (Moderation, query_pretranslation,
-        # Amul AI Agent, suggestions, each tool call) becomes its OWN top-level trace —
-        # measured at 6 traces for one turn — and every trace-level write made outside
-        # an observation is silently dropped by the SDK ("no active span ... skipped").
-        # That is why trace input/output was missing on many turns, why the chat export
-        # has gaps, and why turn-level scores never landed.
-        root_ctx = (
-            get_langfuse_client().start_as_current_observation(
-                name=CHAT_TURN_V1_ROOT, as_type="span"
-            )
-            if get_langfuse_client
-            else nullcontext()
-        )
-
-        with session_ctx, root_ctx:
-            self._record_input(channel)
-            yield
-
-    def _record_input(self, channel: str) -> None:
-        if not get_langfuse_client:
-            return
-        turn = self._turn
-        try:
-            langfuse = get_langfuse_client()
-            langfuse.set_current_trace_io(
-                input=chat_turn_v1_input(
-                    query=turn.query,
-                    channel=channel,
-                    source_lang=turn.source_lang,
-                    target_lang=turn.target_lang,
-                    persona=turn.persona,
+        environment = surface_environment("chat")
+        client = get_langfuse_client() if get_langfuse_client else None
+        with ExitStack() as stack:
+            if propagate_attributes:
+                # Every span of the turn lands in chat's environment (#422). Not a
+                # trace-level field, so safe on every step.
+                stack.enter_context(propagate_attributes(environment=environment))
+            if client:
+                # THE TURN ROOT SPAN. Without it, every observation opened during the
+                # turn becomes its own top-level trace and trace-level writes are
+                # dropped (#200). The root observation carries the same amul.* keys
+                # as the trace.
+                stack.enter_context(
+                    client.start_as_current_observation(name=TURN_ROOT, as_type="span", metadata=metadata)
                 )
-            )
-            #this is the same as the update_current_trace method,
-            #but it is more explicit about the type of the output
-            # and is supported by the latest version of the langfuse SDK.
-            # Emit a categorical pipeline_profile score attached to the
-            # *current trace*. Langfuse rolls this up to the session view,
-            # so a Sessions filter "pipeline_profile = oss" works directly.
-            # `score_id` is deterministic per session so subsequent traces
-            # in the same session upsert the same score (no duplicates).
+            if propagate_attributes:
+                # Trace-level fields, on the root only: set on the current span (the
+                # root) and left before any step opens.
+                with propagate_attributes(
+                    environment=environment,
+                    session_id=self._session_id_safe,
+                    user_id=effective_user_id,
+                    metadata=metadata,
+                ):
+                    pass
+            if client:
+                try:
+                    # The raw question. turn.v1's input is the text itself; the
+                    # channel, languages and persona are amul.* keys.
+                    client.set_current_trace_io(input=turn.query)
+                except Exception as e:
+                    logger.warning("Langfuse: failed to set trace input: %s", e)
             try:
-                langfuse.score_current_trace(
-                    name="pipeline_profile",
-                    value=self._pipeline_profile,
-                    data_type="CATEGORICAL",
-                    score_id=f"variant-{self._session_id_safe}",
-                    comment="Sticky pipeline variant for this session",
-                )
-            except Exception as e:
-                logger.warning("Langfuse: pipeline_profile score failed: %s", e)
+                yield
+            finally:
+                self._close(client, environment)
+
+    def _close(self, client, environment: str) -> None:
+        """What the turn knows only at its end, written on the root, which is the
+        current span again here. Best-effort, and synchronous: this runs in a
+        finally that can execute during GeneratorExit."""
+        if not client:
+            return
+        try:
+            fields = turn_v1_fields(outcome=self._outcome, served_tier=_agent_served_tier(self._pipeline_trace))
+            if fields and propagate_attributes:
+                with propagate_attributes(environment=environment, metadata=fields):
+                    pass
+            if self._output is not None:
+                _record_trace_output(self._output, "turn")
         except Exception as e:
-            logger.warning("Langfuse: failed to set trace input: %s", e)
+            logger.warning("Langfuse: failed to close the turn root: %s", e)
 
     def record_output(self, text: str, label: str) -> None:
-        _record_trace_output(text, label)
+        # Kept until the root closes: writing it now would put a trace-level field
+        # on whichever step is open (the agent's, for the final answer).
+        self._output = text
 
     def record_outcome(self, outcome: str) -> None:
+        self._outcome = outcome
         _record_turn_outcome(outcome, self._session_id_safe)
+
+
+def _translates_output(target_lang: str) -> bool:
+    """Whether the sink translates the agent's English for this target language, as
+    ``run_turn`` decides it: an Indian language whose kill switch is on."""
+    return target_lang in INDIAN_LANGUAGES and target_lang not in _disabled_chat_langs()
+
+
+def _agent_served_tier(pipeline_trace) -> str | None:
+    """The tier that produced the answer, as ``route[index]``; None until the agent ran."""
+    try:
+        return _pipeline_trace.step_metadata(pipeline_trace, _LlmStep.AGENT).get("amul.served_tier")
+    except Exception as e:  # pragma: no cover - tracing must never break the turn
+        logger.debug("served tier unavailable: %s", e)
+        return None
 
 
 class _NoTelemetry:
@@ -837,29 +841,6 @@ async def _identity_classifier(turn: Turn) -> ClassifierResult | None:
             ModelResponse(parts=[TextPart(content=response)]),
         ),
     )
-
-
-def _record_served_tier(execution, _new_messages) -> None:
-    """Which tier ACTUALLY answered, as chat.turn.v1's ``served_tier`` score.
-
-    compact_metadata reports the configured primary, and it is snapshotted before
-    any step runs, so a health-prune or failure fallback is invisible in the
-    trace without this. Recorded once the agent's answer is out, because the
-    walker only knows it then.
-    """
-    if not get_langfuse_client:
-        return
-    try:
-        served = _pipeline_trace.served_summary(execution.begin_trace())
-        if served:
-            get_langfuse_client().score_current_trace(
-                name="served_tier",
-                value=served,
-                data_type="CATEGORICAL",
-                comment="Tier that actually produced this turn, per step",
-            )
-    except Exception as e:
-        logger.warning("Langfuse: failed to record served_tier: %s", e)
 
 
 async def _chat_agent_input(
@@ -926,8 +907,8 @@ async def _chat_agent_input(
         _lf_mod = get_langfuse_client() if get_langfuse_client else None
         _mod_obs_ctx = (
             _lf_mod.start_as_current_observation(
-                # Distinct from Pydantic's "Moderation Agent run" OTEL span to avoid triple duplicate sidebar labels.
-                name="Moderation",
+                # turn.v1's moderation step; distinct from pydantic-ai's "Moderation Agent run" span under it.
+                name="moderation",
                 as_type="generation",
                 input={
                     # Actual model the moderation_agent.run uses below
@@ -938,7 +919,6 @@ async def _chat_agent_input(
                     "session_id": session_id_safe,
                 },
                 model=request_model_name,
-                metadata={"pipeline": _PIPELINE_NAME},
             )
             if _lf_mod
             else nullcontext()
@@ -957,11 +937,15 @@ async def _chat_agent_input(
                 moderation_data.action,
             )
             if mod_obs is not None:
+                # turn.v1's moderation output: rejected, category, reason. Chat's
+                # "reason" is the action: "allow", or the decline text.
                 mod_obs.update(
                     output={
+                        "rejected": moderation_data.category != "valid_agricultural",
                         "category": moderation_data.category,
-                        "action": moderation_data.action,
-                    }
+                        "reason": moderation_data.action,
+                    },
+                    metadata=_pipeline_trace.step_metadata(execution.begin_trace(), _LlmStep.MODERATION),
                 )
             # Generate suggestions after moderation passes
             if moderation_data.category == "valid_agricultural" and persona == "farmer":
@@ -1058,30 +1042,35 @@ async def _chat_agent_input(
 
     logger.info(f"Trimmed history length: {len(trimmed_history)} messages")
 
-    agent_observation_name = "Amul Doctor Agent" if persona == "doctor" else "Amul AI Agent"
-
+    @contextmanager
     def observe():
+        """turn.v1's agent step (the persona is on the root). pydantic-ai's "Amul AI
+        Agent run" span and the tool spans nest under it. The tier that served and
+        the attempts it took are known once the stream ends, so they are written
+        when the observation closes."""
         _lf_ag = get_langfuse_client() if get_langfuse_client else None
-        return (
-            _lf_ag.start_as_current_observation(
-                # Distinct from Pydantic's "Amul AI Agent run" span; keeps gen_ai/tool children grouped under that name.
-                name=agent_observation_name,
-                as_type="generation",
-                input={
-                    "action": moderation_data.action,
-                    "model_name": request_model_name,
-                    "persona": persona,
-                },
-                model=request_model_name,
-                metadata={
-                    "pipeline": _PIPELINE_NAME,
-                    "pipeline_profile": execution.profile_name,
-                    "persona": persona,
-                },
-            )
-            if _lf_ag
-            else nullcontext()
-        )
+        if not _lf_ag:
+            yield None
+            return
+        with _lf_ag.start_as_current_observation(
+            name="agent",
+            as_type="generation",
+            input={
+                "action": moderation_data.action,
+                "model_name": request_model_name,
+                "persona": persona,
+            },
+            model=request_model_name,
+        ) as agent_obs:
+            try:
+                yield agent_obs
+            finally:
+                try:
+                    step = _pipeline_trace.step_metadata(execution.begin_trace(), _LlmStep.AGENT)
+                    if step:
+                        agent_obs.update(metadata=step)
+                except Exception as e:  # pragma: no cover - tracing must never break the turn
+                    logger.warning("Langfuse: failed to record the agent step's tier: %s", e)
 
     return AgentInput(
         agent=active_agent,
@@ -1090,7 +1079,6 @@ async def _chat_agent_input(
         deps=deps,
         history=history,
         observe=observe,
-        after_run=partial(_record_served_tier, execution),
     )
 
 

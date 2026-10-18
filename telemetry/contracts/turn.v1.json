@@ -1,0 +1,70 @@
+{
+  "schema_version": "turn.v1",
+  "note": "What a chat turn sends to Langfuse as turn.v1 (amul-telemetry telemetry/turn.v1.yaml): the root, its trace fields, its amul.* metadata keys, the steps opened under it with the metadata each may carry, the scores and the outcomes. A metadata key is sent only when its value is known (farmer_id for a phone-identified user, served_tier once the agent ran). The input is the raw question, the output the answer as delivered. pydantic-ai's agent-run, model and tool spans nest under the agent step and are not listed.",
+  "root": "turn",
+  "trace_fields": [
+    "input",
+    "output",
+    "session_id",
+    "user_id"
+  ],
+  "metadata_keys": [
+    "amul.direction",
+    "amul.farmer_id",
+    "amul.kind",
+    "amul.outcome",
+    "amul.persona",
+    "amul.pipeline",
+    "amul.pipeline_profile",
+    "amul.release",
+    "amul.schema_version",
+    "amul.served_tier",
+    "amul.service",
+    "amul.source_lang",
+    "amul.target_lang",
+    "amul.translation_mode"
+  ],
+  "steps": {
+    "pre_translation": {
+      "type": "GENERATION",
+      "metadata_keys": []
+    },
+    "moderation": {
+      "type": "GENERATION",
+      "metadata_keys": [
+        "amul.attempts",
+        "amul.configured_tier",
+        "amul.served_tier"
+      ],
+      "output": [
+        "category",
+        "reason",
+        "rejected"
+      ]
+    },
+    "agent": {
+      "type": "GENERATION",
+      "metadata_keys": [
+        "amul.attempts",
+        "amul.configured_tier",
+        "amul.served_tier"
+      ]
+    },
+    "post_translation": {
+      "type": "GENERATION",
+      "metadata_keys": []
+    },
+    "stream_translation": {
+      "type": "GENERATION",
+      "metadata_keys": []
+    }
+  },
+  "scores": [
+    "turn_outcome"
+  ],
+  "outcomes": [
+    "success",
+    "error",
+    "cancelled"
+  ]
+}
