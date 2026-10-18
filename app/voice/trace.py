@@ -292,8 +292,11 @@ class VoiceTrace:
                     end_on_exit=False,
                 )
             )
+            from app.observability import surface_environment
+
             stack.enter_context(
                 propagate_attributes(
+                    environment=surface_environment("voice"),
                     user_id=_langfuse_user_id(self.user_id, self.metadata["user_id_hash"]),
                     session_id=(self.session_id or "")[:200] or None,
                     metadata={

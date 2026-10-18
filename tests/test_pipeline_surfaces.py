@@ -5,11 +5,13 @@ files the repo ships), and each surface gets its own config, live Redis key and
 ``settings:``. Without it nothing changes, which the rest of the suite covers.
 """
 import asyncio
+import contextlib
 import dataclasses
 import os
 import time
 from pathlib import Path
 from types import MappingProxyType, SimpleNamespace
+from unittest.mock import MagicMock
 
 os.environ.setdefault("OPENAI_API_KEY", "test-key")
 
@@ -28,12 +30,16 @@ from app.llm_core.execution import ExecutionTarget
 from app.services import chat as chat_service
 from app.services import voice as voice_service
 from app.tasks import health_poller
+from app.tasks import suggestions
 from app.turn.types import AgentInput, ClassifierResult, Pretranslated, Surface, SurfaceProfile, Turn
 from app.voice import classifiers, liveness, moderation, trace
+from app.voice.telemetry import VoiceTelemetry
 from tests.test_chat_turn_contract import _Run
 from tests.test_config_source import FakeRedis
+from tests.test_suggestions_fallback import _Execution, isolated  # noqa: F401 (isolated is a fixture)
 from tests.test_voice_agent_input import _ORPHANED, _agent_input, world  # noqa: F401 (world is a fixture)
 from tests.test_voice_agent_input import _turn as _voice_turn
+from tests.test_voice_telemetry import lf  # noqa: F401 (a fixture)
 
 DEV = Path(__file__).resolve().parents[1] / "pipelines" / "dev"
 ENDPOINTS = {
@@ -239,6 +245,41 @@ def test_voice_saves_cleaned_history_for_voices_time(boot, world, monkeypatch): 
     _agent_input(_voice_turn(history=_ORPHANED))
 
     assert seen == [{"ttl": 86400}]
+
+
+def test_each_surfaces_traces_land_in_its_own_langfuse_environment(boot, isolated, lf, monkeypatch):  # noqa: F811
+    """Each turn root, and chat's suggestions task after its turn, asks Langfuse for
+    its own surface's environment. That the SDK then stamps it on every span and
+    score under the root was shown with langfuse 4.18.0 (OpenAgriNet/amul-infra#107, step 7)."""
+    asked = []
+
+    @contextlib.contextmanager
+    def _propagate(**kwargs):
+        asked.append(kwargs["environment"])
+        yield
+
+    for module in (chat_service, suggestions):
+        monkeypatch.setattr(module, "propagate_attributes", _propagate)
+    monkeypatch.setattr("langfuse.propagate_attributes", _propagate)  # voice's trace imports it per turn
+    monkeypatch.setattr(chat_service, "get_langfuse_client", MagicMock)
+    chat_turn = Turn(query="q", session_id="web-1", source_lang="en", target_lang="en", user_id="anonymous",
+                     authenticated_user=MappingProxyType({}), history=(), history_session_id="web-1",
+                     persona="farmer", channel=WEB)
+
+    def _roots():
+        asked.clear()
+        with chat_service._ChatTelemetry(chat_turn, pipeline_profile="oss", pipeline_trace=None).root():
+            pass
+        with VoiceTelemetry(_voice_turn(), pipeline_profile="oss", pipeline_trace=None).root():
+            pass
+        asyncio.run(suggestions.create_suggestions("web-1", "gu", _Execution(SimpleNamespace(output=[]))))
+        return list(asked)
+
+    monkeypatch.setattr(settings, "langfuse_tracing_environment", "chat-production")
+    # Without the pipeline files, every root asks for the process's, as the client has it today.
+    assert _roots() == ["chat-production"] * 3
+    boot()
+    assert _roots() == ["chat-development", "voice-development", "chat-development"]
 
 
 def test_voice_knobs_come_from_voices_settings_else_env(monkeypatch):
