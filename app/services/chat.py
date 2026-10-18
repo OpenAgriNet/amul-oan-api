@@ -1052,15 +1052,16 @@ async def _chat_agent_input(
         if not _lf_ag:
             yield None
             return
+        # An AGENT observation, as turn.v1 declares the step; the model calls under
+        # it are pydantic-ai's generations, so the model is named in the input only.
         with _lf_ag.start_as_current_observation(
             name="agent",
-            as_type="generation",
+            as_type="agent",
             input={
                 "action": moderation_data.action,
                 "model_name": request_model_name,
                 "persona": persona,
             },
-            model=request_model_name,
         ) as agent_obs:
             try:
                 yield agent_obs

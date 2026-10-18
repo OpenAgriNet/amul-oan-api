@@ -43,7 +43,7 @@
       ]
     },
     "agent": {
-      "type": "GENERATION",
+      "type": "AGENT",
       "metadata_keys": [
         "amul.attempts",
         "amul.configured_tier",
