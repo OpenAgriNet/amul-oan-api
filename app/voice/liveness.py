@@ -22,6 +22,7 @@ import httpx
 
 from agents.voice.tools import common as _tool_signal
 from app.config import settings
+from app.llm_core import runtime
 from app.observability import start_observation
 from app.turn.types import SideChannelEmission, SideChannelSender, StalenessCheck, Turn
 from app.utils import is_session_request_owner, refresh_session_request_ownership
@@ -294,14 +295,15 @@ class VoiceLiveness:
         waits: tuple[asyncio.Task, ...] = ()
         try:
             elapsed = max(0.0, time.monotonic() - started_at)
-            remaining = max(0.0, float(settings.nudge_timeout_seconds) - elapsed)
+            timeout = float(runtime.surface_setting("voice", "nudge_timeout_seconds", settings.nudge_timeout_seconds))
+            remaining = max(0.0, timeout - elapsed)
             logger.info(
                 "Nudge armed; session_id=%s process_id=%s elapsed=%.3fs remaining=%.3fs timeout=%.3fs",
                 self._session_id,
                 self._process_id,
                 elapsed,
                 remaining,
-                settings.nudge_timeout_seconds,
+                timeout,
             )
 
             # Wait for EITHER the timer OR a tool-call signal

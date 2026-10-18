@@ -234,7 +234,7 @@ def test_an_agent_that_fails_is_answered_with_the_trouble_line_and_history_kept(
         runs.append(kw)
         raise RuntimeError("agent down")
 
-    monkeypatch.setattr(runtime, "get_pipeline", lambda: config)
+    monkeypatch.setattr(runtime, "get_pipeline", lambda surface="chat": config)
     monkeypatch.setattr(voice_router, "_get_message_history", _history)
     monkeypatch.setattr(voice_agents.voice_agent, "iter", _dies)
 

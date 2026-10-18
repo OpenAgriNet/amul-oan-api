@@ -213,7 +213,7 @@ async def _canned_for_caller(
 async def _session_execution(turn: Turn):
     """The turn's session on llm_core. A classifier is given only the turn, and the
     profile follows the session id, so its fixed reply runs on the turn's models."""
-    return await llm_core.context(turn.session_id)
+    return await llm_core.context(turn.session_id, surface="voice")
 
 
 async def _stt_signal_classifier(turn: Turn) -> Optional[ClassifierResult]:

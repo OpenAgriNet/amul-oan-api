@@ -41,6 +41,7 @@ from app.turn.types import ClassifierResult, Pretranslated, Pretranslation, Turn
 from app.voice.classifiers import _FRAGMENT_RESPONSES, RenderForCaller, _canned_for_caller
 from app.voice.history import HISTORY_MARKERS as _HISTORY_MARKERS
 from app.voice.history import history_pair as _history_pair
+from app.voice.moderation import pretranslation_timeout_s
 from app.voice.stt_signals import detect_stt_signal
 from app.voice.trace import current_trace
 from helpers.utils import get_logger
@@ -409,7 +410,7 @@ async def _create_pretranslation_response(
             max_completion_tokens=max_tokens,
             response_format={"type": "json_object"},
         ),
-        timeout=settings.openai_pretranslation_timeout_seconds,
+        timeout=pretranslation_timeout_s(),
     )
 
 
@@ -522,7 +523,7 @@ async def _translate_to_english_pretranslation(
             label,
             source_lang,
             model,
-            settings.openai_pretranslation_timeout_seconds,
+            pretranslation_timeout_s(),
             len(text or ""),
         )
         raise TimeoutError(f"{label} pretranslation timed out") from e

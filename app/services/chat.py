@@ -14,6 +14,7 @@ from app import llm_core
 from app.llm_core import Step as _LlmStep
 from helpers.utils import get_logger
 from app.utils import (
+    history_ttl,
     update_message_history,
     trim_history,
     format_message_pairs,
@@ -475,7 +476,7 @@ def _build_deps(
     )
 
 
-async def _write_short_circuit_history(history, decision, key: str, request_id: str) -> None:
+async def _write_short_circuit_history(history, decision, key: str, request_id: str, ttl_kw: dict) -> None:
     """Persist what a classifier or the gate answered, when it asks for that."""
     if decision.history_pair is None:
         return
@@ -486,7 +487,7 @@ async def _write_short_circuit_history(history, decision, key: str, request_id: 
         decision.label,
         len(messages),
     )
-    await update_message_history(key, messages)
+    await update_message_history(key, messages, **ttl_kw)
 
 
 def _heard(answer: ClassifierResult) -> str:
@@ -1226,8 +1227,10 @@ async def run_turn(
     history = turn.history
     message_history_session_id = turn.history_session_id
 
-    execution = await llm_core.context(session_id)
+    execution = await llm_core.context(session_id, surface=surface.surface.value)
     pipeline_profile = execution.profile_name
+    # The surface's own history retention, when its pipeline file sets one.
+    ttl_kw = history_ttl(surface.surface.value)
     # Open the per-turn pipeline-config tracer and hold the EXPLICIT instance.
     # Populate the static fields directly and pass the trace state explicitly
     # across Starlette's StreamingResponse async-generator boundary.
@@ -1275,7 +1278,7 @@ async def run_turn(
                     return
                 telemetry.record_output(_heard(short_circuit), short_circuit.label)
                 await _write_short_circuit_history(
-                    history, short_circuit, message_history_session_id, request_id
+                    history, short_circuit, message_history_session_id, request_id, ttl_kw
                 )
                 # A short-circuit that answered the farmer is a completed turn, not
                 # an error. `_turn_outcome` defaults to "error" so that an exit we
@@ -1327,7 +1330,7 @@ async def run_turn(
                     liveness = None
                 telemetry.record_output(_heard(pretranslated), pretranslated.label)
                 await _write_short_circuit_history(
-                    history, pretranslated, message_history_session_id, request_id
+                    history, pretranslated, message_history_session_id, request_id, ttl_kw
                 )
                 _turn_outcome = pretranslated.outcome
                 yield TextEmission(pretranslated.canned_text, raw=pretranslated.raw)
@@ -1366,7 +1369,7 @@ async def run_turn(
                     liveness = None
                 telemetry.record_output(_heard(agent_input), agent_input.label)
                 await _write_short_circuit_history(
-                    history, agent_input, message_history_session_id, request_id
+                    history, agent_input, message_history_session_id, request_id, ttl_kw
                 )
                 _turn_outcome = agent_input.outcome
                 yield TextEmission(agent_input.canned_text, raw=agent_input.raw)
@@ -1416,7 +1419,7 @@ async def run_turn(
                             liveness = None
                         telemetry.record_output(_heard(gated), gated.label)
                         await _write_short_circuit_history(
-                            history, gated, message_history_session_id, request_id
+                            history, gated, message_history_session_id, request_id, ttl_kw
                         )
                         _turn_outcome = gated.outcome
                         yield TextEmission(gated.canned_text, raw=gated.raw)
@@ -1481,7 +1484,7 @@ async def run_turn(
                 _turn_outcome = stale
                 return
             logger.info(f"Updating message history for session {session_id} with {len(messages)} messages")
-            await update_message_history(message_history_session_id, messages)
+            await update_message_history(message_history_session_id, messages, **ttl_kw)
             # A turn whose sink caught a failure (voice's trouble line) is saved
             # like any other, as voice saved it, and recorded as the sink says.
             # Chat's sink never reports one: it lets a failure propagate.

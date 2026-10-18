@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 from typing import Any, Iterator, Optional
 
 from app.config import settings
+from app.llm_core import runtime
 from app.services.telemetry_stamps import forward_voice_telemetry_metadata
 
 logger = logging.getLogger(__name__)
@@ -46,7 +47,9 @@ def _hash(value: str) -> str:
 def _langfuse_user_id(user_id: Optional[str], user_id_hash: str) -> str:
     """The caller's hash by default. ``phone`` sends the caller's id as given, so
     it is only for a Langfuse approved to hold phone numbers."""
-    mode = getattr(settings, "voice_trace_user_id_mode", "hash")
+    mode = runtime.surface_setting(
+        "voice", "trace_user_id_mode", getattr(settings, "voice_trace_user_id_mode", "hash")
+    )
     if mode not in _VALID_USER_ID_MODES:
         mode = "hash"
     if mode == "phone":
@@ -71,7 +74,9 @@ def sanitize_text(text: Optional[str], *, mode: Optional[str] = None) -> dict[st
     them, with a documented retention and access policy.
     """
     value = text or ""
-    active_mode = mode or getattr(settings, "voice_trace_text_mode", "none")
+    active_mode = mode or runtime.surface_setting(
+        "voice", "trace_text_mode", getattr(settings, "voice_trace_text_mode", "none")
+    )
     if active_mode not in _VALID_TEXT_MODES:
         active_mode = "none"
 
