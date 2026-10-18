@@ -1,5 +1,9 @@
 {
   "schema_version": "turn.v1",
+  "pipelines": [
+    "webapp",
+    "whatsapp"
+  ],
   "note": "What a chat turn sends to Langfuse as turn.v1 (amul-telemetry telemetry/turn.v1.yaml): the root, its trace fields, its amul.* metadata keys, the steps opened under it with the metadata each may carry, the scores and the outcomes. A metadata key is sent only when its value is known (farmer_id for a phone-identified user, served_tier once the agent ran). The input is the raw question, the output the answer as delivered. pydantic-ai's agent-run, model and tool spans nest under the agent step and are not listed.",
   "root": "turn",
   "trace_fields": [

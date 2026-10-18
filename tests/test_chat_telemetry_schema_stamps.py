@@ -15,12 +15,12 @@ from app.services.telemetry_stamps import (
 
 REPO = Path(__file__).resolve().parents[1]
 CONTRACTS = REPO / "telemetry" / "contracts"
-CONTRACT = CONTRACTS / f"{CHAT_TELEMETRY_SCHEMA_VERSION}.json"
+CONTRACT = CONTRACTS / CHAT_TELEMETRY_SCHEMA_VERSION / "chat.json"
 STAMPS = {"amul.schema_version", "amul.service", "amul.release", "amul.kind"}
 NEW_VERSION = (
     f"{CHAT_TELEMETRY_SCHEMA_VERSION} is the shape every pipeline sends (amul-telemetry telemetry/turn.v1.yaml). "
     "A key added or removed is a registry change there first; then change telemetry/contracts/"
-    f"{CHAT_TELEMETRY_SCHEMA_VERSION}.json and the calls in chat.py together."
+    f"{CHAT_TELEMETRY_SCHEMA_VERSION}/chat.json and the calls in chat.py together."
 )
 
 # Key order, spacing and a "note" don't count.

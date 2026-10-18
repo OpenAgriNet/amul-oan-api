@@ -22,7 +22,7 @@ from app.services import chat as chat_service
 from app.turn.types import TextEmission, Turn
 from tests.test_chat_turn_contract import patch_turn
 
-CONTRACT = Path(__file__).resolve().parents[1] / "telemetry" / "contracts" / "turn.v1.json"
+CONTRACT = Path(__file__).resolve().parents[1] / "telemetry" / "contracts" / "turn.v1" / "chat.json"
 
 
 def _turn(**overrides):

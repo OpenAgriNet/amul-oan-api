@@ -205,7 +205,9 @@ class CallStaleness:
                 self._process_id,
                 reason,
             )
-            return "client_disconnected"
+            # turn.v1's one value for a caller who went away, as run_turn records a
+            # closed stream (voice called it client_disconnected).
+            return "cancelled"
 
         owner = self._owner
         now = time.monotonic()

@@ -5,18 +5,16 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-# Chat sends turn.v1: the one shape every pipeline is sent in (amul-telemetry
-# telemetry/turn.v1.yaml). The root is named "turn", every trace-level key is
-# flat under amul.*, and telemetry/contracts/turn.v1.json lists what is sent.
+# Chat and voice send turn.v1: the one shape every pipeline is sent in
+# (amul-telemetry telemetry/turn.v1.yaml). The root is named "turn", every
+# trace-level key is flat under amul.*, and telemetry/contracts/turn.v1/ lists
+# what each surface sends. One constant per surface, as amul-telemetry's contract
+# check reads them.
 CHAT_TELEMETRY_SCHEMA_VERSION = "turn.v1"
+VOICE_TELEMETRY_SCHEMA_VERSION = "turn.v1"
 CHAT_TELEMETRY_SERVICE = "amul-oan-api"
 TURN_ROOT = "turn"
 TURN_KIND = "turn"
-
-VOICE_TELEMETRY_SCHEMA_VERSION = "voice.turn.v1"
-# Voice turns served from this repo are stamped with this service, not
-# voice-oan-api's, so they can be told apart from turns served there.
-VOICE_TELEMETRY_SERVICE = CHAT_TELEMETRY_SERVICE
 
 
 @lru_cache(maxsize=1)
@@ -67,7 +65,7 @@ def _read_git_head(repository: Path) -> str | None:
 
 
 def forward_chat_telemetry_metadata() -> dict[str, str]:
-    """The stamps on every chat trace: which shape, which service, which build."""
+    """The stamps on every trace this service sends: which shape, which service, which build."""
 
     return {
         "amul.schema_version": CHAT_TELEMETRY_SCHEMA_VERSION,
@@ -76,19 +74,11 @@ def forward_chat_telemetry_metadata() -> dict[str, str]:
     }
 
 
-def forward_voice_telemetry_metadata() -> dict[str, str]:
-    return {
-        "amul.schema_version": VOICE_TELEMETRY_SCHEMA_VERSION,
-        "service": VOICE_TELEMETRY_SERVICE,
-        "release": chat_telemetry_release(),
-    }
-
-
 def turn_v1_metadata(**fields: Any) -> dict[str, str]:
-    """The trace-level metadata of a chat turn root as turn.v1 names it: the stamps,
-    the kind, and each field under ``amul.<name>``. A field without a value is left
-    out, so a key is present only when it is known. The contract test reads the
-    field names from the calls in chat.py.
+    """The trace-level metadata of a turn root as turn.v1 names it: the stamps, the
+    kind, and each field under ``amul.<name>``. A field without a value is left out,
+    so a key is present only when it is known. The contract tests read the field
+    names from the calls in chat.py and app/voice.
     """
 
     return {**forward_chat_telemetry_metadata(), "amul.kind": TURN_KIND, **turn_v1_fields(**fields)}

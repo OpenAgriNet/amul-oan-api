@@ -278,9 +278,10 @@ def test_each_surfaces_traces_land_in_its_own_langfuse_environment(boot, isolate
     monkeypatch.setattr(settings, "langfuse_tracing_environment", "chat-production")
     # Without the pipeline files, every root asks for the process's, as the client has it today.
     # Chat's root asks twice: once for every span of the turn, once for its own trace-level fields.
-    assert _roots() == ["chat-production"] * 4
+    # Voice's asks a third time when it closes, for the outcome.
+    assert _roots() == ["chat-production"] * 6
     boot()
-    assert _roots() == ["chat-development", "chat-development", "voice-development", "chat-development"]
+    assert _roots() == ["chat-development"] * 2 + ["voice-development"] * 3 + ["chat-development"]
 
 
 def test_voice_knobs_come_from_voices_settings_else_env(monkeypatch):
