@@ -2,12 +2,17 @@ import ast
 import hashlib
 import json
 import re
+import typing
 from pathlib import Path
 
+from app.models.telemetry import CanonicalTelemetryEvent
 from app.services import telemetry_stamps
+from app.services.telemetry_mapper import map_canonical_event_to_langfuse
 from app.services.telemetry_stamps import (
+    BACKGROUND_JOB,
     CHAT_TELEMETRY_SCHEMA_VERSION,
     CHAT_TELEMETRY_SERVICE,
+    FRONTEND_EVENT,
     TURN_ROOT,
     forward_chat_telemetry_metadata,
 )
@@ -16,6 +21,7 @@ from app.services.telemetry_stamps import (
 REPO = Path(__file__).resolve().parents[1]
 CONTRACTS = REPO / "telemetry" / "contracts"
 CONTRACT = CONTRACTS / CHAT_TELEMETRY_SCHEMA_VERSION / "chat.json"
+NON_TURN_CONTRACT = CONTRACTS / CHAT_TELEMETRY_SCHEMA_VERSION / "non_turn.json"
 STAMPS = {"amul.schema_version", "amul.service", "amul.release", "amul.kind"}
 NEW_VERSION = (
     f"{CHAT_TELEMETRY_SCHEMA_VERSION} is the shape every pipeline sends (amul-telemetry telemetry/turn.v1.yaml). "
@@ -98,7 +104,8 @@ def test_forward_telemetry_metadata_reads_a_git_head_file(monkeypatch, tmp_path)
 
 def test_turn_v1_contract_matches_what_chat_py_sends():
     """The contract lists exactly the amul.* keys chat.py builds (turn_v1_metadata at the
-    root, turn_v1_fields when it closes), the steps it and translation.py open, and its scores."""
+    root, turn_v1_fields when it closes), the steps it, translation.py and the suggestions
+    task open, and its scores."""
     contract = json.loads(CONTRACT.read_text(encoding="utf-8"))
     chat_calls = _calls("app/services/chat.py")
     sent = STAMPS | {
@@ -108,7 +115,11 @@ def test_turn_v1_contract_matches_what_chat_py_sends():
     assert contract["schema_version"] == CHAT_TELEMETRY_SCHEMA_VERSION == "turn.v1"
     assert contract["root"] == TURN_ROOT == "turn"
     assert sent == set(contract["metadata_keys"]), f"chat.py's metadata keys don't match the contract. {NEW_VERSION}"
-    opened = (_observation_names(chat_calls) | _observation_names(_calls("app/services/translation.py"))) - {TURN_ROOT}
+    opened = {
+        name
+        for path in ("app/services/chat.py", "app/services/translation.py", "app/tasks/suggestions.py")
+        for name in _observation_names(_calls(path))
+    } - {TURN_ROOT}
     assert opened == set(contract["steps"]), f"the steps chat opens don't match the contract. {NEW_VERSION}"
     assert CHAT_TELEMETRY_SERVICE == "amul-oan-api"
 
@@ -133,6 +144,63 @@ def test_chat_scores_match_the_contract():
         "turn.v1 records the outcome as amul.outcome and as the turn_outcome score; served_tier and pipeline_profile "
         "are metadata, not scores."
     )
+
+
+def _non_turn_calls(function):
+    """Every call to ``function`` (non_turn_v1_metadata or non_turn_root) in app/ and agents/."""
+    paths = sorted([*REPO.glob("app/**/*.py"), *REPO.glob("agents/**/*.py")])
+    return [
+        call
+        for path in paths
+        for call in _calls(path.relative_to(REPO))
+        if isinstance(call.func, ast.Name) and call.func.id == function
+    ]
+
+
+def _non_turn_sends():
+    """kind -> job -> the amul.* keys each non_turn_v1_metadata call builds. The frontend
+    writer's one call names no job: its event is the event's."""
+    sent: dict[str, dict] = {}
+    for call in _non_turn_calls("non_turn_v1_metadata"):
+        kind = getattr(telemetry_stamps, call.args[0].id)
+        job = next((kw.value.value for kw in call.keywords if kw.arg == "job" and isinstance(kw.value, ast.Constant)), None)
+        sent.setdefault(kind, {})[job] = STAMPS | {f"amul.{kw.arg}" for kw in call.keywords}
+    return sent
+
+
+def test_non_turn_contract_matches_what_the_jobs_and_the_frontend_writer_send():
+    """Every background job and frontend event is in telemetry/contracts/turn.v1/non_turn.json
+    with exactly the amul.* keys its call builds; amul-telemetry checks the file against the shape."""
+    contract = json.loads(NON_TURN_CONTRACT.read_text(encoding="utf-8"))
+    sent = _non_turn_sends()
+
+    assert contract["schema_version"] == CHAT_TELEMETRY_SCHEMA_VERSION
+    assert set(contract) - {"schema_version", "note"} == set(sent) == {BACKGROUND_JOB, FRONTEND_EVENT}
+    jobs = {job: set(entry["metadata_keys"]) for job, entry in contract[BACKGROUND_JOB].items()}
+    assert jobs == sent[BACKGROUND_JOB], f"the background jobs don't match the contract. {NEW_VERSION}"
+    (writer_keys,) = sent[FRONTEND_EVENT].values()
+    events = set(typing.get_args(CanonicalTelemetryEvent.model_fields["event_name"].annotation))
+    assert set(contract[FRONTEND_EVENT]) == events
+    assert all(set(entry["metadata_keys"]) == writer_keys for entry in contract[FRONTEND_EVENT].values())
+
+
+def test_non_turn_trace_fields_and_scores_match_the_contract():
+    contract = json.loads(NON_TURN_CONTRACT.read_text(encoding="utf-8"))
+    passed: dict[str, set] = {}
+    for call in _non_turn_calls("non_turn_root"):
+        passed.setdefault(call.args[0].id, set()).update(kw.arg for kw in call.keywords if kw.arg in ("session_id", "user_id"))
+
+    # No turn caused a job here, so none passes a session or a user.
+    assert passed["BACKGROUND_JOB"] == set()
+    assert all(entry["trace_fields"] == [] for entry in contract[BACKGROUND_JOB].values())
+    assert {field for entry in contract[FRONTEND_EVENT].values() for field in entry["trace_fields"]} == passed["FRONTEND_EVENT"]
+    scored = {
+        event: {mapped["score"]["name"]}
+        for event in contract[FRONTEND_EVENT]
+        if (mapped := map_canonical_event_to_langfuse(CanonicalTelemetryEvent(event_name=event))).get("score")
+    }
+    assert scored == {event: set(entry["scores"]) for event, entry in contract[FRONTEND_EVENT].items() if entry["scores"]}
+    assert scored == {"feedback": {"user_feedback"}}
 
 
 def test_released_contracts_never_change():

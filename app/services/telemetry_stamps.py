@@ -15,6 +15,9 @@ VOICE_TELEMETRY_SCHEMA_VERSION = "turn.v1"
 CHAT_TELEMETRY_SERVICE = "amul-oan-api"
 TURN_ROOT = "turn"
 TURN_KIND = "turn"
+# The traces that are not turns, each named after its kind (turn.v1's amul.kind).
+BACKGROUND_JOB = "background_job"
+FRONTEND_EVENT = "frontend_event"
 
 
 @lru_cache(maxsize=1)
@@ -82,6 +85,16 @@ def turn_v1_metadata(**fields: Any) -> dict[str, str]:
     """
 
     return {**forward_chat_telemetry_metadata(), "amul.kind": TURN_KIND, **turn_v1_fields(**fields)}
+
+
+def non_turn_v1_metadata(kind: str, **fields: Any) -> dict[str, str]:
+    """The trace-level metadata of a trace that is not a turn (a background job or a
+    frontend event), as turn.v1 names it: the stamps, the kind, and each field under
+    ``amul.<name>``, left out when it has no value. The non-turn contract test reads the
+    field names from these calls, per job and event.
+    """
+
+    return {**forward_chat_telemetry_metadata(), "amul.kind": kind, **turn_v1_fields(**fields)}
 
 
 def turn_v1_fields(**fields: Any) -> dict[str, str]:

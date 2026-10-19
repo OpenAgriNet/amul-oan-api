@@ -796,6 +796,22 @@ def _agent_served_tier(pipeline_trace) -> str | None:
         return None
 
 
+def _current_trace_context(client) -> dict[str, str] | None:
+    """The current span as a Langfuse ``trace_context``, for a step opened later
+    outside it; None without tracing or a span."""
+    if client is None:
+        return None
+    try:
+        trace_id = client.get_current_trace_id()
+        span_id = client.get_current_observation_id()
+    except Exception as e:  # pragma: no cover - tracing must never break the turn
+        logger.debug("trace context unavailable: %s", e)
+        return None
+    if not trace_id or not span_id:
+        return None
+    return {"trace_id": trace_id, "parent_span_id": span_id}
+
+
 class _NoTelemetry:
     """For a surface that sets no telemetry, such as a test surface: no root span
     is opened and nothing is recorded."""
@@ -905,6 +921,9 @@ async def _chat_agent_input(
         # from the farmer context, which is why moderation need not wait for it.
         user_message = f"{last_response}{FarmerContext(query=pretranslated.query).get_user_message()}"
         _lf_mod = get_langfuse_client() if get_langfuse_client else None
+        # The turn's root, the current span until moderation opens. The suggestions
+        # step runs after the response, when the root has closed, and nests under it.
+        turn_root = _current_trace_context(_lf_mod)
         _mod_obs_ctx = (
             _lf_mod.start_as_current_observation(
                 # turn.v1's moderation step; distinct from pydantic-ai's "Moderation Agent run" span under it.
@@ -959,7 +978,7 @@ async def _chat_agent_input(
                     # Deferred, never inline: suggestions read the history
                     # this turn has not written yet.
                     scheduler.schedule(
-                        create_suggestions, session_id, target_lang, execution
+                        create_suggestions, session_id, target_lang, execution, turn_root
                     )
                     logger.info("Successfully added suggestions task")
                 except Exception as e:

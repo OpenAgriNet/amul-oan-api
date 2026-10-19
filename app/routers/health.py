@@ -1,6 +1,8 @@
 from fastapi import APIRouter, HTTPException, status
 from app.utils import cache
 from app.config import settings
+from app.observability import non_turn_root
+from app.services.telemetry_stamps import BACKGROUND_JOB, non_turn_v1_metadata
 import time
 from typing import Dict, Any
 
@@ -42,11 +44,13 @@ async def check_translation_service() -> Dict[str, Any]:
     from app.services.translation import translate_text
     try:
         t0 = time.monotonic()
-        result = await translate_text(
-            text=_CANARY_EN,
-            source_lang="english",
-            target_lang="gujarati",
-        )
+        # Its own trace: the translation opens observations, which need a root.
+        with non_turn_root(BACKGROUND_JOB, non_turn_v1_metadata(BACKGROUND_JOB, job="health_check")):
+            result = await translate_text(
+                text=_CANARY_EN,
+                source_lang="english",
+                target_lang="gujarati",
+            )
         latency_ms = round((time.monotonic() - t0) * 1000)
         if not result or _CANARY_GU_SUBSTR not in result:
             return {

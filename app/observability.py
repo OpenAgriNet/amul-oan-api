@@ -1,5 +1,5 @@
 import logging
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from typing import Any, Iterator
 
 from app.config import settings
@@ -138,6 +138,49 @@ def set_trace_io(
             langfuse_client.set_current_trace_io(**kwargs)
     except Exception:
         pass
+
+
+@contextmanager
+def non_turn_root(
+    kind: str,
+    metadata: dict[str, str],
+    *,
+    session_id: str | None = None,
+    user_id: str | None = None,
+    environment: str | None = None,
+) -> Iterator[Any | None]:
+    """Open the root of a trace that is not a turn: a background job or a frontend
+    event, named after its kind (amul-telemetry telemetry/turn.v1.yaml).
+
+    As on a turn's root, the trace-level fields (the amul.* metadata, the session, the
+    user) are written on the root only: ``propagate_attributes`` is entered and left
+    before anything opens under it, so the model or API calls inside carry none. The
+    root has no input or output; turn.v1 keeps those for turns, so what the job read
+    and wrote belongs on the observation that did the work.
+
+    ``environment`` is the Langfuse environment of every span inside, for work that
+    belongs to a surface but runs outside its turn; without it the process's applies.
+    Yields None when tracing is disabled.
+    """
+    if langfuse_client is None:
+        yield None
+        return
+
+    from langfuse import propagate_attributes
+
+    with ExitStack() as stack:
+        if environment:
+            stack.enter_context(propagate_attributes(environment=environment))
+        root = stack.enter_context(
+            langfuse_client.start_as_current_observation(name=kind, as_type="span", metadata=metadata)
+        )
+        with propagate_attributes(
+            session_id=session_id[:200] if session_id else None,
+            user_id=user_id[:200] if user_id else None,
+            metadata=metadata,
+        ):
+            pass
+        yield root
 
 
 @contextmanager

@@ -8,6 +8,7 @@ from app.utils import _get_message_history, trim_history, format_message_pairs, 
 from app.core.cache import cache
 from app import llm_core
 from app.llm_core import Step as _LlmStep
+from app.llm_core import trace as _pipeline_trace
 from agents.suggestions import suggestions_agent
 from app.observability import surface_environment
 from langcodes import Language
@@ -22,13 +23,30 @@ except ImportError:
     propagate_attributes = None
     get_langfuse_client = None
 
+
+def _step_metadata(execution) -> dict[str, str]:
+    """turn.v1's metadata for the suggestions step: the tier that served it."""
+    try:
+        return _pipeline_trace.step_metadata(execution.begin_trace(), _LlmStep.SUGGESTIONS)
+    except Exception as e:  # tracing must never break suggestions
+        logger.debug("suggestions step metadata unavailable: %s", e)
+        return {}
+
+
 async def create_suggestions(
     session_id: str,
     target_lang: str,
     execution: llm_core.ExecutionContext,
+    turn_root: dict[str, str] | None = None,
 ):
     """
-    Create and save suggestions for a session
+    Create and save suggestions for a session.
+
+    The ``suggestions`` step of the turn that asked for them (amul-telemetry
+    telemetry/turn.v1.yaml), which runs after the response: ``turn_root`` is that
+    turn's root span as a Langfuse trace context, so the step nests under the root
+    though it has closed. A step writes no trace-level field: a late one would
+    rewrite the turn.
     """
     logger.info(f"Getting suggestions for session {session_id}")
 
@@ -48,17 +66,10 @@ async def create_suggestions(
         target_lang_name = Language.get(target_lang).display_name(target_lang)
         message = f"**Conversation**\n\n{message_pairs}\n\n**Based on the conversation, suggest 3-5 questions the farmer can ask in {target_lang_name}.**"
         
-        session_id_safe = (session_id or "")[:200]
-        session_ctx = (
-            propagate_attributes(
-                # Deferred past the turn, so outside its root: name chat explicitly.
-                environment=surface_environment("chat"),
-                session_id=session_id_safe,
-                metadata={
-                    "task": "suggestions",
-                    "target_lang": (target_lang or "unknown")[:200],
-                },
-            )
+        # Deferred past the turn, so outside its context: name chat's environment
+        # explicitly. Only the environment, which is not a trace-level field.
+        environment_ctx = (
+            propagate_attributes(environment=surface_environment("chat"))
             if propagate_attributes
             else nullcontext()
         )
@@ -66,6 +77,7 @@ async def create_suggestions(
         _lf = get_langfuse_client() if get_langfuse_client else None
         _suggestions_obs_ctx = (
             _lf.start_as_current_observation(
+                trace_context=turn_root,
                 name="suggestions",
                 as_type="generation",
                 input={
@@ -81,7 +93,7 @@ async def create_suggestions(
             else nullcontext()
         )
 
-        with session_ctx:
+        with environment_ctx:
             with _suggestions_obs_ctx as sug_obs:
                 agent_run = await execution.run(
                     _LlmStep.SUGGESTIONS,
@@ -92,6 +104,7 @@ async def create_suggestions(
                 if sug_obs is not None:
                     sug_obs.update(
                         output={"suggestions": suggestions},
+                        metadata=_step_metadata(execution),
                     )
 
         logger.info(f"Suggestions: {suggestions}")
