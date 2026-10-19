@@ -24,6 +24,12 @@ from agents.tools.vistaar_shc import (
     get_vistaar_soil_health_card,
     prepare_get_vistaar_soil_health_card,
 )
+from agents.tools.memory_tools import (
+    list_memories,
+    prepare_memory_tool,
+    read_memory,
+    search_memories,
+)
 
 TOOLS = [
     # # Search Terms
@@ -34,6 +40,28 @@ TOOLS = [
         takes_ctx=False, # No context is needed for this tool
         docstring_format='auto',
         require_parameter_descriptions=True,
+    ),
+
+    Tool(
+        search_memories,
+        takes_ctx=True,
+        docstring_format='auto',
+        require_parameter_descriptions=True,
+        prepare=prepare_memory_tool,
+    ),
+    Tool(
+        list_memories,
+        takes_ctx=True,
+        docstring_format='auto',
+        require_parameter_descriptions=True,
+        prepare=prepare_memory_tool,
+    ),
+    Tool(
+        read_memory,
+        takes_ctx=True,
+        docstring_format='auto',
+        require_parameter_descriptions=True,
+        prepare=prepare_memory_tool,
     ),
 
     # Available to anonymous callers too: a profile location helps, but the tool
