@@ -21,6 +21,7 @@ from app.services.translation import (
     _apply_protected_output,
     _buffered_protected_stream,
     _protected_output_triggers,
+    translation_channel,
 )
 
 # Verbatim TranslateGemma output for an English sentence naming the farmer.
@@ -244,3 +245,35 @@ async def test_bank_pin_does_not_duplicate_words_arriving_after_the_match():
     assert out == BANK_FIXED_WITH_BRANCH
     assert out.count("લિમિટેડ") == 1
     assert out.count("બેંક") == 1
+
+
+# ── The assistant's own name (AMUL-112) and the brand ─────────────────────────
+# Raw strings are verbatim prod stream_translation output for the agent's English
+# self-introduction, 2026-10-19.
+
+@pytest.mark.parametrize("lang,raw,fixed", [
+    ("gu", "હું સર્લાબેન છું,", "હું સરલાબેન છું,"),
+    ("hi", "मैं सारलाबेन हूँ,", "मैं सरलाबेन हूँ,"),
+    ("bn", "আমি সারলাবেন, আমিউল-এর", "আমি সরলাবেন, আমুল-এর"),
+    # Already right: self-replace.
+    ("gu", "હું સરલાબેન છું.", "હું સરલાબેન છું."),
+    ("mr", "मी सरलाबेन आहे.", "मी सरलाबेन आहे."),
+    ("pa", "ਮੈਂ ਸਰਲਾਬੇਨ ਹਾਂ।", "ਮੈਂ ਸਰਲਾਬੇਨ ਹਾਂ।"),
+])
+def test_sarlaben_is_spelt_the_way_the_product_spells_it(lang, raw, fixed):
+    src = "I am Sarlaben, Amul's AI digital assistant."
+    assert _apply_protected_output(raw, _protected_output_triggers(src, lang)) == fixed
+
+
+def test_gujarati_brand_pinned_in_chat_but_voice_is_left_alone():
+    src = "Give **Amul Power Dan**, which is balanced feed."
+    raw = "અમુલ પાવર ડેન** આપો"
+    assert _apply_protected_output(raw, _protected_output_triggers(src, "gu")) == "અમૂલ પાવર ડેન** આપો"
+    with translation_channel("voice"):
+        assert _protected_output_triggers(src, "gu") == []
+
+
+def test_bengali_words_that_start_like_the_brand_are_kept():
+    src = "Amul gives priceless support."
+    text = "অমূল্য সহায়তা, অমূলক ভয়"
+    assert _apply_protected_output(text, _protected_output_triggers(src, "bn")) == text
