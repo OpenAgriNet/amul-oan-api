@@ -32,8 +32,10 @@ def validate_config():
 
 
 def hidden_key(key):
-    return (key in {"farmer_id", "animal_id", "account_id", "mobile", "phone", "ear_tag"}
-            or key.endswith(("_id", "_number", "_no", "_tag")))
+    normalized = re.sub(r"(?<!^)(?=[A-Z])", "_", str(key)).lower()
+    return (normalized in {
+        "farmer_id", "animal_id", "account_id", "mobile", "phone", "ear_tag",
+    } or normalized.endswith(("_id", "_number", "_no", "_tag")))
 
 
 def layout(payload):

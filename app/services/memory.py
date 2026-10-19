@@ -1,5 +1,4 @@
-"""
-Memory integration (memory_v0).
+"""Read-only farmer conversational memory.
 
 Reads a farmer's accumulated memory directly from Qdrant and turns it into a
 short, bounded context block for the prompt. Deliberately narrow:
@@ -17,7 +16,6 @@ short, bounded context block for the prompt. Deliberately narrow:
   reader hides identifier metadata in reply reads. These checks reduce exposure;
   they do not establish perfect detection of identifiers in generated prose.
 
-Design: oan_horizon/future_work/memory_amul/memory-overview.md (Sections 3a, 6).
 """
 import asyncio
 import os
