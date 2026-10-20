@@ -4,11 +4,13 @@ From voice-oan-api (``app/services/voice_trace.py`` at amul-dev ``3b19835``). It
 sends turn.v1 (amul-telemetry ``telemetry/turn.v1.yaml``): one root named ``turn``
 with flat ``amul.*`` metadata, the blocks voice recorded on the root written as the
 output of the step each describes (moderation, pre_translation, agent, farmer_context,
-nudge, ...), and the caller's words on the trace only in the ``full`` text mode.
+nudge, ...), and the caller's words and number as they are: turn.v1 keeps them raw and
+nothing here hashes them (amul-telemetry, decided 2026-10-13 and 2026-10-20).
 
 What voice recorded stays recorded: ``metadata``, ``stages``, ``timings_ms`` and
 ``counters`` are the turn's in-memory record, and the ``VOICE_TRACE_SUMMARY`` log line
-holds them hash-only, whatever the text mode. Only what goes to Langfuse changed.
+holds them. The record keeps only the length of the caller's words and not the caller's
+number, so the log holds neither the words, the number, nor a hash of them.
 
 ``current_trace`` is how voice's modules reach the turn's trace. Voice passed its
 trace around by hand; on the seam, ``VoiceTelemetry`` (``app/voice/telemetry.py``)
@@ -16,7 +18,6 @@ sets it for the length of the turn's root.
 """
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 import time
@@ -27,15 +28,10 @@ from dataclasses import dataclass, field
 from typing import Any, Iterator, Optional
 
 from app.config import settings
-from app.llm_core import runtime
 from app.llm_core import trace as pipeline_trace
 from app.services.telemetry_stamps import TURN_ROOT, forward_chat_telemetry_metadata, turn_v1_fields
 
 logger = logging.getLogger(__name__)
-
-_VALID_TEXT_MODES = {"preview_hash", "full", "none"}
-_VALID_USER_ID_MODES = {"hash", "phone"}
-_HASH_SALT = "voice-oan-api"
 
 # Voice's milk readout routes, as turn.v1's milk_readout step names its source.
 _MILK_READOUT_SOURCES = {"outbound_milk_readout": "cache", "outbound_milk_readout_cold": "cold"}
@@ -51,39 +47,10 @@ def _duration_ms(started_at: float) -> float:
     return round((_now() - started_at) * 1000.0, 2)
 
 
-def _hash(value: str) -> str:
-    return hashlib.sha256(f"{_HASH_SALT}:{value}".encode("utf-8")).hexdigest()
-
-
-def _user_id_mode() -> str:
-    mode = runtime.surface_setting(
-        "voice", "trace_user_id_mode", getattr(settings, "voice_trace_user_id_mode", "hash")
-    )
-    return mode if mode in _VALID_USER_ID_MODES else "hash"
-
-
-def _langfuse_user_id(user_id: Optional[str], user_id_hash: str) -> str:
-    """The caller's hash by default. ``phone`` sends the caller's id as given, so
-    it is only for a Langfuse approved to hold phone numbers."""
-    if _user_id_mode() == "phone":
-        return (user_id or "anonymous")[:200]
-    return user_id_hash
-
-
-def _text_mode() -> str:
-    mode = runtime.surface_setting(
-        "voice", "trace_text_mode", getattr(settings, "voice_trace_text_mode", "none")
-    )
-    return mode if mode in _VALID_TEXT_MODES else "none"
-
-
 def trace_text(text: Optional[str]) -> Optional[str]:
-    """``text`` as the trace carries it: the words themselves in the ``full`` text
-    mode, else nothing. turn.v1 has no place for a preview or a hash (the summary
-    log keeps the hash), so ``preview_hash`` sends no text, like ``none``."""
-    if text and _text_mode() == "full":
-        return text
-    return None
+    """``text`` as the trace carries it: the caller's words as they are (turn.v1 keeps
+    the raw text, decided 2026-10-13); nothing for no words."""
+    return text or None
 
 
 def _safe_update(observation: Any | None, **kwargs: Any) -> None:
@@ -95,43 +62,10 @@ def _safe_update(observation: Any | None, **kwargs: Any) -> None:
         logger.debug("Langfuse observation update failed: %s", exc)
 
 
-def sanitize_text(text: Optional[str], *, mode: Optional[str] = None) -> dict[str, Any]:
-    """Return trace-safe text metadata for the summary log.
-
-    By default only the length and a hash. ``preview_hash`` and ``full`` add the
-    caller's words to the record; the log drops them (``_hash_only``), and the
-    trace carries them only in ``full`` (``trace_text``).
-    """
-    value = text or ""
-    active_mode = mode or _text_mode()
-    if active_mode not in _VALID_TEXT_MODES:
-        active_mode = "none"
-
-    payload: dict[str, Any] = {
-        "chars": len(value),
-        "sha256": _hash(value) if value else None,
-    }
-    if active_mode == "full":
-        payload["text"] = value
-    elif active_mode == "preview_hash":
-        preview_chars = max(0, int(getattr(settings, "voice_trace_preview_chars", 120)))
-        payload["preview"] = value[:preview_chars]
-    return payload
-
-
-def _hash_only(value: Any) -> Any:
-    """``value`` with every sanitized text cut down to its length and hash. Logs
-    never hold the caller's words, whatever text mode the trace is sent with."""
-    if isinstance(value, dict):
-        sanitized = "chars" in value and "sha256" in value
-        return {
-            key: _hash_only(item)
-            for key, item in value.items()
-            if not (sanitized and key in ("preview", "text"))
-        }
-    if isinstance(value, list):
-        return [_hash_only(item) for item in value]
-    return value
+def text_length(text: Optional[str]) -> dict[str, Any]:
+    """What the record (and so the summary log) keeps of some words: their length,
+    never the words and never a hash of them. The trace carries the words."""
+    return {"chars": len(text or "")}
 
 
 def step_tiers(execution: Any, step: Any) -> dict[str, str]:
@@ -324,15 +258,9 @@ class VoiceTrace:
                 "process_id": self.process_id,
                 "source_lang": self.source_lang,
                 "target_lang": self.target_lang,
-                "user_id_hash": _hash(self.user_id or "anonymous"),
-                "query": sanitize_text(self.query),
+                "query": text_length(self.query),
             }
         )
-
-    @property
-    def sends_phone(self) -> bool:
-        """Whether this deployment sends the caller's number (VOICE_TRACE_USER_ID_MODE=phone)."""
-        return _user_id_mode() == "phone"
 
     def text(self, value: Optional[str]) -> Optional[str]:
         """``value`` as the trace carries it: see ``trace_text``."""
@@ -407,7 +335,7 @@ class VoiceTrace:
             )
             with propagate_attributes(
                 environment=self.environment,
-                user_id=_langfuse_user_id(self.user_id, self.metadata["user_id_hash"]),
+                user_id=(self.user_id or "")[:200] or None,  # the caller's number as given
                 session_id=(self.session_id or "")[:200] or None,
                 metadata=self.root_metadata,
             ):
@@ -484,7 +412,7 @@ class VoiceTrace:
                     "rejected": bool(getattr(verdict, "rejected", False)),
                     "failed_open": bool(getattr(verdict, "failed_open", False)),
                     "failed_closed": bool(getattr(verdict, "failed_closed", False)),
-                    "reason": sanitize_text(getattr(verdict, "reason", None)),
+                    "reason": text_length(getattr(verdict, "reason", None)),
                 }
             )
         self.metadata["moderation"] = payload
@@ -541,7 +469,7 @@ class VoiceTrace:
         attempts: Optional[list[dict[str, Any]]] = None,
     ) -> None:
         payload: dict[str, Any] = {
-            "text": sanitize_text(text),
+            "text": text_length(text),
             "provider": provider,
             "fallback_used": fallback_used,
         }
@@ -697,13 +625,13 @@ class VoiceTrace:
             "stage_totals_ms": self.stage_totals_ms,
             "stages": self.stages[-50:],
             "counters": self.counters,
-            "response": sanitize_text("".join(self.response_parts)),
+            "response": text_length("".join(self.response_parts)),
         }
         if self.root_observation is not None:
             self._close_root(error=error, served_tier=served_tier)
         if getattr(settings, "voice_trace_log_summary", True):
             try:
-                logger.info("VOICE_TRACE_SUMMARY %s", json.dumps(_hash_only(summary), ensure_ascii=False, default=str))
+                logger.info("VOICE_TRACE_SUMMARY %s", json.dumps(summary, ensure_ascii=False, default=str))
             except Exception as exc:
                 logger.debug("Voice trace summary logging failed: %s", exc)
 

@@ -99,10 +99,7 @@ def _take(client):
 
 
 def _every_turn(lf, call, monkeypatch):  # noqa: F811
-    """One run down each path, with the words and the caller's number sent (the modes
-    a Langfuse approved to hold them runs with)."""
-    monkeypatch.setattr(settings, "voice_trace_user_id_mode", "phone")
-    monkeypatch.setattr(settings, "voice_trace_text_mode", "full")
+    """One run down each path, with the words and the caller's number sent, as voice sends them."""
 
     async def _please_repeat(**_kw):
         return "Please say that again."

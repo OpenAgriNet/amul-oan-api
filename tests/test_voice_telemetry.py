@@ -10,6 +10,7 @@ import contextlib
 import dataclasses
 import json
 import os
+import re
 import time
 from types import MappingProxyType, SimpleNamespace
 
@@ -54,6 +55,7 @@ from tests.test_voice_pretranslation import _turn as _gujarati_turn
 from tests.test_voice_sink import _English, _speak, _Translation
 
 _MOBILE = "9876543210"
+_SHA256 = re.compile(r"\b[0-9a-f]{64}\b")
 
 
 def _turn(query="My cow has fever", *, history=(), consent_turn=False, lang="en", user_id=f"+91 {_MOBILE}"):
@@ -186,7 +188,6 @@ def lf(monkeypatch):
     monkeypatch.setattr(observability, "get_langfuse_client", lambda: client)
     monkeypatch.setattr(langfuse, "propagate_attributes", client.propagate_attributes)
     monkeypatch.setattr(voice_telemetry, "_get_langfuse_client", lambda: client)
-    monkeypatch.setattr(settings, "voice_trace_text_mode", "full")
     monkeypatch.setattr(settings, "enable_voice_tracing", True)
     return client
 
@@ -299,7 +300,7 @@ def test_an_answered_turn_is_one_turn_v1_root_with_its_steps_under_it(lf, call):
     environment, opened, closed = lf.propagated
     assert set(environment) == {"environment"}
     assert opened["environment"] == environment["environment"]
-    assert opened["session_id"] == "call-1" and opened["user_id"] == record.metadata["user_id_hash"]
+    assert opened["session_id"] == "call-1" and opened["user_id"] == f"+91 {_MOBILE}"
     assert "tags" not in opened and "trace_name" not in opened
     assert opened["metadata"] == root.kwargs["metadata"] == {
         "amul.schema_version": "turn.v1",
@@ -317,6 +318,7 @@ def test_an_answered_turn_is_one_turn_v1_root_with_its_steps_under_it(lf, call):
         "amul.persona": "farmer",
         "amul.process_id": "proc-1",
         "amul.signed_in": "true",
+        "amul.farmer_id": _MOBILE,
     }
     assert closed["metadata"]["amul.outcome"] == "success"
     assert closed["metadata"]["amul.served_tier"] == lf.step("agent").sent["metadata"]["amul.served_tier"]
@@ -326,7 +328,7 @@ def test_an_answered_turn_is_one_turn_v1_root_with_its_steps_under_it(lf, call):
     assert {"amul.agent_ms", "amul.first_agent_text_ms"} <= timed
     assert set(closed["metadata"]) == {"amul.outcome", "amul.served_tier"} | timed
     assert all(closed["metadata"][key].isdigit() for key in timed)
-    # The words, in this fixture's full text mode: the question and the answer as heard.
+    # The words: the question and the answer as heard.
     assert lf.io == {"input": "My cow has fever", "output": "Give her water."}
     assert "input" not in root.kwargs and root.updates == []
     assert set(lf.names) == {"turn", "moderation", "non_meaningful", "farmer_context", "scheme_summary", "agent", "nudge"}
@@ -375,48 +377,21 @@ def _everything_sent(client):
     )
 
 
-def test_by_default_a_turn_sends_langfuse_no_phone_and_no_words(lf, call, monkeypatch):
-    default = type(settings).model_fields["voice_trace_text_mode"].default
-    monkeypatch.setattr(settings, "voice_trace_text_mode", default)
-
+def test_a_turn_sends_langfuse_the_words_and_the_callers_number_as_they_are(lf, call):
+    """turn.v1 keeps the caller's words and number raw (decided 2026-10-13 and 2026-10-20):
+    no mode hashes them or leaves them out, and nothing sent is a hash."""
     _run(_turn(history=_PRIOR))
 
-    sent = _everything_sent(lf)
-    for private in (_MOBILE, "fever", "water"):
-        assert private not in sent
-    assert lf.io == {}
-    assert "input" not in lf.step("agent").sent and "output" not in lf.step("agent").sent
-    assert "amul.farmer_id" not in lf.root.kwargs["metadata"]
-    # The record keeps the hash, for the summary log.
-    assert lf.trace.metadata["query"].keys() == {"chars", "sha256"}
-
-
-def test_the_preview_hash_mode_sends_langfuse_no_words_either(lf, call, monkeypatch):
-    # turn.v1 has no place for a preview: the trace carries the words or nothing.
-    monkeypatch.setattr(settings, "voice_trace_text_mode", "preview_hash")
-
-    _run(_turn(history=_PRIOR))
-
-    for private in ("fever", "water"):
-        assert private not in _everything_sent(lf)
-    assert lf.io == {}
-    assert lf.trace.metadata["query"]["preview"] == "My cow has fever"
-
-
-def test_the_phone_user_id_mode_sends_langfuse_the_callers_phone(lf, call, monkeypatch):
-    monkeypatch.setattr(settings, "voice_trace_user_id_mode", "phone")
-
-    _run(_turn(history=_PRIOR))
-
+    assert lf.io == {"input": "My cow has fever", "output": "Give her water."}
     assert lf.opened["user_id"] == f"+91 {_MOBILE}"
-    # A signed-in caller's number is the farmer id; only the record keeps the hash.
     assert lf.root.kwargs["metadata"]["amul.farmer_id"] == _MOBILE
+    assert not _SHA256.search(_everything_sent(lf))
+    # The record keeps the length of the words, not the words, the number or a hash.
+    assert lf.trace.metadata["query"] == {"chars": len("My cow has fever")}
     assert _MOBILE not in json.dumps(lf.trace.metadata, ensure_ascii=False, default=str)
 
 
-@pytest.mark.parametrize("mode", sorted(voice_trace._VALID_TEXT_MODES))
-def test_the_summary_log_holds_no_words_whatever_the_text_mode(lf, call, caplog, monkeypatch, mode):
-    monkeypatch.setattr(settings, "voice_trace_text_mode", mode)
+def test_the_summary_log_holds_no_words_no_number_and_no_hash(lf, call, caplog):
     caplog.set_level("INFO", logger=voice_trace.logger.name)
 
     _run(_turn(history=_PRIOR))
@@ -424,7 +399,8 @@ def test_the_summary_log_holds_no_words_whatever_the_text_mode(lf, call, caplog,
     (logged,) = [r.getMessage() for r in caplog.records if r.getMessage().startswith("VOICE_TRACE_SUMMARY")]
     for private in (_MOBILE, "fever", "water"):
         assert private not in logged
-    assert json.loads(logged.split(" ", 1)[1])["query"].keys() == {"chars", "sha256"}
+    assert not _SHA256.search(logged)
+    assert json.loads(logged.split(" ", 1)[1])["query"] == {"chars": len("My cow has fever")}
 
 
 @pytest.mark.parametrize("query, path, stage", [
@@ -513,8 +489,6 @@ def test_a_milk_readout_is_routed_as_one(lf, call, prefetched, route, source):
 
 def test_an_anonymous_caller_is_recorded_as_not_signed_in(lf, call, monkeypatch):
     monkeypatch.setattr(voice_agents.voice_agent, "iter", lambda **_kw: _answer("Give her water."))
-    monkeypatch.setattr(settings, "voice_trace_user_id_mode", "phone")
-
     _run(_turn(history=_PRIOR, user_id="anonymous"))
 
     record = lf.trace
@@ -733,7 +707,6 @@ def test_with_fallback_off_the_agent_block_names_the_primary_that_answered(lf, c
 @pytest.fixture
 def trace(monkeypatch):
     """A current trace to record into, as a voice turn's root sets one."""
-    monkeypatch.setattr(settings, "voice_trace_text_mode", "full")
     current = voice_trace.VoiceTrace(
         session_id="call-1", user_id="u", source_lang="gu", target_lang="gu", query="q", enabled=False
     )
@@ -856,7 +829,7 @@ def test_pretranslation_records_each_attempt_and_the_fallback(trace, monkeypatch
     assert [a["status"] for a in recorded["attempts"]] == ["error", "ok"]
     assert recorded["attempts"][0]["error_class"] == "RuntimeError"
     assert (recorded["actual_tier"], recorded["actual_provider"]) == ("managed", "openai")
-    assert recorded["text"]["text"] == "For a buffalo"
+    assert recorded["text"] == {"chars": len("For a buffalo")}
     assert [s["name"] for s in trace.stages] == ["pre_translation"]
     step = trace.sent.step("pre_translation").sent
     assert (step["as_type"], step["input"], step["output"]) == ("generation", "ભેંસ", "For a buffalo")

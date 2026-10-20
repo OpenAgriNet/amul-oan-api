@@ -292,8 +292,7 @@ class _AgentRun:
     def observe(self):
         """turn.v1's agent step: the English question in, the English answer out
         (``after_run`` writes it, inside this), pydantic-ai's spans under it.
-        ``run_turn`` is handed None so the step's output stays voice's, which sends
-        the words only in the full text mode."""
+        ``run_turn`` is handed None so the step's output stays voice's."""
         self._started_at = time.monotonic()
         trace = current_trace()
         with trace.observation("agent", as_type="agent", input=trace.text(self._user_query)) as step:
