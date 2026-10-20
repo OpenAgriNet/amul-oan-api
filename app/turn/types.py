@@ -74,6 +74,10 @@ class TelephonyCall:
     #: The session ownership epoch this request claimed, when the adapter claimed
     #: one. For the trace (turn.v1's ``amul.request_epoch``).
     request_epoch: Optional[int] = None
+    #: The trace id the turn opens with, made when the request claimed the session,
+    #: and its utterance's (turn.v1's ``amul.utterance_id``). For the trace.
+    trace_id: Optional[str] = None
+    utterance_id: Optional[str] = None
 
 
 @dataclass(frozen=True)

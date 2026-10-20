@@ -25,7 +25,7 @@ from app.config import settings
 from app.llm_core import runtime
 from app.observability import start_observation
 from app.turn.types import SideChannelEmission, SideChannelSender, StalenessCheck, Turn
-from app.utils import is_session_request_owner, refresh_session_request_ownership
+from app.utils import is_session_request_owner, refresh_session_request_ownership, session_request_taken_over_by
 from app.voice.trace import current_trace
 from helpers.utils import get_logger
 
@@ -196,6 +196,22 @@ class CallStaleness:
         self._session_id = session_id
         self._process_id = process_id
         self._last_owner_refresh_at = 0.0
+        self._takeover_read = False
+        # The nudge's check and the turn's can find the request stale at once: the
+        # second waits for the first's read, so the trace has it before the turn ends.
+        self._takeover_lock = asyncio.Lock()
+
+    async def _read_takeover(self) -> None:
+        """Tell the trace which request took the session over, if one did, once."""
+        async with self._takeover_lock:
+            if self._takeover_read:
+                return
+            try:
+                current_trace().superseded_by = await session_request_taken_over_by(self._owner)
+            except Exception as exc:  # tracing never breaks the turn
+                logger.debug("Reading the request that took over failed: %s", exc)
+            # Not when the read was cancelled (the nudge stopped): the next check reads it.
+            self._takeover_read = True
 
     async def __call__(self, reason: str) -> Optional[str]:
         if self._http_request is not None and await self._http_request.is_disconnected():
@@ -225,6 +241,7 @@ class CallStaleness:
                     owner.epoch,
                     reason,
                 )
+                await self._read_takeover()
                 return "stale_request"
 
         if owner is not None and not await is_session_request_owner(owner):
@@ -235,6 +252,7 @@ class CallStaleness:
                 owner.epoch,
                 reason,
             )
+            await self._read_takeover()
             return "stale_request"
 
         return None

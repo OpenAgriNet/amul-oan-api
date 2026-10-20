@@ -231,6 +231,9 @@ class VoiceTrace:
     outcome: Optional[str] = None
     #: A failure the turn caught and answered with the trouble line, as its reason.
     failure: Optional[str] = None
+    #: The trace id of the request that took the session over, read when this one
+    #: found itself stale (turn.v1's amul.superseded_by).
+    superseded_by: Optional[str] = None
     root_observation: Any | None = None
     #: The root's amul.* keys (turn.v1), set by VoiceTelemetry before the root opens.
     root_metadata: dict[str, str] = field(default_factory=dict)
@@ -315,7 +318,7 @@ class VoiceTrace:
         try:
             from langfuse import propagate_attributes
 
-            from app.observability import surface_environment
+            from app.observability import root_trace_id, surface_environment
         except Exception:
             yield
             return
@@ -327,14 +330,24 @@ class VoiceTrace:
         try:
             self.environment = surface_environment("voice")
             stack.enter_context(propagate_attributes(environment=self.environment))
-            self.root_observation = stack.enter_context(
-                self.langfuse_client.start_as_current_observation(
-                    name=TURN_ROOT,
-                    as_type="span",
-                    metadata=self.root_metadata,
-                    end_on_exit=False,
+            # The trace id made when the request claimed the session: the request it
+            # took over from names it as amul.superseded_by.
+            with root_trace_id(self.trace_id):
+                self.root_observation = stack.enter_context(
+                    self.langfuse_client.start_as_current_observation(
+                        name=TURN_ROOT,
+                        as_type="span",
+                        metadata=self.root_metadata,
+                        end_on_exit=False,
+                    )
                 )
-            )
+            opened_as = getattr(self.root_observation, "trace_id", self.trace_id)
+            if opened_as != self.trace_id:
+                logger.warning(
+                    "Voice turn root did not open with its claimed trace id; amul.superseded_by and "
+                    "amul.utterance_id that name it point to no trace - session_id=%s",
+                    self.session_id,
+                )
             with propagate_attributes(
                 environment=self.environment,
                 user_id=(self.user_id or "")[:200] or None,  # the caller's number as given
@@ -660,6 +673,8 @@ class VoiceTrace:
             # turn's whole time is amul.total_ms, as the summary log has it.
             fields = turn_v1_fields(
                 outcome=self.outcome,
+                # Only a stale request names the one that took over (turn.v1).
+                superseded_by=self.superseded_by if self.outcome == "stale_request" else None,
                 served_tier=served_tier,
                 total_ms=_whole_ms(total_ms),
                 ttft_ms=_whole_ms(self.timings_ms.get("ttft_ms")),
@@ -705,7 +720,9 @@ def create_voice_trace(
     target_lang: str,
     provider: Optional[str],
     process_id: Optional[str],
+    trace_id: Optional[str] = None,
 ) -> VoiceTrace:
+    # Without one made when the request claimed the session, the trace makes its own.
     return VoiceTrace(
         session_id=session_id,
         user_id=user_id,
@@ -714,6 +731,7 @@ def create_voice_trace(
         target_lang=target_lang,
         provider=provider,
         process_id=process_id,
+        **({"trace_id": trace_id} if trace_id else {}),
     )
 
 

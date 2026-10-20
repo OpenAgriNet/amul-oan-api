@@ -79,6 +79,7 @@ class VoiceTelemetry:
             target_lang=turn.target_lang,
             provider=call.provider if call is not None else None,
             process_id=call.process_id if call is not None else None,
+            trace_id=call.trace_id if call is not None else None,
         )
         # The turn's record, for the summary log: as voice kept it.
         agent = pipeline_trace.steps.get("agent") if pipeline_trace is not None else None
@@ -111,6 +112,12 @@ class VoiceTelemetry:
             persona=turn.persona,
             process_id=call.process_id if call is not None else None,
             request_epoch=call.request_epoch if call is not None else None,
+            # The provider's session is the call: it sends no other call id, and on
+            # prod no session ran longer than 30 minutes (2026-09-20..10-20).
+            call_id=turn.session_id,
+            # A request that came in while another held the session is the same
+            # utterance; otherwise the turn is its own.
+            utterance_id=(call.utterance_id if call is not None else None) or trace.trace_id,
             signed_in="true" if signed_in else "false",
             # The caller's number is a farmer id when the call signed in.
             farmer_id=normalize_phone_to_mobile(turn.user_id) if signed_in else None,

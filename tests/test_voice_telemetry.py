@@ -8,6 +8,7 @@ fetch, the checks and the agent are stood in for.
 import asyncio
 import contextlib
 import dataclasses
+import importlib
 import json
 import os
 import re
@@ -18,6 +19,9 @@ os.environ.setdefault("OPENAI_API_KEY", "test-key")
 
 import langfuse
 import pytest
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, UserPromptPart
 
 from agents.voice import agent as voice_agents
@@ -31,9 +35,11 @@ from app.llm_core.execution import ExecutionContext, ExecutionTarget
 from app.services import chat as chat_service
 from app.services.telemetry_stamps import chat_telemetry_release
 from app.turn.types import TelephonyCall, Turn
+from app.utils import SessionRequestOwner
 from app.voice import agent_input as ai
 from app.voice import background as bg
 from app.voice import classifiers as vc
+from app.voice import liveness as lv_module
 from app.voice import outbound
 from app.voice import telemetry as voice_telemetry
 from app.voice import trace as voice_trace
@@ -92,6 +98,8 @@ class _Observation:
         self.parent = parent
         self.updates = []
         self.ended = 0
+        # The trace id OpenTelemetry would give a root opened now (observability.root_trace_id).
+        self.pinned = observability._root_trace_id.get()
 
     def update(self, **kwargs):
         self.updates.append(kwargs)
@@ -317,9 +325,14 @@ def test_an_answered_turn_is_one_turn_v1_root_with_its_steps_under_it(lf, call):
         "amul.pipeline_flags": record.metadata["pipeline_flags"],
         "amul.persona": "farmer",
         "amul.process_id": "proc-1",
+        "amul.call_id": "call-1",
+        "amul.utterance_id": record.trace_id,
         "amul.signed_in": "true",
         "amul.farmer_id": _MOBILE,
     }
+    # The root opens with the turn's trace id, the one its summary log names; no step does.
+    assert root.pinned == int(record.trace_id, 16) and record.metadata["trace_id"] == record.trace_id
+    assert all(o.pinned is None for o in lf.observations if o is not root)
     assert closed["metadata"]["amul.outcome"] == "success"
     assert closed["metadata"]["amul.served_tier"] == lf.step("agent").sent["metadata"]["amul.served_tier"]
     assert closed["metadata"]["amul.ttft_ms"].isdigit() and closed["metadata"]["amul.ttfr_ms"].isdigit()
@@ -368,6 +381,143 @@ def test_a_turn_with_a_request_epoch_sends_it(lf, call):
     _run(dataclasses.replace(turn, call=dataclasses.replace(turn.call, request_epoch=7)))
 
     assert lf.root.kwargs["metadata"]["amul.request_epoch"] == "7"
+
+
+_CLAIMED, _UTTERANCE, _TOOK_OVER = "ab" * 16, "cd" * 16, "ef" * 16
+
+
+def test_a_turn_opens_with_the_trace_id_its_request_claimed_and_sends_its_utterance(lf, call):
+    turn = _turn(history=_PRIOR)
+    _run(dataclasses.replace(turn, call=dataclasses.replace(turn.call, trace_id=_CLAIMED, utterance_id=_UTTERANCE)))
+
+    assert lf.root.pinned == int(_CLAIMED, 16) and lf.trace.trace_id == _CLAIMED
+    assert lf.root.kwargs["metadata"]["amul.utterance_id"] == _UTTERANCE
+    assert lf.root.kwargs["metadata"]["amul.call_id"] == "call-1"
+    assert "amul.superseded_by" not in lf.closed
+
+
+def test_only_a_root_opened_inside_root_trace_id_takes_its_trace_id():
+    exported = InMemorySpanExporter()
+    provider = TracerProvider(id_generator=observability._trace_ids())
+    provider.add_span_processor(SimpleSpanProcessor(exported))
+    tracer = provider.get_tracer("test")
+
+    with observability.root_trace_id(_CLAIMED):
+        with tracer.start_as_current_span("turn"):
+            pass
+    with observability.root_trace_id(_CLAIMED):
+        with tracer.start_as_current_span("turn") as root:
+            # Opened under the root, as a step is: the root's trace, not a new one.
+            with tracer.start_as_current_span("agent") as step:
+                pass
+    with tracer.start_as_current_span("unpinned"):
+        pass
+    with observability.root_trace_id(_CLAIMED.upper()), tracer.start_as_current_span("not hex"):
+        pass
+    with tracer.start_as_current_span("parent"), observability.root_trace_id(_UTTERANCE):
+        # A span with a parent takes its parent's trace: the pin goes unused.
+        with tracer.start_as_current_span("child"):
+            pass
+
+    spans = {span.name: span for span in exported.get_finished_spans()}
+    trace_id = {name: format(span.context.trace_id, "032x") for name, span in spans.items()}
+    assert trace_id["turn"] == trace_id["agent"] == _CLAIMED and spans["turn"].parent is None
+    assert step.parent.span_id == root.get_span_context().span_id
+    assert trace_id["unpinned"] != _CLAIMED and trace_id["not hex"] != _CLAIMED
+    assert trace_id["child"] == trace_id["parent"] != _UTTERANCE
+    assert observability._root_trace_id.get() is None
+
+
+def test_langfuse_is_set_up_with_the_id_generator_a_call_turns_root_needs(monkeypatch):
+    made = {}
+
+    class _Client:
+        def __init__(self, **kwargs):
+            made.update(kwargs)
+
+        def auth_check(self):
+            return False
+
+    had_client = observability.langfuse_client is not None
+    monkeypatch.setattr(langfuse, "Langfuse", _Client)
+    monkeypatch.setattr(settings, "langfuse_public_key", "pk-lf-test")
+    monkeypatch.setattr(settings, "langfuse_secret_key", "sk-lf-test")
+    try:
+        importlib.reload(observability)
+        with observability.root_trace_id(_CLAIMED):
+            assert made["id_generator"].generate_trace_id() == int(_CLAIMED, 16)
+        assert made["id_generator"].generate_trace_id() != int(_CLAIMED, 16)
+    finally:
+        monkeypatch.undo()
+        importlib.reload(observability)
+    assert (observability.langfuse_client is not None) == had_client
+
+
+def test_a_root_that_opens_with_another_trace_id_is_logged(lf, call, monkeypatch, caplog):
+    # As if a tracer provider registered before Langfuse's had kept its own ids.
+    monkeypatch.setattr(_Observation, "trace_id", "00" * 16, raising=False)
+    turn = _turn(history=_PRIOR)
+
+    with caplog.at_level("WARNING", logger="app.voice.trace"):
+        _run(dataclasses.replace(turn, call=dataclasses.replace(turn.call, trace_id=_CLAIMED)))
+
+    assert "did not open with its claimed trace id" in caplog.text
+    assert lf.closed["amul.outcome"] == "success"
+
+
+def _taken_over(monkeypatch, *, by, owner=True):
+    """The real staleness check, losing the session just before the history write."""
+    async def _yes(_owner):
+        return True
+
+    async def _owns(_owner):
+        return owner
+
+    async def _by(_owner):
+        if isinstance(by, Exception):
+            raise by
+        return by
+
+    monkeypatch.setattr(lv_module, "refresh_session_request_ownership", _yes)
+    monkeypatch.setattr(lv_module, "is_session_request_owner", _owns)
+    monkeypatch.setattr(lv_module, "session_request_taken_over_by", _by)
+    check = lv_module.CallStaleness(
+        http_request=None, owner=SessionRequestOwner(session_id="call-1", request_token="t", epoch=4),
+        session_id="call-1", process_id="proc-1",
+    )
+
+    async def _is_stale(reason):
+        return await check(reason) if reason == "before_history_write" else None
+
+    return _is_stale
+
+
+def test_a_stale_turn_names_the_request_that_took_over(lf, call, monkeypatch):
+    _run(_turn(history=_PRIOR), is_stale=_taken_over(monkeypatch, by=_TOOK_OVER, owner=False))
+
+    assert lf.closed["amul.outcome"] == "stale_request"
+    assert lf.closed["amul.superseded_by"] == _TOOK_OVER
+
+
+@pytest.mark.parametrize("by", [None, ConnectionError("redis down")])
+def test_a_stale_turn_no_request_took_over_names_none(lf, call, monkeypatch, by):
+    # The session's ownership ran out with no one taking over, or Redis could not say.
+    _run(_turn(history=_PRIOR), is_stale=_taken_over(monkeypatch, by=by, owner=False))
+
+    assert lf.closed["amul.outcome"] == "stale_request"
+    assert "amul.superseded_by" not in lf.closed
+
+
+def test_only_a_stale_turn_names_a_request_that_took_over(lf, call):
+    async def _is_stale(reason):
+        # Known, but the turn ended otherwise: it was not superseded.
+        voice_trace.current_trace().superseded_by = _TOOK_OVER
+        return None
+
+    _run(_turn(history=_PRIOR), is_stale=_is_stale)
+
+    assert lf.closed["amul.outcome"] == "success"
+    assert "amul.superseded_by" not in lf.closed
 
 
 def _everything_sent(client):

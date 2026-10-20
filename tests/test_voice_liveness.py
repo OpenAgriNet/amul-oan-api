@@ -7,17 +7,25 @@ request is stale.
 import asyncio
 import gc
 import os
+import re
+import shutil
+import socket
+import subprocess
 import time
 from types import MappingProxyType, SimpleNamespace
 
 os.environ.setdefault("OPENAI_API_KEY", "test-key")
 
 import pytest
+from redis.asyncio import Redis
 
+from app import utils
 from app.channels.chat import WEB
 from app.config import settings
 from app.turn.types import SideChannelEmission, TelephonyCall, Turn
 from app.voice import liveness as lv
+from app.voice import trace as voice_trace
+from app.voice.trace import VoiceTrace
 
 
 def _turn(target_lang="gu"):
@@ -228,7 +236,7 @@ class _Request:
 
 @pytest.fixture
 def ownership(monkeypatch):
-    state = {"refreshes": 0, "refresh_ok": True, "owner": True}
+    state = {"refreshes": 0, "refresh_ok": True, "owner": True, "taken_over_by": None, "takeover_reads": 0}
 
     async def _refresh(owner):
         state["refreshes"] += 1
@@ -237,9 +245,25 @@ def ownership(monkeypatch):
     async def _is_owner(owner):
         return state["owner"]
 
+    async def _taken_over_by(owner):
+        state["takeover_reads"] += 1
+        if isinstance(state["taken_over_by"], Exception):
+            raise state["taken_over_by"]
+        return state["taken_over_by"]
+
     monkeypatch.setattr(lv, "refresh_session_request_ownership", _refresh)
     monkeypatch.setattr(lv, "is_session_request_owner", _is_owner)
+    monkeypatch.setattr(lv, "session_request_taken_over_by", _taken_over_by)
     return state
+
+
+@pytest.fixture
+def turn_trace():
+    """The voice turn's trace the check runs in."""
+    trace = VoiceTrace(session_id="call-1", user_id="", source_lang="gu", target_lang="gu", query="", enabled=False)
+    token = voice_trace._current.set(trace)
+    yield trace
+    voice_trace._current.reset(token)
 
 
 def _check(*, disconnected=False, owner=SimpleNamespace(epoch=1)):
@@ -284,3 +308,180 @@ def test_ownership_is_refreshed_at_most_once_per_interval(ownership, monkeypatch
 def test_without_an_owner_only_the_connection_counts(ownership):
     assert asyncio.run(_check(owner=None)("before_history_write")) is None
     assert ownership["refreshes"] == 0
+
+
+# Found at the owner check, or first at the refresh (the session is another's then too).
+@pytest.mark.parametrize("lost", [{"owner": False}, {"refresh_ok": False, "owner": False}])
+def test_a_stale_request_tells_its_trace_which_request_took_over_once(ownership, turn_trace, lost):
+    ownership.update(lost, taken_over_by="ef" * 16)
+    check = _check()
+
+    async def _run():
+        first = await check("during_agent_stream")
+        # Known from the check that found it, which may be the turn's last.
+        known = turn_trace.superseded_by
+        return [first, known, await check("before_history_write")]
+
+    assert asyncio.run(_run()) == ["stale_request", "ef" * 16, "stale_request"]
+    assert ownership["takeover_reads"] == 1
+
+
+def test_a_check_that_finds_the_request_stale_while_another_reads_the_takeover_waits_for_it(ownership, turn_trace, monkeypatch):
+    ownership["owner"] = False
+    read = asyncio.Event()
+
+    async def _slow(owner):
+        ownership["takeover_reads"] += 1
+        await read.wait()
+        return "ef" * 16
+
+    monkeypatch.setattr(lv, "session_request_taken_over_by", _slow)
+    check = _check()
+
+    async def _turns_check():
+        await asyncio.sleep(0)  # the nudge's check is reading by now
+        read.set()
+        return await check("before_history_write"), turn_trace.superseded_by
+
+    async def _run():
+        return await asyncio.wait_for(asyncio.gather(check("before_nudge_send"), _turns_check()), timeout=5)
+
+    assert asyncio.run(_run()) == ["stale_request", ("stale_request", "ef" * 16)]
+    assert ownership["takeover_reads"] == 1
+
+
+def test_a_takeover_read_cut_short_is_read_again(ownership, turn_trace, monkeypatch):
+    ownership.update(owner=False, taken_over_by="ef" * 16)
+
+    async def _run():
+        check = _check()
+        taken_over_by = lv.session_request_taken_over_by
+        started = asyncio.Event()
+
+        async def _hangs(owner):
+            started.set()
+            await asyncio.sleep(3600)
+
+        monkeypatch.setattr(lv, "session_request_taken_over_by", _hangs)
+        nudge = asyncio.create_task(check("before_nudge_send"))
+        await asyncio.wait_for(started.wait(), timeout=5)
+        nudge.cancel()  # the nudge stopped as the turn ended
+        with pytest.raises(asyncio.CancelledError):
+            await nudge
+        monkeypatch.setattr(lv, "session_request_taken_over_by", taken_over_by)
+        return await check("before_history_write")
+
+    assert asyncio.run(_run()) == "stale_request"
+    assert turn_trace.superseded_by == "ef" * 16
+
+
+def test_a_stale_request_whose_takeover_cant_be_read_is_still_stale(ownership, turn_trace):
+    ownership["owner"] = False
+    ownership["taken_over_by"] = ConnectionError("redis down")
+
+    assert asyncio.run(_check()("before_history_write")) == "stale_request"
+    assert turn_trace.superseded_by is None
+
+
+def test_a_live_request_reads_no_takeover(ownership, turn_trace):
+    assert asyncio.run(_check()("before_history_write")) is None
+    assert asyncio.run(_check(disconnected=True)("before_history_write")) == "cancelled"
+    assert ownership["takeover_reads"] == 0 and turn_trace.superseded_by is None
+
+
+# ── the session's ownership, in a real Redis ────────────────────────────────
+
+
+@pytest.fixture(scope="module")
+def redis_port():
+    """A throwaway redis-server: the claim is a Lua script, which only Redis runs."""
+    if shutil.which("redis-server") is None:
+        pytest.skip("needs redis-server")
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    server = subprocess.Popen(
+        ["redis-server", "--port", str(port), "--bind", "127.0.0.1", "--save", "", "--appendonly", "no"],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+    try:
+        for _ in range(100):
+            try:
+                with socket.create_connection(("127.0.0.1", port), timeout=0.1):
+                    break
+            except OSError:
+                time.sleep(0.05)
+        yield port
+    finally:
+        server.terminate()
+        server.wait(timeout=10)
+
+
+def _in_redis(port, monkeypatch, steps):
+    async def _go():
+        client = Redis(host="127.0.0.1", port=port, decode_responses=True)
+        monkeypatch.setattr(utils, "redis_client", client)
+        try:
+            await client.flushall()
+            return await steps(client)
+        finally:
+            await client.aclose()
+
+    return asyncio.run(_go())
+
+
+def test_a_request_that_comes_in_while_another_holds_the_session_takes_it_over(redis_port, monkeypatch):
+    async def _steps(redis):
+        first = await utils.claim_session_request_ownership("call-1")
+        assert (first.epoch, first.utterance_id) == (1, first.trace_id)
+        assert re.fullmatch(r"[0-9a-f]{32}", first.trace_id)
+        assert await redis.get(utils._session_owner_key("call-1")) == first.request_token
+        assert await utils.session_request_taken_over_by(first) is None
+
+        second = await utils.claim_session_request_ownership("call-1")
+        # The same utterance, and the first can read who took over.
+        assert (second.epoch, second.utterance_id) == (2, first.trace_id)
+        assert await utils.session_request_taken_over_by(first) == second.trace_id
+        assert not await utils.is_session_request_owner(first) and await utils.is_session_request_owner(second)
+        assert not await utils.refresh_session_request_ownership(first)
+        assert not await utils.release_session_request_ownership(first)
+
+        third = await utils.claim_session_request_ownership("call-1")
+        assert third.utterance_id == first.trace_id
+        assert await utils.session_request_taken_over_by(second) == third.trace_id
+        # Kept past the owner's TTL: a request stuck in a long call reads it when it next checks.
+        assert settings.session_owner_ttl_seconds < await redis.ttl(utils._session_takeover_key("call-1")) <= utils.DEFAULT_CACHE_TTL
+
+        # Once the session is released, the next request is an utterance of its own.
+        assert await utils.release_session_request_ownership(third)
+        fourth = await utils.claim_session_request_ownership("call-1")
+        assert (fourth.epoch, fourth.utterance_id) == (4, fourth.trace_id)
+        assert await utils.session_request_taken_over_by(third) is None
+
+    _in_redis(redis_port, monkeypatch, _steps)
+
+
+def test_a_request_taking_over_an_older_builds_token_starts_its_own_utterance(redis_port, monkeypatch):
+    async def _steps(redis):
+        await redis.set(utils._session_owner_key("call-1"), "5:2b8e0c3a-1f4d-4c7e-9a3b-0d2e1f3a4b5c", ex=120)
+        await redis.set(utils._session_epoch_key("call-1"), 5)
+        taking_over = await utils.claim_session_request_ownership("call-1")
+
+        assert (taking_over.epoch, taking_over.utterance_id) == (6, taking_over.trace_id)
+        assert await redis.hget(utils._session_takeover_key("call-1"), "5") == taking_over.trace_id
+
+    _in_redis(redis_port, monkeypatch, _steps)
+
+
+def test_requests_claiming_at_once_leave_the_newest_owning_the_session(redis_port, monkeypatch):
+    async def _steps(redis):
+        owners = await asyncio.gather(*(utils.claim_session_request_ownership("call-1") for _ in range(20)))
+        by_epoch = {owner.epoch: owner for owner in owners}
+
+        assert sorted(by_epoch) == list(range(1, 21))
+        assert await redis.get(utils._session_owner_key("call-1")) == by_epoch[20].request_token
+        for epoch in range(1, 20):
+            assert await utils.session_request_taken_over_by(by_epoch[epoch]) == by_epoch[epoch + 1].trace_id
+        assert {owner.utterance_id for owner in owners} == {by_epoch[1].trace_id}
+
+    _in_redis(redis_port, monkeypatch, _steps)

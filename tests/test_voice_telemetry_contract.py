@@ -30,7 +30,7 @@ from app.voice.outbound_consent import ConsentVerdict
 from tests.test_voice_pretranslation import _pretranslate
 from tests.test_voice_pretranslation import _turn as _gujarati_turn
 from tests.test_voice_sink import _English, _speak, _Translation
-from tests.test_voice_telemetry import _PRIOR, _run, _Sender, _turn, _turn_execution, call, lf, trace  # noqa: F401  (fixtures)
+from tests.test_voice_telemetry import _PRIOR, _run, _Sender, _taken_over, _turn, _turn_execution, call, lf, trace  # noqa: F401  (fixtures)
 
 REPO = Path(__file__).resolve().parents[1]
 CONTRACTS = REPO / "telemetry" / "contracts"
@@ -108,6 +108,9 @@ def _every_turn(lf, call, monkeypatch):  # noqa: F811
     runs = []
     answered = _turn(history=_PRIOR)
     _run(dataclasses.replace(answered, call=dataclasses.replace(answered.call, request_epoch=3)))
+    runs.append(_take(lf))
+    # A request another took the session over from, before its history write.
+    _run(_turn(history=_PRIOR), is_stale=_taken_over(monkeypatch, by="ef" * 16, owner=False))
     runs.append(_take(lf))
     for query in ("hello", "What is your name?", "hm", "No audio/User is speaking softly", "please remain on the line"):
         _run(_turn(query))
