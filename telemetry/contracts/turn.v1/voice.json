@@ -3,7 +3,7 @@
   "pipelines": [
     "telephony"
   ],
-  "note": "What a voice turn sends to Langfuse as turn.v1 (amul-telemetry telemetry/turn.v1.yaml): the root, its trace fields, its amul.* metadata keys, the steps opened under it with the metadata each may carry and the fields its output holds, the scores and the outcomes. A metadata key is sent only when its value is known (provider and process_id when the request carried them, farmer_id for a signed-in caller, served_tier once the agent ran, ttft_ms and ttfr_ms once measured). The caller's words (the trace input and output, the text in and out of the steps) are sent only with VOICE_TRACE_TEXT_MODE=full; the user id is the caller's number with VOICE_TRACE_USER_ID_MODE=phone, else its hash, and farmer_id goes out only in the phone mode. level and status_message are set when the turn fails. pydantic-ai's agent-run, model and tool spans nest under the agent step and are not listed.",
+  "note": "What a voice turn sends to Langfuse as turn.v1 (amul-telemetry telemetry/turn.v1.yaml): the root, its trace fields, its amul.* metadata keys, the steps opened under it with the metadata each may carry and the fields its output holds, the scores and the outcomes. A metadata key is sent only when its value is known (provider and process_id when the request carried them, farmer_id for a signed-in caller, served_tier once the agent ran, ttft_ms, ttfr_ms and the other marks once measured, and amul.<stage>_ms for each stage the turn ran, the time it spent there). The caller's words (the trace input and output, the text in and out of the steps) are sent only with VOICE_TRACE_TEXT_MODE=full; the user id is the caller's number with VOICE_TRACE_USER_ID_MODE=phone, else its hash, and farmer_id goes out only in the phone mode. level and status_message are set when the turn fails. pydantic-ai's agent-run, model and tool spans nest under the agent step and are not listed.",
   "root": "turn",
   "trace_fields": [
     "input",
@@ -34,7 +34,23 @@
     "amul.target_lang",
     "amul.translation_mode",
     "amul.ttfr_ms",
-    "amul.ttft_ms"
+    "amul.first_agent_text_ms",
+    "amul.first_translation_chunk_ms",
+    "amul.ttft_ms",
+    "amul.agent_ms",
+    "amul.farmer_context_ms",
+    "amul.fragment_fast_path_ms",
+    "amul.greeting_fast_path_ms",
+    "amul.history_load_ms",
+    "amul.identity_fast_path_ms",
+    "amul.moderation_ms",
+    "amul.non_meaningful_ms",
+    "amul.outbound_consent_ms",
+    "amul.ownership_claim_ms",
+    "amul.post_translation_ms",
+    "amul.pre_translation_ms",
+    "amul.scheme_summary_ms",
+    "amul.stt_signal_response_ms"
   ],
   "steps": {
     "pre_translation": {

@@ -186,9 +186,12 @@ def test_contract_matches_the_stamped_schema_version_and_root():
 def test_the_root_sends_exactly_the_metadata_keys_the_contract_lists(lf, call, monkeypatch):  # noqa: F811
     runs = _every_turn(lf, call, monkeypatch)
     sent = set().union(*(run.root_keys for run in runs))
+    listed, timed = set(_contract()["metadata_keys"]), _timing_keys()
 
     assert STAMPS <= sent
-    assert sent == set(_contract()["metadata_keys"]), f"the amul.* keys voice sends don't match the contract. {NEW_VERSION}"
+    # Each mark and stage a turn reached has its time; which ones depends on the path.
+    assert sent - timed == listed - timed, f"the amul.* keys voice sends don't match the contract. {NEW_VERSION}"
+    assert sent & timed and sent & timed <= listed
     for run in runs:
         # Trace-level fields on the root alone: the environment for every span, the
         # fields before any step, the end of the turn as the root closes.
@@ -246,6 +249,30 @@ def _function_nodes(path, name):
 
 def _run_turn_nodes():
     return _function_nodes(REPO / "app" / "services" / "chat.py", "run_turn")
+
+
+def _first_string_args(*methods):
+    return {
+        node.args[0].value
+        for node in _voice_nodes()
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr in methods
+        and node.args and isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, str)
+    }
+
+
+def _timing_keys():
+    """The keys of what voice times: each mark (trace.mark("ttft_ms")) as amul.<mark>, and
+    each stage (trace.stage("agent"), attach_stage_timing("history_load")) as amul.<stage>_ms."""
+    marks = {f"amul.{mark}" for mark in _first_string_args("mark")}
+    stages = {f"amul.{stage}_ms" for stage in _first_string_args("stage", "attach_stage_timing")}
+    return marks | stages
+
+
+def test_every_mark_and_stage_voice_times_has_its_key_in_the_contract():
+    listed = {key for key in _contract()["metadata_keys"] if key.endswith("_ms")}
+
+    assert {"amul.ttft_ms", "amul.history_load_ms"} <= _timing_keys()
+    assert _timing_keys() == listed, f"a mark's or stage's key. {NEW_VERSION}"
 
 
 def _outcomes_in(nodes):

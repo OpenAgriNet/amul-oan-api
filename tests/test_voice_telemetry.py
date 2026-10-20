@@ -321,7 +321,11 @@ def test_an_answered_turn_is_one_turn_v1_root_with_its_steps_under_it(lf, call):
     assert closed["metadata"]["amul.outcome"] == "success"
     assert closed["metadata"]["amul.served_tier"] == lf.step("agent").sent["metadata"]["amul.served_tier"]
     assert closed["metadata"]["amul.ttft_ms"].isdigit() and closed["metadata"]["amul.ttfr_ms"].isdigit()
-    assert set(closed["metadata"]) == {"amul.outcome", "amul.served_tier", "amul.ttft_ms", "amul.ttfr_ms"}
+    # Every mark and every stage the turn timed goes out, in whole milliseconds.
+    timed = {f"amul.{mark}" for mark in record.timings_ms} | {f"amul.{stage}_ms" for stage in record.stage_totals_ms}
+    assert {"amul.agent_ms", "amul.first_agent_text_ms"} <= timed
+    assert set(closed["metadata"]) == {"amul.outcome", "amul.served_tier"} | timed
+    assert all(closed["metadata"][key].isdigit() for key in timed)
     # The words, in this fixture's full text mode: the question and the answer as heard.
     assert lf.io == {"input": "My cow has fever", "output": "Give her water."}
     assert "input" not in root.kwargs and root.updates == []

@@ -713,12 +713,17 @@ class VoiceTrace:
             from langfuse import propagate_attributes
 
             # The outcome, the tier that answered and the timings are trace-level
-            # fields: set on the root, the current span, and nowhere else.
+            # fields: set on the root, the current span, and nowhere else. Each stage's
+            # time is amul.<stage>_ms: not every stage is a step (history_load and the
+            # session's ownership run before the root opens).
             fields = turn_v1_fields(
                 outcome=self.outcome,
                 served_tier=served_tier,
                 ttft_ms=_whole_ms(self.timings_ms.get("ttft_ms")),
                 ttfr_ms=_whole_ms(self.timings_ms.get("ttfr_ms")),
+                first_agent_text_ms=_whole_ms(self.timings_ms.get("first_agent_text_ms")),
+                first_translation_chunk_ms=_whole_ms(self.timings_ms.get("first_translation_chunk_ms")),
+                **{f"{stage}_ms": _whole_ms(ms) for stage, ms in self.stage_totals_ms.items()},
             )
             if fields:
                 with propagate_attributes(environment=self.environment, metadata=fields):
