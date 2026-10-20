@@ -313,6 +313,7 @@ def test_an_answered_turn_is_one_turn_v1_root_with_its_steps_under_it(lf, call):
         "amul.target_lang": "en",
         "amul.translation_mode": "direct",
         "amul.pipeline_profile": record.metadata["pipeline_profile"],
+        "amul.pipeline_flags": record.metadata["pipeline_flags"],
         "amul.persona": "farmer",
         "amul.process_id": "proc-1",
     }

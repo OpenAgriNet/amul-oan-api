@@ -714,6 +714,7 @@ class _ChatTelemetry:
             target_lang=target_lang,
             translation_mode="translated" if _translates_output(target_lang) else "direct",
             pipeline_profile=self._pipeline_profile,
+            pipeline_flags=_pipeline_trace.compact_metadata(self._pipeline_trace).get("pipeline_flags"),
             persona=turn.persona,
             # A farmer id is a phone; an anonymous or UUID user has none.
             farmer_id=normalize_phone_to_mobile(effective_user_id),

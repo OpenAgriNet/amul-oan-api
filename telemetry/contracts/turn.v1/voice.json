@@ -21,6 +21,7 @@
     "amul.persona",
     "amul.pipeline",
     "amul.pipeline_profile",
+    "amul.pipeline_flags",
     "amul.process_id",
     "amul.provider",
     "amul.release",

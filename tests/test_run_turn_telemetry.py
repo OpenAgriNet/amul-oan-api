@@ -18,6 +18,7 @@ os.environ.setdefault("OPENAI_API_KEY", "test-key")
 import pytest
 
 from app.channels.chat import WEB
+from app.llm_core.trace import snapshot_flags
 from app.services import chat as chat_service
 from app.turn.types import TextEmission, Turn
 from tests.test_chat_turn_contract import patch_turn
@@ -173,6 +174,9 @@ def test_chat_telemetry_writes_the_turn_v1_contract(monkeypatch):
     assert metadata["amul.pipeline"] == "webapp" and metadata["amul.direction"] == "inbound"
     assert metadata["amul.translation_mode"] == "translated" and metadata["amul.farmer_id"] == "9000000000"
     assert (metadata["amul.source_lang"], metadata["amul.target_lang"], metadata["amul.persona"]) == ("gu", "gu", "farmer")
+    # The guard flags that were on, as llm_core joins them; they can change while a release runs.
+    flags_on = ",".join(name.replace("_enabled", "") for name, on in snapshot_flags().items() if on)
+    assert metadata.get("amul.pipeline_flags") == (flags_on or None)
     assert all(isinstance(value, str) for value in metadata.values())
     # What the turn knows at its end lands on the root when it closes, with the root current again.
     assert close[1] == len(seen["spans"]) - 1 and seen["spans"][-1] == ("exit", "turn")

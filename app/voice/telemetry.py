@@ -107,6 +107,7 @@ class VoiceTelemetry:
             target_lang=self._target_lang,
             translation_mode=_translation_mode(self._source_lang, self._target_lang),
             pipeline_profile=pipeline_profile,
+            pipeline_flags=_pipeline_trace.compact_metadata(pipeline_trace).get("pipeline_flags"),
             persona=turn.persona,
             process_id=call.process_id if call is not None else None,
             request_epoch=call.request_epoch if call is not None else None,

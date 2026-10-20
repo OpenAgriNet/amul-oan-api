@@ -20,6 +20,7 @@
     "amul.persona",
     "amul.pipeline",
     "amul.pipeline_profile",
+    "amul.pipeline_flags",
     "amul.release",
     "amul.schema_version",
     "amul.served_tier",
