@@ -131,6 +131,89 @@ def test_a_failing_turn_records_error_and_still_closes_the_root(monkeypatch):
     assert events[-2:] == [("outcome", "error"), ("exit",)]
 
 
+def _open_span(seen):
+    open_spans = []
+    for event, name in seen["spans"]:
+        open_spans.append(name) if event == "enter" else open_spans.remove(name)
+    return open_spans[-1] if open_spans else None
+
+
+def _root_status(seen):
+    """What the turn writes on the current span's level and status, with the span open then."""
+    updates = []
+    seen["langfuse"].update_current_span.side_effect = lambda **kw: updates.append((kw, _open_span(seen)))
+    return updates
+
+
+def test_a_failing_turn_marks_its_root_an_error_with_what_it_raised(monkeypatch):
+    """turn.v1: level ERROR and the reason on the root whenever the outcome is error."""
+    seen = patch_turn(monkeypatch)
+    updates = _root_status(seen)
+
+    def _explode(**_kw):
+        raise RuntimeError("agent exploded")
+
+    monkeypatch.setattr(chat_service.agrinet_agent, "iter", _explode)
+
+    with pytest.raises(RuntimeError):
+        _run(_turn(), chat_service.CHAT_SURFACE)
+
+    assert updates == [({"level": "ERROR", "status_message": "agent exploded"}, "turn")]
+    assert {"level", "status_message"} <= set(json.loads(CONTRACT.read_text(encoding="utf-8"))["trace_fields"])
+
+
+def test_a_fail_closed_answer_marks_its_root_an_error_with_its_path(monkeypatch):
+    """Moderation failed and the farmer got the placeholder: an error the turn did not raise,
+    so the reason is the path that answered it."""
+    seen = patch_turn(monkeypatch)
+    updates = _root_status(seen)
+
+    async def _moderation_down(user_message, model=None):
+        raise RuntimeError("moderation down")
+
+    monkeypatch.setattr(chat_service.moderation_agent, "run", _moderation_down)
+
+    emissions = _run(_turn(source_lang="en", target_lang="en"), chat_service.CHAT_SURFACE)
+
+    assert emissions, "the fail-closed line still reaches the farmer"
+    assert updates == [({"level": "ERROR", "status_message": "fail-closed"}, "turn")]
+
+
+def test_an_error_turns_reason_is_what_it_raised_else_the_path_that_answered():
+    telemetry = chat_service._ChatTelemetry(_turn(), pipeline_profile="oss", pipeline_trace=None)
+
+    assert telemetry._error_reason() == "the turn ended without an answer"
+    telemetry.record_output("Please try again later.", "fail-closed")
+    assert telemetry._error_reason() == "fail-closed"
+    telemetry._raised = TimeoutError()
+    assert telemetry._error_reason() == "TimeoutError"
+    telemetry._raised = RuntimeError("x" * 400)
+    assert telemetry._error_reason() == "x" * 300
+
+
+def test_a_turn_that_did_not_fail_leaves_its_root_level_alone(monkeypatch):
+    """An answered turn, and one the caller hung up on (cancelled), are not errors."""
+    seen = patch_turn(monkeypatch)
+    updates = _root_status(seen)
+
+    _run(_turn(), chat_service.CHAT_SURFACE)
+
+    async def _hang_up():
+        turn = chat_service.run_turn(_turn(), chat_service.CHAT_SURFACE, scheduler=_Scheduler())
+        async for _ in turn:
+            break
+        await turn.aclose()
+
+    asyncio.run(_hang_up())
+
+    outcomes = [
+        call.kwargs["value"] for call in seen["langfuse"].score_current_trace.call_args_list
+        if call.kwargs.get("name") == "turn_outcome"
+    ]
+    assert outcomes == ["success", "cancelled"]
+    assert updates == []
+
+
 def test_a_bare_surface_runs_without_writing_a_trace(monkeypatch):
     seen = patch_turn(monkeypatch)
     bare = dataclasses.replace(chat_service.CHAT_SURFACE, telemetry=None)

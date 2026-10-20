@@ -682,9 +682,11 @@ class _ChatTelemetry:
     propagated to every span (#422); it is not a trace-level field.
 
     What is known only at the end (the answer, the outcome, the tier that served)
-    is written when the root closes, with the root as the current span again. The
-    metadata and field names are built in this module on purpose: the turn.v1
-    contract test reads them from these calls.
+    is written when the root closes, with the root as the current span again. A
+    turn that ends as an error marks its root level ERROR with the reason: what the
+    turn raised, else the path that answered it (``fail-closed``). The metadata and
+    field names are built in this module on purpose: the turn.v1 contract test
+    reads them from these calls.
     """
 
     def __init__(self, turn: Turn, *, pipeline_profile: str, pipeline_trace) -> None:
@@ -693,7 +695,9 @@ class _ChatTelemetry:
         self._pipeline_trace = pipeline_trace
         self._session_id_safe = (turn.session_id or "")[:200]
         self._output: str | None = None
+        self._output_label: str | None = None
         self._outcome: str | None = None
+        self._raised: BaseException | None = None
 
     @contextmanager
     def root(self):
@@ -753,6 +757,11 @@ class _ChatTelemetry:
                     logger.warning("Langfuse: failed to set trace input: %s", e)
             try:
                 yield
+            except BaseException as exc:
+                # Kept for the reason an error turn's root gives; how the turn ended
+                # is the outcome run_turn recorded, so a hang-up stays cancelled.
+                self._raised = exc
+                raise
             finally:
                 self._close(client, environment)
 
@@ -769,13 +778,23 @@ class _ChatTelemetry:
                     pass
             if self._output is not None:
                 _record_trace_output(self._output, "turn")
+            if self._outcome == "error":
+                # turn.v1: level ERROR and the reason whenever the outcome is error.
+                client.update_current_span(level="ERROR", status_message=self._error_reason())
         except Exception as e:
             logger.warning("Langfuse: failed to close the turn root: %s", e)
+
+    def _error_reason(self) -> str:
+        """Why the turn ended as an error: what it raised, else the path that answered it."""
+        if self._raised is not None:
+            return (str(self._raised) or type(self._raised).__name__)[:300]
+        return self._output_label or "the turn ended without an answer"
 
     def record_output(self, text: str, label: str) -> None:
         # Kept until the root closes: writing it now would put a trace-level field
         # on whichever step is open (the agent's, for the final answer).
         self._output = text
+        self._output_label = label
 
     def record_outcome(self, outcome: str) -> None:
         self._outcome = outcome
