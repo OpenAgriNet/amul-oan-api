@@ -316,6 +316,7 @@ def test_an_answered_turn_is_one_turn_v1_root_with_its_steps_under_it(lf, call):
         "amul.pipeline_flags": record.metadata["pipeline_flags"],
         "amul.persona": "farmer",
         "amul.process_id": "proc-1",
+        "amul.signed_in": "true",
     }
     assert closed["metadata"]["amul.outcome"] == "success"
     assert closed["metadata"]["amul.served_tier"] == lf.step("agent").sent["metadata"]["amul.served_tier"]

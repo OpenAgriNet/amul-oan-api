@@ -111,6 +111,7 @@ class VoiceTelemetry:
             persona=turn.persona,
             process_id=call.process_id if call is not None else None,
             request_epoch=call.request_epoch if call is not None else None,
+            signed_in="true" if signed_in else "false",
             # The caller's number is a farmer id when the call signed in, and goes
             # out only where the deployment sends phones (VOICE_TRACE_USER_ID_MODE).
             farmer_id=normalize_phone_to_mobile(turn.user_id) if signed_in and trace.sends_phone else None,

@@ -29,6 +29,7 @@
     "amul.schema_version",
     "amul.served_tier",
     "amul.service",
+    "amul.signed_in",
     "amul.source_lang",
     "amul.target_lang",
     "amul.translation_mode",
