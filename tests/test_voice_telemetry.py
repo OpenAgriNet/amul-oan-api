@@ -326,8 +326,8 @@ def test_an_answered_turn_is_one_turn_v1_root_with_its_steps_under_it(lf, call):
     # Every mark and every stage the turn timed goes out, in whole milliseconds.
     timed = {f"amul.{mark}" for mark in record.timings_ms} | {f"amul.{stage}_ms" for stage in record.stage_totals_ms}
     assert {"amul.agent_ms", "amul.first_agent_text_ms"} <= timed
-    assert set(closed["metadata"]) == {"amul.outcome", "amul.served_tier"} | timed
-    assert all(closed["metadata"][key].isdigit() for key in timed)
+    assert set(closed["metadata"]) == {"amul.outcome", "amul.served_tier", "amul.total_ms"} | timed
+    assert all(closed["metadata"][key].isdigit() for key in timed | {"amul.total_ms"})
     # The words: the question and the answer as heard.
     assert lf.io == {"input": "My cow has fever", "output": "Give her water."}
     assert "input" not in root.kwargs and root.updates == []
@@ -401,6 +401,25 @@ def test_the_summary_log_holds_no_words_no_number_and_no_hash(lf, call, caplog):
         assert private not in logged
     assert not _SHA256.search(logged)
     assert json.loads(logged.split(" ", 1)[1])["query"] == {"chars": len("My cow has fever")}
+
+
+def test_the_root_carries_the_turns_whole_time_from_the_request_coming_in(lf, caplog):
+    """The root opens after claiming the session and loading its history, so its span is not
+    the whole turn; amul.total_ms is, from the request coming in, as the summary log has it."""
+    caplog.set_level("INFO", logger=voice_trace.logger.name)
+    route = voice_telemetry.RouteTimings(
+        started_at=time.perf_counter() - 1.0, ownership_claim_ms=3.0, history_load_ms=4.0, history_messages=0
+    )
+    telemetry = voice_telemetry.VoiceTelemetry(
+        _turn(), pipeline_profile="oss", pipeline_trace=_execution().begin_trace(), route=route
+    )
+    with telemetry.root():
+        pass
+
+    (logged,) = [r.getMessage() for r in caplog.records if r.getMessage().startswith("VOICE_TRACE_SUMMARY")]
+    total_ms = json.loads(logged.split(" ", 1)[1])["total_ms"]
+    assert total_ms >= 1000.0
+    assert lf.closed["amul.total_ms"] == str(int(round(total_ms)))
 
 
 @pytest.mark.parametrize("query, path, stage", [
@@ -568,8 +587,10 @@ def test_the_request_is_recorded_as_voice_records_it(lf):
     # The agent's primary tier, as voice's request_model and request_provider.
     assert (record.metadata["request_model"], record.metadata["request_provider"]) == ("gemma", "vllm")
     assert record.metadata["pc_agent"].startswith("vllm:gemma@")
-    # Nothing a tier served and nothing timed: the root closes with the outcome alone.
-    assert lf.closed == {"amul.outcome": "success"}
+    # Nothing a tier served and nothing timed: the root closes with the outcome and the
+    # turn's whole time alone.
+    assert set(lf.closed) == {"amul.outcome", "amul.total_ms"}
+    assert lf.closed["amul.outcome"] == "success" and lf.closed["amul.total_ms"].isdigit()
 
 
 def test_the_turns_trace_is_current_only_inside_its_root(lf):

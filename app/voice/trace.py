@@ -628,14 +628,14 @@ class VoiceTrace:
             "response": text_length("".join(self.response_parts)),
         }
         if self.root_observation is not None:
-            self._close_root(error=error, served_tier=served_tier)
+            self._close_root(error=error, served_tier=served_tier, total_ms=summary["total_ms"])
         if getattr(settings, "voice_trace_log_summary", True):
             try:
                 logger.info("VOICE_TRACE_SUMMARY %s", json.dumps(summary, ensure_ascii=False, default=str))
             except Exception as exc:
                 logger.debug("Voice trace summary logging failed: %s", exc)
 
-    def _close_root(self, *, error: BaseException | None, served_tier: Optional[str]) -> None:
+    def _close_root(self, *, error: BaseException | None, served_tier: Optional[str], total_ms: float) -> None:
         self._record_nudge()
         try:
             from langfuse import propagate_attributes
@@ -643,10 +643,12 @@ class VoiceTrace:
             # The outcome, the tier that answered and the timings are trace-level
             # fields: set on the root, the current span, and nowhere else. Each stage's
             # time is amul.<stage>_ms: not every stage is a step (history_load and the
-            # session's ownership run before the root opens).
+            # session's ownership run before the root opens). For the same reason the
+            # turn's whole time is amul.total_ms, as the summary log has it.
             fields = turn_v1_fields(
                 outcome=self.outcome,
                 served_tier=served_tier,
+                total_ms=_whole_ms(total_ms),
                 ttft_ms=_whole_ms(self.timings_ms.get("ttft_ms")),
                 ttfr_ms=_whole_ms(self.timings_ms.get("ttfr_ms")),
                 first_agent_text_ms=_whole_ms(self.timings_ms.get("first_agent_text_ms")),

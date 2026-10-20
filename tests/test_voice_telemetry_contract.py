@@ -269,7 +269,8 @@ def test_every_mark_and_stage_voice_times_has_its_key_in_the_contract():
     listed = {key for key in _contract()["metadata_keys"] if key.endswith("_ms")}
 
     assert {"amul.ttft_ms", "amul.history_load_ms"} <= _timing_keys()
-    assert _timing_keys() == listed, f"a mark's or stage's key. {NEW_VERSION}"
+    # Beside them, the turn's whole time, which no mark or stage is.
+    assert _timing_keys() | {"amul.total_ms"} == listed, f"a mark's or stage's key. {NEW_VERSION}"
 
 
 def _outcomes_in(nodes):
