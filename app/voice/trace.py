@@ -229,6 +229,8 @@ class VoiceTrace:
     langfuse_client: Any | None = None
     route: Optional[str] = None
     outcome: Optional[str] = None
+    #: A failure the turn caught and answered with the trouble line, as its reason.
+    failure: Optional[str] = None
     root_observation: Any | None = None
     #: The root's amul.* keys (turn.v1), set by VoiceTelemetry before the root opens.
     root_metadata: dict[str, str] = field(default_factory=dict)
@@ -376,6 +378,12 @@ class VoiceTrace:
     def set_outcome(self, outcome: str) -> None:
         self.outcome = outcome
         self.metadata["outcome"] = outcome
+
+    def record_failure(self, error: BaseException) -> None:
+        """A failure the sink caught and spoke the trouble line for: nothing is raised out
+        of the turn, so this is the reason its root gives. The first one is the cause."""
+        if self.failure is None:
+            self.failure = _reason(error)
 
     def set_moderation(self, verdict: Any | None) -> None:
         def _pick(name: str, fallback: Any = None) -> Any:
@@ -635,6 +643,11 @@ class VoiceTrace:
             except Exception as exc:
                 logger.debug("Voice trace summary logging failed: %s", exc)
 
+    def _error_reason(self, error: BaseException | None) -> str:
+        if error is not None:
+            return _reason(error)
+        return self.failure or self.route or "the turn ended without an answer"
+
     def _close_root(self, *, error: BaseException | None, served_tier: Optional[str], total_ms: float) -> None:
         self._record_nudge()
         try:
@@ -665,14 +678,18 @@ class VoiceTrace:
         except Exception as exc:
             logger.debug("Voice Langfuse root close failed: %s", exc)
         if error is not None or self.outcome == "error":
-            # level = ERROR whenever the outcome is error (turn.v1), with the reason
-            # when the turn raised; a failure the sink spoke the trouble line for has
-            # its reason in the log.
-            _safe_update(self.root_observation, level="ERROR", status_message=str(error)[:300] if error else None)
+            # level = ERROR whenever the outcome is error (turn.v1), with the reason: what
+            # the turn raised, else the failure the sink caught and spoke the trouble line
+            # for, else the path that answered it.
+            _safe_update(self.root_observation, level="ERROR", status_message=self._error_reason(error))
         try:
             self.root_observation.end()
         except Exception as exc:
             logger.debug("Langfuse root observation end failed: %s", exc)
+
+
+def _reason(error: BaseException) -> str:
+    return (str(error) or type(error).__name__)[:300]
 
 
 def _whole_ms(value: Optional[float]) -> Optional[int]:

@@ -406,6 +406,7 @@ class VoiceSink:
                     yield text
         except Exception as error:
             self._failed = True
+            current_trace().record_failure(error)
             logger.error(
                 "Voice agent stream failed %s first token; session_id=%s process_id=%s error=%s",
                 "after" if self._agent_started else "before",
@@ -535,6 +536,7 @@ class VoiceSink:
                     )
         except Exception as e:
             trace.increment("output_translation_errors")
+            trace.record_failure(e)
             self._failed = True
             logger.error(
                 "Translation pipeline output translation failed for session_id=%s error=%s",

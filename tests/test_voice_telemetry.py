@@ -679,13 +679,15 @@ def _agent_on(monkeypatch, *tiers):
 _GPT_MINI = ("managed", "openai", "gpt-mini")
 
 
-@pytest.mark.parametrize("tiers, answered, fell_back, served", [
-    pytest.param([(_MANAGED, "up")], _GPT_MINI, False, "openai:gpt-mini[0]", id="answers"),
-    pytest.param([(_OSS, "down"), (_MANAGED, "up")], _GPT_MINI, True, "openai:gpt-mini[1]", id="falls back"),
-    pytest.param([(_MANAGED, "breaks off")], _GPT_MINI, False, None, id="breaks off after its first words"),
-    pytest.param([(_OSS, "down"), (_MANAGED, "down")], ("failed",) * 3, True, None, id="every tier is down"),
+@pytest.mark.parametrize("tiers, answered, fell_back, served, reason", [
+    pytest.param([(_MANAGED, "up")], _GPT_MINI, False, "openai:gpt-mini[0]", None, id="answers"),
+    pytest.param([(_OSS, "down"), (_MANAGED, "up")], _GPT_MINI, True, "openai:gpt-mini[1]", None, id="falls back"),
+    pytest.param([(_MANAGED, "breaks off")], _GPT_MINI, False, None, "stream reset", id="breaks off after its first words"),
+    pytest.param([(_OSS, "down"), (_MANAGED, "down")], ("failed",) * 3, True, None, "tier down", id="every tier is down"),
 ])
-def test_the_agent_block_names_the_model_that_answered_as_voice_did(lf, call, monkeypatch, tiers, answered, fell_back, served):
+def test_the_agent_block_names_the_model_that_answered_as_voice_did(
+    lf, call, monkeypatch, tiers, answered, fell_back, served, reason
+):
     _agent_on(monkeypatch, *tiers)
 
     _run(_turn(history=_PRIOR))
@@ -698,11 +700,12 @@ def test_the_agent_block_names_the_model_that_answered_as_voice_did(lf, call, mo
         assert tuple(block.get(f"first_token_committed_{key}") for key in ("tier", "provider", "model")) == committed
         assert block["fallback_used"] is fell_back
     # On the trace: the tier that served the answer, as route[index], and the attempts
-    # it took; none when no tier finished an answer (the step and the turn are errors).
+    # it took; none when no tier finished an answer (the step and the turn are errors, and
+    # the turn's reason is the failure the sink caught and spoke the trouble line for).
     sent = lf.step("agent").sent
     assert (sent["metadata"].get("amul.served_tier"), lf.closed.get("amul.served_tier")) == (served, served)
     if served is None:
-        assert lf.closed["amul.outcome"] == "error" and lf.root.updates == [{"level": "ERROR", "status_message": None}]
+        assert lf.closed["amul.outcome"] == "error" and lf.root.updates == [{"level": "ERROR", "status_message": reason}]
     else:
         assert sent["metadata"]["amul.attempts"] == str(int(served[-2]) + 1)
 
@@ -891,6 +894,22 @@ def test_a_failed_output_translation_is_counted(trace, monkeypatch):
     _speak(_English(["Give the cow water."]))
 
     assert trace.counters["output_translation_errors"] == 1
+    # The caller heard the trouble line; the failure is the turn's reason if it ends as an error.
+    assert trace.failure == "translategemma down"
+
+
+def test_an_error_turns_reason_is_what_it_raised_else_what_it_caught_else_its_path():
+    trace = voice_trace.VoiceTrace(session_id="s", user_id="u", source_lang="gu", target_lang="gu", query="q", enabled=False)
+
+    assert trace._error_reason(None) == "the turn ended without an answer"
+    trace.set_route("pretranslation_empty")
+    assert trace._error_reason(None) == "pretranslation_empty"
+    trace.record_failure(RuntimeError("tier down"))
+    trace.record_failure(RuntimeError("translategemma down"))
+    assert trace._error_reason(None) == "tier down"
+    assert trace._error_reason(RuntimeError("redis down")) == "redis down"
+    assert trace._error_reason(TimeoutError()) == "TimeoutError"
+    assert trace._error_reason(RuntimeError("x" * 400)) == "x" * 300
 
 
 def test_a_stream_nothing_was_heard_from_stops_the_nudge_as_stream_ended(trace):
