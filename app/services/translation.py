@@ -114,87 +114,241 @@ VOICE_GU_PREFERRED_TRANSLATION_RULES = [
 # aliases as chat. Channel-specific replacement behavior remains separate.
 
 
-def _gu_policy_pattern(src: str, dst: str) -> str:
-    """The regex for one forbidden term.
-
-    A replacement that contains its own term would rewrite text that already
-    says it, and its own output on every later pass: "પોટેશિયમ પરમેંગેનેટ" ->
-    "પોટેશિયમ પરમેંગેનેટના દ્રાવણ" turned "પોટેશિયમ પરમેંગેનેટનું દ્રાવણ" into
-    "પોટેશિયમ પરમેંગેનેટના દ્રાવણનું દ્રાવણ". So the term is left alone where the
-    words the replacement adds are already beside it. What is glued to the term
-    (a case ending such as ના, or a bracket voice strips) may differ.
-    """
-    pattern = re.escape(src)
-    at = dst.find(src)
+def _gu_policy_pattern(source: str, replacement: str) -> str:
+    """Build an idempotent pattern when a replacement contains its source."""
+    pattern = re.escape(source)
+    at = replacement.find(source)
     if at < 0:
         return pattern
-    before = dst[:at]
+    before = replacement[:at]
     words_before = re.sub(r"\S*$", "", before)
-    words_after = re.sub(r"^\S*", "", dst[at + len(src):]).strip()
+    words_after = re.sub(r"^\S*", "", replacement[at + len(source):]).strip()
     alternatives = []
     if words_before.strip():
-        alternatives.append(f"(?<!{re.escape(before)})(?<!{re.escape(words_before)}){pattern}")
+        alternatives.append(
+            f"(?<!{re.escape(before)})(?<!{re.escape(words_before)}){pattern}"
+        )
     if words_after:
         alternatives.append(rf"{pattern}(?!\S*\s*{re.escape(words_after)})")
     return "(?:" + "|".join(alternatives) + ")" if alternatives else pattern
 
 
-def _build_gu_policy_replacements(
+VOICE_KEPT_GU_POLICY_TERMS = frozenset(
+    {"પાડુના", "વોડકી", "ટીડીએન", "પોટેશિયમ પરમેંગેનેટ"}
+)
+
+
+def _build_gu_policy_term_rules(
     policy: dict, *, skip: frozenset[str] = frozenset()
-) -> list[tuple[str, str]]:
+) -> list[tuple[str, str, bool, bool]]:
     forbidden = policy.get("forbidden", {}) if isinstance(policy, dict) else {}
     if not isinstance(forbidden, dict):
         return []
-    # Longer keys first so phrase-level replacements win before single-word ones.
-    items = sorted(
-        [
-            (str(k).strip(), str(v).strip())
-            for k, v in forbidden.items()
-            if str(k).strip() and str(v).strip() and str(k).strip() not in skip
-        ],
-        key=lambda kv: len(kv[0]),
-        reverse=True,
-    )
-    out: list[tuple[str, str]] = []
-    for src, dst in items:
-        out.append((_gu_policy_pattern(src, dst), dst))
-    return out
+    return [
+        (str(source).strip(), str(replacement).strip(), False, False)
+        for source, replacement in forbidden.items()
+        if str(source).strip()
+        and str(replacement).strip()
+        and str(source).strip() not in skip
+    ]
 
 
 GU_POST_REPLACEMENTS_BASE = [
     (r"(?i)red\s*colour\s*-?\s*delete", ""),
     (r"(?i)red\s*colour", ""),
-    # Keep only script/format cleanup and a couple of safe transliteration fixes here.
-    # Terminology ownership should live in the glossary/policy layers.
-    (r"(?i)\bpaho\b", "બાવલું"),
-    (r"ગર્ભવતી", "ગાભણ"),
+    # Keep only script/format cleanup here. Terminology is handled by the
+    # ordered rules below so it can be recognized across streaming chunks.
     # TranslateGemma confuses the digit ૫ with the letter પ. Adjacency to a
     # Gujarati digit disambiguates: "૧પ" is 15, not "1p".
     (r"(?<=[૦-૯])પ", "૫"),
     (r"પ(?=[૦-૯])", "૫"),
 ]
-GU_POLICY_REPLACEMENTS = _build_gu_policy_replacements(GU_TERM_POLICY)
-GU_POST_REPLACEMENTS = GU_POST_REPLACEMENTS_BASE + GU_POLICY_REPLACEMENTS
-# Shared policy terms voice leaves as they are, as voice-oan-api does. Voice
-# removed પાડુના -> બચ્ચાંના in c7f4b80 (#158): a buffalo calf stays a buffalo
-# calf when the farmer did not name the species. Voice never had વોડકી -> પાડી
-# (98abd41, chat only): the glossary's own Heifer rows list વોડકી, and પાડી is
-# a female buffalo calf. Nor ટીડીએન -> કુલ પાચ્ય પોષક તત્વ (ટીડીએન) and
-# પોટેશિયમ પરમેંગેનેટ -> પોટેશિયમ પરમેંગેનેટના દ્રાવણ (98abd41 too). These
-# rules run on one streamed chunk at a time, so where the words beside the term
-# came in the chunk before, the term was rewritten all the same:
-# "આ કુલ પાચ્ય પોષક તત્વ (" + "ટીડીએન) છે." said the phrase twice. Chat keeps all four.
-VOICE_KEPT_GU_POLICY_TERMS = frozenset({"પાડુના", "વોડકી", "ટીડીએન", "પોટેશિયમ પરમેંગેનેટ"})
-VOICE_GU_POST_REPLACEMENTS = GU_POST_REPLACEMENTS_BASE + _build_gu_policy_replacements(
-    GU_TERM_POLICY, skip=VOICE_KEPT_GU_POLICY_TERMS
-)
+
 CHAT_ONLY_GU_POST_REPLACEMENTS = [
-    # Canonicalize organic wording in chat output.
-    (r"(?i)\borganic\b", "જૈવિક"),
-    (r"ઓર્ગેનિક", "જૈવિક"),
+    # Preserve malformed organic typo cleanup. Canonical English/Gujarati
+    # organic terms are handled by the stream-safe chat terminology rules.
     (r"જવિૈ\s*ક", "જૈવિક"),
     (r"ઓર્ગેનિર્ગે\s*ક", "જૈવિક"),
 ]
+
+# source, replacement, case-insensitive, whole-ASCII-token
+_GU_BODY_SLANG_TERMS = ("બૈડા", "બૈડું", "બૈડુ", "બરડા", "બરડું", "બરડુ")
+
+
+def _build_gu_body_context_term_rules() -> list[tuple[str, str, bool, bool]]:
+    """Keep voice back/body meaning intact across streaming boundaries."""
+    rules: list[tuple[str, str, bool, bool]] = []
+    for source in _GU_BODY_SLANG_TERMS:
+        for suffix in ("માં", "મા", "પર"):
+            rules.append((f"{source}{suffix}", f"પીઠ{suffix}", False, False))
+        for postposition in ("પર", "માં", "મા", "પાછળ"):
+            rules.append(
+                (f"{source} {postposition}", f"પીઠ {postposition}", False, False)
+            )
+        rules.append((f"{source} ની બાજુ", "પીઠની બાજુ", False, False))
+        for suffix in ("માં", "મા", "પર"):
+            rules.append(
+                (f"{source} ના ભાગ{suffix}", f"પીઠના ભાગ{suffix}", False, False)
+            )
+    return rules
+
+
+_GU_SHARED_FIXED_TERM_REPLACEMENTS: list[tuple[str, str, bool, bool]] = [
+    ("paho", "બાવલું", True, True),
+    ("ગર્ભવતી", "ગાભણ", False, False),
+]
+_GU_CHAT_TERM_REPLACEMENTS: list[tuple[str, str, bool, bool]] = [
+    ("organic", "જૈવિક", True, True),
+    ("ઓર્ગેનિક", "જૈવિક", False, False),
+]
+_GU_VOICE_TERM_REPLACEMENTS = _build_gu_body_context_term_rules()
+GU_TERM_REPLACEMENTS: list[tuple[str, str, bool, bool]] = sorted(
+    [*_GU_SHARED_FIXED_TERM_REPLACEMENTS, *_build_gu_policy_term_rules(GU_TERM_POLICY)],
+    key=lambda item: len(item[0]),
+    reverse=True,
+)
+
+
+def _term_rule_pattern(
+    source: str,
+    replacement: str,
+    case_insensitive: bool,
+    whole_ascii_token: bool,
+) -> str:
+    pattern = _gu_policy_pattern(source, replacement)
+    if whole_ascii_token:
+        pattern = rf"\b{pattern}\b"
+    if case_insensitive:
+        pattern = rf"(?i){pattern}"
+    return pattern
+
+
+def _term_rules_for_current_channel() -> list[tuple[str, str, bool, bool]]:
+    channel_rules = (
+        _GU_VOICE_TERM_REPLACEMENTS
+        if _is_voice_channel()
+        else _GU_CHAT_TERM_REPLACEMENTS
+    )
+    shared_rules = GU_TERM_REPLACEMENTS
+    if _is_voice_channel():
+        shared_rules = [
+            rule for rule in shared_rules if rule[0] not in VOICE_KEPT_GU_POLICY_TERMS
+        ]
+    return sorted(
+        [*channel_rules, *shared_rules],
+        key=lambda item: len(item[0]),
+        reverse=True,
+    )
+
+
+def _term_replacement_patterns(
+    rules: list[tuple[str, str, bool, bool]],
+) -> list[tuple[str, str]]:
+    return [
+        (
+            _term_rule_pattern(
+                source, replacement, case_insensitive, whole_ascii_token
+            ),
+            replacement,
+        )
+        for source, replacement, case_insensitive, whole_ascii_token in rules
+    ]
+
+
+# Compatibility inspection list used by existing imports/tests. Runtime channel
+# selection happens through _term_rules_for_current_channel().
+GU_POST_REPLACEMENTS = GU_POST_REPLACEMENTS_BASE + _term_replacement_patterns(
+    sorted(
+        [*GU_TERM_REPLACEMENTS, *_GU_CHAT_TERM_REPLACEMENTS, *_GU_VOICE_TERM_REPLACEMENTS],
+        key=lambda item: len(item[0]),
+        reverse=True,
+    )
+)
+
+
+def _apply_gu_term_replacements(text: str) -> str:
+    out = text
+    for pattern, replacement in _term_replacement_patterns(
+        _term_rules_for_current_channel()
+    ):
+        out = re.sub(pattern, replacement, out)
+    return out
+
+
+def _is_word_char(char: str) -> bool:
+    return bool(char and re.match(r"\w", char, flags=re.UNICODE))
+
+
+class _StreamingGujaratiTermNormalizer:
+    """Incrementally apply ordered literal rules with minimal prefix buffering."""
+
+    def __init__(self, target_lang: str):
+        self._enabled = target_lang.lower() in ("gujarati", "gu")
+        self._rules = _term_rules_for_current_channel() if self._enabled else []
+        self._pending = ""
+        self._previous_input_char = ""
+
+    @staticmethod
+    def _comparable(value: str, case_insensitive: bool) -> str:
+        return value.casefold() if case_insensitive else value
+
+    def feed(self, chunk: str) -> str:
+        if not self._enabled:
+            return chunk
+        self._pending += chunk
+        return self._drain(final=False)
+
+    def flush(self) -> str:
+        if not self._enabled:
+            return ""
+        return self._drain(final=True)
+
+    def _drain(self, *, final: bool) -> str:
+        emitted: list[str] = []
+        while self._pending:
+            matches: list[tuple[str, str, bool, bool]] = []
+            needs_more = False
+
+            for rule in self._rules:
+                source, _, case_insensitive, whole_ascii_token = rule
+                pending_cmp = self._comparable(self._pending, case_insensitive)
+                source_cmp = self._comparable(source, case_insensitive)
+
+                if len(self._pending) < len(source) and source_cmp.startswith(pending_cmp):
+                    if not whole_ascii_token or not _is_word_char(
+                        self._previous_input_char
+                    ):
+                        needs_more = True
+                    continue
+                if not pending_cmp.startswith(source_cmp):
+                    continue
+                if whole_ascii_token and _is_word_char(self._previous_input_char):
+                    continue
+                if whole_ascii_token and len(self._pending) == len(source) and not final:
+                    needs_more = True
+                    continue
+                if (
+                    whole_ascii_token
+                    and len(self._pending) > len(source)
+                    and _is_word_char(self._pending[len(source)])
+                ):
+                    continue
+                matches.append(rule)
+
+            if needs_more and not final:
+                break
+            if matches:
+                source, replacement, _, _ = matches[0]
+                emitted.append(replacement)
+                self._previous_input_char = source[-1]
+                self._pending = self._pending[len(source) :]
+                continue
+
+            emitted.append(self._pending[0])
+            self._previous_input_char = self._pending[0]
+            self._pending = self._pending[1:]
+
+        return "".join(emitted)
 
 
 # ── Protected proper nouns: pin a fixed Gujarati rendering ──────────────────────
@@ -372,11 +526,11 @@ async def _buffered_protected_stream(stream, triggers):
 # Chat maps all body slang -> શરીર uniformly via the shared gu_term_policy.json.
 # Voice additionally distinguishes back/flank context (-> પીઠ) from general body
 # context (-> શરીર), matching voice's live telephony behavior. Gated on the voice
-# channel; runs BEFORE GU_POST_REPLACEMENTS so the policy's uniform બૈડ->શરીર
-# entries become no-ops once the slang has already been contextually resolved.
+# channel; the stream-safe rule set mirrors these longer contextual matches before
+# the policy's generic body mapping.
 GU_WORD_BOUNDARY_START = r"(?<![઀-૿])"
 GU_WORD_BOUNDARY_END = r"(?![઀-૿])"
-GU_BODY_SLANG_VARIANTS = r"(?:બૈડા|બૈડું|બૈડુ|બરડા|બરડું|બરડુ)"
+GU_BODY_SLANG_VARIANTS = rf"(?:{'|'.join(map(re.escape, _GU_BODY_SLANG_TERMS))})"
 GU_BODY_BACK_SUFFIXES = r"(?:માં|મા|પર)"
 GU_BODY_BACK_POSTPOSITIONS = r"(?:પર|માં|મા|પાછળ)"
 GU_BODY_AGREEMENT_FIXES = [
@@ -492,6 +646,7 @@ def _post_normalize_gu_translation(
     target_lang: str,
     *,
     strip_outer: bool = False,
+    apply_term_replacements: bool = True,
 ) -> str:
     if target_lang.lower() not in ("gujarati", "gu"):
         return text
@@ -503,8 +658,10 @@ def _post_normalize_gu_translation(
     else:
         for pat, repl in CHAT_ONLY_GU_POST_REPLACEMENTS:
             out = re.sub(pat, repl, out)
-    for pat, repl in VOICE_GU_POST_REPLACEMENTS if _is_voice_channel() else GU_POST_REPLACEMENTS:
+    for pat, repl in GU_POST_REPLACEMENTS_BASE:
         out = re.sub(pat, repl, out)
+    if apply_term_replacements:
+        out = _apply_gu_term_replacements(out)
     # Keep assistant first-person Gujarati conjugation feminine on all channels.
     for pat, repl in GU_FEMININE_SELF_REFERENCE_REPLACEMENTS:
         out = pat.sub(repl, out)
@@ -529,6 +686,33 @@ def _post_normalize_gu_translation(
     out = re.sub(r"[ \t]{2,}", " ", out)
     out = re.sub(r"\n{3,}", "\n\n", out)
     return out.strip() if strip_outer else out
+
+
+def _finish_streaming_translation_chunk(text: str, target_lang: str) -> str:
+    if not text:
+        return ""
+    return _post_normalize_gu_translation(
+        text,
+        target_lang,
+        strip_outer=False,
+        apply_term_replacements=False,
+    )
+
+
+def _normalize_streaming_translation_chunk(
+    normalizer: _StreamingGujaratiTermNormalizer,
+    content: str,
+    target_lang: str,
+) -> str:
+    safe_text = normalizer.feed(_fix_dandas(content, target_lang))
+    return _finish_streaming_translation_chunk(safe_text, target_lang)
+
+
+def _flush_streaming_translation(
+    normalizer: _StreamingGujaratiTermNormalizer,
+    target_lang: str,
+) -> str:
+    return _finish_streaming_translation_chunk(normalizer.flush(), target_lang)
 
 
 # Only the 27b-base TranslateGemma is deployed, BEHIND AN NGINX LB — the SINGULAR
@@ -902,7 +1086,7 @@ def _prepare_translation_inputs(text, source_lang, target_lang, max_output_chars
 
 
 async def _translategemma_stream(descriptor, prompt, source_lang, target_lang, text, temperature, max_tokens):
-    """Stream TranslateGemma chunks. Langfuse wraps the call when it is available."""
+    """Stream TranslateGemma chunks with incremental, chunk-safe normalization."""
     langfuse = _get_langfuse()
     observation = (
         langfuse.start_as_current_observation(
@@ -941,7 +1125,8 @@ async def _translategemma_stream(descriptor, prompt, source_lang, target_lang, t
 async def _raw_translategemma_stream(
     descriptor, prompt, target_lang, temperature, max_tokens
 ):
-    """Execute TranslateGemma streaming request and yield transformed chunks."""
+    """Execute TranslateGemma streaming with incremental, chunk-safe normalization."""
+    normalizer = _StreamingGujaratiTermNormalizer(target_lang)
     async with aiohttp.ClientSession() as session:
         async with session.post(
             descriptor.completions_url,
@@ -977,11 +1162,14 @@ async def _raw_translategemma_stream(
                     content = chunk_data["choices"][0].get("text", "")
                     if not content:
                         continue
-                    content = _fix_dandas(content, target_lang)
-                    content = _post_normalize_gu_translation(
-                        content, target_lang, strip_outer=False,
+                    content = _normalize_streaming_translation_chunk(
+                        normalizer, content, target_lang,
                     )
-                    yield content
+                    if content:
+                        yield content
+    tail = _flush_streaming_translation(normalizer, target_lang)
+    if tail:
+        yield tail
 
 
 async def _raw_llm_translation_stream(
@@ -1023,11 +1211,13 @@ async def _llm_translation_stream(
     client, model_name, instruction, source_lang, target_lang, text, temperature,
     max_tokens, *, provider="openai", grammar=None,
 ):
-    """Translate through a provider-native LLM client, preserving transforms.
+    """Translate through a provider-native LLM client with chunk-safe transforms.
 
     A grammar-constrained stream that ends with no text raises; when nothing was yielded
-    the chain falls back to the next tier instead of serving an empty translation."""
+    the chain falls back to the next tier instead of serving an empty translation.
+    """
     langfuse = _get_langfuse()
+    normalizer = _StreamingGujaratiTermNormalizer(target_lang)
     observation = (
         langfuse.start_as_current_observation(
             name="stream_translation",
@@ -1055,10 +1245,16 @@ async def _llm_translation_stream(
         ):
             if not content:
                 continue
-            content = _fix_dandas(content, target_lang)
-            content = _post_normalize_gu_translation(content, target_lang, strip_outer=False)
-            translated_parts.append(content)
-            yield content
+            content = _normalize_streaming_translation_chunk(
+                normalizer, content, target_lang,
+            )
+            if content:
+                translated_parts.append(content)
+                yield content
+        tail = _flush_streaming_translation(normalizer, target_lang)
+        if tail:
+            translated_parts.append(tail)
+            yield tail
         if span is not None:
             span.update(output="".join(translated_parts))
         if grammar is not None and not "".join(translated_parts).strip():

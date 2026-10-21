@@ -2,8 +2,8 @@
 
 Covers (no network — the aiohttp SSE + AsyncOpenAI stream are mocked):
   * guards short-circuit WITHOUT any model call (untranslatable / same-lang / empty);
-  * the per-chunk transform pipeline (_fix_dandas -> _post_normalize_gu_translation)
-    is applied identically on the TranslateGemma tier and the LLM overflow tier;
+  * the incremental terminology pipeline is applied identically on the
+    TranslateGemma tier and every managed LLM overflow protocol;
   * the built instruction carries the glossary Rules + GU style rules + length rule
     (shared verbatim by both tiers);
   * chain walk order = TranslateGemma first, LLM overflow second, with first-chunk
@@ -282,6 +282,71 @@ async def test_llm_stream_applies_identical_per_chunk_transforms():
     ]
     # Byte-identical to the TG tier's transformed output.
     assert out == ["ગાભણ.", " બીજું"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("chunks", "expected"),
+    [
+        (["ગર્ભ", "વતી છે"], "ગાભણ છે"),
+        (["આ વો", "ડકી છે"], "આ પાડી છે"),
+    ],
+)
+async def test_tg_and_managed_streams_replace_terms_across_chunk_boundaries(
+    monkeypatch, chunks, expected
+):
+    _patch_aiohttp(monkeypatch, _FakeResp(sse=_sse(*chunks)))
+    tg = [
+        c async for c in tr._translategemma_stream(
+            _FakeTGDescriptor(), "prompt", "english", "gujarati", "src", 0.0, 2048
+        )
+    ]
+    llm = [
+        c async for c in tr._llm_translation_stream(
+            _FakeOpenAIClient(stream_contents=chunks),
+            "gpt-4.1", "instruction", "english", "gujarati", "src", 0.0, 2048,
+        )
+    ]
+    assert "".join(tg) == "".join(llm) == expected
+
+
+@pytest.mark.asyncio
+async def test_voice_body_context_is_stream_safe_on_both_tiers(monkeypatch):
+    chunks = ["પશુના બૈ", "ડા પર સોજો છે"]
+    expected = "પશુના પીઠ પર સોજો છે"
+    _patch_aiohttp(monkeypatch, _FakeResp(sse=_sse(*chunks)))
+
+    with tr.translation_channel("voice"):
+        tg = [
+            c async for c in tr._translategemma_stream(
+                _FakeTGDescriptor(), "prompt", "english", "gujarati", "src", 0.0, 2048
+            )
+        ]
+        llm = [
+            c async for c in tr._llm_translation_stream(
+                _FakeOpenAIClient(stream_contents=chunks),
+                "gpt-4.1", "instruction", "english", "gujarati", "src", 0.0, 2048,
+            )
+        ]
+
+    assert "".join(tg) == "".join(llm) == expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("provider", ["openai", "anthropic", "gemini"])
+async def test_every_managed_provider_uses_stream_safe_terms(monkeypatch, provider):
+    async def raw_stream(*_args, **_kwargs):
+        yield "ગર્ભ"
+        yield "વતી છે"
+
+    monkeypatch.setattr(tr, "_raw_llm_translation_stream", raw_stream)
+    out = [
+        c async for c in tr._llm_translation_stream(
+            object(), provider, "instruction", "english", "gujarati", "src", 0.0,
+            2048, provider=provider,
+        )
+    ]
+    assert "".join(out) == "ગાભણ છે"
 
 
 @pytest.mark.asyncio
