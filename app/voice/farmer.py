@@ -73,6 +73,9 @@ def _append_animal_records(lines: list[str], envelope: FarmerDataEnvelope) -> No
             if not masked:
                 continue
             parts = [f"tag ending {masked}"]
+            # The name the farmer calls the animal, so a spoken name finds its record.
+            if data.get("animalName"):
+                parts.append(f"name={data['animalName']}")
             if data.get("animalType"):
                 parts.append(f"type={data['animalType']}")
             breeding = data.get("lastBreedingActivity")
