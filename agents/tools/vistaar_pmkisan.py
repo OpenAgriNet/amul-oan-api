@@ -17,8 +17,10 @@ from agents.tools.beckn.operations import (
     get_beckn_operation_store,
 )
 from agents.tools.session_pmkisan import (
+    allow_otp_request,
     clear_pm_kisan_session,
     get_pm_kisan_session,
+    resolve_identifier,
     set_pm_kisan_session,
 )
 from app.config import settings
@@ -44,11 +46,6 @@ def _redact_tool_span(outcome: str) -> None:
 
 def _normalize_identifier(value: str | None) -> str:
     return re.sub(r"\s+", "", to_ascii_digits(value or "")).upper()
-
-
-def _normalize_otp(value: str | None) -> str | None:
-    normalized = re.sub(r"\s+", "", to_ascii_digits(value or ""))
-    return normalized if re.fullmatch(r"\d{4}", normalized) else None
 
 
 def _orders(payload: Mapping[str, Any]) -> Iterable[Mapping[str, Any]]:
@@ -81,12 +78,17 @@ def _init_outcome(payload: Mapping[str, Any]) -> str | None:
     for order in _orders(payload):
         items = order.get("items")
         for item in items if isinstance(items, list) else []:
-            if isinstance(item, Mapping):
-                codes = _tag_codes(item.get("tags"))
-                if "otp_status" in codes:
-                    return "otp_status"
-                if "otp_error" in codes:
-                    return "otp_error"
+            if not isinstance(item, Mapping):
+                continue
+            tags = item.get("tags")
+            if "otp_status" in _tag_codes(tags):
+                return "otp_sent"
+            for tag in tags if isinstance(tags, list) else []:
+                descriptor = tag.get("descriptor") if isinstance(tag, Mapping) else None
+                if isinstance(descriptor, Mapping) and descriptor.get("code") == "otp_error":
+                    # BV also answers "Try again" when its own service fails.
+                    short_desc = str(descriptor.get("short_desc") or "")
+                    return "no_record" if "no record found" in short_desc.lower() else "service_error"
     return None
 
 
@@ -103,7 +105,21 @@ def _mask_phone(value: object) -> str:
     return f"******{digits[-4:]}" if digits else ""
 
 
-def _status_summary(order: Mapping[str, Any]) -> str:
+def _mask_keep_last4(value: str) -> str:
+    return "*" * max(len(value) - 4, 0) + value[-4:]
+
+
+def _mask_registration(text: str, identifier: str) -> str:
+    text = re.sub(
+        r"(Registration (?:Number|No\.?)\s*[-:]\s*)([A-Za-z0-9]+)",
+        lambda match: match.group(1) + _mask_keep_last4(match.group(2)),
+        text,
+        flags=re.IGNORECASE,
+    )
+    return text.replace(identifier, _mask_keep_last4(identifier)) if len(identifier) > 4 else text
+
+
+def _status_summary(order: Mapping[str, Any], identifier: str) -> str:
     lines: list[str] = []
     state = order.get("state")
     if state:
@@ -134,7 +150,7 @@ def _status_summary(order: Mapping[str, Any]) -> str:
         updated_at = fulfillment_state.get("updated_at")
         if isinstance(updated_at, str) and updated_at:
             lines.append(f"Last updated: {updated_at}")
-    return "\n".join(lines)[:_MAX_RESULT_CHARS]
+    return _mask_registration("\n".join(lines), identifier)[:_MAX_RESULT_CHARS]
 
 
 async def prepare_pm_kisan_tool(
@@ -145,32 +161,57 @@ async def prepare_pm_kisan_tool(
 
 
 async def initiate_pm_kisan_status_check(
-    ctx: RunContext[FarmerContext], identifier: str = ""
+    ctx: RunContext[FarmerContext], identifier: str = "", use_account_mobile: bool = False
 ) -> str:
     """Send a PM-KISAN OTP for a farmer-provided identifier.
 
     Use this only when the farmer asks to check THEIR PM-KISAN beneficiary or
-    installment status. Never invent an identifier. When the farmer supplied no
-    identifier, the signed-in account mobile is used if available.
+    installment status. Never invent an identifier.
 
     Args:
         ctx: Current farmer and session context.
-        identifier: PM-KISAN registration number, beneficiary ID, or
-            registered mobile typed by the farmer; omit to use the signed-in mobile.
+        identifier: PM-KISAN registration number, beneficiary ID, mobile, or the
+            [AADHAAR_1234] placeholder exactly as it appears in the farmer's message.
+        use_account_mobile: True only after the farmer confirmed that the
+            registered mobile of this account should be used.
     """
     _redact_tool_span("started")
     session_id = ctx.deps.session_id
     if not session_id:
         _redact_tool_span("missing_session")
         return "A valid chat session is required. Ask the farmer to start again."
-    supplied = identifier or (ctx.deps.mobile if ctx.deps.signed_in else "")
+    if identifier:
+        supplied = await resolve_identifier(identifier, session_id, ctx.deps.mobile)
+        if supplied is None:
+            _redact_tool_span("identifier_expired")
+            return "Ask the farmer to type their Aadhaar number again."
+    elif ctx.deps.mobile and use_account_mobile:
+        supplied = ctx.deps.mobile
+    elif ctx.deps.mobile:
+        _redact_tool_span("confirm_mobile")
+        return (
+            "CONFIRM_MOBILE. Ask the farmer whether to check PM-KISAN with their registered "
+            f"mobile {_mask_phone(ctx.deps.mobile)}, or to type their PM-KISAN registration "
+            "number or Aadhaar instead."
+        )
+    else:
+        supplied = ""
     normalized = _normalize_identifier(supplied)
     if not normalized:
         _redact_tool_span("missing_identifier")
         return (
             "Ask the farmer for their PM-KISAN registration number, beneficiary ID, "
-            "or registered mobile number. Never guess it."
+            "Aadhaar, or registered mobile number. Never guess it."
         )
+    try:
+        allowed = await allow_otp_request(session_id, normalized)
+    except Exception:
+        logger.exception("PM-KISAN OTP request limit could not be checked")
+        _redact_tool_span("state_unavailable")
+        return "The PM-KISAN status service is temporarily unavailable. Please try again later."
+    if not allowed:
+        _redact_tool_span("rate_limited")
+        return "TOO_MANY_OTP_REQUESTS. Tell the farmer to try again after an hour."
 
     transaction_id = str(uuid.uuid4())
     message_id = str(uuid.uuid4())
@@ -215,13 +256,16 @@ async def initiate_pm_kisan_status_check(
         return "The PM-KISAN service returned an unreadable response. Please try again later."
 
     outcome = _init_outcome(result.payload)
-    if outcome == "otp_status":
+    if outcome == "otp_sent":
         _redact_tool_span("otp_sent")
         return "OTP_SENT. Ask the farmer for the 4-digit OTP sent to their registered mobile."
     await clear_pm_kisan_session(session_id, ctx.deps.mobile)
-    if outcome == "otp_error":
+    if outcome == "no_record":
         _redact_tool_span("no_record")
         return "NO_RECORD. Ask the farmer to check the identifier and start again."
+    if outcome == "service_error":
+        _redact_tool_span("service_error")
+        return "SERVICE_ERROR. The PM-KISAN service is not responding. Ask the farmer to try again later."
     _redact_tool_span("invalid_response")
     return "The PM-KISAN service returned an unreadable response. Please try again later."
 
@@ -247,7 +291,7 @@ async def _handle_status_result(
         _redact_tool_span("invalid_otp")
         return "INVALID_OTP. Ask the farmer to re-enter the 4-digit OTP."
 
-    summary = _status_summary(order)
+    summary = _status_summary(order, str(state.get("identifier") or ""))
     if not summary:
         state["last_status_message_id"] = ""
         await set_pm_kisan_session(ctx.deps.session_id, ctx.deps.mobile, state)
@@ -258,20 +302,16 @@ async def _handle_status_result(
     return "PM-KISAN STATUS FOUND. Present these exact details only to this farmer:\n" + summary
 
 
-async def check_pm_kisan_status_with_otp(
-    ctx: RunContext[FarmerContext], otp: str
-) -> str:
-    """Verify the farmer-provided four-digit OTP and fetch PM-KISAN status.
+async def check_pm_kisan_status_with_otp(ctx: RunContext[FarmerContext]) -> str:
+    """Verify the OTP the farmer just sent and fetch their PM-KISAN status.
+
+    The farmer's OTP appears as [OTP] in their message; the tool reads the real
+    digits itself, so never pass or repeat them.
 
     Args:
         ctx: Current farmer and session context.
-        otp: Exactly four digits typed by the farmer after an OTP was requested.
     """
     _redact_tool_span("started")
-    normalized_otp = _normalize_otp(otp)
-    if normalized_otp is None:
-        _redact_tool_span("invalid_otp_format")
-        return "Ask the farmer to enter the 4-digit OTP exactly as received."
     try:
         state = await get_pm_kisan_session(ctx.deps.session_id, ctx.deps.mobile)
     except Exception:
@@ -298,13 +338,19 @@ async def check_pm_kisan_status_with_otp(
             return "The previous OTP verification is still processing. Please wait and try again shortly."
         state["last_status_message_id"] = ""
 
+    otp = str(state.get("pending_otp") or "")
+    if not re.fullmatch(r"\d{4}", otp):
+        _redact_tool_span("invalid_otp_format")
+        return "Ask the farmer to send only the 4-digit OTP exactly as received."
+    # One submission per OTP the farmer sent.
+    state["pending_otp"] = ""
     message_id = str(uuid.uuid4())
     state["last_status_message_id"] = message_id
     try:
         await set_pm_kisan_session(ctx.deps.session_id, ctx.deps.mobile, state)
         result = await get_beckn_operation_client().submit_pm_kisan_otp(
             identifier=str(state["identifier"]),
-            otp=normalized_otp,
+            otp=otp,
             transaction_id=str(state["transaction_id"]),
             message_id=message_id,
             session_id=str(ctx.deps.session_id),

@@ -1165,12 +1165,16 @@ class BecknOperationClient:
             raise RuntimeError(
                 "PM-KISAN callbacks are missing configuration: " + ", ".join(missing)
             )
+        # BV production, or its sandbox for dev. Both check the OTP (10-07).
+        bv_bpps = {
+            "provider-network-vistaar.da.gov.in",
+            "bpp-network-playground-sandbox-vistaar.da.gov.in",
+        }
         if (
-            settings.vistaar_bpp_id != "provider-network-vistaar.da.gov.in"
-            or settings.vistaar_bpp_uri
-            != "https://provider-network-vistaar.da.gov.in"
+            settings.vistaar_bpp_id not in bv_bpps
+            or settings.vistaar_bpp_uri != f"https://{settings.vistaar_bpp_id}"
         ):
-            raise RuntimeError("PM-KISAN requires the production Bharat Vistaar BPP")
+            raise RuntimeError("PM-KISAN requires a Bharat Vistaar BPP")
         if settings.beckn_city_code != "std:080":
             raise RuntimeError("PM-KISAN requires BECKN_CITY_CODE=std:080")
 
