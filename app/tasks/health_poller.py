@@ -2,7 +2,7 @@
 
 A FastAPI-lifespan background task (mirrors ``farmer_refresh_worker`` start/stop)
 that, every ``HEALTH_POLLER_INTERVAL_MS``, GETs the LB ``/health`` for each
-distinct self-hosted endpoint in the loaded pipeline config and reports the
+distinct self-hosted endpoint in the loaded pipeline configs and reports the
 result into ``app.llm_core.health`` (``record_healthy_poll`` /
 ``record_failed_poll``). Failback is hysteretic (K healthy polls) — that lives in
 the registry; the poller only reports raw poll outcomes.
@@ -62,6 +62,18 @@ def _distinct_endpoints(pipeline) -> list[str]:
     return list(seen.keys())
 
 
+def _endpoints() -> list[str]:
+    """``_distinct_endpoints`` across every surface's config: one process can serve
+    chat and voice."""
+    from app.llm_core import runtime
+
+    return list(dict.fromkeys(
+        endpoint
+        for surface in runtime.surfaces()
+        for endpoint in _distinct_endpoints(runtime.get_pipeline(surface))
+    ))
+
+
 async def _poll_once(client, endpoints: list[str], timeout_s: float) -> None:
     """One sweep: GET ``/health`` for each endpoint, report the outcome."""
     from app.llm_core import health
@@ -87,7 +99,6 @@ async def _run_loop() -> None:
     # Imported here (not at module scope) so importing this task module stays
     # side-effect-free (mirrors farmer_refresh_worker).
     import httpx
-    from app.llm_core import runtime
 
     interval = settings.health_poller_interval_ms / 1000.0
     timeout_s = settings.health_poller_timeout_ms / 1000.0
@@ -98,7 +109,7 @@ async def _run_loop() -> None:
             try:
                 # Refresh every sweep so live Redis config changes update the
                 # monitored inventory within the normal config refresh window.
-                endpoints = _distinct_endpoints(runtime.get_pipeline())
+                endpoints = _endpoints()
                 await _poll_once(client, endpoints, timeout_s)
             except asyncio.CancelledError:
                 raise

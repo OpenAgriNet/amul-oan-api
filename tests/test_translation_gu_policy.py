@@ -84,6 +84,35 @@ def test_term_replacements_are_ordered_longest_first():
     assert lengths == sorted(lengths, reverse=True)
 
 
+@pytest.mark.parametrize("said, chat_says", [
+    ("પાડુના ઉછેર માટે શું કરવું?", "બચ્ચાંના ઉછેર માટે શું કરવું?"),
+    ("વોડકી ને દાણ આપો.", "પાડી ને દાણ આપો."),
+])
+def test_voice_keeps_the_calf_and_heifer_words_chat_rewrites(said, chat_says):
+    with translation_channel("voice"):
+        assert _post_normalize_gu_translation(said, "gujarati", strip_outer=True) == said
+    assert _post_normalize_gu_translation(said, "gujarati", strip_outer=True) == chat_says
+
+
+@pytest.mark.parametrize("channel", ["chat", "voice"])
+def test_a_rewrite_is_not_rewritten_again(channel):
+    """A replacement containing its own term must not grow on a second pass."""
+    def normalize(text):
+        with translation_channel(channel):
+            return _post_normalize_gu_translation(text, "gujarati", strip_outer=True)
+
+    said = "પોટેશિયમ પરમેંગેનેટનું દ્રાવણ વાપરો."
+    assert normalize(said) == said
+    if channel == "chat":
+        assert "પોટેશિયમ પરમેંગેનેટના દ્રાવણ" in normalize("પોટેશિયમ પરમેંગેનેટ વાપરો.")
+    forbidden = GU_TERM_POLICY["forbidden"]
+    grown = [
+        text for text in (f"આ {term} છે." for term in [*forbidden, *forbidden.values()])
+        if normalize(normalize(text)) != normalize(text)
+    ]
+    assert grown == []
+
+
 def test_strip_outer_trims_whitespace():
     out = _post_normalize_gu_translation("  આ ગાય ગાભણ છે  ", "gujarati", strip_outer=True)
     assert out == out.strip() and not out.startswith(" ")

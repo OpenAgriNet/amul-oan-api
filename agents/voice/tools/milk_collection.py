@@ -90,8 +90,8 @@ async def _fetch_one_account(
         logger.warning("Beckn milk lookup failed: %s", e)
         response = None
     logger.info(
-        "Milk collection lookup: union=%s society=%s farmer=%s from=%s to=%s ok=%s milk=%s ded=%s",
-        account.union_code, account.society_code, account.farmer_code, fromdate, todate,
+        "Milk collection lookup: session=%s union=%s society=%s from=%s to=%s ok=%s milk=%s ded=%s",
+        session_id, account.union_code, account.society_code, fromdate, todate,
         response is not None,
         len(response.milk) if response else 0,
         len(response.deduction) if response else 0,
@@ -152,15 +152,15 @@ async def get_farmer_milk_collection_details(
     accounts = list(ctx.deps.farmer_accounts) if ctx.deps and ctx.deps.farmer_accounts else []
     if not accounts:
         logger.warning(
-            "Milk collection blocked: no farmer accounts in context (llm_codes=%s/%s/%s)",
-            union_code, society_code, farmer_code,
+            "Milk collection blocked: no farmer accounts in context (llm_codes=%s/%s)",
+            union_code, society_code,
         )
         return (
             "Milk collection lookup failed. The farmer account details are not available."
         )
     logger.info(
-        "Milk collection tool invoked: accounts=%s from=%s to=%s (llm_codes=%s/%s/%s)",
-        len(accounts), fromdate, todate, union_code, society_code, farmer_code,
+        "Milk collection tool invoked: accounts=%s from=%s to=%s (llm_codes=%s/%s)",
+        len(accounts), fromdate, todate, union_code, society_code,
     )
     return await fetch_milk_summary_for_accounts(
         accounts,

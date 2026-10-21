@@ -213,7 +213,7 @@ async def _canned_for_caller(
 async def _session_execution(turn: Turn):
     """The turn's session on llm_core. A classifier is given only the turn, and the
     profile follows the session id, so its fixed reply runs on the turn's models."""
-    return await llm_core.context(turn.session_id)
+    return await llm_core.context(turn.session_id, surface="voice")
 
 
 async def _stt_signal_classifier(turn: Turn) -> Optional[ClassifierResult]:
@@ -265,8 +265,8 @@ async def _hold_message_classifier(turn: Turn) -> Optional[ClassifierResult]:
     if not _is_hold_message(turn.query):
         return None
     logger.info(
-        "Hold message detected; responding with goodbye to cut call - session_id=%s process_id=%s query=%r",
-        turn.session_id, _process_id(turn), turn.query[:100],
+        "Hold message detected; responding with goodbye to cut call - session_id=%s process_id=%s query_chars=%s",
+        turn.session_id, _process_id(turn), len(turn.query or ""),
     )
     goodbye = TELEPHONY_TERMINATE_CALL_TOKEN.get(
         _caller_lang(turn),
@@ -285,8 +285,8 @@ async def _greeting_classifier(turn: Turn, *, render: RenderForCaller) -> Option
     if not _is_bare_greeting(turn.query) or not _fast_paths_apply(turn):
         return None
     logger.info(
-        "Bare greeting detected; short-circuiting - session_id=%s process_id=%s query=%r",
-        turn.session_id, _process_id(turn), turn.query,
+        "Bare greeting detected; short-circuiting - session_id=%s process_id=%s query_chars=%s",
+        turn.session_id, _process_id(turn), len(turn.query or ""),
     )
     greeting_history = _GREETING_RESPONSES["en"]
     with current_trace().stage("greeting_fast_path"):
@@ -310,8 +310,8 @@ async def _identity_classifier(turn: Turn, *, render: RenderForCaller) -> Option
     if _fast_path_kind_for_query(turn.query) != "identity" or not _fast_paths_apply(turn):
         return None
     logger.info(
-        "Identity fast-path triggered; session_id=%s process_id=%s query=%r",
-        turn.session_id, _process_id(turn), turn.query,
+        "Identity fast-path triggered; session_id=%s process_id=%s query_chars=%s",
+        turn.session_id, _process_id(turn), len(turn.query or ""),
     )
     with current_trace().stage("identity_fast_path"):
         identity_resp_for_caller = await render(
@@ -331,8 +331,8 @@ async def _fragment_classifier(turn: Turn, *, render: RenderForCaller) -> Option
     if not _is_fragment_query(turn.query) or not _fast_paths_apply(turn):
         return None
     logger.info(
-        "Fragment query detected; short-circuiting - session_id=%s process_id=%s query=%r",
-        turn.session_id, _process_id(turn), turn.query,
+        "Fragment query detected; short-circuiting - session_id=%s process_id=%s query_chars=%s",
+        turn.session_id, _process_id(turn), len(turn.query or ""),
     )
     frag_response_for_history = _FRAGMENT_RESPONSES["en"]
     with current_trace().stage("fragment_fast_path"):

@@ -79,9 +79,10 @@ def cmd_set(channel: str, path: str) -> int:
         return 1
     # Content gate (SAME as the app's live-load path): reject a schema-valid but
     # UNBUILDABLE config (bad provider/step, unresolvable tier) BEFORE writing, so a
-    # bad push can never reach the key and go live.
+    # bad push can never reach the key and go live. By the target channel's rules,
+    # not this host's PIPELINE_CHANNEL.
     try:
-        runtime.validate_content(cfg)
+        runtime.validate_content(cfg, channel)
     except Exception as e:
         print(f"REFUSED: config in {path} failed content validation: {e}", file=sys.stderr)
         return 1

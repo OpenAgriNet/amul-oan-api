@@ -23,7 +23,7 @@ from app.services import translation
 from app.turn.types import TelephonyCall, TextEmission, Turn
 from app.voice import sink as voice_sink
 from app.voice.classifiers import _IDENTITY_RESPONSE_EN
-from tests.test_chat_turn_contract import patch_turn
+from tests.test_chat_turn_contract import _NEW_MESSAGE, patch_turn
 
 _TROUBLE_GU = voice_sink.TRANSLATION_TROUBLE_MESSAGE["gu"]
 
@@ -480,11 +480,32 @@ def test_a_call_turn_is_spoken_through_the_voice_sink(monkeypatch):
 
     emissions = _run(_turn(), _surface())
 
-    assert emissions == [TextEmission("ગાયને રોજ પાણી આપો."), TextEmission(" ગાયને છાંયડામાં રાખો.")]
+    assert emissions == [
+        TextEmission("ગાયને રોજ પાણી આપો.", raw=True), TextEmission(" ગાયને છાંયડામાં રાખો.", raw=True),
+    ]
     assert seen["translated_inputs"] == [], "chat's translation ran"
     assert len(seen["history_writes"]) == 1
     assert ("output", "final", "ગાયને રોજ પાણી આપો. ગાયને છાંયડામાં રાખો.") in _Outcomes.seen
     assert _Outcomes.seen[-1] == ("outcome", "success")
+
+
+@pytest.mark.parametrize("translated", [
+    ["દવા ૫ મિલી આપો."],
+    # The full word split across two chunks, as a stream can split it.
+    ["દવા ૫ મિલી", "લીટર આપો."],
+])
+def test_the_caller_hears_the_sinks_cleanup_once(monkeypatch, translated):
+    # The adapter cleaned the sink's text again, and "મિલી" was heard as
+    # "મિલીલીટરલીટર". voice-oan-api cleans a translated chunk once.
+    from app.services.voice import _render_voice_emission
+
+    patch_turn(monkeypatch, agent_text="Give 5 ml of the medicine.")
+    _Translation(monkeypatch, replies=[translated])
+
+    emissions = _run(_turn(), _surface())
+    heard = "".join(chunk for emission in emissions for chunk in _render_voice_emission(emission, "gu"))
+
+    assert heard == "દવા પાંચ મિલીલીટર આપો."
 
 
 def test_a_call_turn_that_goes_stale_mid_answer_stops_and_saves_nothing(monkeypatch):
@@ -525,22 +546,23 @@ def test_an_agent_that_fails_before_its_first_chunk_is_answered_after_the_gate(m
     emissions = _run(_turn(), _surface(background=_Pass))
 
     assert log == ["agent", "gate"]
-    assert emissions == [TextEmission(_TROUBLE_GU)]
-    # The caller heard the trouble line, but the turn failed: no success, no history.
+    assert emissions == [TextEmission(_TROUBLE_GU, raw=True)]
+    # The caller heard the trouble line and the turn failed. The agent left no
+    # messages, so history is saved as it was, as voice saved it.
     assert _Outcomes.seen[-1] == ("outcome", "error")
-    assert seen["history_writes"] == []
+    assert seen["history_writes"] == [("call-1", [])]
 
 
-def test_a_translation_that_fails_mid_answer_ends_the_turn_as_an_error(monkeypatch):
+def test_a_translation_that_fails_mid_answer_is_saved_and_ends_as_an_error(monkeypatch):
     seen = patch_turn(monkeypatch, agent_text="Give clean water daily. Keep the cow in shade.")
     _Translation(monkeypatch, replies=[["ગાયને રોજ પાણી આપો."]], fail_on={2})
 
     emissions = _run(_turn(), _surface())
 
-    assert emissions[0] == TextEmission("ગાયને રોજ પાણી આપો.")
+    assert emissions[0] == TextEmission("ગાયને રોજ પાણી આપો.", raw=True)
     assert emissions[-1].text.strip() == _TROUBLE_GU
     assert _Outcomes.seen[-1] == ("outcome", "error")
-    assert seen["history_writes"] == []
+    assert seen["history_writes"] == [("call-1", [_NEW_MESSAGE])]
 
 
 def test_a_blank_first_chunk_does_not_stop_the_nudge(monkeypatch):

@@ -17,6 +17,7 @@ from agents.voice.tools.union_schemes import get_union_scheme_data, prepare_get_
 from agents.voice.tools.loan import check_loan_eligibility, prepare_check_loan_eligibility
 from agents.voice.tools.bonus import get_farmer_bonus_amount, prepare_get_farmer_bonus_amount
 from agents.voice.services.farmer_identity import prepare_requires_farmer_identity
+from agents.tools.cattle_trade import get_cattle_trade_prices
 
 
 def _with_nudge_signal(func):
@@ -63,6 +64,12 @@ BASE_TOOLS = [
         docstring_format='auto',
         require_parameter_descriptions=True,
         prepare=prepare_requires_farmer_identity,
+    ),
+    Tool(
+        _with_nudge_signal(get_cattle_trade_prices),
+        takes_ctx=False,
+        docstring_format='auto',
+        require_parameter_descriptions=True,
     ),
     Tool(
         signal_conversation_state,

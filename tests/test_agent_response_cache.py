@@ -159,3 +159,13 @@ async def test_cache_outage_fails_open(monkeypatch):
     )
 
     assert value == ["live"]
+
+
+def test_banas_visit_ttl_follows_the_animal_ttl_unless_set(monkeypatch):
+    from app.config import Settings
+
+    monkeypatch.setenv("AGENT_ANIMAL_CACHE_TTL_SECONDS", "21600")
+    monkeypatch.delenv("AGENT_BANAS_CACHE_TTL_SECONDS", raising=False)
+    assert Settings().agent_banas_cache_ttl_seconds == 21600
+    monkeypatch.setenv("AGENT_BANAS_CACHE_TTL_SECONDS", "120")
+    assert Settings().agent_banas_cache_ttl_seconds == 120

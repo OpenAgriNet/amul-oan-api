@@ -251,6 +251,9 @@ class Settings(BaseSettings):
 
     # Firebase / FCM (for webview endpoint auth)
     # Inline JSON values take precedence; if not set, credentials are loaded from paths.
+    # app.auth.fcm_auth also discovers arbitrary numbered env vars at runtime, so
+    # FIREBASE_SERVICE_ACCOUNT_4 / FIREBASE_SERVICE_ACCOUNT_PATH_4 and later slots
+    # require no corresponding Settings field or code change.
     firebase_service_account: Optional[str] = os.getenv("FIREBASE_SERVICE_ACCOUNT")  # JSON string; overrides path if set
     firebase_service_account_path: Optional[str] = os.getenv("FIREBASE_SERVICE_ACCOUNT_PATH", "service-account.json")
     firebase_service_account_2: Optional[str] = os.getenv("FIREBASE_SERVICE_ACCOUNT_2")  # JSON string; overrides path if set
@@ -303,6 +306,12 @@ class Settings(BaseSettings):
         default=60 * 5,
         validation_alias="AGENT_CVCC_CACHE_TTL_SECONDS",
     )
+    # Banas operated visits. When unset, follows AGENT_ANIMAL_CACHE_TTL_SECONDS
+    # (see _default_banas_cache_ttl_to_animal).
+    agent_banas_cache_ttl_seconds: int = Field(
+        default=60 * 15,
+        validation_alias="AGENT_BANAS_CACHE_TTL_SECONDS",
+    )
     agent_negative_cache_ttl_seconds: int = Field(
         default=60,
         validation_alias="AGENT_NEGATIVE_CACHE_TTL_SECONDS",
@@ -346,16 +355,6 @@ class Settings(BaseSettings):
     telemetry_ingest_max_feedback_text_len: int = 4000
     telemetry_ingest_max_error_text_len: int = 2000
 
-    # Telemetry database, read by the dashboard query API (docs/TELEMETRY_PIPELINE.md).
-    # The host and port are the ones scripts/telemetry_import.py uses. Without the
-    # password and the API key the query endpoints answer 503.
-    telemetry_clickhouse_host: str = "localhost"
-    telemetry_clickhouse_port: int = 8123
-    telemetry_dashboard_password: Optional[str] = None
-    telemetry_query_api_key: Optional[str] = None
-    telemetry_query_voice_environment: str = "voice-production"
-    telemetry_query_chat_environment: str = "chat-production"
-
     # External Service URLs
     telemetry_api_url: str = "https://vistaar.kenpath.ai/observability-service/action/data/v3/telemetry"
     bhashini_api_url: str = "https://dhruva-api.bhashini.gov.in/services/inference/pipeline"
@@ -391,6 +390,7 @@ class Settings(BaseSettings):
     # Voice's trace (app/voice/trace.py). Same names and defaults as voice-oan-api.
     enable_voice_tracing: bool = _get_bool_env("ENABLE_VOICE_TRACING", default=True)
     voice_trace_text_mode: str = os.getenv("VOICE_TRACE_TEXT_MODE", "none")
+    voice_trace_user_id_mode: str = os.getenv("VOICE_TRACE_USER_ID_MODE", "hash")
     voice_trace_preview_chars: int = int(os.getenv("VOICE_TRACE_PREVIEW_CHARS", "120"))
     voice_trace_log_summary: bool = _get_bool_env("VOICE_TRACE_LOG_SUMMARY", default=True)
     # Voice's agent and its farmer data (agents/voice/), inert on the chat path.
@@ -674,6 +674,30 @@ class Settings(BaseSettings):
     loan_db_url: Optional[str] = os.getenv("LOAN_DB_URL")
     loan_db_pool_size: int = int(os.getenv("LOAN_DB_POOL_SIZE", "5"))
 
+    # ── Partner heat-alert webhook ───────────────────────────────────────────
+    # Shared secret sent by the partner as Authorization: Bearer. When
+    # unset/empty the webhook endpoint rejects all requests (fail closed).
+    webhook_shared_token: Optional[str] = os.getenv("WEBHOOK_SHARED_TOKEN")
+    # Dedicated Postgres for partner webhook payloads. When unset the endpoint
+    # returns 503 and the retention worker does not start.
+    webhook_db_url: Optional[str] = os.getenv("WEBHOOK_DB_URL")
+    webhook_db_pool_size: int = int(os.getenv("WEBHOOK_DB_POOL_SIZE", "5"))
+    # Retention + cleanup cadence for ephemeral webhook data.
+    webhook_retention_hours: int = int(os.getenv("WEBHOOK_RETENTION_HOURS", "24"))
+    webhook_cleanup_interval_seconds: int = int(
+        os.getenv("WEBHOOK_CLEANUP_INTERVAL_SECONDS", "900")
+    )
+    # Sarlaben WhatsApp API used after a new heat-alert webhook is stored.
+    sarlaben_whatsapp_base_url: str = os.getenv(
+        "SARLABEN_WHATSAPP_BASE_URL", "https://comm.amul.in/sarlaben"
+    )
+    sarlaben_whatsapp_api_key: Optional[str] = os.getenv(
+        "SARLABEN_WHATSAPP_API_KEY"
+    )
+    sarlaben_whatsapp_timeout_seconds: float = float(
+        os.getenv("SARLABEN_WHATSAPP_TIMEOUT_SECONDS", "15")
+    )
+
     # ── Onex-Aura / OneXtel SMS gateway (DLT-approved KDCC micro-loan template) ─
     # When false, SMS is a dry-run: nothing is sent, the code is still issued and
     # stored, and sms_status is recorded as 'dry_run'. Keep OFF while testing.
@@ -698,6 +722,14 @@ class Settings(BaseSettings):
     amul_network_timeout_s: float = float(os.getenv("AMUL_NETWORK_TIMEOUT_S", "35"))
     # SHC retains its own product gate because it exposes a private rich report.
     vistaar_shc_enabled: bool = _get_bool_env("VISTAAR_SHC_ENABLED", default=False)
+    # PM-KISAN is separately gated because it handles an OTP and beneficiary data.
+    vistaar_pmkisan_enabled: bool = _get_bool_env("VISTAAR_PMKISAN_ENABLED", default=False)
+    vistaar_pmkisan_session_ttl_seconds: int = Field(
+        default=10 * 60, validation_alias="VISTAAR_PMKISAN_SESSION_TTL_SECONDS"
+    )
+    vistaar_pmkisan_max_otp_attempts: int = Field(
+        default=3, validation_alias="VISTAAR_PMKISAN_MAX_OTP_ATTEMPTS"
+    )
     # Private transaction-bridge base (for example https://bridge/transactions).
     # The client appends the Beckn action, such as /search, /init, or /confirm.
     beckn_bap_caller_url: str = os.getenv("BECKN_BAP_CALLER_URL", "").rstrip("/")
@@ -762,7 +794,7 @@ class Settings(BaseSettings):
     vistaar_max_items: int = Field(default=20, validation_alias="VISTAAR_MAX_ITEMS")
     mandi_max_candidates: int = 3
     mandi_location_ttl_s: int = 3600
-    # Bonus is the sole direct provider integration; all supported tools use Beckn.
+    # Direct PashuGPT integrations used by bonus and cattle trade price tools.
     amulpashudhan_base_url: str = Field(
         default="https://api.amulpashudhan.com/configman/v1/PashuGPT",
         validation_alias="AMULPASHUDHAN_BASE_URL",
@@ -798,11 +830,18 @@ class Settings(BaseSettings):
         "agent_farmer_cache_ttl_seconds": ("AGENT_FARMER_CACHE_TTL_SECONDS", 60 * 15, 1, None),
         "agent_animal_cache_ttl_seconds": ("AGENT_ANIMAL_CACHE_TTL_SECONDS", 60 * 15, 1, None),
         "agent_cvcc_cache_ttl_seconds": ("AGENT_CVCC_CACHE_TTL_SECONDS", 60 * 5, 1, None),
+        "agent_banas_cache_ttl_seconds": ("AGENT_BANAS_CACHE_TTL_SECONDS", 60 * 15, 1, None),
         "agent_negative_cache_ttl_seconds": ("AGENT_NEGATIVE_CACHE_TTL_SECONDS", 60, 1, None),
         "beckn_operation_ttl_seconds": ("BECKN_OPERATION_TTL_SECONDS", 60 * 60 * 24, 60, None),
         "beckn_callback_max_body_bytes": ("BECKN_CALLBACK_MAX_BODY_BYTES", 2 * 1024 * 1024, 1024, 5 * 1024 * 1024),
         "shc_html_max_bytes": ("SHC_HTML_MAX_BYTES", 1024 * 1024, 1024, 2 * 1024 * 1024),
         "shc_artifact_ttl_seconds": ("SHC_ARTIFACT_TTL_SECONDS", 10 * 60, 60, 60 * 60),
+        "vistaar_pmkisan_session_ttl_seconds": (
+            "VISTAAR_PMKISAN_SESSION_TTL_SECONDS", 10 * 60, 60, 60 * 60
+        ),
+        "vistaar_pmkisan_max_otp_attempts": (
+            "VISTAAR_PMKISAN_MAX_OTP_ATTEMPTS", 3, 1, 10
+        ),
         "beckn_forward_connect_attempts": ("BECKN_FORWARD_CONNECT_ATTEMPTS", 2, 1, 5),
     }
     _SAFE_FLOAT_FIELDS: ClassVar[dict[str, tuple[str, float, float | None, float | None]]] = {
@@ -832,11 +871,14 @@ class Settings(BaseSettings):
         "agent_farmer_cache_ttl_seconds",
         "agent_animal_cache_ttl_seconds",
         "agent_cvcc_cache_ttl_seconds",
+        "agent_banas_cache_ttl_seconds",
         "agent_negative_cache_ttl_seconds",
         "beckn_operation_ttl_seconds",
         "beckn_callback_max_body_bytes",
         "shc_html_max_bytes",
         "shc_artifact_ttl_seconds",
+        "vistaar_pmkisan_session_ttl_seconds",
+        "vistaar_pmkisan_max_otp_attempts",
         "beckn_forward_connect_attempts",
         mode="before",
     )
@@ -884,6 +926,7 @@ class Settings(BaseSettings):
         "sursagar_scheme_source_url",
         "sabar_scheme_source_url",
         "dudhdhara_scheme_source_url",
+        "madhur_scheme_source_url",
         mode="before",
     )
     @classmethod
@@ -891,6 +934,12 @@ class Settings(BaseSettings):
         if value is None:
             return ""
         return str(value).rstrip("/")
+
+    @model_validator(mode="after")
+    def _default_banas_cache_ttl_to_animal(self):
+        if "agent_banas_cache_ttl_seconds" not in self.model_fields_set:
+            self.agent_banas_cache_ttl_seconds = self.agent_animal_cache_ttl_seconds
+        return self
 
     @model_validator(mode="after")
     def _resolve_scheme_ocr_concurrency(self):

@@ -13,12 +13,21 @@ import simplejson as json
 from jinja2 import Environment, FileSystemLoader, Template
 import pytz
 from helpers.gujarati_numbers import normalize_numbers_for_tts
-from agents.tools.models.farmer import FarmerModel
-from agents.tools.models.union import UnionName
 from app.config import settings
 
 # In-memory prompt template cache (populated at app startup; no disk I/O at request time)
 PROMPT_TEMPLATES_CACHE: Dict[str, str] = {}
+
+
+def to_ascii_digits(value) -> str:
+    """Convert Unicode decimal digits to ASCII while preserving other text."""
+    converted = []
+    for char in str(value or ""):
+        try:
+            converted.append(str(ud.decimal(char)))
+        except (TypeError, ValueError):
+            converted.append(char)
+    return "".join(converted)
 
 
 def get_s3_client():
@@ -202,7 +211,10 @@ def _replace_voice_abbreviations(text: str, lang_code: str) -> str:
             (r"(?i)\bcm\b", "સેન્ટીમીટર"),
             (r"(?i)કિ\.?\s*ગ્રા\.?", "કિલોગ્રામ"),
             (r"(?i)(?<!\w)ગ્રા\.?(?!\w)", "ગ્રામ"),
-            (r"(?i)મિ\.?\s*લી\.?", "મિલીલીટર"),
+            # Not where it is already the full word, or at the end of a
+            # streamed chunk, where the rest of the word may come next: its own
+            # output would grow on every pass (મિલીલીટર -> મિલીલીટરલીટર).
+            (r"(?i)મિ\.?\s*લી\.?(?!\.?\s*(?:લ[ીિ]ટર|$))", "મિલીલીટર"),
             (r"(?i)%", " ટકા"),
             (r"(?i)°\s*c", " ડિગ્રી સેલ્સિયસ"),
         ]
@@ -418,7 +430,3 @@ def upload_audio_to_s3(audio_base64: str, session_id: str, bucket_name: str | No
         logger = get_logger(__name__)
         logger.error(f"Error uploading audio to S3: {str(e)}")
         raise
-
-
-def is_from_union(records: list[FarmerModel], union_name: UnionName) -> bool:
-    return any(record.union_name == union_name.value for record in records)

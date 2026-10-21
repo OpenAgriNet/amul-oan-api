@@ -15,12 +15,14 @@ from __future__ import annotations
 import asyncio
 import random
 import time
+from contextvars import ContextVar
 from typing import Any, Dict, Optional
 
 import httpx
 
 from agents.voice.tools import common as _tool_signal
 from app.config import settings
+from app.llm_core import runtime
 from app.observability import start_observation
 from app.turn.types import SideChannelEmission, SideChannelSender, StalenessCheck, Turn
 from app.utils import is_session_request_owner, refresh_session_request_ownership
@@ -144,12 +146,25 @@ async def send_nudge_message_raya(message: str, session_id: str, process_id: str
         )
 
 
+# The turn's nudge while it waits. A decline, a hang-up or the first text stops
+# it where voice did, before the line is rendered, not once run_turn has it.
+_waiting_nudge: ContextVar[Optional[asyncio.Task]] = ContextVar("voice_waiting_nudge", default=None)
+
+
+def stop_nudge() -> None:
+    """Stop the turn's nudge if it has not gone out. ``VoiceLiveness.stop`` reaps it."""
+    task = _waiting_nudge.get()
+    if task is not None and not task.done():
+        task.cancel()
+
+
 def nudge_stopped(reason: str) -> None:
-    """Record why a nudge that was still waiting will not go out.
+    """Stop a nudge that is still waiting, and record why it will not go out.
 
     Voice records it only for a nudge armed and not yet sent, and keeps the
     first reason it records.
     """
+    stop_nudge()
     nudge = current_trace().metadata.get("nudge") or {}
     if nudge.get("armed") and not nudge.get("sent") and "cancel_reason" not in nudge:
         current_trace().set_nudge(cancel_reason=reason)
@@ -253,6 +268,7 @@ class VoiceLiveness:
         set_tool_call_nudge_event(self._tool_call)
         lang = (turn.target_lang or "gu").strip().lower()
         self._task = asyncio.create_task(self._nudge(lang, started_at, send, is_stale))
+        _waiting_nudge.set(self._task)
         logger.info(
             "Nudge initiated; session_id=%s process_id=%s",
             self._session_id,
@@ -279,14 +295,15 @@ class VoiceLiveness:
         waits: tuple[asyncio.Task, ...] = ()
         try:
             elapsed = max(0.0, time.monotonic() - started_at)
-            remaining = max(0.0, float(settings.nudge_timeout_seconds) - elapsed)
+            timeout = float(runtime.surface_setting("voice", "nudge_timeout_seconds", settings.nudge_timeout_seconds))
+            remaining = max(0.0, timeout - elapsed)
             logger.info(
                 "Nudge armed; session_id=%s process_id=%s elapsed=%.3fs remaining=%.3fs timeout=%.3fs",
                 self._session_id,
                 self._process_id,
                 elapsed,
                 remaining,
-                settings.nudge_timeout_seconds,
+                timeout,
             )
 
             # Wait for EITHER the timer OR a tool-call signal

@@ -264,7 +264,8 @@ for suggestion generation. As built:
 ### `SurfaceProfile`
 
 The design has four structures (above). As built, each field landed with its first reader,
-following the rule in `app/channels/base.py`, and the voice port added three more:
+following the rule in `app/channels/base.py`, and the voice port added three more. `prefetch`
+came later, to take chat's farmer-context load off the turn's critical path:
 
 ```python
 @dataclass(frozen=True)
@@ -277,7 +278,13 @@ class SurfaceProfile:
     liveness: Optional[LivenessFactory] = None       # what a waiting caller hears; voice only
     pretranslation: Optional[Pretranslation] = None  # the query in the language the agent reads
     agent_input: Optional[AgentInputStep] = None     # what the agent runs with
+    prefetch: Optional[Prefetch] = None              # a read the agent input awaits; chat only
 ```
+
+`run_turn` starts the prefetch as a task right after the classifiers, hands it to the agent
+input as `prefetched`, and cancels it on every exit if it is still running. Chat's is the
+farmer context, so its Beckn reads overlap pretranslation and moderation, and a declined query
+does not wait for them. Voice has none: its background set fetches the farmer data.
 
 Chat's single classifier is identity. It is persona-aware (the Doctor identity response) and
 respects the per-language kill switches, both of which landed on `main` after the classifier

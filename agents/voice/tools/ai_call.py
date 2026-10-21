@@ -90,8 +90,8 @@ async def create_ai_call(
     """
     session_id = ctx.deps.session_id
     logger.info(
-        "AI call tool invoked: session=%s union=%s society=%s farmer=%s user_id=%s species=%s",
-        session_id, union_code, society_code, farmer_code, user_id, species.value,
+        "AI call tool invoked: session=%s union=%s society=%s user_id=%s species=%s",
+        session_id, union_code, society_code, user_id, species.value,
     )
 
     # Moderation runs concurrently with the agent, so this booking write must
@@ -121,8 +121,8 @@ async def create_ai_call(
     )
     if invalid_field is not None:
         logger.warning(
-            "AI call blocked: invalid %s; session=%s union=%s society=%s farmer=%s user_id=%s",
-            invalid_field, session_id, union_code, society_code, farmer_code, user_id,
+            "AI call blocked: invalid %s; session=%s union=%s society=%s user_id=%s",
+            invalid_field, session_id, union_code, society_code, user_id,
         )
         return INVALID_IDENTIFIERS_MESSAGE
 

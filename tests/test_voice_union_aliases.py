@@ -255,6 +255,12 @@ def test_scheme_cache_keys_match_chat_ingestion_sources():
     assert get_source_keys_for_union(UnionName.SABAR.value) == (
         "sabardairy.org/for-our-milk-producers",
     )
+    assert get_source_keys_for_union(UnionName.GANDHINAGAR.value) == (
+        "madhurdairy.org/forourmilkproducers",
+    )
+    assert get_source_keys_for_union("madhur dairy") == (
+        "madhurdairy.org/forourmilkproducers",
+    )
     assert us.SUPPORTED_SCHEME_UNIONS == frozenset(SUPPORTED_UNION_SOURCE_KEYS)
     assert SUPPORTED_SCHEME_UNIONS == frozenset(
         {
@@ -264,5 +270,56 @@ def test_scheme_cache_keys_match_chat_ingestion_sources():
             UnionName.SURENDRANAGAR.value,
             UnionName.BHARUCH.value,
             UnionName.SABAR.value,
+            UnionName.GANDHINAGAR.value,
         }
     )
+
+
+def test_voice_reads_every_union_chat_ingests():
+    """A union chat's scheduler writes but voice does not read is a union whose
+    callers hear no schemes (Gandhinagar, until 4f2b7f7 was ported)."""
+    from app.services import scheme_ingestion as chat_ingestion
+    from app.voice.scheme_ingestion import SUPPORTED_UNION_SOURCE_KEYS
+
+    written = {
+        union: tuple(source.cache_key for source in sources)
+        for union, sources in chat_ingestion.SUPPORTED_UNION_SOURCE_MAP.items()
+    }
+    assert SUPPORTED_UNION_SOURCE_KEYS == written
+
+
+class _Redis:
+    def __init__(self):
+        self.values = {}
+
+    async def set(self, key, value):
+        self.values[key] = value
+
+    async def get(self, key):
+        return self.values.get(key)
+
+
+def test_a_madhur_farmer_hears_the_schemes_chat_ingested(monkeypatch):
+    from app.services import scheme_ingestion as chat_ingestion
+    from app.voice import farmer as voice_farmer
+    from app.voice import scheme_ingestion as voice_ingestion
+
+    redis = _Redis()
+    record = {
+        "union_name": UnionName.GANDHINAGAR.value,
+        "scheme_title": "Madhur Test Scheme",
+        "scheme_url": "https://example.org/madhur-test-scheme.pdf",
+    }
+    asyncio.run(chat_ingestion.cache_source_records(
+        chat_ingestion.MADHUR_SOURCE.cache_key, [record], redis_client=redis,
+    ))
+    monkeypatch.setattr(voice_ingestion, "_redis_client", redis)
+    sentinel = object()
+
+    summary = asyncio.run(voice_farmer._build_union_scheme_summary(["madhur dairy"]))
+    prepared = asyncio.run(us.prepare_get_union_scheme_data(_ctx(["madhur dairy"]), sentinel))
+    out = asyncio.run(us.get_union_scheme_data(_ctx(["madhur dairy"]), None))
+
+    assert "Madhur Test Scheme: https://example.org/madhur-test-scheme.pdf" in summary
+    assert prepared is sentinel
+    assert "Madhur Test Scheme" in out
