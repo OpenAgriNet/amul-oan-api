@@ -20,8 +20,10 @@ from agents.tools.session_pmkisan import (
     allow_otp_request,
     clear_pending_otp,
     clear_pm_kisan_session,
+    count_otp_attempt,
     get_pending_otp,
     get_pm_kisan_session,
+    otp_attempts,
     resolve_identifier,
     set_pm_kisan_session,
 )
@@ -222,10 +224,11 @@ async def initiate_pm_kisan_status_check(
         "init_message_id": message_id,
         "last_status_message_id": "",
         "identifier": normalized,
-        "invalid_otp_attempts": 0,
     }
     try:
-        # Store first: never request an OTP that cannot be correlated next turn.
+        # A new check starts clean. Store first: never request an OTP that
+        # cannot be correlated next turn.
+        await clear_pm_kisan_session(session_id, ctx.deps.mobile)
         await set_pm_kisan_session(session_id, ctx.deps.mobile, state)
     except Exception:
         logger.exception("PM-KISAN session state could not be created")
@@ -282,12 +285,11 @@ async def _handle_status_result(
         _redact_tool_span("invalid_response")
         return "The PM-KISAN service returned an unreadable response. Please try again later."
     if _is_invalid_otp(order):
-        attempts = int(state.get("invalid_otp_attempts") or 0) + 1
+        attempts = await otp_attempts(ctx.deps.session_id, ctx.deps.mobile)
         if attempts >= settings.vistaar_pmkisan_max_otp_attempts:
             await clear_pm_kisan_session(ctx.deps.session_id, ctx.deps.mobile)
             _redact_tool_span("invalid_otp_limit")
             return "OTP_RETRY_LIMIT. Ask the farmer to restart and request a new OTP."
-        state["invalid_otp_attempts"] = attempts
         state["last_status_message_id"] = ""
         await set_pm_kisan_session(ctx.deps.session_id, ctx.deps.mobile, state)
         _redact_tool_span("invalid_otp")
@@ -349,8 +351,13 @@ async def check_pm_kisan_status_with_otp(ctx: RunContext[FarmerContext]) -> str:
     message_id = str(uuid.uuid4())
     state["last_status_message_id"] = message_id
     try:
-        # One submission per OTP the farmer sent.
+        # One submission per OTP the farmer sent, counted before it goes out so
+        # parallel or abandoned submissions cannot exceed the attempt limit.
         await clear_pending_otp(session_id, mobile)
+        if await count_otp_attempt(session_id, mobile) > settings.vistaar_pmkisan_max_otp_attempts:
+            await clear_pm_kisan_session(session_id, mobile)
+            _redact_tool_span("invalid_otp_limit")
+            return "OTP_RETRY_LIMIT. Ask the farmer to restart and request a new OTP."
         await set_pm_kisan_session(session_id, mobile, state)
         result = await get_beckn_operation_client().submit_pm_kisan_otp(
             identifier=str(state["identifier"]),

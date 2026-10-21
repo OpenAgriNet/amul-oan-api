@@ -21,9 +21,12 @@ MAX_OTP_REQUESTS = 3
 OTP_REQUEST_WINDOW_SECONDS = 60 * 60
 
 _SEP = r"[\s.\-]"
-# 12 digits in any script, with up to two spaces, dots or hyphens between digits.
+# A typed Aadhaar: 12 digits in any script, written together, or as 4-4-4 groups
+# split by up to two spaces, dots or hyphens. Grouped digits must stand apart from
+# other numbers, so dates and lists of amounts stay; a "+91 ..." mobile never counts.
 _AADHAAR_RE = re.compile(
-    rf"(?<!\d)(?<!\d{_SEP})(?<!\d{_SEP}{_SEP})\d(?:{_SEP}{{0,2}}\d){{11}}(?!{_SEP}{{0,2}}\d)"
+    rf"(?<![\d+])\d{{12}}(?!\d)"
+    rf"|(?<![\d+])(?<!\d[ .\-])\d{{4}}{_SEP}{{1,2}}\d{{4}}{_SEP}{{1,2}}\d{{4}}(?!\d)(?![ .\-]\d)"
 )
 _AADHAAR_PLACEHOLDER_RE = re.compile(r"AADHAAR_(\d{4})", re.IGNORECASE)
 _PLACEHOLDER_RE = re.compile(r"\[(?:AADHAAR_\d{4}|OTP)\]")
@@ -81,6 +84,10 @@ def _otp_key(session_id: str, mobile: str | None) -> str:
     return f"{_cache_key(session_id, mobile)}:otp"
 
 
+def _attempts_key(session_id: str, mobile: str | None) -> str:
+    return f"{_cache_key(session_id, mobile)}:attempts"
+
+
 async def get_pm_kisan_session(
     session_id: str | None, mobile: str | None
 ) -> dict[str, Any] | None:
@@ -110,11 +117,15 @@ async def set_pm_kisan_session(
 async def clear_pm_kisan_session(
     session_id: str | None, mobile: str | None
 ) -> None:
+    """End the check: its state, an unsent OTP and its attempt count."""
     if not session_id:
         return
-    await cache.delete(
-        _cache_key(session_id, mobile), namespace=PMKISAN_SESSION_NAMESPACE
-    )
+    for key in (
+        _cache_key(session_id, mobile),
+        _otp_key(session_id, mobile),
+        _attempts_key(session_id, mobile),
+    ):
+        await cache.delete(key, namespace=PMKISAN_SESSION_NAMESPACE)
 
 
 def _mask_aadhaar(text: str) -> tuple[str, dict[str, str]]:
@@ -195,8 +206,9 @@ async def mask_telemetry_text(
 ) -> str:
     """A farmer question as UI telemetry reports it, masked like the chat query.
 
-    Only an OTP this session already sent to a check is hidden, so ordinary
-    numbers in questions stay readable.
+    A lone 4-digit number is hidden while this session's check waits for its
+    OTP (the UI reports the question before the chat request arrives) or when
+    the session already sent it to a check.
     """
     if not settings.vistaar_pmkisan_enabled or not text:
         return text
@@ -210,7 +222,9 @@ async def mask_telemetry_text(
             if session_id
             else None
         )
-        sent = isinstance(known, Mapping) and _otp_digits(otp) in known.get("otps", [])
+        sent = (
+            isinstance(known, Mapping) and _otp_digits(otp) in known.get("otps", [])
+        ) or await get_pm_kisan_session(session_id, mobile) is not None
     except Exception as exc:  # noqa: BLE001 - telemetry must never fail on masking
         logger.warning("PM-KISAN private number state unavailable: %s", type(exc).__name__)
         sent = True
@@ -268,3 +282,18 @@ async def allow_otp_request(session_id: str, identifier: str) -> bool:
         if int(count) > MAX_OTP_REQUESTS:
             allowed = False
     return allowed
+
+
+async def count_otp_attempt(session_id: str, mobile: str | None) -> int:
+    """Count one OTP submission for the current check, before it is sent."""
+    key = build_cache_key(_attempts_key(session_id, mobile), namespace=PMKISAN_SESSION_NAMESPACE)
+    return int(
+        await redis_client.eval(
+            _COUNT_SCRIPT, 1, key, str(settings.vistaar_pmkisan_session_ttl_seconds)
+        )
+    )
+
+
+async def otp_attempts(session_id: str, mobile: str | None) -> int:
+    key = build_cache_key(_attempts_key(session_id, mobile), namespace=PMKISAN_SESSION_NAMESPACE)
+    return int(await redis_client.get(key) or 0)
