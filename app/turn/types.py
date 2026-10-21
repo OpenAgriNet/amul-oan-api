@@ -371,16 +371,17 @@ class AgentInput:
     deps: Any
     #: The history the agent's new messages are appended to when the turn is saved.
     history: Sequence[ModelMessage]
-    #: Opens the surface's observation around the agent's run. What it yields,
-    #: if not None, is given the answer with ``update(output=...)``.
+    #: Opens the surface's observation around the agent's run, turn.v1's agent
+    #: step; the surface writes its output itself, from ``after_run``.
     observe: Callable[[], AbstractContextManager[Any]] = nullcontext
     #: pydantic-ai ``UsageLimits`` for the run, or None for the agent's own.
     usage_limits: Any = None
     #: Given the agent's new messages, a raw line to say after its answer, or
     #: None. Voice's hangs up when the agent said the conversation is closing.
     closing_line: Optional[Callable[[Sequence[ModelMessage]], Optional[str]]] = None
-    #: Called with the agent's new messages once its answer has been streamed.
-    #: Chat's records which tier served the turn; voice's records the agent's run.
+    #: Called with the agent's new messages once its answer has been streamed,
+    #: inside ``observe``. Chat's and voice's write the agent's answer on its step;
+    #: voice's also records the agent's run.
     after_run: Optional[Callable[[Sequence[ModelMessage]], None]] = None
 
 

@@ -1088,29 +1088,26 @@ async def _chat_agent_input(
 
     logger.info(f"Trimmed history length: {len(trimmed_history)} messages")
 
+    agent_step: list = []
+
     @contextmanager
     def observe():
-        """turn.v1's agent step (the persona is on the root). pydantic-ai's "Amul AI
-        Agent run" span and the tool spans nest under it. The tier that served and
-        the attempts it took are known once the stream ends, so they are written
-        when the observation closes."""
+        """turn.v1's agent step, as voice's: the question the agent is asked in (English
+        when the answer is translated), its own answer out (``after_run`` writes it,
+        inside this), pydantic-ai's "Amul AI Agent run" span and the tool spans under
+        it. The persona is on the root, the moderation action on its step and the
+        model on the generations. The tier that served and the attempts it took are
+        known once the stream ends, so they are written when the observation closes.
+        ``run_turn`` is handed None so the step's output stays the agent's."""
         _lf_ag = get_langfuse_client() if get_langfuse_client else None
         if not _lf_ag:
             yield None
             return
-        # An AGENT observation, as turn.v1 declares the step; the model calls under
-        # it are pydantic-ai's generations, so the model is named in the input only.
-        with _lf_ag.start_as_current_observation(
-            name="agent",
-            as_type="agent",
-            input={
-                "action": moderation_data.action,
-                "model_name": request_model_name,
-                "persona": persona,
-            },
-        ) as agent_obs:
+        # An AGENT observation, as turn.v1 declares the step.
+        with _lf_ag.start_as_current_observation(name="agent", as_type="agent", input=pretranslated.query) as agent_obs:
+            agent_step.append(agent_obs)
             try:
-                yield agent_obs
+                yield None
             finally:
                 try:
                     step = _pipeline_trace.step_metadata(execution.begin_trace(), _LlmStep.AGENT)
@@ -1119,6 +1116,14 @@ async def _chat_agent_input(
                 except Exception as e:  # pragma: no cover - tracing must never break the turn
                     logger.warning("Langfuse: failed to record the agent step's tier: %s", e)
 
+    def after_run(new_messages) -> None:
+        """The agent's own answer, before any translation, on its step."""
+        for agent_obs in agent_step:
+            try:
+                agent_obs.update(output=_agent_text(new_messages))
+            except Exception as e:  # pragma: no cover - tracing must never break the turn
+                logger.warning("Langfuse: failed to record the agent's answer: %s", e)
+
     return AgentInput(
         agent=active_agent,
         prompt=user_message,
@@ -1126,7 +1131,19 @@ async def _chat_agent_input(
         deps=deps,
         history=history,
         observe=observe,
+        after_run=after_run,
     )
+
+
+def _agent_text(new_messages) -> str:
+    """The text the agent answered with, as its new messages hold it (as voice reads it)."""
+    return "".join(
+        part.content
+        for message in new_messages
+        if isinstance(message, ModelResponse)
+        for part in message.parts
+        if isinstance(part, TextPart)
+    ).strip()
 
 
 #: The chat surface's population of the seam. Chat is the degenerate case: one
@@ -1429,7 +1446,7 @@ async def run_turn(
                 is_stale=is_stale,
             )
 
-            with agent_input.observe() as agent_obs:
+            with agent_input.observe():
                 # ── ONE agent-streaming path ─────────────────────────────────
                 # Collapsed from the three duplicated blocks (fallback / anthropic
                 # .iter / openai .run_stream) into a single token stream parameterized
@@ -1487,14 +1504,6 @@ async def run_turn(
                     telemetry.record_output(trace_output, "final")
                 delivered = None
                 sink_outcome = sink.outcome()
-                if get_langfuse_client and agent_obs is not None:
-                    try:
-                        # Match moderation: structured output so Langfuse shows JSON in the observation panel.
-                        agent_obs.update(
-                            output={"response": trace_output or ""},
-                        )
-                    except Exception as e:
-                        logger.warning("Langfuse: failed to record agent output: %s", e)
 
             # Rich provider documents are deliberately emitted only after the
             # model/translation/trace pipeline is finished. They are not model
