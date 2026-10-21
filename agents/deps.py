@@ -88,8 +88,12 @@ class FarmerContext(BaseModel):
     supports_rich_artifacts: bool = Field(default=False, description="Whether this channel can render private rich documents such as SHC HTML.")
     soil_health_card_context: str = Field(default="", description="Bounded agronomic facts from this signed-in session's latest Soil Health Card.")
     memory_context: str = Field(default="", description="Bounded recollection from this farmer's earlier conversations. Empty when memory is off or unavailable.")
+    memory_read_allowed: bool = Field(default=False, description="Whether this authenticated surface established a trusted farmer identity for memory reads.")
     memory_tool_calls: int = Field(default=0, description="Memory lookups used during this turn.")
     memory_tool_chars: int = Field(default=0, description="Memory tool output consumed during this turn.")
+    memory_tool_timeout_seconds: Optional[float] = Field(default=None, description="Optional surface-specific memory tool deadline.")
+    memory_tool_max_calls: Optional[int] = Field(default=None, description="Optional surface-specific memory tool call limit.")
+    memory_tool_max_chars: Optional[int] = Field(default=None, description="Optional surface-specific memory tool output budget.")
     persona: Literal['farmer', 'doctor'] = Field(default='farmer', description="Resolved chat persona for this turn.")
 
     # Handle to the per-turn content-moderation task, which runs concurrently with

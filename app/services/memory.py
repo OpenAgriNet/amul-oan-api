@@ -37,22 +37,32 @@ MEMORY_TIMEOUT_SECONDS = float(os.getenv("MEMORY_TIMEOUT_SECONDS", "2.0"))
 MEMORY_TOP_K = int(os.getenv("MEMORY_TOP_K", "3"))
 # Bounds the standing record, episode summaries, contents, dates and available keys.
 MEMORY_MAX_CHARS = int(os.getenv("MEMORY_MAX_CHARS", "4500"))
+MEMORY_VOICE_TIMEOUT_SECONDS = float(os.getenv("MEMORY_VOICE_TIMEOUT_SECONDS", "2.0"))
+MEMORY_VOICE_TOOL_TIMEOUT_SECONDS = float(os.getenv("MEMORY_VOICE_TOOL_TIMEOUT_SECONDS", "2.0"))
+MEMORY_VOICE_TOOL_MAX_CALLS = int(os.getenv("MEMORY_VOICE_TOOL_MAX_CALLS", "2"))
+MEMORY_VOICE_TOOL_TURN_MAX_CHARS = int(os.getenv("MEMORY_VOICE_TOOL_TURN_MAX_CHARS", "6000"))
 
 
-async def fetch_memory_context(farmer_id: str | None, query: str) -> str:
+async def fetch_memory_context(
+    farmer_id: str | None,
+    query: str,
+    *,
+    allowed: bool = False,
+    timeout_seconds: float | None = None,
+) -> str:
     """Return a short context block for this turn, or "" when there is nothing to add.
 
     Never raises: any failure (unavailable store, timeout, unexpected shape) yields "",
     so a memory problem cannot fail the turn; waiting is bounded by the deadline.
     """
-    # Only the global switch is checked here. Whether memory is on for *this*
-    # farmer is decided (and enforced) by the Qdrant reader, which returns
-    # nothing when it's off for them — so there is no second place to keep in sync.
-    if not MEMORY_ENABLED or not re.fullmatch(r"\d{10}", farmer_id or ""):
+    # The caller must first establish a trusted surface identity. Whether memory
+    # is on for this farmer is then decided by the Qdrant settings tombstone.
+    if not MEMORY_ENABLED or not allowed or not re.fullmatch(r"\d{10}", farmer_id or ""):
         return ""
 
+    timeout = timeout_seconds or MEMORY_TIMEOUT_SECONDS
     try:
-        async with httpx.AsyncClient(timeout=MEMORY_TIMEOUT_SECONDS) as client:
+        async with httpx.AsyncClient(timeout=timeout) as client:
             store = MemoryStore(client, farmer_id)
             async def lookup():
                 if not await store.enabled():
@@ -61,7 +71,7 @@ async def fetch_memory_context(farmer_id: str | None, query: str) -> str:
                     _standing_summary(store, farmer_id),
                     _relevant_entries(store, farmer_id, query),
                     _available_filters(store, farmer_id), return_exceptions=True)
-            standing, recalled, filters = await asyncio.wait_for(lookup(), timeout=MEMORY_TIMEOUT_SECONDS)
+            standing, recalled, filters = await asyncio.wait_for(lookup(), timeout=timeout)
     except Exception as exc:  # pragma: no cover - defensive
         logger.warning(
             "memory: lookup failed; continuing without it error_type=%s",

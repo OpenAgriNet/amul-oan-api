@@ -46,7 +46,8 @@ BUDGET_REACHED = "Memory lookup budget reached for this turn. No additional reco
 
 
 def _budget(ctx):
-    return max(0, TURN_MAX_CHARS - getattr(ctx.deps, "memory_tool_chars", 0))
+    limit = getattr(ctx.deps, "memory_tool_max_chars", None) or TURN_MAX_CHARS
+    return max(0, limit - getattr(ctx.deps, "memory_tool_chars", 0))
 
 
 def _finish(ctx, text):
@@ -66,23 +67,26 @@ def _reference(value):
 
 async def _request(ctx, operation, **kwargs):
     farmer = (ctx.deps.mobile or "").strip()
-    if (not MEMORY_ENABLED or not re.fullmatch(r"\d{10}", farmer)
+    if (not MEMORY_ENABLED or not getattr(ctx.deps, "memory_read_allowed", False)
+            or not re.fullmatch(r"\d{10}", farmer)
             or getattr(ctx.deps, "persona", "farmer") != "farmer"):
         return None, DISABLED
     used = getattr(ctx.deps, "memory_tool_calls", 0)
-    if used >= MAX_CALLS:
+    max_calls = getattr(ctx.deps, "memory_tool_max_calls", None) or MAX_CALLS
+    if used >= max_calls:
         return None, "Memory lookup budget reached for this turn. Use existing evidence; do not invent missing detail."
     ctx.deps.memory_tool_calls = used + 1
+    timeout = getattr(ctx.deps, "memory_tool_timeout_seconds", None) or TIMEOUT
 
     async def fetch():
-        async with httpx.AsyncClient(timeout=TIMEOUT) as client:
+        async with httpx.AsyncClient(timeout=timeout) as client:
             store = MemoryStore(client, farmer)
             body = await getattr(store, operation)(**kwargs)
             if not isinstance(body, dict):
                 raise ValueError("invalid memory response")
             return body
     try:
-        body = await asyncio.wait_for(fetch(), timeout=TIMEOUT)
+        body = await asyncio.wait_for(fetch(), timeout=timeout)
     except PermissionError:
         return None, DISABLED
     except Exception as exc:
@@ -259,7 +263,8 @@ async def read_memory(
 
 
 async def prepare_memory_tool(ctx: RunContext[FarmerContext], tool_def: ToolDefinition) -> ToolDefinition | None:
-    if (not MEMORY_ENABLED or not re.fullmatch(r"\d{10}", (ctx.deps.mobile or "").strip())
+    if (not MEMORY_ENABLED or not getattr(ctx.deps, "memory_read_allowed", False)
+            or not re.fullmatch(r"\d{10}", (ctx.deps.mobile or "").strip())
             or getattr(ctx.deps, "persona", "farmer") != "farmer"):
         return None
     return tool_def
