@@ -10,9 +10,12 @@ os.environ.setdefault("OPENAI_API_KEY", "test-key")
 import pytest
 
 from app.services.translation import (
+    _StreamingGujaratiPostNormalizer,
     VOICE_GU_PREFERRED_TRANSLATION_RULES,
     _apply_protected_output,
     _buffered_protected_stream,
+    _flush_streaming_translation,
+    _normalize_streaming_translation_chunk,
     _protected_output_triggers,
     _post_normalize_gu_translation,
     GU_TERM_POLICY,
@@ -21,9 +24,69 @@ from app.services.translation import (
 )
 
 
+def _stream_normalize(text: str, channel: str, split_at: int) -> str:
+    with translation_channel(channel):
+        normalizer = _StreamingGujaratiPostNormalizer("gu")
+        return "".join(
+            (
+                _normalize_streaming_translation_chunk(
+                    normalizer, text[:split_at], "gu"
+                ),
+                _normalize_streaming_translation_chunk(
+                    normalizer, text[split_at:], "gu"
+                ),
+                _flush_streaming_translation(normalizer, "gu"),
+            )
+        )
+
+
 def test_non_gujarati_passthrough_unchanged():
     assert _post_normalize_gu_translation("She is pregnant", "english") == "She is pregnant"
     assert _post_normalize_gu_translation("unchanged", "hi") == "unchanged"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "ગાય red colour દૂધ",
+        "ગાય red colour - delete દૂધ",
+        "જવિૈ ક ખાતર વાપરો",
+        "ઓર્ગેનિર્ગે ક ખાતર વાપરો",
+        "૧પ લિટર અને પ૦ કિલો",
+        "હું મદદ કરી શકું નથી.",
+        "હું મદદ કરી શકું છું.",
+        "હું આ કામ કરી શકતો નથી.",
+        "હું આ કામ કરી શકતો છું.",
+        "હું તપાસ કરું પછી કહું.",
+        "હું આવું છું.",
+        "બૈડા પર દુખે છે",
+        "ગાય   પૂરતું   દૂધ આપે છે\n\n\nબરાબર",
+    ],
+)
+def test_chat_cleanup_matches_unary_at_every_split_point(text):
+    with translation_channel("chat"):
+        expected = _post_normalize_gu_translation(text, "gu")
+
+    for split_at in range(len(text) + 1):
+        assert _stream_normalize(text, "chat", split_at) == expected, split_at
+
+
+def test_safe_chat_text_is_emitted_without_waiting_for_flush():
+    with translation_channel("chat"):
+        normalizer = _StreamingGujaratiPostNormalizer("gu")
+    assert normalizer.feed("સામાન્ય લખાણ") == "સામાન્ય લખાણ"
+
+
+def test_feminine_candidate_buffer_is_bounded():
+    with translation_channel("chat"):
+        normalizer = _StreamingGujaratiPostNormalizer("gu")
+    assert normalizer.feed("હું " + ("અ" * 140))
+
+
+def test_non_gujarati_stream_is_not_buffered():
+    normalizer = _StreamingGujaratiPostNormalizer("hi")
+    assert normalizer.feed("unchanged") == "unchanged"
+    assert normalizer.flush() == ""
 
 
 def test_base_pregnant_term_normalized():

@@ -258,30 +258,30 @@ async def test_unary_guards_short_circuit(monkeypatch):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 2. Per-chunk transforms applied identically on TG and LLM tiers
+# 2. Incremental transforms applied identically on TG and LLM tiers
 # ══════════════════════════════════════════════════════════════════════════════
 @pytest.mark.asyncio
-async def test_tg_stream_applies_per_chunk_transforms(monkeypatch):
-    # "।" -> "." (dandas) and "ગર્ભવતી" -> "ગાભણ" (GU post-normalize) per chunk.
+async def test_tg_stream_applies_incremental_transforms(monkeypatch):
+    # Chunk boundaries may move while an unfinished rule is retained, but the
+    # assembled output must match unary normalization.
     _patch_aiohttp(monkeypatch, _FakeResp(sse=_sse("ગર્ભવતી।", " બીજું")))
     out = [
         c async for c in tr._translategemma_stream(
             _FakeTGDescriptor(), "prompt", "english", "gujarati", "src", 0.0, 2048
         )
     ]
-    assert out == ["ગાભણ.", " બીજું"]
+    assert "".join(out) == "ગાભણ. બીજું"
 
 
 @pytest.mark.asyncio
-async def test_llm_stream_applies_identical_per_chunk_transforms():
+async def test_llm_stream_applies_identical_incremental_transforms():
     client = _FakeOpenAIClient(stream_contents=["ગર્ભવતી।", " બીજું"])
     out = [
         c async for c in tr._llm_translation_stream(
             client, "gpt-4.1", "instruction", "english", "gujarati", "src", 0.0, 2048
         )
     ]
-    # Byte-identical to the TG tier's transformed output.
-    assert out == ["ગાભણ.", " બીજું"]
+    assert "".join(out) == "ગાભણ. બીજું"
 
 
 @pytest.mark.asyncio
