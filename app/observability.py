@@ -3,11 +3,36 @@ from contextlib import contextmanager
 from typing import Any, Iterator
 
 from app.config import settings
+from app.services.telemetry_stamps import chat_telemetry_release
 
 logger = logging.getLogger(__name__)
 
 # Track if any OTEL exporter is configured.
 has_otel_exporter = False
+
+
+def _process_environment() -> str:
+    """The Langfuse environment of anything not inside a surface's turn."""
+    return (
+        settings.langfuse_tracing_environment
+        or settings.environment
+        or "voice-development"
+    )
+
+
+def surface_environment(surface: str) -> str:
+    """The Langfuse environment of one surface's turns ("chat" or "voice").
+
+    One process can serve both surfaces, so the surface, not the process, says
+    where a turn's trace lands: its pipeline settings' langfuse_environment, else
+    the process environment. The turn roots pass this to
+    ``propagate_attributes(environment=...)``, which stamps it on every span
+    opened inside the turn, pydantic-ai's included, and on the scores made there.
+    """
+    from app.llm_core import runtime
+
+    return runtime.surface_settings(surface).langfuse_environment or _process_environment()
+
 
 # Conditionally configure Langfuse if env vars are set.
 langfuse_public_key = settings.langfuse_public_key
@@ -16,16 +41,11 @@ langfuse_client = None
 
 if langfuse_public_key and langfuse_secret_key:
     try:
-        # Labels for Langfuse: identify all traces as from this service.
-        release = (
-            settings.langfuse_release
-            or "voice-oan-api"
-        )
-        environment = (
-            settings.langfuse_tracing_environment
-            or settings.environment
-            or "voice-development"
-        )
+        # Labels for Langfuse. The release is the build that served the trace:
+        # LANGFUSE_RELEASE if the deployment sets it, else the running commit,
+        # the same value as the amul.release stamp.
+        release = settings.langfuse_release or chat_telemetry_release()
+        environment = _process_environment()
         # Langfuse SDK v4 reads LANGFUSE_BASE_URL. Keep LANGFUSE_HOST as a
         # backward-compatible input because older deployments may still set it.
         host = (

@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -74,11 +74,24 @@ class Tier(BaseModel):
     # ALIVE TG overflows in single-digit seconds instead of blocking a voice turn
     # for the full 60s total. ``None`` -> the consumer falls back to ``timeout_ms``.
     ttft_ms: Optional[int] = None
+    # Post-translation only: constrain this vLLM tier's decoding to the target
+    # language's script (vLLM structured outputs) and give it the strict
+    # translation-only prompt written for that grammar. Gujarati is the only
+    # target with a grammar; other targets translate unconstrained.
+    target_script_only: bool = False
     api_version: Optional[str] = None
     admission: AdmissionPolicy = AdmissionPolicy.AUTO
     label: Optional[str] = None
 
     model_config = {"frozen": True}
+
+    @model_validator(mode="after")
+    def _script_only_needs_vllm(self) -> "Tier":
+        if self.target_script_only and self.provider is not Provider.VLLM:
+            raise ValueError(
+                "target_script_only needs a vllm tier (it sends vLLM structured_outputs)"
+            )
+        return self
 
 
 class ConcurrencyGate(BaseModel):
@@ -232,3 +245,34 @@ class PipelineConfig(BaseModel):
                 else history_default_tokens
             ),
         )
+
+
+class SurfaceSettings(BaseModel):
+    """A surface's own settings: the ``settings:`` block of its pipeline file.
+
+    For what has to differ between chat and voice when one process serves both.
+    Read only when the deployment loads one file per surface (``PIPELINE_CONFIG_DIR``).
+    A setting left out is None, and its reader falls back to the env var named
+    beside it, so a file without the block changes nothing.
+    """
+
+    #: How long the surface's conversation history is kept after its last turn
+    #: (HISTORY_CACHE_TTL_SECONDS).
+    history_ttl_seconds: Optional[int] = Field(default=None, gt=0)
+    #: The Langfuse environment the surface's traces land in
+    #: (LANGFUSE_TRACING_ENVIRONMENT).
+    langfuse_environment: Optional[str] = None
+
+    model_config = {"frozen": True, "extra": "forbid"}
+
+
+class VoiceSettings(SurfaceSettings):
+    """Voice's settings, with the knobs only voice reads."""
+
+    trace_user_id_mode: Optional[Literal["hash", "phone"]] = None  # VOICE_TRACE_USER_ID_MODE
+    trace_text_mode: Optional[Literal["none", "preview_hash", "full"]] = None  # VOICE_TRACE_TEXT_MODE
+    nudge_timeout_seconds: Optional[float] = Field(default=None, gt=0)  # NUDGE_TIMEOUT_SECONDS
+    outbound_intro_enabled: Optional[bool] = None  # OUTBOUND_INTRO_ENABLED
+    #: One of agents.voice.agent.VOICE_PROMPT_VARIANTS (VOICE_AGENT_PROMPT_VERSION).
+    agent_prompt_version: Optional[Literal["mixed", "gpt-5.1", "gemma4"]] = None
+    pretranslation_timeout_seconds: Optional[float] = Field(default=None, gt=0)  # OPENAI_PRETRANSLATION_TIMEOUT_SECONDS

@@ -13,7 +13,6 @@ simplejson==3.20.2
 pg8000==1.31.5
 sqlalchemy==2.0.46
 requests==2.32.5
-clickhouse-connect==1.9.0  # scripts/telemetry_import.py
 
 # LLM
 openai==2.16.0
@@ -23,8 +22,9 @@ tiktoken==0.12.0
 tenacity==9.1.2
 slowapi==0.1.9
 
-# Langfuse
-langfuse
+# Langfuse. Pinned: propagate_attributes(environment=...) first shipped in 4.12.0,
+# and 5.x drops set_current_trace_io (5.x needs Python >=3.11, so 3.10 resolves 4.x today).
+langfuse==4.18.0
 gevent>=22.10.0
 
 # Prometheus metrics (optional at runtime; app/metrics.py degrades to a no-op when absent)

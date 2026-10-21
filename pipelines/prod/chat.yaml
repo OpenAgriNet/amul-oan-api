@@ -1,0 +1,55 @@
+# Pipeline config for prod chat, loaded as chat.yaml from PIPELINE_CONFIG_DIR. For
+# reference: the deployed copy is in amul-infra's pipelines ConfigMap. It reproduces
+# what synthesize_from_env builds from amul-oan-api-config today: every session on
+# oss, gemma-4-31b-it first and gpt-5.1 behind it on every step, the agent's
+# concurrency gate (25 in flight), the Gemma 4 script-only translator ahead of
+# TranslateGemma, and the FALLBACK_* timeouts.
+#
+# ${NAME} is filled from the pod env at boot; api_key_env names a secret.
+
+fallback_enabled: true
+
+# Chat's own settings (the env var each replaces is in app/llm_core/config_model.py).
+# History retention is left out: chat keeps HISTORY_CACHE_TTL_SECONDS's default.
+settings:
+  langfuse_environment: chat-production
+
+profiles:
+  - name: oss
+    weight: 100
+    capabilities: {history_max_tokens: 20000}   # CHAT_HISTORY_MAX_TOKENS_VLLM_GEMMA
+    steps:
+      agent:
+        tiers:
+          - {provider: vllm, model: gemma-4-31b-it, endpoint: "${OSS_INFERENCE_ENDPOINT_URL}", api_key_env: OSS_INFERENCE_API_KEY, timeout_ms: 20000, label: oss-agent}
+          - &managed_agent {provider: openai, model: gpt-5.1, api_key_env: OPENAI_API_KEY, timeout_ms: 20000, admission: managed, label: managed-agent}
+        triggers:
+          concurrency_gate: {metrics_url: "${AGENT_CONCURRENCY_METRICS_URL}", max_concurrency: 25}
+      moderation:
+        tiers:
+          - {provider: vllm, model: gemma-4-31b-it, endpoint: "${OSS_INFERENCE_ENDPOINT_URL}", api_key_env: OSS_INFERENCE_API_KEY, timeout_ms: 9000, label: oss-moderation}
+          - *managed_agent
+      suggestions:
+        tiers:
+          - {provider: vllm, model: gemma-4-31b-it, endpoint: "${OSS_INFERENCE_ENDPOINT_URL}", api_key_env: OSS_INFERENCE_API_KEY, timeout_ms: 6000, label: oss-suggestions}
+          - *managed_agent
+      pre_translation:
+        tiers:
+          - {provider: vllm, model: gemma-4-31b-it, endpoint: "${OSS_INFERENCE_ENDPOINT_URL}", api_key_env: OSS_INFERENCE_API_KEY, timeout_ms: 10000, label: oss-pretranslation}
+          - &managed_pretranslation {provider: openai, model: gpt-4.1-mini, api_key_env: OPENAI_API_KEY, timeout_ms: 20000, admission: managed, label: managed-pretranslation}
+
+  - name: managed
+    weight: 0
+    capabilities: {history_max_tokens: 80000}
+    steps:
+      agent: {tiers: [*managed_agent]}
+      moderation: {tiers: [*managed_agent]}
+      suggestions: {tiers: [*managed_agent]}
+      pre_translation: {tiers: [*managed_pretranslation]}
+
+defaults:
+  post_translation:
+    tiers:
+      - {provider: vllm, model: gemma-4-31b-it, endpoint: "${TRANSLATION_GEMMA_ENDPOINT}", api_key_env: OSS_INFERENCE_API_KEY, timeout_ms: 30000, ttft_ms: 5000, target_script_only: true, label: gemma-translator}
+      - {provider: translategemma, model: translategemma-27b-base, endpoint: "${TRANSLATEGEMMA_27B_BASE_ENDPOINT}", timeout_ms: 60000, ttft_ms: 5000, label: translategemma}
+      - {provider: openai, model: gpt-5.1, api_key_env: OPENAI_API_KEY, timeout_ms: 30000, admission: managed, label: llm-fallback}

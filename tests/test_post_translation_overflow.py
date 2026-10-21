@@ -498,6 +498,24 @@ async def test_post_translation_common_stream_enforces_ttft(monkeypatch):
     assert result == "overflow"
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("chunks, said", [
+    (["આ કુલ પાચ્ય પોષક તત્વ (", "ટીડીએન) છે."], "આ કુલ પાચ્ય પોષક તત્વ ટીડીએન છે."),
+    (["પોટેશિયમ પરમેંગેનેટ", "નું દ્રાવણ વાપરો."], "પોટેશિયમ પરમેંગેનેટનું દ્રાવણ વાપરો."),
+], ids=["tdn", "potassium permanganate"])
+async def test_voice_stream_keeps_a_term_whose_words_came_in_the_chunk_before(
+    monkeypatch, _managed_pipeline, chunks, said
+):
+    """The term policy runs on one streamed chunk at a time. Voice keeps TDN and
+    potassium permanganate as voice-oan-api does, so they are not expanded into
+    a second copy of the words before them."""
+    from app.voice.sink import _voice_translation
+
+    _patch_aiohttp(monkeypatch, _FakeResp(sse=_sse(*chunks)))
+    out = "".join([c async for c in _voice_translation("src", "gujarati", None)])
+    assert out == said
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # 8. Faithful HTTP status classification
 # ══════════════════════════════════════════════════════════════════════════════

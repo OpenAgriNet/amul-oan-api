@@ -51,6 +51,11 @@ CVCC_CACHE_POLICY = ResponseCachePolicy(
     ttl_seconds=settings.agent_cvcc_cache_ttl_seconds,
     negative_ttl_seconds=settings.agent_negative_cache_ttl_seconds,
 )
+BANAS_CACHE_POLICY = ResponseCachePolicy(
+    name="banas-visits",
+    ttl_seconds=settings.agent_banas_cache_ttl_seconds,
+    negative_ttl_seconds=settings.agent_negative_cache_ttl_seconds,
+)
 
 
 def _cache_key(policy: ResponseCachePolicy, identity: Mapping[str, object]) -> str:

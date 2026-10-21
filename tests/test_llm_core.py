@@ -269,6 +269,22 @@ def test_shim_post_translation_tg_ttft_deadline(monkeypatch):
     assert tg2.ttft_ms == 3500 and tg2.timeout_ms == 60000
 
 
+def test_shim_gemma_translator_switch(monkeypatch):
+    """Unset, chat's post-translation chain is unchanged; set, the Gemma 4
+    script-only translator goes first with TranslateGemma behind it."""
+    monkeypatch.delenv("OSS_INFERENCE_ENDPOINT_URL", raising=False)
+    monkeypatch.setenv("LLM_PROVIDER", "openai")
+    monkeypatch.delenv("TRANSLATION_GEMMA_ENDPOINT", raising=False)
+    labels = [t.label for t in synthesize_from_env().defaults[Step.POST_TRANSLATION].tiers]
+    assert labels == ["translategemma", "llm-fallback"]
+
+    monkeypatch.setenv("TRANSLATION_GEMMA_ENDPOINT", "http://gemma-translate:8870/v1")
+    tiers = synthesize_from_env().defaults[Step.POST_TRANSLATION].tiers
+    assert [t.label for t in tiers] == ["gemma-translator", "translategemma", "llm-fallback"]
+    assert tiers[0].provider is Provider.VLLM and tiers[0].target_script_only
+    assert tiers[0].endpoint == "http://gemma-translate:8870/v1"
+
+
 def test_yaml_config_does_not_enable_fallback_implicitly():
     from app.llm_core.config_model import NamedProfile, PipelineConfig
 

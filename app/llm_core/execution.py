@@ -291,6 +291,24 @@ def _record_served(
         pass
 
 
+def _record_committed(step: Step, target: ExecutionTarget, trace_state: Any) -> None:
+    """Tracing-only, like ``_record_served``: the tier a stream committed to."""
+    try:  # pragma: no cover - best effort
+        from app.llm_core import trace as _trace
+        _trace.record_committed(step, target, trace_state=trace_state)
+    except Exception:
+        pass
+
+
+def _record_fell_back(step: Step, trace_state: Any) -> None:
+    """Tracing-only, like ``_record_served``: a tier failed before committing."""
+    try:  # pragma: no cover - best effort
+        from app.llm_core import trace as _trace
+        _trace.record_fell_back(step, trace_state=trace_state)
+    except Exception:
+        pass
+
+
 # (D) Internal commit sentinel. Agent producers yield this the instant the agent
 # does ANY work — the FIRST pydantic-ai model event, which is a tool-call part that
 # pydantic-ai emits BEFORE it runs the tools and long before the first TEXT delta.
@@ -584,6 +602,8 @@ async def stream_with_fallback(
                     if sem is not None:
                         acquired = await _acquire_managed_slot(sem)
                     async for chunk in _attempt_events(attempt, make_stream(attempt)):
+                        if not committed:
+                            _record_committed(step, attempt, trace_state)
                         committed = True
                         if chunk is not AGENT_ACTIVITY:
                             yield chunk
@@ -647,6 +667,7 @@ async def stream_with_fallback(
                         await asyncio.sleep(_retry_after_seconds(exc))
                         continue
                     if will_fall_back:
+                        _record_fell_back(step, trace_state)
                         break  # fall to the next tier
                     raise
                 finally:
@@ -682,6 +703,8 @@ class ExecutionContext:
     session_id: str
     config: PipelineConfig
     profile_name: str
+    #: The surface whose config this is ("chat" or "voice").
+    surface: str = "chat"
     _trace_state: Any = field(default=None, init=False, repr=False, compare=False)
 
     @property
@@ -805,7 +828,11 @@ class ExecutionContext:
     ) -> AsyncIterator[Any]:
         if not self.config.fallback_enabled:
             target = self._target(step, self._step_plan(step).tiers[0])
+            committed = False
             async for chunk in make_stream(target):
+                if not committed:
+                    committed = True
+                    _record_committed(step, target, self._trace_state)
                 if chunk is not AGENT_ACTIVITY:
                     yield chunk
             self._record_direct_success(step, target)
@@ -861,10 +888,12 @@ class ExecutionContext:
             yield chunk
 
 
-async def context(session_id: str) -> ExecutionContext:
-    """Snapshot current config and resolve the session profile exactly once."""
+async def context(session_id: str, surface: str = "chat") -> ExecutionContext:
+    """Snapshot the surface's current config and resolve the session profile exactly once."""
     from app.llm_core import runtime, split
 
-    config = runtime.get_pipeline()
+    config = runtime.get_pipeline(surface)
     profile_name = await split.resolve_profile(session_id, config)
-    return ExecutionContext(session_id=session_id, config=config, profile_name=profile_name)
+    return ExecutionContext(
+        session_id=session_id, config=config, profile_name=profile_name, surface=surface
+    )

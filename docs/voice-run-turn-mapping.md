@@ -70,7 +70,7 @@ Found while mapping; each changes what the port has to do.
   consumer at a `yield`, so a `SideChannelEmission` yielded by `run_turn` would arrive after the
   moment it was needed. See decision 1.
 - **One process, one Langfuse environment.** Chat traces go to `chat-production` and voice
-  traces to `voice-production` (`telemetry/eras.yaml`), set per process through
+  traces to `voice-production` (`telemetry/eras.yaml` in amul-telemetry), set per process through
   `LANGFUSE_TRACING_ENVIRONMENT`. The telemetry import selects by environment. Voice served from
   the chat process would land in the chat environment and drop out of `voice_turns`.
 
@@ -312,10 +312,21 @@ reads it. So a slot lands in the same PR as the code that reads it, never ahead 
    called with the agent's new messages: voice's records the agent's run, chat's records
    `served_tier`, which `run_turn` used to send itself and which would have landed on voice
    turns. `TelephonyCall` gets the provider and the call type. Where it differs from voice: a
-   turn cut off mid-answer is `client_disconnected` rather than `success`, a short-circuit that
+   turn cut off mid-answer is `client_disconnected` rather than `success`, a turn whose agent or
+   translation failed (the caller heard the trouble line) is `error` rather than `success`, though
+   it still hangs up on a closing turn and is saved to history as voice's was, a short-circuit that
    goes stale has no route, history writes aren't timed, and the agent's per-attempt tiers
    aren't recorded because `llm_core` runs the attempts. The ownership release timing comes with
    the adapter.
+
+   The model that answered and whether it fell back are recorded, with voice's keys:
+   `llm_core`'s streaming walker notes the tier it committed to and any fallback on the turn's
+   pipeline trace. `VOICE_TRACE_USER_ID_MODE` (default `hash`) is voice-oan-api#345: `phone`
+   sends the caller's phone as the Langfuse user id. The Prometheus series keep their names, but
+   their `step` label takes `llm_core`'s step names: `pretranslation` is `pre_translation`,
+   `chat` is `agent`, and a post-translation fallback event's `posttranslation` is
+   `post_translation`; a TranslateGemma tier counts as `kind=oss`, where voice counted it as
+   `managed`. No dashboard or alert in amul-infra reads these.
 5. Voice adapter and route behind a flag, off by default, emitting `voice.turn.v1`.
 
    **Done** on `feat/voice-route` (PR 12), stacked on voice's telemetry. `GET /api/voice/` is
@@ -323,8 +334,9 @@ reads it. So a slot lands in the same PR as the code that reads it, never ahead 
    only when `VOICE_ROUTE_ENABLED` is on; with it off the voice code is never imported.
    `stream_voice_message` (`app/services/voice.py`) works out the outbound consent turn from
    the stage in Redis as voice did, wires in `CallStaleness` and `RayaNudgeSender`, runs
-   `VOICE_SURFACE`, sends each emission through voice's output normalizer unless it is raw, and
-   releases the session however the turn ends. The route's ownership claim and history load are
+   `VOICE_SURFACE`, sends each emission through voice's output normalizer unless it is raw (the
+   sink's own text is raw: the sink has cleaned it once, as voice did), and releases the session
+   however the turn ends. The route's ownership claim and history load are
    timed on the trace, from when the request came in. `Turn.channel` is `None` on voice. A
    caller hanging up closes the turn at once, as on chat's route; the ownership release isn't
    timed on the trace, since it runs after the trace has closed.
@@ -334,16 +346,18 @@ reads it. So a slot lands in the same PR as the code that reads it, never ahead 
 7. Cutover: the amul-oan-api image deployed as the voice service with
    `PIPELINE_CHANNEL=voice`, `LANGFUSE_TRACING_ENVIRONMENT=voice-production`,
    `VOICE_ROUTE_ENABLED=true` and `HISTORY_CACHE_TTL_SECONDS=86400` (voice keeps history for 24
-   hours, this repo's default is 2), the telephony
+   hours, this repo's default is 2), `VOICE_TRACE_USER_ID_MODE=phone` where that Langfuse may
+   hold phone numbers (prod voice sends the phone today), the telephony
    provider pointed at it, voice-oan-api kept deployable for rollback, and a new era in
-   `telemetry/eras.yaml`. The voice deployment boots from `PIPELINE_CONFIG_PATH` with voice's
+   amul-telemetry's `telemetry/eras.yaml`. The voice deployment boots from `PIPELINE_CONFIG_PATH` with voice's
    steps; the live `llm_pipeline_config:voice` key can override it after that. With
    `VOICE_ROUTE_ENABLED` the app refuses to start, and rejects a live config, unless
    `PIPELINE_CHANNEL=voice` and every profile calls are routed to has moderation,
    pre_translation, agent and post_translation, with non_meaningful on managed. This repo's env
    synthesis builds chat's steps, not voice's (`VOICE_MODERATION_PROVIDER`,
    `VOICE_NON_MEANINGFUL_PROVIDER`, moderation on the pretranslation models), so it can't boot
-   voice; porting it is the alternative if the deployment has to run from env alone.
+   voice; porting it is the alternative if the deployment has to run from env alone. Dev's file
+   is `pipeline.voice-dev.yaml`; it names its endpoints as `${ENV_VAR}`, filled in at boot.
 
 Each PR is checked the same way: no existing test edited, every existing test's result unchanged,
 a mutation check on what it adds, and a trial merge onto the open telemetry PRs and the earlier

@@ -23,6 +23,10 @@ from agents.voice import agent as voice_agents
 from app import observability
 from app.channels.chat import WEB
 from app.config import settings
+from app.llm_core import Step
+from app.llm_core import runtime as llm_runtime
+from app.llm_core.config_model import StepClientKind
+from app.llm_core.execution import ExecutionContext, ExecutionTarget
 from app.services import chat as chat_service
 from app.services.telemetry_stamps import chat_telemetry_release
 from app.turn.types import TelephonyCall, Turn
@@ -43,8 +47,9 @@ from app.voice.pretranslation import voice_pretranslation
 from app.voice.sink import VoiceSink
 from app.voice.telemetry import VoiceTelemetry
 from tests.test_chat_turn_contract import patch_turn
+from tests.test_chat_turn_sequence import _Node
 from tests.test_voice_agent_input import _FOUND, _Run, _closing, _render
-from tests.test_voice_pretranslation import _execution, _pretranslate
+from tests.test_voice_pretranslation import _MANAGED, _OSS, _execution, _pretranslate
 from tests.test_voice_pretranslation import _turn as _gujarati_turn
 from tests.test_voice_sink import _English, _speak, _Translation
 
@@ -198,6 +203,8 @@ _VOICE = dataclasses.replace(
     liveness=VoiceLiveness,
     pretranslation=voice_pretranslation(_render),
     agent_input=voice_agent_input(_render),
+    # Voice has no prefetch: its background set fetches the farmer data.
+    prefetch=None,
 )
 
 
@@ -294,6 +301,17 @@ def test_by_default_a_turn_sends_langfuse_no_phone_and_no_words(lf, call, monkey
     for private in (_MOBILE, "fever", "water"):
         assert private not in sent
     assert lf.summary["query"].keys() == {"chars", "sha256"}
+
+
+def test_the_phone_user_id_mode_sends_langfuse_the_callers_phone(lf, call, monkeypatch):
+    monkeypatch.setattr(settings, "voice_trace_user_id_mode", "phone")
+
+    _run(_turn(history=_PRIOR))
+
+    (propagated,) = lf.propagated
+    assert propagated["user_id"] == f"+91 {_MOBILE}"
+    # Only as the trace's user id: the metadata keeps the hash.
+    assert _MOBILE not in json.dumps(lf.summary, ensure_ascii=False, default=str)
 
 
 @pytest.mark.parametrize("mode", sorted(voice_trace._VALID_TEXT_MODES))
@@ -487,6 +505,86 @@ def test_a_voice_turn_sends_no_served_tier_and_a_chat_turn_still_does(lf, call, 
 
 async def _collect(agen):
     return [item async for item in agen]
+
+
+class _Down:
+    """An agent run whose tier fails before it sends anything."""
+
+    async def __aenter__(self):
+        raise RuntimeError("tier down")
+
+    async def __aexit__(self, *_e):
+        return False
+
+
+class _BreaksOff(_Down):
+    """An agent run that sends its first words, then fails."""
+
+    ctx = None
+
+    async def __aenter__(self):
+        return self
+
+    async def __aiter__(self):
+        yield _Node(["Give her "])
+        raise RuntimeError("stream reset")
+
+
+_RUNS = {"up": lambda: _answer("Give her water."), "down": _Down, "breaks off": _BreaksOff}
+
+
+def _agent_on(monkeypatch, *tiers):
+    """The agent's chain for the turn: each tier, and how its run goes."""
+    chain = []
+    for tier, run in tiers:
+        target = ExecutionTarget(tier, StepClientKind.AGENT)
+        object.__setattr__(target, "handle", run)
+        chain.append(target)
+    real_chain = ExecutionContext._chain
+
+    async def _chain(self, step, client_kind=None):
+        return chain if step is Step.AGENT else await real_chain(self, step, client_kind)
+
+    monkeypatch.setattr(ExecutionContext, "_chain", _chain)
+    monkeypatch.setattr(voice_agents.voice_agent_signed_in, "iter", lambda **kw: _RUNS[kw["model"]]())
+
+
+_GPT_MINI = ("managed", "openai", "gpt-mini")
+
+
+@pytest.mark.parametrize("tiers, answered, fell_back", [
+    pytest.param([(_MANAGED, "up")], _GPT_MINI, False, id="answers"),
+    pytest.param([(_OSS, "down"), (_MANAGED, "up")], _GPT_MINI, True, id="falls back"),
+    pytest.param([(_MANAGED, "breaks off")], _GPT_MINI, False, id="breaks off after its first words"),
+    pytest.param([(_OSS, "down"), (_MANAGED, "down")], ("failed",) * 3, True, id="every tier is down"),
+])
+def test_the_agent_block_names_the_model_that_answered_as_voice_did(lf, call, monkeypatch, tiers, answered, fell_back):
+    _agent_on(monkeypatch, *tiers)
+
+    _run(_turn(history=_PRIOR))
+
+    summary = lf.summary
+    (stage,) = [stage for stage in summary["stages"] if stage["name"] == "agent"]
+    committed = (None,) * 3 if answered[0] == "failed" else answered
+    for block in (summary["agent"], stage):
+        assert (block["actual_tier"], block["actual_provider"], block["actual_model"]) == answered
+        assert tuple(block.get(f"first_token_committed_{key}") for key in ("tier", "provider", "model")) == committed
+        assert block["fallback_used"] is fell_back
+
+
+def test_with_fallback_off_the_agent_block_names_the_primary_that_answered(lf, call, monkeypatch):
+    pipeline = llm_runtime.get_pipeline()
+    monkeypatch.setattr(llm_runtime, "get_pipeline", lambda surface="chat": pipeline.model_copy(update={"fallback_enabled": False}))
+    monkeypatch.setattr(ExecutionTarget, "handle", property(lambda _target: "up"))
+    monkeypatch.setattr(voice_agents.voice_agent_signed_in, "iter", lambda **kw: _RUNS[kw["model"]]())
+
+    _run(_turn(history=_PRIOR))
+
+    agent = lf.summary["agent"]
+    assert (agent["actual_tier"], agent["actual_provider"], agent["actual_model"]) == (
+        agent["requested_tier"], agent["requested_provider"], agent["requested_model"]
+    )
+    assert agent["fallback_used"] is False
 
 
 # ── what each voice module records ──────────────────────────────────────────

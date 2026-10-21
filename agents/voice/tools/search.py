@@ -351,7 +351,7 @@ async def search_documents(
         else:
             logger.warning("Could not inspect index '%s': %s", index_name, capabilities.get("error"))
 
-        logger.info("Searching for '%s' in index '%s'", query, index_name)
+        logger.info("Searching index '%s'; query_chars=%s", index_name, len(query or ""))
 
         use_e5_query_prefix = _env_bool("MARQO_USE_E5_QUERY_PREFIX", True)
         exclude_reference_chunks = _env_bool("MARQO_EXCLUDE_REFERENCE", True)
@@ -407,7 +407,7 @@ async def search_documents(
                 results = await asyncio.to_thread(_marqo_search_sync, endpoint_url, index_name, search_params)
             except Exception as e:
                 if search_mode == "hybrid":
-                    logger.warning("Hybrid search failed, retrying with tensor search for query '%s'", query)
+                    logger.warning("Hybrid search failed, retrying with tensor search; query_chars=%s", len(query or ""))
                     fallback_params = {
                         "q": effective_query,
                         "limit": search_limit,
@@ -458,9 +458,9 @@ async def search_documents(
         results = _apply_doc_diversity(results, top_k=final_top_k, max_per_doc=max_per_doc)
 
         logger.info(
-            "Search completed: query=%s expanded_query=%s mode=%s top_k=%s hits=%s profile=%s",
-            query,
-            expanded_query,
+            "Search completed: query_chars=%s expanded_query_chars=%s mode=%s top_k=%s hits=%s profile=%s",
+            len(query or ""),
+            len(expanded_query or ""),
             search_mode,
             final_top_k,
             len(results),
@@ -486,5 +486,5 @@ async def search_documents(
         document_string = '\n\n----\n\n'.join([str(document) for document in search_hits])
         return "> Search Results for `" + query + "`\n\n" + document_string
     except Exception as e:
-        logger.error("Error searching documents: %s for query: %s", e, query)
+        logger.error("Error searching documents: %s; query_chars=%s", e, len(query or ""))
         raise ModelRetry("Error searching documents, please try again")

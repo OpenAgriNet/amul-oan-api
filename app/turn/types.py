@@ -15,7 +15,8 @@ reads it. The sink and the telemetry are on ``SurfaceProfile`` because ``run_tur
 reads them and chat populates them with its real ones; so are pretranslation
 and the agent input.
 ``Turn.call`` is there because voice's classifiers read it, and the background set
-and liveness because ``run_turn`` runs voice's.
+and liveness because ``run_turn`` runs voice's, and the prefetch because it starts
+chat's.
 """
 from __future__ import annotations
 
@@ -28,6 +29,7 @@ from typing import (
     AsyncIterator,
     Awaitable,
     Callable,
+    Coroutine,
     Mapping,
     Optional,
     Protocol,
@@ -119,7 +121,9 @@ class TextEmission:
     text: str
     #: Bypass the surface's output normalizer. Chat has none, so its adapter
     #: ignores this; voice's hangup line ``"Goodbye."`` must skip the Gujarati
-    #: allow-list normalizer or it is spoken as ``"."``.
+    #: allow-list normalizer or it is spoken as ``"."``. The sink's text is raw
+    #: too: the sink has already normalized it, and a second pass is not
+    #: harmless (voice's "મિલી" became "મિલીલીટરલીટર").
     raw: bool = False
 
 
@@ -302,6 +306,17 @@ class LivenessFactory(Protocol):
     ) -> TurnLiveness: ...
 
 
+# ── prefetch ────────────────────────────────────────────────────────────────
+
+
+#: A read the agent input needs, started by ``run_turn`` as a task right after
+#: the classifier chain, so it runs alongside pretranslation (and chat's
+#: moderation) instead of after them. The agent input is handed the task as
+#: ``prefetched`` and awaits it where it needs the result; ``run_turn`` cancels
+#: it on every exit if it is still running (a declined query, a hang-up).
+Prefetch = Callable[[Turn], Coroutine[Any, Any, Any]]
+
+
 # ── pretranslation ──────────────────────────────────────────────────────────
 
 
@@ -371,7 +386,9 @@ class AgentInputStep(Protocol):
     reads out milk details. ``translate_to`` is set when the answer will be
     translated for the caller, so the agent answers in English. Voice reads the
     farmer data and the consent verdict off the background set, and asks
-    ``is_stale`` before it rewrites history. Chat ignores both.
+    ``is_stale`` before it rewrites history. Chat ignores both. ``prefetched``
+    is passed only when the surface sets ``prefetch`` (chat's farmer context),
+    so a surface without one need not accept it.
     """
 
     async def __call__(
@@ -384,6 +401,7 @@ class AgentInputStep(Protocol):
         translate_to: Optional[str],
         background: Optional[TurnBackground],
         is_stale: Optional[StalenessCheck],
+        prefetched: Optional[Awaitable[Any]] = None,
     ) -> Union[AgentInput, ClassifierResult]: ...
 
 
@@ -408,8 +426,9 @@ class TurnSink(Protocol):
 
     def outcome(self) -> Optional[str]:
         """How the turn ended, when the sink caught a failure itself and told the
-        caller so; None when the answer went through. ``run_turn`` then records
-        it and keeps the turn out of history."""
+        caller so; None when the answer went through. ``run_turn`` records it in
+        place of ``success``; the closing line and the history write still
+        happen, as they did on voice."""
         ...
 
 
@@ -496,6 +515,10 @@ class SurfaceProfile:
     #: What the agent is run with. Chat's also runs its moderation. Like the
     #: sink, a surface that always answers from its classifiers may leave it unset.
     agent_input: Optional[AgentInputStep] = None
+    #: A read the agent input needs, started right after the classifiers so it
+    #: runs alongside pretranslation and moderation. Chat's loads the farmer
+    #: context. Voice has none: its background set fetches the farmer data.
+    prefetch: Optional[Prefetch] = None
     #: Languages switched off for this surface, whose turns are answered in
     #: English. Chat's come from its ``*_CHAT_ENABLED`` settings; voice has none.
     disabled_languages: Optional[Callable[[], set[str]]] = None

@@ -28,10 +28,11 @@ class UnionName(str, Enum):
 # Brand / spelling variants that farmer-source APIs return for a union, mapped to
 # the canonical UnionName value. A union is often returned by its dairy brand
 # (Kutch -> "Sarhad", Mehsana -> "Dudhsagar", Surendranagar -> "Sursagar",
-# Bharuch -> "Dudhdhara" / "Dudh Dhara") or an alternate spelling ("Kachchh",
-# "Banaskantha"). Normalizing through this map lets union-scoped features
-# (e.g. scheme lookup) resolve a farmer's union regardless of which name the
-# source returns. Keys are lowercase; values equal a UnionName value.
+# Bharuch -> "Dudhdhara" / "Dudh Dhara", Gandhinagar -> "Madhur") or an
+# alternate spelling ("Kachchh", "Banaskantha"). Normalizing through this map
+# lets union-scoped features (e.g. scheme lookup) resolve a farmer's union
+# regardless of which name the source returns. Keys are lowercase; values
+# equal a UnionName value.
 # Vasudhara is a separate (Valsad) union and is deliberately not aliased.
 UNION_NAME_ALIASES: dict[str, str] = {
     "sarhad": UnionName.KUTCH.value,
@@ -42,6 +43,9 @@ UNION_NAME_ALIASES: dict[str, str] = {
     "sursagar": UnionName.SURENDRANAGAR.value,
     "dudhdhara": UnionName.BHARUCH.value,
     "dudh dhara": UnionName.BHARUCH.value,
+    "madhur": UnionName.GANDHINAGAR.value,
+    "madhur dairy": UnionName.GANDHINAGAR.value,
+    "gandhinagar dairy": UnionName.GANDHINAGAR.value,
 }
 
 

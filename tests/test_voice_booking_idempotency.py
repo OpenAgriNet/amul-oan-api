@@ -16,9 +16,11 @@ import pytest
 
 from agents.tools import ai_call as chat_ai_call
 from agents.tools.beckn import network as beckn_network
+from agents.tools.beckn import operations
 from agents.voice.tools import ai_call as ai_mod
 from agents.voice.models.ai_call import AISpecies
 from app.core import cache as cache_mod
+from tests.test_beckn_operations import MemoryRedis, _configure_amul
 
 # create_ai_call rejects identifiers that cannot be real; 24 base64 chars is the
 # shape of every real prod technician id.
@@ -117,7 +119,7 @@ def test_ai_call_idempotent_on_rerun(monkeypatch, store):
 
     assert len(calls) == 1
     assert "booked successfully" in r1.lower()
-    assert "already" in r2.lower()
+    assert r2 == chat_ai_call.ALREADY_BOOKED_MESSAGE
     assert store[("ai_call_booked", "s1")] == {"ticket": "T1", "species": SPECIES.value}
 
 
@@ -184,3 +186,176 @@ def test_ai_call_booking_that_provably_did_not_happen_can_be_retried(monkeypatch
     assert len(calls) == 2
     assert "booked successfully" not in first.lower()
     assert "booked successfully" in second.lower()
+
+
+# ── through the real Beckn confirm ──────────────────────────────────────────
+
+
+def _nack_body(code):
+    return {"message": {"ack": {"status": "NACK"}}, "error": {"code": code, "message": code.lower()}}
+
+
+_BOOKED = ("ack", {"message": {"order": {"id": "T9", "state": "ACTIVE"}}})
+
+
+def _on_confirm_error(code, message):
+    return ("ack", {"error": {"code": code, "message": message}})
+
+
+class _Bridge:
+    """The transaction bridge as the BAP sees it. Each confirm gets the next
+    answer: an exception to raise, an (HTTP status, body) pair, or ("ack", the
+    on_confirm the BPP sends back, or None for none in time)."""
+
+    def __init__(self, store, answers):
+        self.store = store
+        self.answers = list(answers)
+        self.posted = []
+
+    async def post(self, url, json=None, headers=None):
+        self.posted.append(json)
+        answer = self.answers.pop(0)
+        if isinstance(answer, BaseException):
+            raise answer
+        request = httpx.Request("POST", url)
+        status, body = answer
+        if status == "ack":
+            if body is not None:
+                context = {**json["context"], "action": "on_confirm"}
+                assert (await self.store.record_callback({"context": context, **body})).accepted
+            return httpx.Response(200, json={"message": {"ack": {"status": "ACK"}}}, request=request)
+        return httpx.Response(status, json=body, request=request)
+
+
+class _Redis(MemoryRedis):
+    """The operation store's Redis, failing once where a test asks it to."""
+
+    fail_on = None
+
+    async def set(self, key, value, ex=None, nx=False):
+        if self.fail_on == "create":
+            self.fail_on = None
+            raise ConnectionError("redis went away")
+        return await super().set(key, value, ex=ex, nx=nx)
+
+    async def hset(self, key, mapping=None):
+        if self.fail_on == "mark_sent" and "sent_at" in (mapping or {}):
+            self.fail_on = None
+            raise ConnectionError("redis went away")
+        return await super().hset(key, mapping=mapping)
+
+
+@pytest.fixture
+def network(monkeypatch, store):
+    _configure_amul(monkeypatch, operations)
+    monkeypatch.setattr(operations.settings, "beckn_callback_wait_seconds", 0.05)
+    monkeypatch.setattr(operations.settings, "beckn_callback_poll_interval_seconds", 0.01)
+    monkeypatch.setattr(operations.settings, "beckn_forward_retry_delay_seconds", 0.0)
+    redis = _Redis()
+    beckn_store = operations.BecknOperationStore(redis, ttl_seconds=3600)
+
+    def answer(*answers):
+        bridge = _Bridge(beckn_store, answers)
+        client = operations.BecknOperationClient(beckn_store, http_client=bridge)
+        monkeypatch.setattr(operations, "_operation_client", client)
+        return bridge
+
+    return SimpleNamespace(answer=answer, redis=redis)
+
+
+def _unconfigured(monkeypatch, network):
+    monkeypatch.setattr(operations.settings, "beckn_bap_caller_url", "")
+    return lambda: monkeypatch.setattr(operations.settings, "beckn_bap_caller_url", "http://onix/bap/caller")
+
+
+def _store_fails(step):
+    def breaks(monkeypatch, network):
+        network.redis.fail_on = step
+        return lambda: None
+    return breaks
+
+
+@pytest.mark.parametrize("breaks, first", [
+    (_unconfigured, []),
+    (_store_fails("create"), []),
+    (_store_fails("mark_sent"), []),
+    (None, [httpx.ConnectError("refused"), httpx.ConnectError("refused")]),
+    (None, [(401, _nack_body("UNAUTHORIZED_TRANSACTION"))]),
+    (None, [(404, _nack_body("UNSUPPORTED_TRANSACTION"))]),
+    (None, [_on_confirm_error("BOOKING_REJECTED", "Invalid Union Code")]),
+], ids=["not_configured", "not_recorded", "not_marked_sent", "connect_refused", "bad_bridge_token", "unsupported_action", "provider_rejected"])
+def test_a_confirm_that_provably_did_not_book_frees_the_call_to_book_again(monkeypatch, network, breaks, first):
+    bridge = network.answer(*first, _BOOKED)
+    undo = breaks(monkeypatch, network) if breaks else None
+
+    failed = _book_ai()
+    if undo:
+        undo()
+    retried = _book_ai()
+
+    assert failed.startswith("Artificial insemination call booking failed.")
+    assert "booked successfully" in retried.lower()
+    assert len(bridge.posted) == len(first) + 1
+
+
+@pytest.mark.parametrize("answer", [
+    httpx.ReadTimeout("read timed out"),
+    (502, _nack_body("ONIX_CALLER_UNAVAILABLE")),
+    (503, _nack_body("BPP_STORAGE_UNAVAILABLE")),
+    ("ack", None),
+    ("ack", {"error": {"code": "BOOKING_UNCONFIRMED", "message": "do not submit a duplicate"}}),
+], ids=["read_timeout", "bridge_502", "bpp_503", "no_callback_in_time", "bpp_could_not_confirm"])
+def test_a_confirm_that_may_have_booked_holds_the_call_and_says_it_may_have(network, answer):
+    """The visit may be booked and the farmer texted: neither the first answer nor
+    a retry in the same call may say it failed or that a booking is active."""
+    bridge = network.answer(answer, _BOOKED)
+
+    first = _book_ai()
+    retried = _book_ai()
+
+    assert len(bridge.posted) == 1
+    assert first == chat_ai_call.UNCONFIRMED_MESSAGE
+    assert retried == chat_ai_call.ALREADY_REQUESTED_MESSAGE
+
+
+# ── chat's route: the same confirm, guard from AI_CALL_BOOKING_GUARD_ENABLED ──
+
+
+def _book_chat(session_id="s1"):
+    from agents.tools.models.ai_call import AISpecies as ChatSpecies
+
+    return asyncio.run(chat_ai_call._book_via_network(
+        "159", "00002", "5058", TECH_ID, ChatSpecies.COW, session_id, {},
+    ))
+
+
+@pytest.mark.parametrize("reason, told", [
+    ("Invalid Union Code", "The booking system did not accept the request (Invalid Union Code), so no visit was booked."),
+    ("The provider rejected the booking (HTTP 409)", "The booking system did not accept the request, so no visit was booked."),
+    ("See https://example.invalid/e/1", "The booking system did not accept the request, so no visit was booked."),
+], ids=["plain_reason", "status_code_dropped", "url_dropped"])
+def test_chat_a_provider_rejection_says_it_failed_and_frees_the_session(monkeypatch, network, store, reason, told):
+    """PashuGPT answered no: nothing was booked, so the farmer may book again now."""
+    monkeypatch.setattr(chat_ai_call.settings, "ai_call_booking_guard_enabled", True)
+    bridge = network.answer(_on_confirm_error("BOOKING_REJECTED", reason), _BOOKED)
+
+    failed = _book_chat()
+    held_after_failure = ("ai_call_booked", "s1") in store
+    retried = _book_chat()
+
+    assert failed.startswith("Artificial insemination call booking failed.\n\n" + told)
+    assert not held_after_failure
+    assert "booked successfully" in retried.lower()
+    assert len(bridge.posted) == 2
+
+
+def test_chat_any_other_provider_error_still_holds_the_session(monkeypatch, network, store):
+    monkeypatch.setattr(chat_ai_call.settings, "ai_call_booking_guard_enabled", True)
+    bridge = network.answer(_on_confirm_error("BOOKING_UNCONFIRMED", "do not submit a duplicate"), _BOOKED)
+
+    first = _book_chat()
+    retried = _book_chat()
+
+    assert first == chat_ai_call.UNCONFIRMED_MESSAGE
+    assert retried == chat_ai_call.ALREADY_REQUESTED_MESSAGE
+    assert len(bridge.posted) == 1

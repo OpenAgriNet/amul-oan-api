@@ -1782,7 +1782,7 @@ _MADHUR_HTML = _MADHUR_UNRELATED_HTML + """
 
 
 def test_madhur_source_url_is_configurable_via_env():
-    env = {**os.environ, "MADHUR_SCHEME_SOURCE_URL": "http://madhur-env.test/schemes?page=milk"}
+    env = {**os.environ, "MADHUR_SCHEME_SOURCE_URL": "http://madhur-env.test/schemes/"}
     result = subprocess.run(
         [
             sys.executable,
@@ -1798,7 +1798,7 @@ def test_madhur_source_url_is_configurable_via_env():
         check=True,
     )
     assert result.stdout.splitlines()[-2:] == [
-        "http://madhur-env.test/schemes?page=milk",
+        "http://madhur-env.test/schemes",
         "http://madhur-env.test",
     ]
 

@@ -762,6 +762,10 @@ async def _fetch_ai_technicians(records: list[FarmerRecord]) -> list[dict]:
                     else [technician.model_dump() for technician in technicians]
                 ),
                 "techniciansLookupFailed": lookup_failed,
+                # voice-oan-api reads this same Redis record and checks only
+                # ``lookupFailed``. Without it, a failure written here reads
+                # there as a society with no technicians, and is not retried.
+                "lookupFailed": lookup_failed,
             }
         )
     return groups

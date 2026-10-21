@@ -17,6 +17,7 @@ from typing import AsyncGenerator, Optional
 from fastapi import BackgroundTasks, Request
 
 from app.config import settings
+from app.llm_core import runtime
 from app.services.chat import _BackgroundTasksScheduler, run_turn
 from app.turn.types import (
     AgentActivityEmission,
@@ -62,7 +63,7 @@ async def _is_outbound_consent_turn(session_id: str, call_type: str, history: li
     read on every turn while outbound calls are on, because the provider is not
     guaranteed to re-stamp call_type after the first request.
     """
-    if not settings.outbound_intro_enabled:
+    if not runtime.surface_setting("voice", "outbound_intro_enabled", settings.outbound_intro_enabled):
         return False
     stage = await _outbound.get_stage(session_id)
     return (
@@ -110,7 +111,9 @@ async def stream_voice_message(
             query=query,
             session_id=session_id,
             source_lang=source_lang,
-            target_lang=target_lang,
+            # As voice read it: an empty or padded value is still Gujarati,
+            # not a language that turns translation off.
+            target_lang=target,
             user_id=user_id,
             authenticated_user=MappingProxyType(dict(user_info or {})),
             history=tuple(history),
