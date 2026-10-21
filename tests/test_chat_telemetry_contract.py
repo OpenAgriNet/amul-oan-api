@@ -96,6 +96,15 @@ def test_the_agent_step_is_the_question_in_and_the_agents_own_answer_out(monkeyp
     assert client.io["output"] == "[Give clean water daily.]"  # the root: the answer as delivered, translated
 
 
+def test_the_roots_input_is_the_whole_question(monkeypatch):
+    """turn.v1's input is the question itself, whole: the session and user ids are capped,
+    never the text."""
+    question = "મારી ગાયને કેટલું પાણી આપવું? " * 40
+    client = _recorded_turn(monkeypatch, _turn(query=question))
+
+    assert len(question) > 1000 and client.io["input"] == question
+
+
 # ── every step chat opens, against the contract ──────────────────────────────
 
 
