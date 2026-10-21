@@ -4,6 +4,7 @@ import anyio
 from fastapi import APIRouter, Depends, BackgroundTasks
 from fastapi.responses import JSONResponse, StreamingResponse
 from starlette.types import Send
+from agents.tools.session_pmkisan import mask_private_numbers, owner_mobile
 from app.auth.jwt_auth import get_chat_user
 from app.services.chat import stream_chat_messages
 from app.utils import _get_message_history
@@ -51,23 +52,26 @@ async def chat_endpoint(
     Requires JWT authentication.
     """
     session_id = request.session_id or str(uuid.uuid4())
-    
+    resolved_persona = resolve_chat_persona(user_info, request.persona)
+    query = await mask_private_numbers(
+        request.query, session_id, owner_mobile(user_info, resolved_persona)
+    )
+
     logger.info(
         f"Chat request received - session_id: {session_id}, user_id: {request.user_id}, "
         f"channel: {request.channel}, "
         f"authenticated_user: {user_info}, source_lang: {request.source_lang}, "
         f"target_lang: {request.target_lang}, "
-        f"requested_persona: {request.persona}, query: {request.query}"
+        f"requested_persona: {request.persona}, query: {query}"
     )
-    
-    resolved_persona = resolve_chat_persona(user_info, request.persona)
+
     history_session_id = history_session_id_for_persona(session_id, resolved_persona)
     history = await _get_message_history(history_session_id)
     logger.debug(f"Retrieved message history for session {session_id} - length: {len(history)}")
 
     artifacts: list[dict] = []
     message_stream = stream_chat_messages(
-        query=request.query,
+        query=query,
         session_id=session_id,
         source_lang=request.source_lang,
         target_lang=request.target_lang,
