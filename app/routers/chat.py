@@ -4,8 +4,7 @@ import anyio
 from fastapi import APIRouter, Depends, BackgroundTasks
 from fastapi.responses import JSONResponse, StreamingResponse
 from starlette.types import Send
-from agents.tools.farmer import normalize_phone_to_mobile
-from agents.tools.session_pmkisan import mask_private_numbers
+from agents.tools.session_pmkisan import mask_private_numbers, owner_mobile
 from app.auth.jwt_auth import get_chat_user
 from app.services.chat import stream_chat_messages
 from app.utils import _get_message_history
@@ -54,13 +53,9 @@ async def chat_endpoint(
     """
     session_id = request.session_id or str(uuid.uuid4())
     resolved_persona = resolve_chat_persona(user_info, request.persona)
-    # Same owner as the turn's FarmerContext.mobile, which the PM-KISAN tools read.
-    mobile = (
-        normalize_phone_to_mobile(user_info["phone"])
-        if resolved_persona == "farmer" and user_info and user_info.get("phone")
-        else None
+    query = await mask_private_numbers(
+        request.query, session_id, owner_mobile(user_info, resolved_persona)
     )
-    query = await mask_private_numbers(request.query, session_id, mobile)
 
     logger.info(
         f"Chat request received - session_id: {session_id}, user_id: {request.user_id}, "

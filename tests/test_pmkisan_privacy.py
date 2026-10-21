@@ -5,6 +5,7 @@ while the model, logs, traces and history only ever see placeholders.
 """
 
 import copy
+import json
 import logging
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -12,6 +13,7 @@ from unittest.mock import AsyncMock
 import pytest
 from fastapi import BackgroundTasks
 
+import main  # noqa: F401 - registers the uvicorn access-log filter
 from agents.tools import session_pmkisan, vistaar_pmkisan
 from agents.tools.beckn.operations import (
     BecknActionResult,
@@ -21,6 +23,7 @@ from agents.tools.beckn.operations import (
 from app.config import settings
 from app.models.requests import ChatRequest
 from app.routers import chat as chat_router
+from app.routers import telemetry as telemetry_router
 
 # Synthetic, checksum-valid Aadhaar; written in Gujarati digits by the farmer.
 AADHAAR = "234567890124"
@@ -44,28 +47,27 @@ class _FakeCache:
 
 
 class _FakeRedis:
+    """The rate limit's INCR-and-expire script."""
+
     def __init__(self):
         self.data = {}
 
-    async def set(self, key, value, ex=None, nx=False):
-        if nx and key in self.data:
-            return None
-        self.data[key] = int(value)
-        return True
-
-    async def incr(self, key):
+    async def eval(self, script, numkeys, key, window):
         self.data[key] = self.data.get(key, 0) + 1
         return self.data[key]
 
 
-def _result(payload):
-    operation = BecknOperation(
+def _operation(state=OperationState.SUCCEEDED):
+    return BecknOperation(
         operation_id="op", transaction_id="txn", message_id="msg", action="x",
         expected_callback="on_x", domain="schemes:vistaar", bap_id="bap", bpp_id="bpp",
         session_id="s1", tool_call_id=None, request_hash="h", idempotency_key="k",
-        state=OperationState.SUCCEEDED,
+        state=state,
     )
-    return BecknActionResult(operation=operation, payload=payload)
+
+
+def _result(payload, state=OperationState.SUCCEEDED):
+    return BecknActionResult(operation=_operation(state), payload=payload)
 
 
 def _on_init(code, short_desc):
@@ -97,6 +99,8 @@ class _FakeClient:
 
     async def submit_pm_kisan_otp(self, **kwargs):
         self.calls.append(("status", kwargs))
+        if self.status_payload is None:
+            return _result(None, OperationState.TIMED_OUT_PENDING)
         return _result(self.status_payload)
 
 
@@ -155,8 +159,54 @@ async def test_aadhaar_and_otp_reach_bv_but_nothing_else(client, monkeypatch, ca
 
 
 @pytest.mark.asyncio
-async def test_four_digits_stay_when_no_check_is_pending(client, monkeypatch):
-    assert await _chat(monkeypatch, "મારી ગાય 2025 માં વિયાણી") == "મારી ગાય 2025 માં વિયાણી"
+@pytest.mark.parametrize(("pending", "typed", "seen"), [
+    (False, "મારી ગાય 2025 માં વિયાણી", "મારી ગાય 2025 માં વિયાણી"),
+    (True, "OTP 58 23", "OTP [OTP]"),
+    (True, "દૂધ 2025-10-01 થી", "દૂધ 2025-10-01 થી"),
+    (True, f"આધાર {AADHAAR[:4]}  {AADHAAR[4:8]}.{AADHAAR[8:]}", "આધાર [AADHAAR_0124]"),
+])
+async def test_what_counts_as_an_otp_or_an_aadhaar(client, monkeypatch, pending, typed, seen):
+    if pending:
+        await session_pmkisan.set_pm_kisan_session("s1", MOBILE, {"transaction_id": "txn"})
+    assert await _chat(monkeypatch, typed) == seen
+
+
+@pytest.mark.asyncio
+async def test_new_otp_goes_out_after_a_verification_that_never_answered(client, monkeypatch):
+    await vistaar_pmkisan.initiate_pm_kisan_status_check(_ctx(), identifier="GJ123456789")
+    client.status_payload = None
+    await _chat(monkeypatch, "5823")
+    assert "still processing" in await vistaar_pmkisan.check_pm_kisan_status_with_otp(_ctx())
+    store = SimpleNamespace(get=AsyncMock(return_value=_operation(OperationState.ACKED_WAITING_CALLBACK)))
+    monkeypatch.setattr(vistaar_pmkisan, "get_beckn_operation_store", lambda: store)
+    client.status_payload = COMPLETED
+    await _chat(monkeypatch, "5823")
+    assert (await vistaar_pmkisan.check_pm_kisan_status_with_otp(_ctx())).startswith("PM-KISAN STATUS FOUND")
+    assert [action for action, _ in client.calls] == ["init", "status", "status"]
+
+
+@pytest.mark.asyncio
+async def test_records_outside_the_turn_are_masked(client, monkeypatch):
+    await session_pmkisan.set_pm_kisan_session("s1", MOBILE, {"transaction_id": "txn"})
+    await _chat(monkeypatch, "OTP ૫૮૨૩")
+    queued = []
+    monkeypatch.setattr(
+        telemetry_router, "enqueue_canonical_telemetry_event",
+        lambda canonical: queued.append(canonical) or ("enqueued", None),
+    )
+    for question in (f"આધાર {AADHAAR_GU}", "OTP ૫૮૨૩", "મારી ગાય 2025 માં વિયાણી"):
+        body = json.dumps({"sid": "s1", "target": {"type": "Question", "questionsDetails": {
+            "questionText": question, "sessionId": "s1"}}}).encode()
+        request = SimpleNamespace(headers={}, body=AsyncMock(return_value=body))
+        await telemetry_router.ingest_telemetry(request, {"phone": MOBILE})
+    assert [c.payload["target"]["questionsDetails"]["questionText"] for c in queued] == [
+        "આધાર [AADHAAR_0124]", "OTP [OTP]", "મારી ગાય 2025 માં વિયાણી",
+    ]
+
+    record = logging.LogRecord("uvicorn.access", logging.INFO, "", 0, '%s - "%s %s HTTP/%s" %d',
+                               ("ip", "GET", "/api/chat/?query=OTP%205823&session_id=s1", "1.1", 200), None)
+    logging.getLogger("uvicorn.access").filter(record)
+    assert record.getMessage() == 'ip - "GET /api/chat/?query=<redacted>&session_id=s1 HTTP/1.1" 200'
 
 
 @pytest.mark.asyncio
@@ -188,3 +238,21 @@ async def test_account_mobile_is_used_only_after_the_farmer_agrees(client):
 
     await vistaar_pmkisan.initiate_pm_kisan_status_check(_ctx(), use_account_mobile=True)
     assert client.calls[0][1]["identifier"] == MOBILE
+
+
+@pytest.mark.parametrize(("environment", "allowed"), [("production", False), ("development", True)])
+def test_production_refuses_the_bv_sandbox(monkeypatch, environment, allowed):
+    from agents.tools.beckn.operations import BecknOperationClient
+
+    sandbox = "bpp-network-playground-sandbox-vistaar.da.gov.in"
+    for name, value in {
+        "environment": environment, "vistaar_bpp_id": sandbox, "vistaar_bpp_uri": f"https://{sandbox}",
+        "beckn_city_code": "std:080", "beckn_bap_caller_url": "x", "beckn_transaction_bridge_token": "x",
+        "beckn_bap_id": "x", "beckn_bap_uri": "x", "beckn_callback_token": "x",
+    }.items():
+        monkeypatch.setattr(settings, name, value)
+    if allowed:
+        BecknOperationClient._validate_pmkisan_configuration()
+    else:
+        with pytest.raises(RuntimeError):
+            BecknOperationClient._validate_pmkisan_configuration()

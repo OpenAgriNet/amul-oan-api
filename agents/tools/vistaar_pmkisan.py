@@ -18,7 +18,9 @@ from agents.tools.beckn.operations import (
 )
 from agents.tools.session_pmkisan import (
     allow_otp_request,
+    clear_pending_otp,
     clear_pm_kisan_session,
+    get_pending_otp,
     get_pm_kisan_session,
     resolve_identifier,
     set_pm_kisan_session,
@@ -312,8 +314,10 @@ async def check_pm_kisan_status_with_otp(ctx: RunContext[FarmerContext]) -> str:
         ctx: Current farmer and session context.
     """
     _redact_tool_span("started")
+    session_id, mobile = ctx.deps.session_id, ctx.deps.mobile
     try:
-        state = await get_pm_kisan_session(ctx.deps.session_id, ctx.deps.mobile)
+        state = await get_pm_kisan_session(session_id, mobile)
+        otp = await get_pending_otp(session_id, mobile)
     except Exception:
         logger.exception("PM-KISAN session state could not be read")
         _redact_tool_span("state_unavailable")
@@ -333,36 +337,41 @@ async def check_pm_kisan_status_with_otp(ctx: RunContext[FarmerContext]) -> str:
             and isinstance(previous.callback, Mapping)
         ):
             return await _handle_status_result(ctx, state, previous.callback)
-        if previous and previous.state not in {OperationState.NACKED}:
+        # A newly sent OTP goes out even when the last verification never answered.
+        if previous and previous.state is not OperationState.NACKED and not otp:
             _redact_tool_span("pending")
             return "The previous OTP verification is still processing. Please wait and try again shortly."
         state["last_status_message_id"] = ""
 
-    otp = str(state.get("pending_otp") or "")
-    if not re.fullmatch(r"\d{4}", otp):
+    if not otp:
         _redact_tool_span("invalid_otp_format")
         return "Ask the farmer to send only the 4-digit OTP exactly as received."
-    # One submission per OTP the farmer sent.
-    state["pending_otp"] = ""
     message_id = str(uuid.uuid4())
     state["last_status_message_id"] = message_id
     try:
-        await set_pm_kisan_session(ctx.deps.session_id, ctx.deps.mobile, state)
+        # One submission per OTP the farmer sent.
+        await clear_pending_otp(session_id, mobile)
+        await set_pm_kisan_session(session_id, mobile, state)
         result = await get_beckn_operation_client().submit_pm_kisan_otp(
             identifier=str(state["identifier"]),
             otp=otp,
             transaction_id=str(state["transaction_id"]),
             message_id=message_id,
-            session_id=str(ctx.deps.session_id),
+            session_id=str(session_id),
             tool_call_id=getattr(ctx, "tool_call_id", None),
         )
     except Exception:
         logger.exception("PM-KISAN status transaction failed")
+        state["last_status_message_id"] = ""
+        try:
+            await set_pm_kisan_session(session_id, mobile, state)
+        except Exception:
+            logger.exception("PM-KISAN session state could not be saved")
         _redact_tool_span("network_error")
-        return "The OTP verification is pending or unavailable. Please try again shortly."
+        return "The OTP could not be verified right now. Ask the farmer to send the same OTP again shortly."
 
     if result.operation.state is OperationState.NACKED:
-        await clear_pm_kisan_session(ctx.deps.session_id, ctx.deps.mobile)
+        await clear_pm_kisan_session(session_id, mobile)
         _redact_tool_span("rejected")
         return "The PM-KISAN OTP request was rejected. Ask the farmer to start again."
     if result.operation.state is OperationState.TIMED_OUT_PENDING:
