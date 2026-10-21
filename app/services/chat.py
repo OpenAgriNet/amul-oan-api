@@ -978,13 +978,15 @@ async def _chat_agent_input(
                 moderation_data.action,
             )
             if mod_obs is not None:
-                # turn.v1's moderation output: rejected, category, reason. Chat's
-                # "reason" is the action: "allow", or the decline text.
+                # turn.v1's moderation output: rejected and category, and chat's
+                # model's action ("allow", or the decline text) under its own name.
+                # turn.v1's reason is a model's reason, which chat's model does not
+                # give (voice's does), so chat sends none.
                 mod_obs.update(
                     output={
                         "rejected": moderation_data.category != "valid_agricultural",
                         "category": moderation_data.category,
-                        "reason": moderation_data.action,
+                        "action": moderation_data.action,
                     },
                     metadata=_pipeline_trace.step_metadata(execution.begin_trace(), _LlmStep.MODERATION),
                 )

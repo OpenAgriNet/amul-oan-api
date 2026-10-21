@@ -44,8 +44,8 @@
         "amul.served_tier"
       ],
       "output": [
+        "action",
         "category",
-        "reason",
         "rejected"
       ]
     },
