@@ -26,10 +26,7 @@ AI_CALL_CACHE_NAMESPACE = "ai_call_booked"
 
 # Shared by both booking routes (direct PashuGPT and Beckn network) so the two
 # cannot drift into telling the farmer different things.
-ALREADY_BOOKED_MESSAGE = (
-    "This session already has an active artificial insemination booking. "
-    "Please try again later or contact your society for assistance."
-)
+ALREADY_BOOKED_MESSAGE = "Artificial insemination call is already booked. Ticket: {ticket}."
 # A second booking while the session's earlier one is still in flight, or was
 # neither confirmed nor refused: that one may have booked the visit.
 ALREADY_REQUESTED_MESSAGE = (
@@ -191,7 +188,7 @@ async def _already_booked_message(session_id: str) -> str:
         logger.warning("Failed to read AI call reservation: %s", e)
         marker = None
     if isinstance(marker, dict) and marker.get("ticket"):
-        return ALREADY_BOOKED_MESSAGE
+        return ALREADY_BOOKED_MESSAGE.format(ticket=marker["ticket"])
     return ALREADY_REQUESTED_MESSAGE
 
 
