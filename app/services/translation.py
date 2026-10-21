@@ -790,6 +790,13 @@ def _format_translation_prompt(
     )
 
 
+def _served_by(provider) -> dict[str, str]:
+    """A translation step's metadata in turn.v1: the provider that served the call
+    (``amul.served_provider``). The model is the generation's own, and the stage is
+    the step's name."""
+    return {"amul.served_provider": str(provider)} if provider else {}
+
+
 def _get_langfuse():
     if not get_langfuse_client:
         return None
@@ -876,12 +883,7 @@ async def _translategemma_stream(descriptor, prompt, source_lang, target_lang, t
                 "text": text,
             },
             model=descriptor.model_id,
-            metadata={
-                "translation_provider": "translategemma",
-                "model_size": "27b-base",
-                "stream": "true",
-                "pipeline_stage": "stream_translation",
-            },
+            metadata=_served_by("translategemma"),
         )
         if langfuse else nullcontext()
     )
@@ -1000,12 +1002,7 @@ async def _llm_translation_stream(
                 "text": text,
             },
             model=model_name,
-            metadata={
-                "translation_provider": provider,
-                "stream": "true",
-                "pipeline_stage": "stream_translation",
-                "script_only": str(grammar is not None).lower(),
-            },
+            metadata=_served_by(provider),
         )
         if langfuse else nullcontext()
     )
@@ -1040,11 +1037,7 @@ async def _translategemma_unary(descriptor, prompt, source_lang, target_lang, te
                 "text": text,
             },
             model=descriptor.model_id,
-            metadata={
-                "translation_provider": "translategemma",
-                "model_size": "27b-base",
-                "pipeline_stage": "text_translation",
-            },
+            metadata=_served_by("translategemma"),
         )
         if langfuse else nullcontext()
     )
@@ -1131,10 +1124,7 @@ async def _llm_translation_unary(
                 "text": text,
             },
             model=model_name,
-            metadata={
-                "translation_provider": provider,
-                "pipeline_stage": "text_translation",
-            },
+            metadata=_served_by(provider),
         )
         if langfuse else nullcontext()
     )
@@ -1328,10 +1318,7 @@ async def pretranslate_with_tier(
                 "text": text,
             },
             model=tier.model_name,
-            metadata={
-                "translation_provider": tier.provider,
-                "pipeline_stage": "query_pretranslation",
-            },
+            metadata=_served_by(tier.provider),
         )
         if langfuse
         else nullcontext()

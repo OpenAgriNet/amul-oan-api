@@ -87,7 +87,6 @@ async def create_suggestions(
                     "message": message,
                 },
                 model=sug_model_name,
-                metadata={"task": "suggestions", "target_lang": (target_lang or "unknown")[:200]},
             )
             if _lf
             else nullcontext()
