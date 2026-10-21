@@ -81,8 +81,32 @@ VOICE_GU_PREFERRED_TRANSLATION_RULES = [
 # aliases as chat. Channel-specific replacement behavior remains separate.
 
 
+def _gu_policy_pattern(source: str, replacement: str) -> str:
+    """Build an idempotent pattern when a replacement contains its source."""
+    pattern = re.escape(source)
+    at = replacement.find(source)
+    if at < 0:
+        return pattern
+    before = replacement[:at]
+    words_before = re.sub(r"\S*$", "", before)
+    words_after = re.sub(r"^\S*", "", replacement[at + len(source):]).strip()
+    alternatives = []
+    if words_before.strip():
+        alternatives.append(
+            f"(?<!{re.escape(before)})(?<!{re.escape(words_before)}){pattern}"
+        )
+    if words_after:
+        alternatives.append(rf"{pattern}(?!\S*\s*{re.escape(words_after)})")
+    return "(?:" + "|".join(alternatives) + ")" if alternatives else pattern
+
+
+VOICE_KEPT_GU_POLICY_TERMS = frozenset(
+    {"પાડુના", "વોડકી", "ટીડીએન", "પોટેશિયમ પરમેંગેનેટ"}
+)
+
+
 def _build_gu_policy_term_rules(
-    policy: dict,
+    policy: dict, *, skip: frozenset[str] = frozenset()
 ) -> list[tuple[str, str, bool, bool]]:
     forbidden = policy.get("forbidden", {}) if isinstance(policy, dict) else {}
     if not isinstance(forbidden, dict):
@@ -90,7 +114,9 @@ def _build_gu_policy_term_rules(
     return [
         (str(source).strip(), str(replacement).strip(), False, False)
         for source, replacement in forbidden.items()
-        if str(source).strip() and str(replacement).strip()
+        if str(source).strip()
+        and str(replacement).strip()
+        and str(source).strip() not in skip
     ]
 
 
@@ -150,9 +176,12 @@ GU_TERM_REPLACEMENTS: list[tuple[str, str, bool, bool]] = sorted(
 
 
 def _term_rule_pattern(
-    source: str, case_insensitive: bool, whole_ascii_token: bool
+    source: str,
+    replacement: str,
+    case_insensitive: bool,
+    whole_ascii_token: bool,
 ) -> str:
-    pattern = re.escape(source)
+    pattern = _gu_policy_pattern(source, replacement)
     if whole_ascii_token:
         pattern = rf"\b{pattern}\b"
     if case_insensitive:
@@ -166,8 +195,13 @@ def _term_rules_for_current_channel() -> list[tuple[str, str, bool, bool]]:
         if _is_voice_channel()
         else _GU_CHAT_TERM_REPLACEMENTS
     )
+    shared_rules = GU_TERM_REPLACEMENTS
+    if _is_voice_channel():
+        shared_rules = [
+            rule for rule in shared_rules if rule[0] not in VOICE_KEPT_GU_POLICY_TERMS
+        ]
     return sorted(
-        [*channel_rules, *GU_TERM_REPLACEMENTS],
+        [*channel_rules, *shared_rules],
         key=lambda item: len(item[0]),
         reverse=True,
     )
@@ -178,7 +212,9 @@ def _term_replacement_patterns(
 ) -> list[tuple[str, str]]:
     return [
         (
-            _term_rule_pattern(source, case_insensitive, whole_ascii_token),
+            _term_rule_pattern(
+                source, replacement, case_insensitive, whole_ascii_token
+            ),
             replacement,
         )
         for source, replacement, case_insensitive, whole_ascii_token in rules
@@ -328,23 +364,20 @@ _INSEMINATION_SOURCE_ONLY = re.compile(
     r"(?![\s\S]*\b(?:conception|pregnan(?:cy|t))\b)"
 )
 
-_PROTECTED_OUTPUT = [
-    (
-        _KDCC_EN,
-        _KDCC_RENDERINGS,
-        _KDCC_PINNED,
-    ),
-    (
-        _BULL_SOURCE_ONLY,
-        re.compile(r"બળદ"),
-        "બુલ",
-    ),
-    (
-        _INSEMINATION_SOURCE_ONLY,
-        re.compile(r"ગર્ભાધાન"),
-        "બીજદાન",
-    ),
-    (
+_SARLABEN_EN = re.compile(r"sara?la[\s-]?ben")
+_SARLABEN_DEVANAGARI = (_SARLABEN_EN, re.compile(r"सा?र्?ला?\s?बेन"), "सरलाबेन")
+_AMUL_EN = re.compile(r"\bamul\b")
+_CHAT_ONLY_PROTECTED_OUTPUT = {
+    "gu": [(_AMUL_EN, re.compile(r"અમુલ(?!ભાઈ)"), "અમૂલ")],
+    "bn": [(_AMUL_EN, re.compile(r"(?:অমূল|অমুল|আমূল|আমিউল)(?=ের|[^ঀ-৿]|$)"), "আমুল")],
+}
+
+_PROTECTED_OUTPUT = {
+    "gu": [
+        (_KDCC_EN, _KDCC_RENDERINGS, _KDCC_PINNED),
+        (_BULL_SOURCE_ONLY, re.compile(r"બળદ"), "બુલ"),
+        (_INSEMINATION_SOURCE_ONLY, re.compile(r"ગર્ભાધાન"), "બીજદાન"),
+        (
         # TranslateGemma transliterates this name letter-by-letter off the Latin
         # spelling and lengthens the first vowel: રામેશ ("Raamesh") for રમેશ.
         #
@@ -368,15 +401,26 @@ _PROTECTED_OUTPUT = [
         "RAMESH",
         re.compile(r"રામેશ(?![્વ])"),
         "રમેશ",
-    ),
-]
+        ),
+        (_SARLABEN_EN, re.compile(r"સા?ર્?લા?\s?બેન"), "સરલાબેન"),
+    ],
+    "hi": [_SARLABEN_DEVANAGARI],
+    "mr": [_SARLABEN_DEVANAGARI],
+    "bn": [(_SARLABEN_EN, re.compile(r"সা?র্?লা?\s?বেন"), "সরলাবেন")],
+    "pa": [(_SARLABEN_EN, re.compile(r"ਸਾ?ਰ੍?ਲਾ?\s?ਬੇਨ"), "ਸਰਲਾਬੇਨ")],
+}
+_TARGET_LANG_CODES = {
+    "gujarati": "gu", "gu": "gu", "hindi": "hi", "hi": "hi",
+    "marathi": "mr", "mr": "mr", "bengali": "bn", "bn": "bn",
+    "punjabi": "pa", "pa": "pa",
+}
 # Chars to hold back in streaming so a forming match completes before flushing
 # (> the longest model rendering of any protected term).
 _PROTECTED_STREAM_HOLDBACK = 80
 
 
 def _protected_output_triggers(source_text: str, target_lang: str):
-    """Regex/pinned pairs whose English trigger appears in the source (gu target only).
+    """Regex/pinned pairs whose English trigger appears in the source.
 
     The trigger match is case-insensitive: a personal name reaches the translator in
     whatever case the upstream record or the agent's sentence used (RAMESHBHAI /
@@ -386,11 +430,15 @@ def _protected_output_triggers(source_text: str, target_lang: str):
     the agent always passes through verbatim can use a literal; a term it paraphrases —
     like the bank name, which it shortens at will — needs the pattern, since a literal
     gate on the long form disarms the pin exactly when it is needed."""
-    if not source_text or target_lang.lower() not in ("gujarati", "gu"):
+    lang = _TARGET_LANG_CODES.get((target_lang or "").lower())
+    if not source_text or lang not in _PROTECTED_OUTPUT:
         return []
+    entries = _PROTECTED_OUTPUT[lang]
+    if not _is_voice_channel():
+        entries = entries + _CHAT_ONLY_PROTECTED_OUTPUT.get(lang, [])
     lowered = source_text.lower()
     out = []
-    for en, rx, pinned in _PROTECTED_OUTPUT:
+    for en, rx, pinned in entries:
         armed = en.search(lowered) if isinstance(en, re.Pattern) else en.lower() in lowered
         if armed:
             out.append((rx, pinned))

@@ -21,6 +21,7 @@ scheme discovery issues one concurrent request PER query instead. Same wall
 time, different words down each leg.
 """
 import asyncio
+import re
 from dataclasses import dataclass
 from typing import Any, Optional
 
@@ -294,14 +295,36 @@ class NetworkBookingResult:
     `ok=False` alone is not enough to justify releasing the reservation: a
     booking that did happen can still come back as a failure to us. Hence
     `authoritative_no_booking`, which is only true when the BPP told us in so
-    many words that it did not book (a NACK). It defaults to False so that any
-    new or sloppily-constructed failure result takes the safe branch — hold the
-    reservation — rather than risking a second SMS to a real farmer.
+    many words that it did not book: a NACK, or an on_confirm error
+    BOOKING_REJECTED (PashuGPT answered and refused). It defaults to False so
+    that any new or sloppily-constructed failure result takes the safe branch —
+    hold the reservation — rather than risking a second SMS to a real farmer.
     """
     ok: bool
     ticket: Optional[str]
     message: str
     authoritative_no_booking: bool = False
+
+
+# The booking BPP's on_confirm error when PashuGPT answered and refused the
+# booking (an HTTP 4xx, or a 2xx carrying `Error` and no ticket). Its message is
+# PashuGPT's own reason when it gave one. Every other on_confirm error stays
+# ambiguous: the visit may have been booked.
+BOOKING_REJECTED = "BOOKING_REJECTED"
+# A reason is passed to the farmer only if it is short plain words: no digits,
+# colons, slashes or underscores, so no codes, numbers, URLs or identifiers.
+_FARMER_SAFE_REASON = re.compile(r"[A-Za-z][A-Za-z ,.'()-]{0,79}")
+
+
+def _rejected_message(label: str, reason: Any) -> str:
+    """What the farmer is told when the provider definitely did not book."""
+    text = " ".join(str(reason or "").split()).rstrip(". ")
+    because = f" ({text})" if _FARMER_SAFE_REASON.fullmatch(text) else ""
+    return (
+        f"{label} booking failed.\n\n"
+        f"The booking system did not accept the request{because}, so no visit was booked. "
+        "You can try again, or contact your society if it keeps failing."
+    )
 
 
 async def network_create_ai_call_result(
@@ -365,6 +388,13 @@ async def _network_callback_ai_call_result(
         )
     if operation.state is OperationState.BUSINESS_FAILED:
         error = (action_result.payload or {}).get("error") or {}
+        if error.get("code") == BOOKING_REJECTED:
+            return NetworkBookingResult(
+                ok=False,
+                ticket=None,
+                message=_rejected_message(label, error.get("message")),
+                authoritative_no_booking=True,
+            )
         return NetworkBookingResult(
             ok=False,
             ticket=None,

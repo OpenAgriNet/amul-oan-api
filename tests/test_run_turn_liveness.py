@@ -299,7 +299,7 @@ def test_a_slow_answer_gets_one_timeout_nudge_first(monkeypatch, nudge_after_20m
 
     (nudge,) = sender.sent
     assert nudge in voice_liveness._TIMEOUT_NUDGE_MESSAGES["en"]
-    assert emissions == [TextEmission("Give clean water daily.")]
+    assert emissions == [TextEmission("Give clean water daily.", raw=True)]
 
 
 def test_a_fast_answer_gets_no_nudge(monkeypatch):
