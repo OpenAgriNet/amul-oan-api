@@ -1289,6 +1289,10 @@ async def run_turn(
         background = None
         liveness = None
         prefetched = None
+        # What the sink has handed the caller, for a turn that stops before its
+        # answer is recorded (a hang-up or a failure mid-answer): turn.v1's output
+        # is the answer as delivered. None once the sink's own record is taken.
+        delivered: list[str] | None = []
         try:
             # Resolve the surface's per-language kill switches before any response
             # path. This keeps deterministic short-circuits and tool language
@@ -1466,6 +1470,7 @@ async def run_turn(
                         await liveness.stop()
                         liveness = None
                     # Raw: the sink has already prepared it for the surface.
+                    delivered.append(_out)
                     yield TextEmission(_out, raw=True)
                 logger.info(f"Streaming complete for session {session_id}")
                 if agent_input.after_run is not None:
@@ -1475,6 +1480,7 @@ async def run_turn(
                 trace_output = sink.final_text()
                 if trace_output:
                     telemetry.record_output(trace_output, "final")
+                delivered = None
                 sink_outcome = sink.outcome()
                 if get_langfuse_client and agent_obs is not None:
                     try:
@@ -1532,6 +1538,11 @@ async def run_turn(
             _turn_outcome = "error"
             raise
         finally:
+            partial = "".join(delivered or ())
+            if partial:
+                # Stopped mid-answer: what the caller got so far. Voice keeps its
+                # spoken chunks itself and takes no "final" output.
+                telemetry.record_output(partial, "final")
             telemetry.record_outcome(_turn_outcome)
             if liveness is not None:
                 await liveness.stop()

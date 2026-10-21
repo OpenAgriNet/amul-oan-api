@@ -21,7 +21,7 @@ from app.channels.chat import WEB
 from app.llm_core.trace import snapshot_flags
 from app.services import chat as chat_service
 from app.turn.types import TextEmission, Turn
-from tests.test_chat_turn_contract import patch_turn
+from tests.test_chat_turn_contract import _Run, patch_turn
 
 CONTRACT = Path(__file__).resolve().parents[1] / "telemetry" / "contracts" / "turn.v1" / "chat.json"
 
@@ -129,6 +129,70 @@ def test_a_failing_turn_records_error_and_still_closes_the_root(monkeypatch):
 
     events = _RecordingTelemetry.events
     assert events[-2:] == [("outcome", "error"), ("exit",)]
+    assert not [e for e in events if e[0] == "output"], "nothing reached the caller, so there is no output"
+
+
+def _answer_in_two_parts(monkeypatch, second="Second part."):
+    """An English turn (passed through as the agent streams it) whose answer comes in two
+    chunks; ``second`` may raise instead."""
+    def _chunks():
+        yield "First part. "
+        if isinstance(second, BaseException):
+            raise second
+        yield second
+
+    monkeypatch.setattr(chat_service.agrinet_agent, "iter", lambda **kw: _Run(_chunks(), deps=kw["deps"]))
+    return _turn(source_lang="en", target_lang="en")
+
+
+def _leave_after_first(turn, surface):
+    async def _go():
+        stream = chat_service.run_turn(turn, surface, scheduler=_Scheduler())
+        first = await stream.__anext__()
+        await stream.aclose()
+        return first
+
+    return asyncio.run(_go())
+
+
+def test_a_turn_the_caller_left_mid_answer_records_what_they_got(monkeypatch):
+    """turn.v1's output is the answer as delivered: a hang-up after the first chunk keeps that chunk."""
+    patch_turn(monkeypatch)
+    turn = _answer_in_two_parts(monkeypatch)
+
+    first = _leave_after_first(turn, _recording_surface())
+
+    events = _RecordingTelemetry.events
+    assert first.text == "First part. "
+    assert [e for e in events if e[0] == "output"] == [("output", "final", "First part. ")]
+    assert events[-2:] == [("outcome", "cancelled"), ("exit",)]
+
+
+def test_a_turn_that_failed_mid_answer_records_what_was_sent(monkeypatch):
+    patch_turn(monkeypatch)
+    turn = _answer_in_two_parts(monkeypatch, second=RuntimeError("model dropped"))
+
+    with pytest.raises(RuntimeError, match="model dropped"):
+        _run(turn, _recording_surface())
+
+    events = _RecordingTelemetry.events
+    assert [e for e in events if e[0] == "output"] == [("output", "final", "First part. ")]
+    assert events[-2:] == [("outcome", "error"), ("exit",)]
+
+
+def test_chat_writes_the_delivered_part_as_the_roots_output(monkeypatch):
+    """Through chat's own telemetry: the root's output after a hang-up, and after a failure,
+    which also marks it an error."""
+    seen = patch_turn(monkeypatch)
+    _leave_after_first(_answer_in_two_parts(monkeypatch), chat_service.CHAT_SURFACE)
+    assert [kw["output"] for kw in seen["trace_io"] if "output" in kw] == ["First part. "]
+
+    seen = patch_turn(monkeypatch)
+    updates = _root_status(seen)
+    with pytest.raises(RuntimeError):
+        _run(_answer_in_two_parts(monkeypatch, second=RuntimeError("model dropped")), chat_service.CHAT_SURFACE)
+    assert [kw["output"] for kw in seen["trace_io"] if "output" in kw] == ["First part. "]
+    assert updates == [({"level": "ERROR", "status_message": "model dropped"}, "turn")]
 
 
 def _open_span(seen):
