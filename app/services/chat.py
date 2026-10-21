@@ -32,6 +32,7 @@ from app.services.translation import (
     pretranslate_with_tier,
     translate_text_stream_fast,
     INDIAN_LANGUAGES,
+    LANG_CODES,
 )
 from pydantic_ai.messages import ModelRequest, ModelResponse, UserPromptPart, TextPart
 from app.services.identity_profile import (
@@ -714,8 +715,9 @@ class _ChatTelemetry:
         metadata = turn_v1_metadata(
             pipeline=_PIPELINE_BY_CHANNEL.get(channel, channel),
             direction="inbound",
-            source_lang=source_lang,
-            target_lang=target_lang,
+            # turn.v1 keeps the language's code; a client may send its name ("english").
+            source_lang=LANG_CODES.get(source_lang, source_lang),
+            target_lang=LANG_CODES.get(target_lang, target_lang),
             translation_mode="translated" if _translates_output(target_lang) else "direct",
             pipeline_profile=self._pipeline_profile,
             pipeline_flags=_pipeline_trace.compact_metadata(self._pipeline_trace).get("pipeline_flags"),

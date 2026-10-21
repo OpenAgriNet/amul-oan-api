@@ -371,6 +371,19 @@ def test_a_farmer_id_is_only_the_phone_the_verified_jwt_carries(monkeypatch, use
     assert root["metadata"].get("amul.farmer_id") == farmer_id
 
 
+@pytest.mark.parametrize(
+    ("source_lang", "target_lang", "codes", "mode"),
+    [("en", "english", ("en", "en"), "direct"), ("gujarati", "Gujarati", ("gu", "gu"), "translated"), ("gu", "hi", ("gu", "hi"), "translated")],
+)
+def test_the_root_names_the_languages_by_code(monkeypatch, source_lang, target_lang, codes, mode):
+    """A client may name the language (dev's sent "english", 2026-08 to 10); turn.v1 keeps its code.
+    Whether the answer is translated is decided as before."""
+    root = _root_fields(monkeypatch, _turn(source_lang=source_lang, target_lang=target_lang))
+    metadata = root["metadata"]
+    assert (metadata["amul.source_lang"], metadata["amul.target_lang"]) == codes
+    assert metadata["amul.translation_mode"] == mode
+
+
 def test_an_anonymous_user_has_no_farmer_id_and_english_is_direct(monkeypatch):
     patch_turn(monkeypatch)
     propagated = []
