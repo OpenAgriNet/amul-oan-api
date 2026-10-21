@@ -720,8 +720,10 @@ class _ChatTelemetry:
             pipeline_profile=self._pipeline_profile,
             pipeline_flags=_pipeline_trace.compact_metadata(self._pipeline_trace).get("pipeline_flags"),
             persona=turn.persona,
-            # A farmer id is a phone; an anonymous or UUID user has none.
-            farmer_id=normalize_phone_to_mobile(effective_user_id),
+            # A farmer id is the phone the verified JWT carries, as the farmer context
+            # and the loan tool read it; a query-param user id is not verified, and an
+            # anonymous user has none. Voice sets it only for a signed-in caller.
+            farmer_id=normalize_phone_to_mobile(user_info.get("phone")) if user_info else None,
         )
         environment = surface_environment("chat")
         client = get_langfuse_client() if get_langfuse_client else None

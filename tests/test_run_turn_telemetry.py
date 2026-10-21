@@ -241,8 +241,9 @@ def test_chat_telemetry_writes_the_turn_v1_contract(monkeypatch):
 
     monkeypatch.setattr(chat_service, "propagate_attributes", _propagate)
     contract = json.loads(CONTRACT.read_text(encoding="utf-8"))
+    _no_farmer_lookup(monkeypatch)
 
-    _run(_turn(user_id="9000000000"), chat_service.CHAT_SURFACE)
+    _run(_turn(user_id="9000000000", authenticated_user=MappingProxyType({"phone": "9000000000"})), chat_service.CHAT_SURFACE)
 
     assert seen["spans"][0] == ("enter", contract["root"]) == ("enter", "turn")
     environment, root, close = propagated
@@ -268,6 +269,42 @@ def test_chat_telemetry_writes_the_turn_v1_contract(monkeypatch):
     assert inputs == ["How much water?"]  # the raw question, not an object
     scores = {call.kwargs["name"] for call in seen["langfuse"].score_current_trace.call_args_list}
     assert scores == set(contract["scores"]) == {"turn_outcome"}
+
+
+def _no_farmer_lookup(monkeypatch):
+    async def _lookup(_phone):
+        return chat_service.FarmerContextBundle(markdown="")
+
+    monkeypatch.setattr(chat_service, "get_farmer_context_bundle_by_mobile", _lookup)
+
+
+def _root_fields(monkeypatch, turn):
+    patch_turn(monkeypatch)
+    _no_farmer_lookup(monkeypatch)
+    propagated = []
+
+    @contextlib.contextmanager
+    def _propagate(**kwargs):
+        propagated.append(kwargs)
+        yield
+
+    monkeypatch.setattr(chat_service, "propagate_attributes", _propagate)
+    _run(turn, chat_service.CHAT_SURFACE)
+    return next(kwargs for kwargs in propagated if "session_id" in kwargs)
+
+
+@pytest.mark.parametrize(
+    ("user_id", "authenticated_user", "farmer_id"),
+    [
+        ("anonymous", {"phone": "+91 98765 43210"}, "9876543210"),  # the JWT's phone, as the farmer context reads it
+        ("9000000000", {}, None),  # a phone-shaped query-param user id is not verified
+        ("9000000000", {"sub": "9000000000"}, None),  # nor is a JWT subject that is not its phone
+    ],
+    ids=["jwt-phone", "query-param", "jwt-sub"],
+)
+def test_a_farmer_id_is_only_the_phone_the_verified_jwt_carries(monkeypatch, user_id, authenticated_user, farmer_id):
+    root = _root_fields(monkeypatch, _turn(user_id=user_id, authenticated_user=MappingProxyType(authenticated_user)))
+    assert root["metadata"].get("amul.farmer_id") == farmer_id
 
 
 def test_an_anonymous_user_has_no_farmer_id_and_english_is_direct(monkeypatch):
