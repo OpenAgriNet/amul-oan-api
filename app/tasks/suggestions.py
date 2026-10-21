@@ -9,6 +9,7 @@ from app.core.cache import cache
 from app import llm_core
 from app.llm_core import Step as _LlmStep
 from agents.suggestions import suggestions_agent
+from app.observability import surface_environment
 from langcodes import Language
 
 logger = get_logger(__name__)
@@ -50,6 +51,8 @@ async def create_suggestions(
         session_id_safe = (session_id or "")[:200]
         session_ctx = (
             propagate_attributes(
+                # Deferred past the turn, so outside its root: name chat explicitly.
+                environment=surface_environment("chat"),
                 session_id=session_id_safe,
                 metadata={
                     "task": "suggestions",

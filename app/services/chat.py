@@ -14,6 +14,7 @@ from app import llm_core
 from app.llm_core import Step as _LlmStep
 from helpers.utils import get_logger
 from app.utils import (
+    history_ttl,
     update_message_history,
     trim_history,
     format_message_pairs,
@@ -208,6 +209,9 @@ GENERIC_UNAVAILABLE_MESSAGE_GU = (
 GENERIC_UNAVAILABLE_MESSAGE_BN = (
     "এই মুহূর্তে আমি আপনার অনুরোধটি প্রক্রিয়া করতে পারছি না। অনুগ্রহ করে কিছুক্ষণ পরে আবার চেষ্টা করুন।"
 )
+GENERIC_UNAVAILABLE_MESSAGE_HI = (
+    "इस समय मैं आपके अनुरोध को पूरा नहीं कर पा रही हूँ। कृपया थोड़ी देर बाद फिर से प्रयास करें।"
+)
 GENERIC_UNAVAILABLE_MESSAGE_PA = (
     "ਇਸ ਸਮੇਂ ਮੈਂ ਤੁਹਾਡੀ ਬੇਨਤੀ ਤੇ ਕਾਰਵਾਈ ਨਹੀਂ ਕਰ ਸਕਦੀ। ਕਿਰਪਾ ਕਰਕੇ ਥੋੜ੍ਹੇ ਸਮੇਂ ਬਾਅਦ ਦੁਬਾਰਾ ਕੋਸ਼ਿਸ਼ ਕਰੋ।"
 )
@@ -219,6 +223,8 @@ GENERIC_UNAVAILABLE_MESSAGE_MR = (
 _UNAVAILABLE_MESSAGE_BY_LANG = {
     "gu": GENERIC_UNAVAILABLE_MESSAGE_GU,
     "gujarati": GENERIC_UNAVAILABLE_MESSAGE_GU,
+    "hi": GENERIC_UNAVAILABLE_MESSAGE_HI,
+    "hindi": GENERIC_UNAVAILABLE_MESSAGE_HI,
     "bn": GENERIC_UNAVAILABLE_MESSAGE_BN,
     "bengali": GENERIC_UNAVAILABLE_MESSAGE_BN,
     "pa": GENERIC_UNAVAILABLE_MESSAGE_PA,
@@ -244,6 +250,8 @@ try:
 except ImportError:
     propagate_attributes = None
     get_langfuse_client = None
+
+from app.observability import surface_environment
 
 # Per-turn resolved-pipeline-config tracer (tracing-only; no behaviour change).
 from app.llm_core import trace as _pipeline_trace
@@ -419,6 +427,16 @@ async def _load_farmer_context(
     return bundle, status
 
 
+async def _chat_prefetch(turn: Turn) -> tuple[FarmerContextBundle, str]:
+    """Chat's prefetch, for ``SurfaceProfile.prefetch``: the farmer context.
+
+    ``run_turn`` starts it right after the classifiers, so its Beckn reads run
+    alongside pretranslation and moderation instead of ahead of them. Identity
+    still comes only from the verified JWT (``turn.authenticated_user``).
+    """
+    return await _load_farmer_context(turn.persona, turn.authenticated_user, turn.session_id)
+
+
 def _build_deps(
     *,
     query: str,
@@ -460,7 +478,7 @@ def _build_deps(
     )
 
 
-async def _write_short_circuit_history(history, decision, key: str, request_id: str) -> None:
+async def _write_short_circuit_history(history, decision, key: str, request_id: str, ttl_kw: dict) -> None:
     """Persist what a classifier or the gate answered, when it asks for that."""
     if decision.history_pair is None:
         return
@@ -471,7 +489,7 @@ async def _write_short_circuit_history(history, decision, key: str, request_id: 
         decision.label,
         len(messages),
     )
-    await update_message_history(key, messages)
+    await update_message_history(key, messages, **ttl_kw)
 
 
 def _heard(answer: ClassifierResult) -> str:
@@ -484,6 +502,17 @@ async def _stale_outcome(is_stale: Optional[StalenessCheck], reason: str) -> Opt
     if is_stale is None:
         return None
     return await is_stale(reason)
+
+
+async def _reap_prefetch(task: asyncio.Future) -> None:
+    """Cancel a prefetch the turn ended without needing, and let it unwind.
+
+    A no-op when the agent input already awaited it. Never raises: a result or
+    failure nobody read is dropped here, so asyncio does not warn about it.
+    """
+    if not task.done():
+        task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
 
 
 _NO_CHUNK = object()
@@ -691,6 +720,7 @@ class _ChatTelemetry:
         _pipeline_trace.add_compact_metadata(self._pipeline_trace, langfuse_metadata)
         session_ctx = (
             propagate_attributes(
+                environment=surface_environment("chat"),
                 session_id=self._session_id_safe,
                 user_id=effective_user_id,
                 metadata=langfuse_metadata,
@@ -841,13 +871,18 @@ async def _chat_agent_input(
     translate_to: Optional[str],
     background: Optional[TurnBackground] = None,
     is_stale: Optional[StalenessCheck] = None,
+    prefetched: Optional[asyncio.Future] = None,
 ) -> AgentInput | ClassifierResult:
     """Chat's agent input, for ``SurfaceProfile.agent_input``.
 
-    Loads the farmer context and builds the turn's FarmerContext, then runs
-    moderation before the agent starts: a query it rejects is declined, and one
-    it cannot check gets the fail-closed line. A valid farmer query also
-    schedules its suggestions. Chat has no background set or staleness check.
+    Runs moderation before the agent starts: a query it rejects is declined,
+    and one it cannot check gets the fail-closed line. A valid farmer query
+    also schedules its suggestions. Moderation reads only the query, so it does
+    not wait for the farmer context: that is ``prefetched``, already loading
+    since run_turn started it (``_chat_prefetch``), and is awaited only once
+    moderation has let the query through, to build the turn's FarmerContext.
+    Called without it (outside run_turn) the farmer context is loaded there.
+    Chat has no background set or staleness check.
     """
     session_id = turn.session_id
     target_lang = turn.target_lang
@@ -876,18 +911,6 @@ async def _chat_agent_input(
             request_id=request_id,
         )
 
-    farmer_context = await _load_farmer_context(persona, user_info, request_id)
-    deps = _build_deps(
-        query=pretranslated.query,
-        session_id=session_id,
-        # Agent responds in English when the answer is translated for the caller.
-        lang_code="en" if translate_to else pretranslated.lang,
-        persona=persona,
-        channel=turn.channel,
-        user_info=user_info,
-        farmer_context=farmer_context,
-    )
-
     message_pairs = "\n\n".join(format_message_pairs(history, 3))
     logger.info(f"Message pairs: {message_pairs}")
     if message_pairs:
@@ -896,7 +919,10 @@ async def _chat_agent_input(
         last_response = ""
 
     try:
-        user_message = f"{last_response}{deps.get_user_message()}"
+        # The query as the agent's user message puts it, before any SHC context
+        # is added: what moderation has always been given. Nothing in it comes
+        # from the farmer context, which is why moderation need not wait for it.
+        user_message = f"{last_response}{FarmerContext(query=pretranslated.query).get_user_message()}"
         _lf_mod = get_langfuse_client() if get_langfuse_client else None
         _mod_obs_ctx = (
             _lf_mod.start_as_current_observation(
@@ -972,7 +998,7 @@ async def _chat_agent_input(
                 # supposed to, a success. Recording "error" here inflated the
                 # error rate by one row per moderated query.
                 return ClassifierResult(canned_text=decline_text, label="moderation decline")
-            deps.update_moderation_str(str(moderation_data))
+            moderation_str = str(moderation_data)
     except Exception as e:
         logger.error("request_id=%s moderation_error=%s", request_id, str(e))
         fail_closed_message = await localize_system_text(GENERIC_UNAVAILABLE_MESSAGE_EN)
@@ -986,6 +1012,23 @@ async def _chat_agent_input(
         # error rate. The trace output is still recorded so the export shows
         # what the farmer actually saw rather than a blank row.
         return ClassifierResult(canned_text=fail_closed_message, label="fail-closed", outcome="error")
+
+    farmer_context = (
+        await prefetched
+        if prefetched is not None
+        else await _load_farmer_context(persona, user_info, request_id)
+    )
+    deps = _build_deps(
+        query=pretranslated.query,
+        session_id=session_id,
+        # Agent responds in English when the answer is translated for the caller.
+        lang_code="en" if translate_to else pretranslated.lang,
+        persona=persona,
+        channel=turn.channel,
+        user_info=user_info,
+        farmer_context=farmer_context,
+    )
+    deps.update_moderation_str(moderation_str)
 
     if persona == "farmer":
         deps.soil_health_card_context = (
@@ -1061,6 +1104,7 @@ CHAT_SURFACE = SurfaceProfile(
     pretranslation=_chat_pretranslation,
     agent_input=_chat_agent_input,
     disabled_languages=_disabled_chat_langs,
+    prefetch=_chat_prefetch,
 )
 
 
@@ -1186,8 +1230,10 @@ async def run_turn(
     history = turn.history
     message_history_session_id = turn.history_session_id
 
-    execution = await llm_core.context(session_id)
+    execution = await llm_core.context(session_id, surface=surface.surface.value)
     pipeline_profile = execution.profile_name
+    # The surface's own history retention, when its pipeline file sets one.
+    ttl_kw = history_ttl(surface.surface.value)
     # Open the per-turn pipeline-config tracer and hold the EXPLICIT instance.
     # Populate the static fields directly and pass the trace state explicitly
     # across Starlette's StreamingResponse async-generator boundary.
@@ -1212,6 +1258,7 @@ async def run_turn(
         _turn_outcome = "error"
         background = None
         liveness = None
+        prefetched = None
         try:
             # Resolve the surface's per-language kill switches before any response
             # path. This keeps deterministic short-circuits and tool language
@@ -1234,7 +1281,7 @@ async def run_turn(
                     return
                 telemetry.record_output(_heard(short_circuit), short_circuit.label)
                 await _write_short_circuit_history(
-                    history, short_circuit, message_history_session_id, request_id
+                    history, short_circuit, message_history_session_id, request_id, ttl_kw
                 )
                 # A short-circuit that answered the farmer is a completed turn, not
                 # an error. `_turn_outcome` defaults to "error" so that an exit we
@@ -1259,6 +1306,13 @@ async def run_turn(
             if surface.background is not None:
                 background = surface.background(turn, execution=execution)
 
+            # A read the agent input needs starts here too, for the same reasons:
+            # it runs alongside pretranslation and the agent input's own work
+            # (chat's moderation) instead of before them. Chat's is the farmer
+            # context; voice has none.
+            if surface.prefetch is not None:
+                prefetched = asyncio.create_task(surface.prefetch(turn))
+
             if surface.pretranslation is None:
                 raise TypeError(f"surface {surface.surface.value!r} reached pretranslation without one")
             stale = await _stale_outcome(is_stale, "before_query_pretranslation")
@@ -1279,7 +1333,7 @@ async def run_turn(
                     liveness = None
                 telemetry.record_output(_heard(pretranslated), pretranslated.label)
                 await _write_short_circuit_history(
-                    history, pretranslated, message_history_session_id, request_id
+                    history, pretranslated, message_history_session_id, request_id, ttl_kw
                 )
                 _turn_outcome = pretranslated.outcome
                 yield TextEmission(pretranslated.canned_text, raw=pretranslated.raw)
@@ -1294,6 +1348,8 @@ async def run_turn(
             translate_to = target_lang if needs_output_translation else None
             if surface.agent_input is None:
                 raise TypeError(f"surface {surface.surface.value!r} reached the agent without an agent input")
+            # Only a surface that sets a prefetch is handed one (chat's).
+            prefetch_kw = {} if prefetched is None else {"prefetched": prefetched}
             agent_input = await surface.agent_input(
                 turn,
                 pretranslated,
@@ -1302,6 +1358,7 @@ async def run_turn(
                 translate_to=translate_to,
                 background=background,
                 is_stale=is_stale,
+                **prefetch_kw,
             )
             if isinstance(agent_input, ClassifierResult):
                 # An answer instead of the agent's (chat's moderation decline):
@@ -1315,7 +1372,7 @@ async def run_turn(
                     liveness = None
                 telemetry.record_output(_heard(agent_input), agent_input.label)
                 await _write_short_circuit_history(
-                    history, agent_input, message_history_session_id, request_id
+                    history, agent_input, message_history_session_id, request_id, ttl_kw
                 )
                 _turn_outcome = agent_input.outcome
                 yield TextEmission(agent_input.canned_text, raw=agent_input.raw)
@@ -1365,7 +1422,7 @@ async def run_turn(
                             liveness = None
                         telemetry.record_output(_heard(gated), gated.label)
                         await _write_short_circuit_history(
-                            history, gated, message_history_session_id, request_id
+                            history, gated, message_history_session_id, request_id, ttl_kw
                         )
                         _turn_outcome = gated.outcome
                         yield TextEmission(gated.canned_text, raw=gated.raw)
@@ -1378,7 +1435,8 @@ async def run_turn(
                     if liveness is not None and _out.strip():
                         await liveness.stop()
                         liveness = None
-                    yield TextEmission(_out)
+                    # Raw: the sink has already prepared it for the surface.
+                    yield TextEmission(_out, raw=True)
                 logger.info(f"Streaming complete for session {session_id}")
                 if agent_input.after_run is not None:
                     agent_input.after_run(new_messages)
@@ -1406,14 +1464,9 @@ async def run_turn(
             if chat_artifacts:
                 yield ArtifactEmission(artifacts=tuple(chat_artifacts))
 
-            if sink_outcome is not None:
-                # The sink caught a failure and told the caller. The turn ends
-                # there: recorded as it is, and nothing half-done goes into history.
-                _turn_outcome = sink_outcome
-                return
-
             # A last raw line after the answer: voice's hang-up token when the
-            # agent said the conversation is closing.
+            # agent said the conversation is closing. Said after the trouble line
+            # too, when the sink caught a failure, so the call still ends.
             closing = agent_input.closing_line(new_messages) if agent_input.closing_line else None
             if closing:
                 stale = await _stale_outcome(is_stale, "before_goodbye")
@@ -1434,8 +1487,11 @@ async def run_turn(
                 _turn_outcome = stale
                 return
             logger.info(f"Updating message history for session {session_id} with {len(messages)} messages")
-            await update_message_history(message_history_session_id, messages)
-            _turn_outcome = "success"
+            await update_message_history(message_history_session_id, messages, **ttl_kw)
+            # A turn whose sink caught a failure (voice's trouble line) is saved
+            # like any other, as voice saved it, and recorded as the sink says.
+            # Chat's sink never reports one: it lets a failure propagate.
+            _turn_outcome = sink_outcome or "success"
         except (GeneratorExit, asyncio.CancelledError):
             # Client hung up: GeneratorExit at a yield, CancelledError when the
             # server cancels the stream mid-await (before the first chunk, say).
@@ -1451,3 +1507,5 @@ async def run_turn(
                 await liveness.stop()
             if background is not None:
                 await background.close()
+            if prefetched is not None:
+                await _reap_prefetch(prefetched)

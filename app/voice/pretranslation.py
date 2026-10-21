@@ -8,7 +8,8 @@ conversation, the glossary and the ambiguity rules, and an exact glossary term
 the model only transliterated is put back as its English label. The ambiguity
 rules are voice's own (``assets/voice_ambiguity_terms.json``): voice's include
 rules chat's do not, such as reading an ASR'd નિદાન as insemination rather than
-diagnosis. The glossary is shared with chat.
+diagnosis. The glossary is chat's with voice's own rows on top
+(``agents/voice/tools/terms.py``), as amul-dev reads abortion and silage.
 
 Each attempt runs on the pretranslation tier ``llm_core`` picks for the turn,
 with that tier's client and model, where voice built them from the environment.
@@ -30,7 +31,7 @@ from typing import Optional, Sequence, Union
 from openai import AsyncOpenAI
 
 from agents.tools import terms as _terms
-from agents.tools.terms import TERM_PAIRS
+from agents.voice.tools.terms import TERM_PAIRS
 from app.config import settings
 from app.llm_core import Step
 from app.llm_core.config_model import StepClientKind
@@ -40,6 +41,7 @@ from app.turn.types import ClassifierResult, Pretranslated, Pretranslation, Turn
 from app.voice.classifiers import _FRAGMENT_RESPONSES, RenderForCaller, _canned_for_caller
 from app.voice.history import HISTORY_MARKERS as _HISTORY_MARKERS
 from app.voice.history import history_pair as _history_pair
+from app.voice.moderation import pretranslation_timeout_s
 from app.voice.stt_signals import detect_stt_signal
 from app.voice.trace import current_trace
 from helpers.utils import get_logger
@@ -422,7 +424,7 @@ async def _create_pretranslation_response(
             max_completion_tokens=max_tokens,
             response_format={"type": "json_object"},
         ),
-        timeout=settings.openai_pretranslation_timeout_seconds,
+        timeout=pretranslation_timeout_s(),
     )
 
 
@@ -488,8 +490,8 @@ async def _translate_to_english_pretranslation(
             translated_text = _extract_translation_from_response(response)
             if not translated_text:
                 logger.warning(
-                    "%s pretranslation returned empty - source_lang=%s query=%r",
-                    label, source_lang, (text or "")[:100],
+                    "%s pretranslation returned empty - source_lang=%s query_chars=%s",
+                    label, source_lang, len(text or ""),
                 )
                 return text
             translated_text = _apply_exact_glossary_transliteration_replacements(text, translated_text)
@@ -521,8 +523,8 @@ async def _translate_to_english_pretranslation(
             translated_text = _extract_translation_from_response(response)
             if not translated_text:
                 logger.warning(
-                    "%s pretranslation returned empty - source_lang=%s query=%r",
-                    label, source_lang, (text or "")[:100],
+                    "%s pretranslation returned empty - source_lang=%s query_chars=%s",
+                    label, source_lang, len(text or ""),
                 )
                 observation.update(output="__EMPTY__")
                 return text
@@ -531,13 +533,12 @@ async def _translate_to_english_pretranslation(
             return translated_text
     except asyncio.TimeoutError as e:
         logger.error(
-            "%s pretranslation timed out - source_lang=%s model=%s timeout_seconds=%.2f query_chars=%s query_preview=%r",
+            "%s pretranslation timed out - source_lang=%s model=%s timeout_seconds=%.2f query_chars=%s",
             label,
             source_lang,
             model,
-            settings.openai_pretranslation_timeout_seconds,
+            pretranslation_timeout_s(),
             len(text or ""),
-            (text or "")[:160],
         )
         raise TimeoutError(f"{label} pretranslation timed out") from e
 
@@ -726,8 +727,8 @@ async def _voice_pretranslation(
         if declined is not None:
             return declined
         logger.info(
-            "Pretranslation produced no usable text; asking to repeat - session_id=%s process_id=%s query=%r",
-            turn.session_id, process_id, query,
+            "Pretranslation produced no usable text; asking to repeat - session_id=%s process_id=%s query_chars=%s",
+            turn.session_id, process_id, len(query or ""),
         )
         low_conf_resp_for_history = _FRAGMENT_RESPONSES["en"]
         low_conf_resp_for_caller = await _canned_for_caller(

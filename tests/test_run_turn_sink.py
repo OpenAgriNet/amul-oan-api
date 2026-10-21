@@ -16,6 +16,7 @@ os.environ.setdefault("OPENAI_API_KEY", "test-key")
 import pytest
 
 from app.channels.chat import WEB
+from app.llm_core.execution import ExecutionContext
 from app.services import chat as chat_service
 from app.turn.types import TextEmission, Turn
 from tests.test_chat_turn_contract import patch_turn
@@ -96,7 +97,7 @@ def test_run_turn_streams_through_the_surface_sink(monkeypatch):
         chat_service.run_turn(_turn(), _recording_surface(), scheduler=_Scheduler())
     ))
 
-    assert emissions == [TextEmission("GIVE CLEAN WATER.")]
+    assert emissions == [TextEmission("GIVE CLEAN WATER.", raw=True)]
     (sink,) = _RecordingSink.built
     assert sink.kwargs["translate_to"] == "gu"
     assert sink.kwargs["deps"] is seen["deps"][0]
@@ -145,6 +146,26 @@ def test_a_surface_without_a_sink_fails_before_the_agent_streams(monkeypatch):
 
     assert _outcomes(seen) == ["error"]
     assert seen["translated_inputs"] == [], "the agent's output reached translation"
+
+
+def test_a_chat_answer_that_fails_mid_stream_is_not_saved(monkeypatch):
+    # Voice's sink catches a failure and the turn is still saved; chat's lets it
+    # propagate, so a half answer never goes into chat history.
+    seen = patch_turn(monkeypatch)
+
+    async def _dies(self, agent, prompt, *, message_history, deps, new_messages):
+        yield "Give clean water daily."
+        raise RuntimeError("agent stream died")
+
+    monkeypatch.setattr(ExecutionContext, "stream", _dies)
+
+    with pytest.raises(RuntimeError, match="agent stream died"):
+        asyncio.run(_collect(chat_service.run_turn(
+            _turn(source_lang="en", target_lang="en"), chat_service.CHAT_SURFACE, scheduler=_Scheduler()
+        )))
+
+    assert seen["history_writes"] == []
+    assert _outcomes(seen) == ["error"]
 
 
 # ── chat's sink on its own ──────────────────────────────────────────────────

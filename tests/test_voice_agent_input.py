@@ -566,6 +566,8 @@ def _voice_surface():
         chat_service.CHAT_SURFACE,
         background=bg.voice_background(_render),
         agent_input=ai.voice_agent_input(_render),
+        # Voice has no prefetch: its background set fetches the farmer data.
+        prefetch=None,
     )
 
 
@@ -644,7 +646,7 @@ def test_run_turn_says_nothing_extra_after_an_ordinary_answer(world, monkeypatch
 
     emissions = _run_turn(_english())
 
-    assert all(not e.raw for e in emissions)
+    assert "".join(e.text for e in emissions).strip() == "Give her water."
 
 
 def test_run_turn_hands_the_agent_input_its_staleness_check(world, monkeypatch):

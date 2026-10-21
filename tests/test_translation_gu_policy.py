@@ -82,6 +82,36 @@ def test_voice_channel_does_not_force_chat_only_organic_normalization():
     assert "જૈવિક" not in out
 
 
+@pytest.mark.parametrize("said, chat_says", [
+    ("પાડુના ઉછેર માટે શું કરવું?", "બચ્ચાંના ઉછેર માટે શું કરવું?"),
+    ("વોડકી ને દાણ આપો.", "પાડી ને દાણ આપો."),
+])
+def test_voice_keeps_the_calf_and_heifer_words_chat_rewrites(said, chat_says):
+    with translation_channel("voice"):
+        assert _post_normalize_gu_translation(said, "gujarati", strip_outer=True) == said
+    assert _post_normalize_gu_translation(said, "gujarati", strip_outer=True) == chat_says
+
+
+@pytest.mark.parametrize("channel", ["chat", "voice"])
+def test_a_rewrite_is_not_rewritten_again(channel):
+    """A replacement that contains its own term (potassium permanganate, TDN)
+    must not grow on text that already says it, or on a second pass."""
+    def normalize(text):
+        with translation_channel(channel):
+            return _post_normalize_gu_translation(text, "gujarati", strip_outer=True)
+
+    said = "પોટેશિયમ પરમેંગેનેટનું દ્રાવણ વાપરો."
+    assert normalize(said) == said
+    if channel == "chat":  # voice keeps the term (VOICE_KEPT_GU_POLICY_TERMS)
+        assert "પોટેશિયમ પરમેંગેનેટના દ્રાવણ" in normalize("પોટેશિયમ પરમેંગેનેટ વાપરો.")
+    forbidden = GU_TERM_POLICY["forbidden"]
+    grown = [
+        text for text in (f"આ {term} છે." for term in [*forbidden, *forbidden.values()])
+        if normalize(normalize(text)) != normalize(text)
+    ]
+    assert grown == []
+
+
 def test_build_replacements_orders_longer_keys_first():
     # phrase-level replacements must win before single-word ones
     reps = _build_gu_policy_replacements({"forbidden": {"aa": "X", "aaaa": "Y"}})
