@@ -215,6 +215,30 @@ def test_released_contracts_never_change():
         )
 
 
+def _outcomes_a_chat_turn_can_end_with():
+    """What a chat turn records as its outcome, read from chat.py: run_turn's own
+    (``_turn_outcome = "..."``) and each answer given instead of the agent's
+    (``ClassifierResult``, ``success`` unless it names another)."""
+    tree = ast.parse((REPO / "app" / "services" / "chat.py").read_text(encoding="utf-8"))
+    outcomes = {"success"}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == "_turn_outcome" for t in node.targets):
+            outcomes.update(n.value for n in ast.walk(node.value) if isinstance(n, ast.Constant) and isinstance(n.value, str))
+        if isinstance(node, ast.Call) and getattr(node.func, "id", None) == "ClassifierResult":
+            outcomes.update(k.value.value for k in node.keywords if k.arg == "outcome" and isinstance(k.value, ast.Constant))
+    return outcomes
+
+
+def test_the_outcomes_a_chat_turn_can_end_with_are_the_contracts():
+    """check_trace accepts any turn.v1 outcome, so only this sees an outcome chat records
+    that its contract doesn't list, or one it lists and no longer records."""
+    listed = set(json.loads(CONTRACT.read_text(encoding="utf-8"))["outcomes"])
+    found = _outcomes_a_chat_turn_can_end_with()
+
+    assert {"success", "error", "cancelled", "moderation_rejected"} <= found
+    assert found == listed, f"chat.py records {sorted(found)}, the contract lists {sorted(listed)}. {NEW_VERSION}"
+
+
 def test_names_are_specific_snake_case():
     contract = json.loads(CONTRACT.read_text(encoding="utf-8"))
     names = [

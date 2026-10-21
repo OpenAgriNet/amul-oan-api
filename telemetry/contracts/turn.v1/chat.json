@@ -80,6 +80,7 @@
   "outcomes": [
     "success",
     "error",
-    "cancelled"
+    "cancelled",
+    "moderation_rejected"
   ]
 }

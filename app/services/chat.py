@@ -1019,10 +1019,13 @@ async def _chat_agent_input(
                 # The decline IS the turn's answer, and run_turn records it as the
                 # trace output. Without that the chat export records the turn as
                 # a blank answer (~470 rows on 2026-08-06).
-                # Moderation ran and decided: the turn ended the way it was
-                # supposed to, a success. Recording "error" here inflated the
-                # error rate by one row per moderated query.
-                return ClassifierResult(canned_text=decline_text, label="moderation decline")
+                # Moderation ran and refused the query: moderation_rejected, as
+                # voice records it (turn.v1's refused_or_blocked class), so a
+                # rejection rate means the same on both. Not an error: that
+                # inflated the error rate by one row per moderated query.
+                return ClassifierResult(
+                    canned_text=decline_text, label="moderation decline", outcome="moderation_rejected"
+                )
             moderation_str = str(moderation_data)
     except Exception as e:
         logger.error("request_id=%s moderation_error=%s", request_id, str(e))
