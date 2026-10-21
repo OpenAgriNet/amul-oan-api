@@ -30,6 +30,11 @@ from agents.tools.memory_tools import (
     read_memory,
     search_memories,
 )
+from agents.tools.vistaar_pmkisan import (
+    check_pm_kisan_status_with_otp,
+    initiate_pm_kisan_status_check,
+    prepare_pm_kisan_tool,
+)
 
 TOOLS = [
     # # Search Terms
@@ -180,6 +185,20 @@ TOOLS.extend([
         docstring_format='auto',
         require_parameter_descriptions=True,
         prepare=prepare_get_vistaar_soil_health_card,
+    ),
+    Tool(
+        initiate_pm_kisan_status_check,
+        takes_ctx=True,
+        docstring_format='auto',
+        require_parameter_descriptions=True,
+        prepare=prepare_pm_kisan_tool,
+    ),
+    Tool(
+        check_pm_kisan_status_with_otp,
+        takes_ctx=True,
+        docstring_format='auto',
+        require_parameter_descriptions=True,
+        prepare=prepare_pm_kisan_tool,
     ),
 ])
 

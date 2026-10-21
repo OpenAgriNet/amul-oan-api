@@ -22,6 +22,24 @@ import app.observability  # noqa: F401, E402
 
 # Import all routers
 from app.routers import chat, transcribe, suggestions, tts, health, auth, user, telemetry, beckn, webhooks
+import logging
+import re
+
+
+class _RedactQueryParam(logging.Filter):
+    """uvicorn's access line carries the GET query string, i.e. the farmer's raw message."""
+
+    _QUERY = re.compile(r"([?&])query=[^&]*")
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if isinstance(record.args, tuple) and len(record.args) >= 3:
+            args = list(record.args)
+            args[2] = self._QUERY.sub(r"\1query=<redacted>", str(args[2]))
+            record.args = tuple(args)
+        return True
+
+
+logging.getLogger("uvicorn.access").addFilter(_RedactQueryParam())
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
