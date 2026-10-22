@@ -27,7 +27,7 @@ from typing import Optional
 from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, UserPromptPart
 from pydantic_ai.usage import UsageLimits
 
-from agents.deps import FarmerAccount, FarmerContext
+from agents.deps import MEMORY_INSTRUCTIONS, FarmerAccount, FarmerContext
 from agents.tools.farmer_cache import (
     enqueue_farmer_refresh,
     get_farmer_data_cached_only,
@@ -43,6 +43,11 @@ from agents.voice.services.farmer_identity import (
 )
 from agents.voice.tools.terms import get_ambiguity_hints_for_query
 from app.config import settings
+from app.services.memory import (
+    MEMORY_VOICE_TOOL_MAX_CALLS,
+    MEMORY_VOICE_TOOL_TIMEOUT_SECONDS,
+    MEMORY_VOICE_TOOL_TURN_MAX_CHARS,
+)
 from app.llm_core import Step, runtime
 from app.model_boundary_capture import boundary_capture_context
 from app.turn.types import AgentInput, AgentInputStep, ClassifierResult, Pretranslated, StalenessCheck, Turn
@@ -180,6 +185,10 @@ def _build_query_hints_request(deps: FarmerContext) -> Optional[ModelRequest]:
     instead, where the instructions also sit closest to the query they describe.
     Returns None when the query triggers neither hint."""
     hint_lines: list[str] = []
+    if deps.memory_read_allowed:
+        hint_lines.append(
+            "- Conversational memory rules:\n" + MEMORY_INSTRUCTIONS
+        )
     # Inject ambiguity hints for the agent so it can decide to clarify vs. answer
     ambiguity_hints = get_ambiguity_hints_for_query(
         deps.query or "",
@@ -338,6 +347,7 @@ async def _voice_agent_input(
     process_id = turn.call.process_id if turn.call is not None else None
     requested_target_lang = (turn.target_lang or "gu").strip().lower()
     processing_query, processing_lang = pretranslated.query, pretranslated.lang
+    background.start_memory(processing_query)
     history = list(turn.history)
     mobile = background.mobile
     signed_in = _is_signed_in_session(turn.authenticated_user, turn.user_id)
@@ -486,6 +496,7 @@ async def _voice_agent_input(
                     outcome="outbound_no_data",
                 )
 
+    memory_context = await background.memory_context()
     deps = FarmerContext(
         query=processing_query,
         lang_code=processing_lang,
@@ -497,6 +508,11 @@ async def _voice_agent_input(
         ai_technician_info=ai_technician_info,
         signed_in=signed_in,
         mobile=mobile,
+        memory_context=memory_context,
+        memory_read_allowed=background.memory_read_allowed,
+        memory_tool_timeout_seconds=MEMORY_VOICE_TOOL_TIMEOUT_SECONDS,
+        memory_tool_max_calls=MEMORY_VOICE_TOOL_MAX_CALLS,
+        memory_tool_max_chars=MEMORY_VOICE_TOOL_TURN_MAX_CHARS,
         farmer_profile_status=profile_status_for_state(farmer_identity),
         farmer_accounts=farmer_accounts,
         farmer_village=farmer_village,

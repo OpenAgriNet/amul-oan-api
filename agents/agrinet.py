@@ -4,7 +4,7 @@ from app.config import get_config_value, settings
 from agents.tools.registry import TOOLS
 from agents.tools.terms import get_ambiguity_hints_for_query
 from pydantic_ai.settings import ModelSettings
-from agents.deps import FarmerContext
+from agents.deps import FarmerContext, MEMORY_INSTRUCTIONS
 from agents.tools.ai_call import NO_FARMER_PROFILE_MESSAGE
 
 
@@ -72,4 +72,7 @@ def get_agrinet_instructions(ctx: RunContext):
     # The translation pipeline is the only supported chat path, so the farmer
     # agent always runs on the English-only prompt; the response is translated
     # into the target language downstream (app.services.chat).
-    return get_prompt("agrinet_system_translation_pipeline.md", context=context)
+    instructions = get_prompt("agrinet_system_translation_pipeline.md", context=context)
+    if ctx.deps.memory_context:
+        instructions += "\n\n" + MEMORY_INSTRUCTIONS
+    return instructions
