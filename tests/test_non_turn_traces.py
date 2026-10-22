@@ -64,6 +64,9 @@ class _Langfuse:
     def set_current_trace_io(self, **kwargs):
         self.log.append(("trace_io", kwargs))
 
+    def create_score(self, **kwargs):
+        self.log.append(("score_trace", kwargs))
+
     def flush(self):
         pass
 
@@ -121,11 +124,12 @@ def test_the_health_canary_translates_inside_a_health_check_job(lf, monkeypatch)
     assert lf.opened("background_job")["metadata"] == _root_metadata("background_job", **{"amul.job": "health_check"})
 
 
-def _feedback():
+def _feedback(trace_id=None):
     return CanonicalTelemetryEvent(
         event_name="feedback",
         session_id="web-session",
         question_id="q-1",
+        trace_id=trace_id,
         pipeline="default",
         payload={"target": {"type": "Feedback", "feedbackDetails": {
             "feedbackText": "useful", "questionText": "q", "answerText": "a", "feedbackType": "like",
@@ -152,6 +156,34 @@ def test_a_frontend_event_is_its_own_frontend_event_trace(lf, monkeypatch):
     assert event["metadata"]["pipeline"] == "default"
     assert ("score", "frontend.feedback", {"name": "user_feedback", "value": 1.0, "comment": "useful"}) in lf.log
     assert not [entry for entry in lf.log if entry[0] == "trace_io"]
+
+
+def test_a_feedback_that_names_its_turn_scores_the_turn(lf, monkeypatch):
+    """turn.v1: user_feedback goes on the turn when the frontend sends back the trace id
+    the chat response carried (X-Trace-Id); the frontend_event trace is still written."""
+    monkeypatch.setattr(writer, "get_langfuse_client", lambda: lf)
+    turn = "b" * 32
+
+    assert asyncio.run(writer.write_canonical_event_to_langfuse(_feedback(trace_id=turn))) == ("queued", None)
+
+    assert [entry[:2] for entry in lf.log if entry[0] in ("open", "close")] == [
+        ("open", "frontend_event"), ("open", "frontend.feedback"), ("close", "frontend.feedback"), ("close", "frontend_event"),
+    ]
+    scores = [entry for entry in lf.log if entry[0] in ("score", "score_trace")]
+    assert scores == [("score_trace", {
+        "trace_id": turn, "name": "user_feedback", "value": 1.0, "comment": "useful",
+        "environment": observability.surface_environment("chat"),
+    })]
+
+
+@pytest.mark.parametrize("trace_id", ["", "not-a-trace", "B" * 32, "c" * 31])
+def test_a_feedback_whose_trace_id_is_not_one_stays_on_its_own_trace(lf, monkeypatch, trace_id):
+    monkeypatch.setattr(writer, "get_langfuse_client", lambda: lf)
+
+    assert asyncio.run(writer.write_canonical_event_to_langfuse(_feedback(trace_id=trace_id))) == ("queued", None)
+
+    scores = [entry for entry in lf.log if entry[0] in ("score", "score_trace")]
+    assert scores == [("score", "frontend.feedback", {"name": "user_feedback", "value": 1.0, "comment": "useful"})]
 
 
 def test_the_anonymous_token_carries_its_user(lf, monkeypatch):

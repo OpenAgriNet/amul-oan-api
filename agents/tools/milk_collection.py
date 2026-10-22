@@ -6,6 +6,7 @@ import asyncio
 from pydantic_ai import RunContext
 from pydantic_ai.tools import ToolDefinition
 
+from agents.tools.telemetry import reason, report_tool
 from agents.deps import FarmerContext
 from agents.tools.beckn.amul import (
     authenticated_accounts,
@@ -169,6 +170,7 @@ async def get_farmer_milk_collection_details(
     mobile = (ctx.deps.mobile or "").strip() if ctx and ctx.deps else ""
     if not mobile:
         logger.info("Farmer milk collection tool refused: no authenticated mobile")
+        report_tool("error", "no signed-in mobile")
         return (
             "Milk collection lookup failed.\n\n"
             "Your signed-in farmer profile is not available, so milk collection "
@@ -188,6 +190,7 @@ async def get_farmer_milk_collection_details(
         logger.info(
             "Farmer milk collection validation failed: %s", str(exc)
         )
+        report_tool("error", f"date range: {exc}")
         return f"Milk collection lookup failed.\n\n{str(exc)}"
 
     session_id = ctx.deps.session_id if ctx and ctx.deps else None
@@ -200,6 +203,7 @@ async def get_farmer_milk_collection_details(
         )
     except Exception as exc:
         logger.warning("Farmer profile lookup for milk collection failed: %s", exc)
+        report_tool("unavailable", f"farmer profile lookup: {reason(exc)}")
         return (
             "Milk collection lookup failed.\n\n"
             "Unable to fetch milk collection details at the moment."
@@ -207,6 +211,7 @@ async def get_farmer_milk_collection_details(
 
     accounts = authenticated_accounts(farmers or [])
     if not accounts:
+        report_tool("no_result", "no account for the signed-in mobile")
         return (
             "Milk collection lookup failed.\n\n"
             "No union, society, and farmer account was found for your signed-in mobile."
@@ -239,6 +244,7 @@ async def get_farmer_milk_collection_details(
             fromdate,
             todate,
         )
+        report_tool("unavailable", f"milk collection provider failed for all {len(accounts)} accounts")
         return (
             "Milk collection lookup failed.\n\n"
             "Unable to fetch milk collection details at the moment."

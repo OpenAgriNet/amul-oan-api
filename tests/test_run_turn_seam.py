@@ -6,6 +6,7 @@ the adapter renders each emission, that the turn stays transport-free, and that
 deferred work really runs after the response through the real router.
 """
 import ast
+import contextlib
 import asyncio
 import dataclasses
 import os
@@ -430,6 +431,31 @@ def test_the_turn_records_how_the_question_was_entered(monkeypatch, sent, record
     roots = [c.kwargs for c in seen["langfuse"].start_as_current_observation.call_args_list if c.kwargs.get("name") == TURN_ROOT]
     assert len(roots) == 1
     assert roots[0]["metadata"].get("amul.input_method") == recorded
+
+
+def test_the_response_names_the_turns_trace(monkeypatch):
+    """The router makes the turn's trace id, opens the root with it and sends it back as
+    X-Trace-Id (and trace_id in a JSON body), so a later feedback can score the turn."""
+    patch_turn(monkeypatch)
+    pinned = []
+
+    @contextlib.contextmanager
+    def _root_trace_id(trace_id):
+        pinned.append(trace_id)
+        yield
+
+    monkeypatch.setattr(chat_service, "root_trace_id", _root_trace_id)
+    client = _client(monkeypatch)
+    params = {"query": "How much water?", "source_lang": "gu", "target_lang": "gu"}
+
+    streamed = client.get("/chat/", params=params)
+    json_response = client.get("/chat/", params={**params, "stream": False})
+
+    assert streamed.status_code == 200 and streamed.text.strip()
+    assert json_response.status_code == 200
+    assert [streamed.headers["x-trace-id"], json_response.headers["x-trace-id"]] == pinned
+    assert json_response.json()["trace_id"] == json_response.headers["x-trace-id"]
+    assert len(set(pinned)) == 2 and all(len(trace_id) == 32 and int(trace_id, 16) for trace_id in pinned)
 
 
 def _asgi_app(monkeypatch):

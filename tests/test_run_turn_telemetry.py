@@ -384,7 +384,8 @@ def test_the_root_names_the_languages_by_code(monkeypatch, source_lang, target_l
     assert metadata["amul.translation_mode"] == mode
 
 
-def test_an_anonymous_user_has_no_farmer_id_and_english_is_direct(monkeypatch):
+def test_an_anonymous_user_has_no_user_id_no_farmer_id_and_english_is_direct(monkeypatch):
+    """turn.v1's userId is written when known: the request's default "anonymous" is not a user."""
     patch_turn(monkeypatch)
     propagated = []
 
@@ -398,5 +399,40 @@ def test_an_anonymous_user_has_no_farmer_id_and_english_is_direct(monkeypatch):
     _run(_turn(source_lang="en", target_lang="en"), chat_service.CHAT_SURFACE)
 
     root = next(kwargs for kwargs in propagated if "session_id" in kwargs)
-    assert root["user_id"] == "anonymous" and "amul.farmer_id" not in root["metadata"]
+    assert root["user_id"] is None and "amul.farmer_id" not in root["metadata"]
     assert root["metadata"]["amul.translation_mode"] == "direct"
+
+
+@pytest.mark.parametrize(
+    ("user_id", "authenticated_user", "recorded"),
+    [
+        ("anonymous", {}, None),
+        ("", {}, None),
+        ("9000000000", {}, "9000000000"),  # the request's user id, unverified but known
+        ("anonymous", {"sub": "farmer-7"}, "farmer-7"),  # the JWT's subject over the request's default
+        ("9000000000", {"phone": "+91 98765 43210", "sub": "x"}, "+91 98765 43210"),  # the JWT's phone first
+    ],
+    ids=["anonymous", "empty", "query-param", "jwt-sub", "jwt-phone"],
+)
+def test_the_root_names_the_user_only_when_one_is_known(monkeypatch, user_id, authenticated_user, recorded):
+    root = _root_fields(monkeypatch, _turn(user_id=user_id, authenticated_user=MappingProxyType(authenticated_user)))
+    assert root["user_id"] == recorded
+
+
+def test_the_root_opens_with_the_trace_id_the_transport_made(monkeypatch):
+    """The chat router makes the turn's trace id before the turn, so the response can
+    name it; the root span, and only the root, is opened inside root_trace_id with it."""
+    seen = patch_turn(monkeypatch)
+    pinned = []
+
+    @contextlib.contextmanager
+    def _root_trace_id(trace_id):
+        pinned.append((trace_id, list(seen["spans"])))
+        yield
+
+    monkeypatch.setattr(chat_service, "root_trace_id", _root_trace_id)
+
+    _run(_turn(trace_id="a" * 32), chat_service.CHAT_SURFACE)
+
+    assert pinned == [("a" * 32, [])]
+    assert seen["spans"][0] == ("enter", "turn")

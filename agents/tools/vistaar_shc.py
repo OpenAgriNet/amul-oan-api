@@ -11,6 +11,7 @@ from typing import Any, Iterable, Mapping
 from pydantic_ai import RunContext
 from pydantic_ai.tools import ToolDefinition
 
+from agents.tools.telemetry import reason, report_tool
 from agents.deps import FarmerContext
 from agents.tools.session_shc import set_session_shc_context
 from app.config import settings
@@ -344,12 +345,14 @@ async def get_vistaar_soil_health_card(
     """
     normalized_cycle = _normalize_cycle(cycle)
     if normalized_cycle is None:
+        report_tool("error", "cycle missing or invalid")
         return (
             "A valid Soil Health Card cycle is required. Ask the farmer naturally "
             "which cycle they want, for example 2024-25 or 2025-26."
         )
     mobile = _registered_mobile(ctx.deps.mobile)
     if mobile is None:
+        report_tool("error", "no registered mobile on the session")
         return (
             "NO REGISTERED MOBILE. Tell the farmer that their Soil Health Card can "
             "only be retrieved from a signed-in account with the scheme-registered "
@@ -363,32 +366,39 @@ async def get_vistaar_soil_health_card(
             session_id=ctx.deps.session_id,
             tool_call_id=getattr(ctx, "tool_call_id", None),
         )
-    except Exception:
+    except Exception as exc:
         # Deliberately omit phone and provider response bodies from logs.
         logger.exception("soil health card network transaction failed cycle=%s", normalized_cycle)
+        report_tool("unavailable", f"Soil Health Card network transaction: {reason(exc)}")
         return "The Soil Health Card service is temporarily unavailable. Please try again later."
 
     if result.operation.state is OperationState.NACKED:
         error = (result.payload or {}).get("error") or {}
         logger.info("soil health card init rejected code=%s", error.get("code"))
+        report_tool("error", f"provider rejected the request: {error.get('code')}")
         return "The Soil Health Card request was rejected by the provider. Please check the cycle and try again."
     if result.operation.state is OperationState.BUSINESS_FAILED:
+        report_tool("no_result", "no card for the cycle")
         return _no_card_for_cycle(normalized_cycle)
     if result.operation.state is OperationState.TIMED_OUT_PENDING:
         # BV ACKs valid SHC lookups but currently emits no on_init when the
         # registered mobile has no report for the requested cycle. Treat this
         # provider-specific completed wait as absence, not a transient outage.
         logger.info("soil health card not available after provider ACK cycle=%s", normalized_cycle)
+        report_tool("no_result", "no card for the cycle")
         return _no_card_for_cycle(normalized_cycle)
     if not result.ok or not isinstance(result.payload, Mapping):
+        report_tool("unavailable", f"no usable on_init: {result.operation.state.name}")
         return "The Soil Health Card service is temporarily unavailable. Please try again later."
 
     try:
         html = _decode_html_media(result.payload)
     except ValueError as exc:
         logger.warning("soil health card media rejected cycle=%s reason=%s", normalized_cycle, exc)
+        report_tool("unavailable", f"card media unreadable: {exc}")
         return "The Soil Health Card was returned in an unreadable format. Please try again later."
     if not html:
+        report_tool("no_result", "no card for the cycle")
         return _no_card_for_cycle(normalized_cycle)
 
     ctx.deps.add_chat_artifact(

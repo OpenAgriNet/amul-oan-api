@@ -51,6 +51,9 @@ async def chat_endpoint(
     Requires JWT authentication.
     """
     session_id = request.session_id or str(uuid.uuid4())
+    # The turn's trace id, sent back as X-Trace-Id (and trace_id in a JSON body): the
+    # client names the turn with it when it sends the farmer's feedback.
+    trace_id = uuid.uuid4().hex
     
     logger.info(
         f"Chat request received - session_id: {session_id}, user_id: {request.user_id}, "
@@ -81,7 +84,9 @@ async def chat_endpoint(
         artifact_sink=artifacts,
         emit_artifact_frames=request.stream is not False,
         input_method=request.input_method,
+        trace_id=trace_id,
     )
+    headers = {"X-Trace-Id": trace_id}
 
     if request.stream is False:
         async with aclosing(message_stream) as stream:
@@ -89,10 +94,12 @@ async def chat_endpoint(
         return JSONResponse(
             content={
                 "session_id": session_id,
+                "trace_id": trace_id,
                 "response": full_response,
                 "artifacts": artifacts,
                 "stream": False,
-            }
+            },
+            headers=headers,
         )
 
-    return ClosingStreamingResponse(message_stream, media_type='text/event-stream')
+    return ClosingStreamingResponse(message_stream, media_type='text/event-stream', headers=headers)

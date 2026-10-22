@@ -119,6 +119,10 @@ class Turn:
     #: How the farmer entered the question, as the chat client reports it
     #: (amul-telemetry#38). None on voice, and when the client sends none.
     input_method: Optional[str] = None
+    #: The trace id the turn's root opens with, made by the chat transport before the
+    #: turn so the response can name it (its X-Trace-Id) and a later feedback can
+    #: score the turn. None on voice, which keeps its own on the call.
+    trace_id: Optional[str] = None
 
 
 # ── what a turn emits ───────────────────────────────────────────────────────

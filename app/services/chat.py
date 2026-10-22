@@ -248,7 +248,7 @@ except ImportError:
     propagate_attributes = None
     get_langfuse_client = None
 
-from app.observability import surface_environment
+from app.observability import root_trace_id, surface_environment
 
 # Per-turn resolved-pipeline-config tracer (tracing-only; no behaviour change).
 from app.llm_core import trace as _pipeline_trace
@@ -670,6 +670,8 @@ class _ChatSink:
 
 # turn.v1 names the delivery medium a pipeline (amul-telemetry telemetry/turn.v1.yaml).
 _PIPELINE_BY_CHANNEL = {"web": "webapp", "whatsapp": "whatsapp"}
+# The request's user_id when the client sends none (app/models/requests.py): not a user.
+ANONYMOUS_USER = "anonymous"
 
 
 class _ChatTelemetry:
@@ -705,11 +707,11 @@ class _ChatTelemetry:
         turn = self._turn
         user_info = turn.authenticated_user
         channel = turn.channel.channel.value
-        # Prefer the phone from the JWT (weburl-minted tokens) over the query-param user_id.
-        effective_user_id = (
-            (user_info.get("phone") or user_info.get("sub")) if user_info else None
-        ) or turn.user_id or "anonymous"
-        effective_user_id = effective_user_id[:200]
+        # turn.v1 writes userId when it is known: the phone from the JWT (weburl-minted
+        # tokens) over the query-param user_id, and none for an anonymous user.
+        known_user = (user_info.get("phone") or user_info.get("sub")) if user_info else None
+        effective_user_id = known_user or (turn.user_id if turn.user_id != ANONYMOUS_USER else None)
+        effective_user_id = effective_user_id[:200] if effective_user_id else None
         source_lang = (turn.source_lang or "unknown").lower()[:200]
         target_lang = (turn.target_lang or "unknown").lower()[:200]
         metadata = turn_v1_metadata(
@@ -740,9 +742,12 @@ class _ChatTelemetry:
                 # turn becomes its own top-level trace and trace-level writes are
                 # dropped (#200). The root observation carries the same amul.* keys
                 # as the trace.
-                stack.enter_context(
-                    client.start_as_current_observation(name=TURN_ROOT, as_type="span", metadata=metadata)
-                )
+                # Opened with the trace id the transport made for the turn, when it
+                # made one (app/observability.py root_trace_id).
+                with root_trace_id(turn.trace_id):
+                    stack.enter_context(
+                        client.start_as_current_observation(name=TURN_ROOT, as_type="span", metadata=metadata)
+                    )
             if propagate_attributes:
                 # Trace-level fields, on the root only: set on the current span (the
                 # root) and left before any step opens.
@@ -1208,6 +1213,7 @@ async def stream_chat_messages(
     artifact_sink: list[dict[str, Any]] | None = None,
     emit_artifact_frames: bool = True,
     input_method: str | None = None,
+    trace_id: str | None = None,
 ) -> AsyncGenerator[str, None]:
     """The chat transport's adapter over ``run_turn``.
 
@@ -1231,6 +1237,7 @@ async def stream_chat_messages(
         channel=_profile_for(channel),
         persona=persona,
         input_method=_input_method(input_method),
+        trace_id=trace_id,
     )
     scheduler = _BackgroundTasksScheduler(background_tasks)
     # aclosing: when the caller closes THIS generator (a hang-up), the turn is

@@ -2,7 +2,7 @@ import asyncio
 from typing import Literal
 
 from app.models.telemetry import CanonicalTelemetryEvent
-from app.observability import non_turn_root
+from app.observability import is_trace_id, non_turn_root, surface_environment
 from app.services.telemetry_mapper import map_canonical_event_to_langfuse
 from app.services.telemetry_stamps import FRONTEND_EVENT, non_turn_v1_metadata
 from helpers.utils import get_logger
@@ -28,8 +28,9 @@ async def write_canonical_event_to_langfuse(
     telemetry/turn.v1.yaml): a root named frontend_event with the amul.* keys,
     the session and the user, and under it the ``frontend.<event>`` observation
     with what the frontend sent. turn.v1 keeps a trace's input and output for
-    turns. A feedback's ``user_feedback`` score is on this trace until the
-    frontend sends the turn's trace id with it.
+    turns. A feedback's ``user_feedback`` score goes on the turn when the frontend
+    sends the turn's trace id (the chat response's X-Trace-Id) with it, else on
+    this trace.
 
     The ingest endpoint must not fail if Langfuse is unavailable, so this function
     always returns a status instead of raising.
@@ -64,7 +65,16 @@ async def write_canonical_event_to_langfuse(
                 # Best-effort score capture for feedback events.
                 score = mapped.get("score")
                 if score and score.get("value") is not None:
-                    if hasattr(observation, "score"):
+                    if is_trace_id(canonical.trace_id):
+                        # On the turn's trace, in chat's environment as the turn is.
+                        langfuse.create_score(
+                            trace_id=canonical.trace_id,
+                            name=score["name"],
+                            value=score["value"],
+                            comment=score.get("comment"),
+                            environment=surface_environment("chat"),
+                        )
+                    elif hasattr(observation, "score"):
                         observation.score(
                             name=score["name"],
                             value=score["value"],

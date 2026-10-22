@@ -226,6 +226,7 @@ class Turn:
     channel: Optional[ChannelProfile] = None
     call: Optional[TelephonyCall] = None
     input_method: Optional[str] = None
+    trace_id: Optional[str] = None
 ```
 
 `channel` is chat's `ChannelProfile` and is `None` on voice: a call is not a chat channel, and
@@ -237,6 +238,13 @@ onto `Turn.call` rather than becoming a `ChannelProfile` (decision 2 in
 `input_method` is how the farmer entered the question as the chat client reports it (typed,
 speech_to_text, home_question, faq or suggestion; amul-telemetry#38), a plain name or `None`. It
 goes on the turn's telemetry root and nowhere else; voice leaves it `None`.
+
+`trace_id` is the trace id the turn's root opens with, when the transport made one before the
+turn. The chat router makes it per request and sends it back as the response's `X-Trace-Id`
+(and `trace_id` in a JSON body), so the client can name the turn when it sends the farmer's
+feedback; the feedback's `user_feedback` score then lands on the turn's trace rather than on
+its own `frontend_event` trace. Voice keeps its trace id on the call (`TelephonyCall.trace_id`),
+made when the request claims the session, and leaves this `None`.
 
 The request's `stream` flag is not part of `Turn`: streaming SSE versus accumulated JSON is a
 transport decision over the same emission stream. Nor are a model, resolved pipeline profile,

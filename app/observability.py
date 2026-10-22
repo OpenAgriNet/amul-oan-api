@@ -17,6 +17,11 @@ _root_trace_id: ContextVar[Optional[int]] = ContextVar("root_trace_id", default=
 _TRACE_ID = re.compile(r"[0-9a-f]{32}")
 
 
+def is_trace_id(value: Any) -> bool:
+    """Whether ``value`` is a trace id as Langfuse names one: 32 lowercase hex characters."""
+    return isinstance(value, str) and _TRACE_ID.fullmatch(value) is not None
+
+
 @contextmanager
 def root_trace_id(trace_id: Optional[str]) -> Iterator[None]:
     """Open the root span started inside with ``trace_id`` (32 lowercase hex).
@@ -29,7 +34,7 @@ def root_trace_id(trace_id: Optional[str]) -> Iterator[None]:
     never sent, and Langfuse would keep it as the root's parent observation. Any other
     value leaves the id to OpenTelemetry.
     """
-    if not trace_id or not _TRACE_ID.fullmatch(trace_id):
+    if not is_trace_id(trace_id):
         yield
         return
     token = _root_trace_id.set(int(trace_id, 16))
@@ -224,6 +229,33 @@ def non_turn_root(
         ):
             pass
         yield root
+
+
+def record_api_result(
+    observation: Any | None,
+    *,
+    ok: bool,
+    status_code: int | None = None,
+    reason: str | None = None,
+    **more: Any,
+) -> None:
+    """What an API step tells turn.v1 (the ``"<api name>"`` SPAN): ``ok`` out, the HTTP
+    ``status_code`` when there was a response, and level ERROR with the reason when the
+    call did not succeed. ``more`` is what else the step has to say. No-op without an
+    observation (tracing off), and never raises."""
+    if observation is None:
+        return
+    output: dict[str, Any] = {"ok": ok}
+    if status_code is not None:
+        output["status_code"] = status_code
+    output.update(more)
+    try:
+        if ok:
+            observation.update(output=output)
+        else:
+            observation.update(output=output, level="ERROR", status_message=(reason or "failed")[:300])
+    except Exception as exc:
+        logger.debug("API result not recorded: %s", exc)
 
 
 @contextmanager
