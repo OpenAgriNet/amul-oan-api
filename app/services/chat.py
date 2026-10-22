@@ -722,6 +722,7 @@ class _ChatTelemetry:
             pipeline_profile=self._pipeline_profile,
             pipeline_flags=_pipeline_trace.compact_metadata(self._pipeline_trace).get("pipeline_flags"),
             persona=turn.persona,
+            input_method=turn.input_method,
             # A farmer id is the phone the verified JWT carries, as the farmer context
             # and the loan tool read it; a query-param user id is not verified, and an
             # anonymous user has none. Voice sets it only for a signed-in caller.
@@ -1176,6 +1177,22 @@ class _BackgroundTasksScheduler:
         self._background_tasks.add_task(fn, *args)
 
 
+# How the client says the question was entered (amul-telemetry#38): typed, speech_to_text,
+# home_question, faq or suggestion. A plain name is kept as sent, so a value the registry
+# does not list yet still reaches the store instead of being lost; anything else is not
+# recorded, and the turn goes on.
+_INPUT_METHOD = re.compile(r"[a-z][a-z_]{0,31}")
+
+
+def _input_method(value: Optional[str]) -> Optional[str]:
+    method = (value or "").strip().lower()
+    if _INPUT_METHOD.fullmatch(method):
+        return method
+    if method:
+        logger.warning("Chat input_method not recorded: not a plain name (%d chars)", len(method))
+    return None
+
+
 async def stream_chat_messages(
     query: str,
     session_id: str,
@@ -1190,6 +1207,7 @@ async def stream_chat_messages(
     history_session_id: str | None = None,
     artifact_sink: list[dict[str, Any]] | None = None,
     emit_artifact_frames: bool = True,
+    input_method: str | None = None,
 ) -> AsyncGenerator[str, None]:
     """The chat transport's adapter over ``run_turn``.
 
@@ -1212,6 +1230,7 @@ async def stream_chat_messages(
         # resolved once here rather than re-derived at each use site.
         channel=_profile_for(channel),
         persona=persona,
+        input_method=_input_method(input_method),
     )
     scheduler = _BackgroundTasksScheduler(background_tasks)
     # aclosing: when the caller closes THIS generator (a hang-up), the turn is

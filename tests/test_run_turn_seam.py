@@ -25,6 +25,7 @@ from app.channels.chat import WEB, WHATSAPP, WHATSAPP_RESPONSE_MAX_CHARS
 from app.chat_artifacts import CHAT_ARTIFACTS_START, encode_chat_artifacts
 from app.routers import chat as chat_router
 from app.services import chat as chat_service
+from app.services.telemetry_stamps import TURN_ROOT
 from app.turn.types import (
     AgentActivityEmission,
     ArtifactEmission,
@@ -403,6 +404,32 @@ def test_json_response_carries_artifacts_without_a_frame(monkeypatch):
     assert body["artifacts"] == [_ARTIFACT]
     assert CHAT_ARTIFACTS_START not in body["response"]
     assert body["response"].strip()
+
+
+@pytest.mark.parametrize(
+    ("sent", "recorded"),
+    [
+        (None, None),
+        ("speech_to_text", "speech_to_text"),
+        (" FAQ ", "faq"),
+        ("voice_note", "voice_note"),  # a name the registry does not list yet: kept as sent
+        ("faq; drop", None),  # not a plain name: not recorded, and the farmer still gets the answer
+    ],
+)
+def test_the_turn_records_how_the_question_was_entered(monkeypatch, sent, recorded):
+    """amul-telemetry#38: the client says how the farmer entered the question, on the
+    request /chat already authenticates, and it lands on the turn's root."""
+    seen = patch_turn(monkeypatch)
+    params = {"query": "How much water?", "source_lang": "gu", "target_lang": "gu"}
+    if sent is not None:
+        params["input_method"] = sent
+
+    response = _client(monkeypatch).get("/chat/", params=params)
+
+    assert response.status_code == 200 and response.text.strip()
+    roots = [c.kwargs for c in seen["langfuse"].start_as_current_observation.call_args_list if c.kwargs.get("name") == TURN_ROOT]
+    assert len(roots) == 1
+    assert roots[0]["metadata"].get("amul.input_method") == recorded
 
 
 def _asgi_app(monkeypatch):

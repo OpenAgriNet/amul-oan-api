@@ -116,6 +116,9 @@ class Turn:
     channel: Optional[ChannelProfile] = None
     #: The call a voice turn belongs to. None on chat.
     call: Optional[TelephonyCall] = None
+    #: How the farmer entered the question, as the chat client reports it
+    #: (amul-telemetry#38). None on voice, and when the client sends none.
+    input_method: Optional[str] = None
 
 
 # ── what a turn emits ───────────────────────────────────────────────────────

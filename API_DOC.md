@@ -17,6 +17,7 @@ Handles chat sessions between a user and the AI assistant.
   - `source_lang`: The source language of the query. Defaults to `gu`.
   - `target_lang`: The target language for the response. Defaults to `gu`.
   - `user_id`: User identifier. Defaults to `anonymous`.
+  - `input_method`: How the farmer entered the question: `typed`, `speech_to_text` (spoken, even if edited before sending), `home_question` (a question on the home screen), `faq` (an FAQ question) or `suggestion` (a follow-up suggestion). Optional; recorded on the turn's telemetry. Omit it when not known.
 
 - **Response**:
   - **Content-Type**: `text/event-stream`
