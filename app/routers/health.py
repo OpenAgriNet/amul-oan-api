@@ -64,17 +64,41 @@ async def check_translation_service() -> Dict[str, Any]:
 
 
 async def check_llm_service() -> Dict[str, Any]:
-    """Check the LLM provider (OpenAI) is reachable via a lightweight models list.
+    """GET ``/health`` on every self-hosted model server the loaded pipelines use
+    (every surface's config; the same inventory the health poller watches).
 
     Deep dependency check for /health/ only — not part of the readiness gate (#14).
+    No key and no generation; managed (gateway) tiers carry no endpoint and are not
+    probed. This page is public, so it reports counts, never endpoint addresses.
     """
-    from openai import AsyncOpenAI
+    import asyncio
+    import httpx
+    from app.tasks.health_poller import _endpoints, _health_url
+
+    async def probe(client: httpx.AsyncClient, endpoint: str) -> str | None:
+        try:
+            resp = await client.get(_health_url(endpoint), timeout=5.0)
+            return None if resp.status_code == 200 else f"HTTP {resp.status_code}"
+        except Exception as e:
+            return type(e).__name__
+
     try:
-        client = AsyncOpenAI(api_key=settings.openai_api_key)
+        endpoints = _endpoints()
+        if not endpoints:
+            return {"status": "unhealthy", "error": "no self-hosted model endpoints in the pipeline config"}
         t0 = time.monotonic()
-        await client.models.list()
+        async with httpx.AsyncClient() as client:
+            errors = await asyncio.gather(*(probe(client, ep) for ep in endpoints))
         latency_ms = round((time.monotonic() - t0) * 1000)
-        return {"status": "healthy", "latency_ms": latency_ms}
+        failed = [e for e in errors if e]
+        result = {
+            "status": "unhealthy" if failed else "healthy",
+            "model_servers": len(endpoints),
+            "latency_ms": latency_ms,
+        }
+        if failed:
+            result["error"] = f"{len(failed)} of {len(endpoints)} failed: {', '.join(sorted(set(failed)))}"
+        return result
     except Exception as e:
         return {"status": "unhealthy", "error": str(e)}
 
@@ -114,7 +138,7 @@ async def health_check():
     Rich health report (for monitoring/alerting, NOT a k8s probe — decision #14):
     - Application metadata (name, environment, uptime)
     - Hard dependency: Redis cache
-    - Deep dependencies: translation (TranslateGemma canary) + LLM (OpenAI)
+    - Deep dependencies: translation (TranslateGemma canary) + LLM (self-hosted model servers' /health)
 
     503 policy: only a HARD dependency (cache) failing returns 503 — that means
     the pod genuinely can't function. Translation/LLM are surfaced in the body

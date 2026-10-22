@@ -249,45 +249,74 @@ _KDCC_RENDERINGS = re.compile(
 # district" weather/market answers from arming (and from being stream-buffered).
 _KDCC_EN = re.compile(r"kheda[\s\-]+(?:district|dist\.?)[^.\n]{0,80}?bank")
 
-_PROTECTED_OUTPUT = [
-    (
-        _KDCC_EN,
-        _KDCC_RENDERINGS,
-        _KDCC_PINNED,
-    ),
-    (
-        # TranslateGemma transliterates this name letter-by-letter off the Latin
-        # spelling and lengthens the first vowel: રામેશ ("Raamesh") for રમેશ.
-        #
-        # Pin the VOWEL, not the whole name. An earlier ભાઈ-anchored pattern
-        # (રા?મેશભાઈ) worked on the unary path but was a no-op on the streaming
-        # path — verified in a prod pod, the streaming tier renders the same
-        # English as "રામેશ કાનુભાઈ પરમાર", dropping ભાઈ off the first name, so
-        # the anchor never matched on the path voice actually delivers on.
-        #
-        # Rewriting રામેશ -> રમેશ is safe in a way the anchored form was not: it
-        # can only fire on the INCORRECT long-vowel spelling. Already-correct text
-        # (રમેશભાઈ, and the technician રમેશ પટેલ in the booking matcher) does not
-        # contain રામેશ and is left untouched, so this is still a self-replace
-        # no-op whenever gemma-4 or the managed overflow tier served the text.
-        # ...but ONLY where the long vowel is actually wrong. રામેશ્વર (Rameshwar =
-        # રામ + ઈશ્વર) is legitimately long-aa, and "RAMESH" is a substring of
-        # "Rameshwar", so a bare રામેશ rule armed on it and shortened it to
-        # રમેશ્વર — confirmed live in prod before this fix. The lookahead skips a
-        # following વ, whether joined as the conjunct શ્વ (રામેશ્વર, રામેશ્વરમ) or
-        # written plain (રામેશવર); a real "Ramesh" is never followed by વ.
-        "RAMESH",
-        re.compile(r"રામેશ(?![્વ])"),
-        "રમેશ",
-    ),
-]
+# ── The assistant's own name (AMUL-112) ──────────────────────────────────────
+# The agent introduces itself in English ("I am Sarlaben, ...") and the translator
+# spells the name off the Latin letters: સર્લાબેન, सारलाबेन and সারলাবেন were all
+# live in prod answers on 2026-10-19. Every fixed string the product shows (welcome
+# text, identity table, voice greeting) spells it સરલાબેન / सरलाबेन / সরলাবেন /
+# ਸਰਲਾਬੇਨ. Each pattern takes only the name's own letters with an optional long
+# vowel, virama or space, so an already-correct spelling self-replaces.
+_SARLABEN_EN = re.compile(r"sara?la[\s-]?ben")
+_SARLABEN_DEVANAGARI = (_SARLABEN_EN, re.compile(r"सा?र्?ला?\s?बेन"), "सरलाबेन")
+
+# ── The brand, chat only ──────────────────────────────────────────────────────
+# Chat answers spell Amul અમુલ in about 4 of 10 Gujarati mentions (અમુલ પાવર ડેન,
+# અમુલ મિલ્ક-ઓ-ગોલ્ડ) and Bengali sometimes অমূল; the product spells it અમૂલ / আমুল.
+# Voice already writes અમૂલ, and arming the stream buffer on every voice sentence
+# that names Amul would hold speech back for nothing. Bengali অমূল্য (priceless) and
+# অমূলক (baseless) are real words, so only the bare name or its genitive ের changes.
+_AMUL_EN = re.compile(r"\bamul\b")
+_CHAT_ONLY_PROTECTED_OUTPUT = {
+    "gu": [(_AMUL_EN, re.compile(r"અમુલ(?!ભાઈ)"), "અમૂલ")],
+    "bn": [(_AMUL_EN, re.compile(r"(?:অমূল|অমুল|আমূল|আমিউল)(?=ের|[^ঀ-৿]|$)"), "আমুল")],
+}
+
+_PROTECTED_OUTPUT = {
+    "gu": [
+        (
+            _KDCC_EN,
+            _KDCC_RENDERINGS,
+            _KDCC_PINNED,
+        ),
+        (
+            # TranslateGemma transliterates this name letter-by-letter off the Latin
+            # spelling and lengthens the first vowel: રામેશ ("Raamesh") for રમેશ.
+            #
+            # Pin the VOWEL, not the whole name. An earlier ભાઈ-anchored pattern
+            # (રા?મેશભાઈ) worked on the unary path but was a no-op on the streaming
+            # path — verified in a prod pod, the streaming tier renders the same
+            # English as "રામેશ કાનુભાઈ પરમાર", dropping ભાઈ off the first name, so
+            # the anchor never matched on the path voice actually delivers on.
+            #
+            # Rewriting રામેશ -> રમેશ is safe in a way the anchored form was not: it
+            # can only fire on the INCORRECT long-vowel spelling. Already-correct text
+            # (રમેશભાઈ, and the technician રમેશ પટેલ in the booking matcher) does not
+            # contain રામેશ and is left untouched, so this is still a self-replace
+            # no-op whenever gemma-4 or the managed overflow tier served the text.
+            # ...but ONLY where the long vowel is actually wrong. રામેશ્વર (Rameshwar =
+            # રામ + ઈશ્વર) is legitimately long-aa, and "RAMESH" is a substring of
+            # "Rameshwar", so a bare રામેશ rule armed on it and shortened it to
+            # રમેશ્વર — confirmed live in prod before this fix. The lookahead skips a
+            # following વ, whether joined as the conjunct શ્વ (રામેશ્વર, રામેશ્વરમ) or
+            # written plain (રામેશવર); a real "Ramesh" is never followed by વ.
+            "RAMESH",
+            re.compile(r"રામેશ(?![્વ])"),
+            "રમેશ",
+        ),
+        (_SARLABEN_EN, re.compile(r"સા?ર્?લા?\s?બેન"), "સરલાબેન"),
+    ],
+    "hi": [_SARLABEN_DEVANAGARI],
+    "mr": [_SARLABEN_DEVANAGARI],
+    "bn": [(_SARLABEN_EN, re.compile(r"সা?র্?লা?\s?বেন"), "সরলাবেন")],
+    "pa": [(_SARLABEN_EN, re.compile(r"ਸਾ?ਰ੍?ਲਾ?\s?ਬੇਨ"), "ਸਰਲਾਬੇਨ")],
+}
 # Chars to hold back in streaming so a forming match completes before flushing
 # (> the longest model rendering of any protected term).
 _PROTECTED_STREAM_HOLDBACK = 80
 
 
 def _protected_output_triggers(source_text: str, target_lang: str):
-    """Regex/pinned pairs whose English trigger appears in the source (gu target only).
+    """Regex/pinned pairs for the target language whose English trigger appears in the source.
 
     The trigger match is case-insensitive: a personal name reaches the translator in
     whatever case the upstream record or the agent's sentence used (RAMESHBHAI /
@@ -297,11 +326,15 @@ def _protected_output_triggers(source_text: str, target_lang: str):
     the agent always passes through verbatim can use a literal; a term it paraphrases —
     like the bank name, which it shortens at will — needs the pattern, since a literal
     gate on the long form disarms the pin exactly when it is needed."""
-    if not source_text or target_lang.lower() not in ("gujarati", "gu"):
+    lang = LANG_CODES.get((target_lang or "").lower())
+    if not source_text or lang not in _PROTECTED_OUTPUT:
         return []
+    entries = _PROTECTED_OUTPUT[lang]
+    if not _is_voice_channel():
+        entries = entries + _CHAT_ONLY_PROTECTED_OUTPUT.get(lang, [])
     lowered = source_text.lower()
     out = []
-    for en, rx, pinned in _PROTECTED_OUTPUT:
+    for en, rx, pinned in entries:
         armed = en.search(lowered) if isinstance(en, re.Pattern) else en.lower() in lowered
         if armed:
             out.append((rx, pinned))

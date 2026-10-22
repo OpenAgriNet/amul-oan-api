@@ -27,6 +27,11 @@ from agents.tools.vistaar_shc import (
     get_vistaar_soil_health_card,
     prepare_get_vistaar_soil_health_card,
 )
+from agents.tools.vistaar_pmkisan import (
+    check_pm_kisan_status_with_otp,
+    initiate_pm_kisan_status_check,
+    prepare_pm_kisan_tool,
+)
 
 TOOLS = [
     # # Search Terms
@@ -155,6 +160,20 @@ TOOLS.extend([
         docstring_format='auto',
         require_parameter_descriptions=True,
         prepare=prepare_get_vistaar_soil_health_card,
+    ),
+    Tool(
+        reporting(initiate_pm_kisan_status_check),
+        takes_ctx=True,
+        docstring_format='auto',
+        require_parameter_descriptions=True,
+        prepare=prepare_pm_kisan_tool,
+    ),
+    Tool(
+        reporting(check_pm_kisan_status_with_otp),
+        takes_ctx=True,
+        docstring_format='auto',
+        require_parameter_descriptions=True,
+        prepare=prepare_pm_kisan_tool,
     ),
 ])
 

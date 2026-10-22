@@ -4,7 +4,9 @@ from typing import Any
 from fastapi import APIRouter, Depends, Request, status
 from fastapi.responses import JSONResponse
 
+from agents.tools.session_pmkisan import mask_telemetry_text, owner_mobile
 from app.auth.jwt_auth import get_chat_user
+from app.personas import resolve_chat_persona
 from app.config import settings
 from app.services.telemetry_normalizer import normalize_telemetry_payload
 from app.tasks.telemetry_queue import enqueue_canonical_telemetry_event, get_telemetry_queue_stats
@@ -117,7 +119,16 @@ async def ingest_telemetry(
     last_enqueue_status = None
     last_enqueue_reason = None
 
+    mobile = owner_mobile(_user_info, resolve_chat_persona(_user_info))
     for canonical in (canonical_events or []):
+        # The UI reports the farmer's question as typed, before the chat router masked it.
+        target = canonical.payload.get("target")
+        for key in ("questionsDetails", "feedbackDetails") if isinstance(target, dict) else ():
+            details = target.get(key)
+            if isinstance(details, dict) and isinstance(details.get("questionText"), str):
+                details["questionText"] = await mask_telemetry_text(
+                    details["questionText"], canonical.session_id, mobile
+                )
         enqueue_status, enqueue_reason = enqueue_canonical_telemetry_event(canonical)
         last_enqueue_status = enqueue_status
         last_enqueue_reason = enqueue_reason
