@@ -78,7 +78,8 @@ def _tag_codes(tags: object) -> set[str]:
     return codes
 
 
-def _init_outcome(payload: Mapping[str, Any]) -> str | None:
+def _init_outcome(payload: Mapping[str, Any]) -> tuple[str | None, str]:
+    """The init outcome, and BV's reason when it refused to send an OTP."""
     for order in _orders(payload):
         items = order.get("items")
         for item in items if isinstance(items, list) else []:
@@ -86,14 +87,22 @@ def _init_outcome(payload: Mapping[str, Any]) -> str | None:
                 continue
             tags = item.get("tags")
             if "otp_status" in _tag_codes(tags):
-                return "otp_sent"
+                return "otp_sent", ""
             for tag in tags if isinstance(tags, list) else []:
                 descriptor = tag.get("descriptor") if isinstance(tag, Mapping) else None
                 if isinstance(descriptor, Mapping) and descriptor.get("code") == "otp_error":
-                    # BV also answers "Try again" when its own service fails.
                     short_desc = str(descriptor.get("short_desc") or "")
-                    return "no_record" if "no record found" in short_desc.lower() else "service_error"
-    return None
+                    lowered = short_desc.lower()
+                    if "no record found" in lowered:
+                        return "no_record", short_desc
+                    # "This mobile number taged with multiple records."
+                    if "multiple record" in lowered:
+                        return "multiple_records", short_desc
+                    # BV answers "Try again" when its own service fails.
+                    if "try again" in lowered:
+                        return "service_error", short_desc
+                    return "not_accepted", short_desc
+    return None, ""
 
 
 def _status_order(payload: Mapping[str, Any]) -> Mapping[str, Any] | None:
@@ -111,6 +120,10 @@ def _mask_phone(value: object) -> str:
 
 def _mask_keep_last4(value: str) -> str:
     return "*" * max(len(value) - 4, 0) + value[-4:]
+
+
+def _mask_numbers(text: str) -> str:
+    return re.sub(r"\d{5,}", lambda match: _mask_keep_last4(match.group()), to_ascii_digits(text))
 
 
 def _mask_registration(text: str, identifier: str) -> str:
@@ -260,7 +273,7 @@ async def initiate_pm_kisan_status_check(
         _redact_tool_span("invalid_response")
         return "The PM-KISAN service returned an unreadable response. Please try again later."
 
-    outcome = _init_outcome(result.payload)
+    outcome, reason = _init_outcome(result.payload)
     if outcome == "otp_sent":
         _redact_tool_span("otp_sent")
         return "OTP_SENT. Ask the farmer for the 4-digit OTP sent to their registered mobile."
@@ -268,9 +281,23 @@ async def initiate_pm_kisan_status_check(
     if outcome == "no_record":
         _redact_tool_span("no_record")
         return "NO_RECORD. Ask the farmer to check the identifier and start again."
+    if outcome == "multiple_records":
+        _redact_tool_span("multiple_records")
+        return (
+            "MULTIPLE_RECORDS. This mobile number is linked to more than one PM-KISAN record, so "
+            "PM-KISAN cannot check it by mobile. Ask the farmer for their PM-KISAN registration "
+            "number or Aadhaar instead."
+        )
     if outcome == "service_error":
         _redact_tool_span("service_error")
         return "SERVICE_ERROR. The PM-KISAN service is not responding. Ask the farmer to try again later."
+    if outcome == "not_accepted":
+        _redact_tool_span("not_accepted")
+        return (
+            f'NOT_ACCEPTED. PM-KISAN did not send an OTP for this identifier: "{_mask_numbers(reason)[:200]}". '
+            "Explain this to the farmer in plain words and ask them to check it, or to use their "
+            "registration number or Aadhaar."
+        )
     _redact_tool_span("invalid_response")
     return "The PM-KISAN service returned an unreadable response. Please try again later."
 
