@@ -698,6 +698,13 @@ def _chat_script_grammar(letters: str) -> str:
 _LATIN_VERBATIM_RE = re.compile(
     r"\$[^$\n]*\\[A-Za-z]|`[^`\n]+`|(?<![/\w.])(?:www\.)?[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.(?:gov\.in|co\.in|in|com|org|net)\b"
 )
+# The same holds for any character the target's grammar cannot write: an emoji,
+# a subscript (D₃), ÷, α. Under the grammar the model tries to copy it and
+# degenerates into a run of punctuation until the output cap stops it.
+_CHAT_UNWRITABLE_RES = {
+    code: re.compile(f"[^\\x00-\\x7F{letters}₹°•–—…×‘’“”।\\s]")
+    for code, letters in _CHAT_SCRIPT_LETTERS.items()
+}
 
 
 CHAT_SCRIPT_GRAMMARS = {code: _chat_script_grammar(letters) for code, letters in _CHAT_SCRIPT_LETTERS.items()}
@@ -781,7 +788,7 @@ def _script_only_request(tier, instruction: str, text: str, target_lang: str, ma
         return _TierRequest(instruction, None, max_tokens)
     contract = _CHAT_STRICT_TRANSLATION_CONTRACT.format(lang=LANG_NAMES[code])
     rules = [_CHAT_GLOSSARY_OPTION_RULE] + ([_CHAT_PERSONA_RULES[code]] if code in _CHAT_PERSONA_RULES else [])
-    if _LATIN_VERBATIM_RE.search(text):
+    if _LATIN_VERBATIM_RE.search(text) or _CHAT_UNWRITABLE_RES[code].search(text):
         grammar = None
     return _TierRequest(_strict_instruction(instruction, contract, rules), grammar, cap)
 
