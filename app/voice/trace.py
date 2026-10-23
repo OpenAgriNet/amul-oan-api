@@ -102,11 +102,16 @@ def _status(exc_type: Any, exc: BaseException | None) -> tuple[str, str, str | N
 
 class _Observation:
     """One step's Langfuse observation, opened as the current span so what the
-    step calls nests under it.
+    step calls nests under it; or, ``under_root``, as a direct child of the root
+    that is not the current span, for a step that runs while another step is
+    current and whose calls are handed it as their parent (the sink's
+    post_translation span, open while the agent step is). Without a root it is
+    opened under the current span.
 
     What a step knows only once it ran (its output, its ``amul.*`` metadata, an
-    error it recorded without raising) is given to ``record`` and written when the
-    step closes, with level ERROR and the reason when the step raised.
+    error it recorded without raising, an input known only at its end) is given to
+    ``record`` and written when the step closes, with level ERROR and the reason
+    when the step raised. ``observe=False`` keeps the step without an observation.
     """
 
     def __init__(
@@ -117,42 +122,59 @@ class _Observation:
         as_type: str = "span",
         input: Any | None = None,
         model: str | None = None,
+        observe: bool = True,
+        under_root: bool = False,
     ) -> None:
         self.trace = trace
         self.name = name
         self.as_type = as_type
         self.input = input
         self.model = model
+        self.observe = observe
+        self.under_root = under_root
         self.output: Any | None = None
         self.metadata: dict[str, Any] = {}
         self.level: str | None = None
         self.status_message: str | None = None
         self.observation: Any | None = None
         self._cm: Any | None = None
+        self._late_input: Any | None = None
 
     def __enter__(self) -> "_Observation":
-        if self.trace.enabled and self.trace.langfuse_client is not None:
+        if self.observe and self.trace.enabled and self.trace.langfuse_client is not None:
             try:
-                self._cm = self.trace.langfuse_client.start_as_current_observation(
-                    name=self.name,
-                    as_type=self.as_type,
-                    input=self.input,
-                    model=self.model,
-                )
-                self.observation = self._cm.__enter__()
+                if self.under_root and self.trace.root_observation is not None:
+                    opened_with = {"input": self.input, "model": self.model}
+                    self.observation = self.trace.root_observation.start_observation(
+                        name=self.name,
+                        as_type=self.as_type,
+                        **{key: value for key, value in opened_with.items() if value is not None},
+                    )
+                else:
+                    self._cm = self.trace.langfuse_client.start_as_current_observation(
+                        name=self.name,
+                        as_type=self.as_type,
+                        input=self.input,
+                        model=self.model,
+                    )
+                    self.observation = self._cm.__enter__()
             except Exception as exc:
                 logger.debug("Langfuse observation start failed for %s: %s", self.name, exc)
                 self._cm = None
+                self.observation = None
         return self
 
     def record(
         self,
         *,
+        input: Any | None = None,
         output: Any | None = None,
         metadata: Optional[dict[str, Any]] = None,
         level: str | None = None,
         status_message: str | None = None,
     ) -> None:
+        if input is not None:
+            self._late_input = input
         if output is not None:
             self.output = output
         if metadata:
@@ -166,6 +188,7 @@ class _Observation:
         _, level, status_message = _status(exc_type, exc)
         _safe_update(
             self.observation,
+            input=self._late_input,
             output=self.output,
             metadata=self.metadata or None,
             level=self.level or level,
@@ -176,13 +199,21 @@ class _Observation:
                 self._cm.__exit__(exc_type, exc, tb)
             except Exception as close_exc:
                 logger.debug("Langfuse observation close failed for %s: %s", self.name, close_exc)
+        elif self.observation is not None:
+            # Opened off the root: ended here, as the SDK leaves that to the opener.
+            try:
+                self.observation.end()
+            except Exception as close_exc:
+                logger.debug("Langfuse observation close failed for %s: %s", self.name, close_exc)
         return False
 
 
 class _StageTimer(_Observation):
     """A step voice times: its observation, and its entry in the turn's ``stages``
     record (name, duration, status and the ``metadata`` given here, which is the
-    record's, not the observation's)."""
+    record's, not the observation's). ``observe=False`` times without an
+    observation, for a step whose observation is opened elsewhere (one span for
+    the turn's post_translation, timed batch by batch)."""
 
     def __init__(
         self,
@@ -193,8 +224,9 @@ class _StageTimer(_Observation):
         input: Any | None = None,
         metadata: Optional[dict[str, Any]] = None,
         model: str | None = None,
+        observe: bool = True,
     ) -> None:
-        super().__init__(trace, name, as_type=as_type, input=input, model=model)
+        super().__init__(trace, name, as_type=as_type, input=input, model=model, observe=observe)
         self.recorded = dict(metadata or {})
         self.started_at = _now()
 
@@ -283,9 +315,10 @@ class VoiceTrace:
         input: Any | None = None,
         metadata: Optional[dict[str, Any]] = None,
         model: str | None = None,
+        observe: bool = True,
     ) -> _StageTimer:
-        """A timed step: its observation, and its entry in ``stages``."""
-        return _StageTimer(self, name, as_type=as_type, input=input, metadata=metadata, model=model)
+        """A timed step: its observation (unless ``observe=False``), and its entry in ``stages``."""
+        return _StageTimer(self, name, as_type=as_type, input=input, metadata=metadata, model=model, observe=observe)
 
     def observation(
         self,
@@ -294,9 +327,11 @@ class VoiceTrace:
         as_type: str = "span",
         input: Any | None = None,
         model: str | None = None,
+        under_root: bool = False,
     ) -> _Observation:
-        """A step's observation alone, for a step voice times itself."""
-        return _Observation(self, name, as_type=as_type, input=input, model=model)
+        """A step's observation alone, for a step voice times itself; ``under_root``
+        for one opened as the root's direct child while another step is current."""
+        return _Observation(self, name, as_type=as_type, input=input, model=model, under_root=under_root)
 
     @contextmanager
     def request_context(self) -> Iterator[None]:

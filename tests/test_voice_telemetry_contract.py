@@ -17,11 +17,13 @@ import json
 import re
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from app.config import settings
 from app.services import chat as chat_service
+from app.services import translation as tr
 from app.services.telemetry_stamps import TURN_ROOT, VOICE_TELEMETRY_SCHEMA_VERSION
 from app.voice import classifiers as vc
 from app.voice.liveness import VoiceLiveness
@@ -140,12 +142,14 @@ def _every_turn(lf, call, monkeypatch):  # noqa: F811
 
 def _every_module_step(trace, monkeypatch):  # noqa: F811
     """The steps voice's modules write on their own: pre_translation with a fallback,
-    post_translation, and a nudge that went out."""
+    post_translation with the translation calls under it (stream_translation for a batch,
+    text_translation for a fixed line rendered for the caller), and a nudge that went out."""
     _pretranslate(
         monkeypatch, _gujarati_turn("ભેંસ"), replies=[RuntimeError("oss down"), "For a buffalo"], execution=_turn_execution()
     )
     _Translation(monkeypatch, replies=[["ગાયને પાણી આપો."]])
     _speak(_English(["Give the cow water."]))
+    _translation_calls(trace, monkeypatch)
     monkeypatch.setattr(settings, "enable_voice_nudges", True)
     monkeypatch.setattr(settings, "nudge_timeout_seconds", 0)
 
@@ -156,6 +160,33 @@ def _every_module_step(trace, monkeypatch):  # noqa: F811
 
     asyncio.run(_go())
     return list(trace.sent.observations)
+
+
+def _translation_calls(trace, monkeypatch):  # noqa: F811
+    """translation.py's calls as voice's sink and renderer make them, the network stubbed:
+    a batch streamed under the sink's post_translation span, a fixed line translated once
+    under the step that says it. Each call names the provider and tier that served."""
+    monkeypatch.setattr(tr, "_get_langfuse", lambda: trace.sent)
+
+    async def _stream(*_a, **_k):
+        yield "ગાયને પાણી આપો."
+
+    async def _unary(*_a, **_k):
+        return "નમસ્તે."
+
+    monkeypatch.setattr(tr, "_raw_translategemma_stream", _stream)
+    monkeypatch.setattr(tr, "_raw_translategemma_unary", _unary)
+    descriptor = SimpleNamespace(model_id="translategemma-27b-base")
+    served = SimpleNamespace(provider="translategemma", served_tier="translategemma:tg[0]")
+    span = trace.sent.step("post_translation")
+
+    async def _go():
+        args = ("Give the cow water.", "english", "gu", 0.0, 64)
+        [_ async for _ in tr._translategemma_stream(descriptor, "prompt", *args, served=served, parent=span)]
+        with trace.stage("greeting_fast_path"):
+            await tr._translategemma_unary(descriptor, "prompt", "Hello.", "english", "gu", 0.0, 64, served=served)
+
+    asyncio.run(_go())
 
 
 def _steps_sent(observations):
