@@ -4,7 +4,7 @@
     "webapp",
     "whatsapp"
   ],
-  "note": "What a chat turn sends to Langfuse as turn.v1 (amul-telemetry telemetry/turn.v1.yaml): the root, its trace fields, its amul.* metadata keys, the steps opened under it with the metadata each may carry, the scores and the outcomes. A metadata key is sent only when its value is known (farmer_id for a phone-identified user, served_tier once the agent ran, input_method when the client says how the question was entered). user_id is the phone or subject the JWT carries, else the request's user_id, and is not sent for an anonymous user. The turn's trace id is the one the router made for the request and sent back as X-Trace-Id; the user_feedback score lands on it when the frontend sends that id with the feedback (else on the feedback frontend_event, non_turn.json). The input is the raw question, the output the answer as delivered. level and status_message are set when the turn ends as an error: level ERROR, and the reason, what the turn raised or else the path that answered it (fail-closed). The suggestions step runs after the response and nests under the root after it has closed. pydantic-ai's agent-run, model and tool spans nest under the agent step and are not listed; every tool span carries amul.tool_status (agents/tools/telemetry.py), and an API step under a tool sends ok and status_code (app/observability.py record_api_result).",
+  "note": "What a chat turn sends to Langfuse as turn.v1 (amul-telemetry telemetry/turn.v1.yaml): the root, its trace fields, its amul.* metadata keys, the steps opened under it with the metadata each may carry, the scores and the outcomes. A metadata key is sent only when its value is known (farmer_id for a phone-identified user, served_tier once the agent ran, input_method when the client says how the question was entered). user_id is the phone or subject the JWT carries, else the request's user_id, and is not sent for an anonymous user. The turn's trace id is the one the router made for the request and sent back as X-Trace-Id; the user_feedback score lands on it when the frontend sends that id with the feedback (else on the feedback frontend_event, non_turn.json). The input is the raw question, the output the answer as delivered. level and status_message are set when the turn ends as an error: level ERROR, and the reason, what the turn raised or else the path that answered it (fail-closed). post_translation is one span per translated turn, a direct child of the root: the English given to translation in, what translation delivered out, the step's tiers from the pipeline trace, and level ERROR with the reason when a batch's translation failed and went out in English. Each translation call is a generation under it: stream_translation for a streamed batch, text_translation for a one-shot translation (a system message, the health canary; also opened under the current span when no turn is translating). Each names the provider and the tier that served it. The suggestions step runs after the response and nests under the root after it has closed. pydantic-ai's agent-run, model and tool spans nest under the agent step and are not listed; every tool span carries amul.tool_status (agents/tools/telemetry.py), and an API step under a tool sends ok and status_code (app/observability.py record_api_result).",
   "root": "turn",
   "trace_fields": [
     "input",
@@ -36,7 +36,8 @@
     "pre_translation": {
       "type": "GENERATION",
       "metadata_keys": [
-        "amul.served_provider"
+        "amul.served_provider",
+        "amul.served_tier"
       ]
     },
     "moderation": {
@@ -61,15 +62,25 @@
       ]
     },
     "post_translation": {
-      "type": "GENERATION",
+      "type": "SPAN",
       "metadata_keys": [
-        "amul.served_provider"
+        "amul.attempts",
+        "amul.configured_tier",
+        "amul.served_tier"
       ]
     },
     "stream_translation": {
       "type": "GENERATION",
       "metadata_keys": [
-        "amul.served_provider"
+        "amul.served_provider",
+        "amul.served_tier"
+      ]
+    },
+    "text_translation": {
+      "type": "GENERATION",
+      "metadata_keys": [
+        "amul.served_provider",
+        "amul.served_tier"
       ]
     },
     "suggestions": {
