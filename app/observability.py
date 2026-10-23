@@ -1,6 +1,8 @@
 import logging
-from contextlib import contextmanager
-from typing import Any, Iterator
+import re
+from contextlib import ExitStack, contextmanager
+from contextvars import ContextVar
+from typing import Any, Iterator, Optional
 
 from app.config import settings
 from app.services.telemetry_stamps import chat_telemetry_release
@@ -9,6 +11,44 @@ logger = logging.getLogger(__name__)
 
 # Track if any OTEL exporter is configured.
 has_otel_exporter = False
+
+# The trace id the next root span opens with, inside ``root_trace_id``.
+_root_trace_id: ContextVar[Optional[int]] = ContextVar("root_trace_id", default=None)
+_TRACE_ID = re.compile(r"[0-9a-f]{32}")
+
+
+@contextmanager
+def root_trace_id(trace_id: Optional[str]) -> Iterator[None]:
+    """Open the root span started inside with ``trace_id`` (32 lowercase hex).
+
+    A call turn's trace id is made when its request claims the session, before the
+    turn opens, so the request it takes over from can name it. OpenTelemetry asks the
+    id generator for a trace id only for a span with no parent, so the root takes it
+    and every span under it shares it; enter this around opening the root alone.
+    Passing Langfuse ``trace_context`` instead would give the root a parent that is
+    never sent, and Langfuse would keep it as the root's parent observation. Any other
+    value leaves the id to OpenTelemetry.
+    """
+    if not trace_id or not _TRACE_ID.fullmatch(trace_id):
+        yield
+        return
+    token = _root_trace_id.set(int(trace_id, 16))
+    try:
+        yield
+    finally:
+        _root_trace_id.reset(token)
+
+
+def _trace_ids():
+    """OpenTelemetry's random ids, but a root span opened inside ``root_trace_id`` gets its id."""
+    from opentelemetry.sdk.trace.id_generator import RandomIdGenerator
+
+    class _TraceIds(RandomIdGenerator):
+        def generate_trace_id(self) -> int:
+            pinned = _root_trace_id.get()
+            return pinned if pinned is not None else super().generate_trace_id()
+
+    return _TraceIds()
 
 
 def _process_environment() -> str:
@@ -67,6 +107,9 @@ if langfuse_public_key and langfuse_secret_key:
             base_url=host,
             release=release,
             environment=environment,
+            # Langfuse uses it when it sets up OpenTelemetry, which it does here, first;
+            # it logs a warning if a tracer provider was already registered.
+            id_generator=_trace_ids(),
         )
 
         # Verify connection before enabling pydantic-ai OTEL instrumentation.
@@ -138,6 +181,49 @@ def set_trace_io(
             langfuse_client.set_current_trace_io(**kwargs)
     except Exception:
         pass
+
+
+@contextmanager
+def non_turn_root(
+    kind: str,
+    metadata: dict[str, str],
+    *,
+    session_id: str | None = None,
+    user_id: str | None = None,
+    environment: str | None = None,
+) -> Iterator[Any | None]:
+    """Open the root of a trace that is not a turn: a background job or a frontend
+    event, named after its kind (amul-telemetry telemetry/turn.v1.yaml).
+
+    As on a turn's root, the trace-level fields (the amul.* metadata, the session, the
+    user) are written on the root only: ``propagate_attributes`` is entered and left
+    before anything opens under it, so the model or API calls inside carry none. The
+    root has no input or output; turn.v1 keeps those for turns, so what the job read
+    and wrote belongs on the observation that did the work.
+
+    ``environment`` is the Langfuse environment of every span inside, for work that
+    belongs to a surface but runs outside its turn; without it the process's applies.
+    Yields None when tracing is disabled.
+    """
+    if langfuse_client is None:
+        yield None
+        return
+
+    from langfuse import propagate_attributes
+
+    with ExitStack() as stack:
+        if environment:
+            stack.enter_context(propagate_attributes(environment=environment))
+        root = stack.enter_context(
+            langfuse_client.start_as_current_observation(name=kind, as_type="span", metadata=metadata)
+        )
+        with propagate_attributes(
+            session_id=session_id[:200] if session_id else None,
+            user_id=user_id[:200] if user_id else None,
+            metadata=metadata,
+        ):
+            pass
+        yield root
 
 
 @contextmanager

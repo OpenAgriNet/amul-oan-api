@@ -233,7 +233,8 @@ async def _stt_signal_classifier(turn: Turn) -> Optional[ClassifierResult]:
     )
     prior_stt_failures = count_consecutive_stt_signals(turn.history)
     final_attempt = (prior_stt_failures + 1) >= max(1, settings.stt_signal_retry_ceiling)
-    with current_trace().stage("stt_signal_response", as_type="generation"):
+    # A span: the line is picked from fixed text, no model generates it.
+    with current_trace().stage("stt_signal_response"):
         stt_response = await generate_stt_signal_response(
             signal=stt_signal,
             target_lang=_caller_lang(turn),

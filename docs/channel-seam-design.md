@@ -225,6 +225,7 @@ class Turn:
     persona: ChatPersona
     channel: Optional[ChannelProfile] = None
     call: Optional[TelephonyCall] = None
+    input_method: Optional[str] = None
 ```
 
 `channel` is chat's `ChannelProfile` and is `None` on voice: a call is not a chat channel, and
@@ -232,6 +233,10 @@ nothing voice runs reads one. `call` is the other way round: what a voice turn k
 call (process ID, outbound consent turn, provider, call type), `None` on chat. Telephony went
 onto `Turn.call` rather than becoming a `ChannelProfile` (decision 2 in
 `docs/voice-run-turn-mapping.md`).
+
+`input_method` is how the farmer entered the question as the chat client reports it (typed,
+speech_to_text, home_question, faq or suggestion; amul-telemetry#38), a plain name or `None`. It
+goes on the turn's telemetry root and nowhere else; voice leaves it `None`.
 
 The request's `stream` flag is not part of `Turn`: streaming SSE versus accumulated JSON is a
 transport decision over the same emission stream. Nor are a model, resolved pipeline profile,
