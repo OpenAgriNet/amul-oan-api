@@ -275,12 +275,12 @@ def test_one_root_span_wraps_the_whole_turn(monkeypatch):
     seen = _drive(monkeypatch)
     spans = seen["spans"]
 
-    assert [s for s in spans if s[1] == "chat.translation"] == [
-        ("enter", "chat.translation"),
-        ("exit", "chat.translation"),
+    assert [s for s in spans if s[1] == "turn"] == [
+        ("enter", "turn"),
+        ("exit", "turn"),
     ], spans
-    assert spans[0] == ("enter", "chat.translation"), spans
-    assert spans[-1] == ("exit", "chat.translation"), spans
+    assert spans[0] == ("enter", "turn"), spans
+    assert spans[-1] == ("exit", "turn"), spans
     assert len(spans) > 2, f"no child observation was nested under the root: {spans}"
 
 

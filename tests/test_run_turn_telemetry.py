@@ -2,8 +2,8 @@
 
 ``run_turn`` opens exactly one root span per turn, records what the caller got
 and how the turn ended on every exit, and takes all three from the surface.
-Chat's telemetry is ``_ChatTelemetry`` and writes ``chat.turn.v1``; voice will
-bring its own root, stamps and outcome vocabulary without touching the skeleton.
+Chat's telemetry is ``_ChatTelemetry`` and writes ``turn.v1``; voice will bring
+its own root, stamps and outcome vocabulary without touching the skeleton.
 """
 import asyncio
 import contextlib
@@ -22,7 +22,7 @@ from app.services import chat as chat_service
 from app.turn.types import TextEmission, Turn
 from tests.test_chat_turn_contract import patch_turn
 
-CONTRACT = Path(__file__).resolve().parents[1] / "telemetry" / "contracts" / "chat.turn.v1.json"
+CONTRACT = Path(__file__).resolve().parents[1] / "telemetry" / "contracts" / "turn.v1" / "chat.json"
 
 
 def _turn(**overrides):
@@ -137,7 +137,7 @@ def test_a_bare_surface_runs_without_writing_a_trace(monkeypatch):
     emissions = _run(_turn(), bare)
 
     assert emissions, "the turn produced nothing"
-    assert ("enter", chat_service.CHAT_TURN_V1_ROOT) not in seen["spans"]
+    assert ("enter", chat_service.TURN_ROOT) not in seen["spans"]
     outcomes = [
         call for call in seen["langfuse"].score_current_trace.call_args_list
         if call.kwargs.get("name") == "turn_outcome"
@@ -145,29 +145,57 @@ def test_a_bare_surface_runs_without_writing_a_trace(monkeypatch):
     assert outcomes == []
 
 
-def test_chat_telemetry_writes_the_chat_turn_v1_contract(monkeypatch):
+def test_chat_telemetry_writes_the_turn_v1_contract(monkeypatch):
     """The contract test reads the source; this one checks what is actually sent."""
     seen = patch_turn(monkeypatch)
     propagated = []
 
+    @contextlib.contextmanager
     def _propagate(**kwargs):
-        propagated.append(kwargs)
-        return contextlib.nullcontext()
+        propagated.append((kwargs, len(seen["spans"])))
+        yield
 
     monkeypatch.setattr(chat_service, "propagate_attributes", _propagate)
     contract = json.loads(CONTRACT.read_text(encoding="utf-8"))
 
-    _run(_turn(), chat_service.CHAT_SURFACE)
+    _run(_turn(user_id="9000000000"), chat_service.CHAT_SURFACE)
 
-    assert seen["spans"][0] == ("enter", contract["root"])
-    (attrs,) = propagated
-    assert set(contract["metadata"]["required"]) <= set(attrs["metadata"])
-    assert attrs["metadata"]["amul.schema_version"] == contract["schema_version"]
+    assert seen["spans"][0] == ("enter", contract["root"]) == ("enter", "turn")
+    environment, root, close = propagated
+    # The surface's environment goes to every span; it is not a trace-level field.
+    assert set(environment[0]) == {"environment"} and environment[1] == 0
+    # The trace-level fields are set on the root, before any step opened, and never propagated to one.
+    assert root[0]["session_id"] == "telemetry" and root[0]["user_id"] == "9000000000"
+    assert root[1] == 1 and seen["spans"][1][0] != "enter" or seen["spans"][1][1] != "turn"
+    metadata = root[0]["metadata"]
+    assert set(metadata) <= set(contract["metadata_keys"])
+    assert metadata["amul.schema_version"] == "turn.v1" and metadata["amul.kind"] == "turn"
+    assert metadata["amul.pipeline"] == "webapp" and metadata["amul.direction"] == "inbound"
+    assert metadata["amul.translation_mode"] == "translated" and metadata["amul.farmer_id"] == "9000000000"
+    assert (metadata["amul.source_lang"], metadata["amul.target_lang"], metadata["amul.persona"]) == ("gu", "gu", "farmer")
+    assert all(isinstance(value, str) for value in metadata.values())
+    # What the turn knows at its end lands on the root when it closes, with the root current again.
+    assert close[1] == len(seen["spans"]) - 1 and seen["spans"][-1] == ("exit", "turn")
+    assert set(close[0]["metadata"]) <= set(contract["metadata_keys"]) and close[0]["metadata"]["amul.outcome"] == "success"
     inputs = [kw["input"] for kw in seen["trace_io"] if "input" in kw]
-    assert len(inputs) == 1
-    assert set(inputs[0]) == set(contract["trace_input"]["required"])
-    scores = {
-        call.kwargs["name"] for call in seen["langfuse"].score_current_trace.call_args_list
-    }
-    assert {"pipeline_profile", "turn_outcome"} <= scores
-    assert scores <= set(contract["scores"]["categorical"])
+    assert inputs == ["How much water?"]  # the raw question, not an object
+    scores = {call.kwargs["name"] for call in seen["langfuse"].score_current_trace.call_args_list}
+    assert scores == set(contract["scores"]) == {"turn_outcome"}
+
+
+def test_an_anonymous_user_has_no_farmer_id_and_english_is_direct(monkeypatch):
+    patch_turn(monkeypatch)
+    propagated = []
+
+    @contextlib.contextmanager
+    def _propagate(**kwargs):
+        propagated.append(kwargs)
+        yield
+
+    monkeypatch.setattr(chat_service, "propagate_attributes", _propagate)
+
+    _run(_turn(source_lang="en", target_lang="en"), chat_service.CHAT_SURFACE)
+
+    root = next(kwargs for kwargs in propagated if "session_id" in kwargs)
+    assert root["user_id"] == "anonymous" and "amul.farmer_id" not in root["metadata"]
+    assert root["metadata"]["amul.translation_mode"] == "direct"
