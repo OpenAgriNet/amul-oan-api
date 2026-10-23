@@ -110,10 +110,11 @@ def test_identity_short_circuit_is_a_success_not_an_error(monkeypatch):
     assert outcomes == ["success"]
 
 
-def test_moderation_decline_is_a_success_not_an_error(monkeypatch):
+def test_moderation_decline_is_moderation_rejected_not_an_error(monkeypatch):
+    """As voice records it, so a rejection rate means the same on both pipelines."""
     emitted, outcomes, _ = _drive(monkeypatch, query="who won the cricket match?", moderation="off_topic")
     assert emitted, "the decline text must still reach the farmer"
-    assert outcomes == ["success"]
+    assert outcomes == ["moderation_rejected"]
 
 
 def test_moderation_decline_records_its_text_as_the_trace_output(monkeypatch):

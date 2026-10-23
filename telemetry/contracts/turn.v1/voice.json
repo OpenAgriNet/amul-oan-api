@@ -1,0 +1,206 @@
+{
+  "schema_version": "turn.v1",
+  "pipelines": [
+    "telephony"
+  ],
+  "note": "What a voice turn sends to Langfuse as turn.v1 (amul-telemetry telemetry/turn.v1.yaml): the root, its trace fields, its amul.* metadata keys, the steps opened under it with the metadata each may carry and the fields its output holds, the scores and the outcomes. A metadata key is sent only when its value is known (provider and process_id when the request carried them, farmer_id for a signed-in caller, served_tier once the agent ran, ttft_ms, ttfr_ms and the other marks once measured, and amul.<stage>_ms for each stage the turn ran, the time it spent there). amul.total_ms is the turn's whole time, from the request coming in to its end; the root's span is not, as the root opens after claiming the session and loading its history. The caller's words (the trace input and output, the text in and out of the steps) and the caller's number (the user id, and farmer_id for a signed-in caller) are sent as they are; nothing is hashed. amul.call_id is the session id: the provider sends no other id for the call, and one is made for a request that comes without a session. amul.utterance_id is the trace id of the first request for what the caller said: a request that comes in while another holds the session keeps that one's, else the turn is its own. A stale_request sends amul.superseded_by, the trace id of the request that took the session over, when one did. level and status_message are set when the turn fails. post_translation is one span per translated turn, a direct child of the root: the English given to translation in, what the caller heard of it out, the step's tiers from the pipeline trace, and level ERROR with the reason when a batch's translation failed and the caller heard the trouble line; amul.post_translation_ms is the time spent translating, batch by batch. Each translation call is a generation under it: stream_translation for a streamed batch; text_translation is a one-shot translation of a fixed line into the caller's language, under the step that says it. Each names the provider and the tier that served it. pydantic-ai's agent-run, model and tool spans nest under the agent step and are not listed.",
+  "root": "turn",
+  "trace_fields": [
+    "input",
+    "level",
+    "output",
+    "session_id",
+    "status_message",
+    "user_id"
+  ],
+  "metadata_keys": [
+    "amul.call_id",
+    "amul.direction",
+    "amul.farmer_id",
+    "amul.kind",
+    "amul.outcome",
+    "amul.persona",
+    "amul.pipeline",
+    "amul.pipeline_profile",
+    "amul.pipeline_flags",
+    "amul.process_id",
+    "amul.provider",
+    "amul.release",
+    "amul.request_epoch",
+    "amul.schema_version",
+    "amul.served_tier",
+    "amul.service",
+    "amul.signed_in",
+    "amul.superseded_by",
+    "amul.source_lang",
+    "amul.target_lang",
+    "amul.translation_mode",
+    "amul.utterance_id",
+    "amul.ttfr_ms",
+    "amul.first_agent_text_ms",
+    "amul.first_translation_chunk_ms",
+    "amul.ttft_ms",
+    "amul.total_ms",
+    "amul.agent_ms",
+    "amul.farmer_context_ms",
+    "amul.fragment_fast_path_ms",
+    "amul.greeting_fast_path_ms",
+    "amul.history_load_ms",
+    "amul.identity_fast_path_ms",
+    "amul.moderation_ms",
+    "amul.non_meaningful_ms",
+    "amul.outbound_consent_ms",
+    "amul.ownership_claim_ms",
+    "amul.post_translation_ms",
+    "amul.pre_translation_ms",
+    "amul.scheme_summary_ms",
+    "amul.stt_signal_response_ms"
+  ],
+  "steps": {
+    "pre_translation": {
+      "type": "GENERATION",
+      "metadata_keys": [
+        "amul.attempts",
+        "amul.configured_tier",
+        "amul.served_tier"
+      ]
+    },
+    "moderation": {
+      "type": "GENERATION",
+      "metadata_keys": [
+        "amul.attempts",
+        "amul.check_mode",
+        "amul.configured_tier",
+        "amul.served_tier"
+      ],
+      "output": [
+        "category",
+        "reason",
+        "rejected"
+      ]
+    },
+    "non_meaningful": {
+      "type": "GENERATION",
+      "metadata_keys": [
+        "amul.attempts",
+        "amul.check_mode",
+        "amul.configured_tier",
+        "amul.served_tier"
+      ],
+      "output": [
+        "non_meaningful",
+        "reason",
+        "streak"
+      ]
+    },
+    "stt_signal_response": {
+      "type": "SPAN",
+      "metadata_keys": []
+    },
+    "greeting_fast_path": {
+      "type": "SPAN",
+      "metadata_keys": []
+    },
+    "identity_fast_path": {
+      "type": "SPAN",
+      "metadata_keys": []
+    },
+    "fragment_fast_path": {
+      "type": "SPAN",
+      "metadata_keys": []
+    },
+    "farmer_context": {
+      "type": "SPAN",
+      "metadata_keys": [],
+      "output": [
+        "farmer_info_chars",
+        "source",
+        "stale",
+        "technician_info_chars",
+        "unions"
+      ]
+    },
+    "scheme_summary": {
+      "type": "SPAN",
+      "metadata_keys": []
+    },
+    "outbound_consent": {
+      "type": "GENERATION",
+      "metadata_keys": [
+        "amul.attempts",
+        "amul.check_mode",
+        "amul.configured_tier",
+        "amul.served_tier"
+      ],
+      "output": [
+        "intent"
+      ]
+    },
+    "milk_readout": {
+      "type": "SPAN",
+      "metadata_keys": [],
+      "output": [
+        "source"
+      ]
+    },
+    "agent": {
+      "type": "AGENT",
+      "metadata_keys": [
+        "amul.attempts",
+        "amul.configured_tier",
+        "amul.served_tier"
+      ]
+    },
+    "post_translation": {
+      "type": "SPAN",
+      "metadata_keys": [
+        "amul.attempts",
+        "amul.configured_tier",
+        "amul.served_tier"
+      ]
+    },
+    "stream_translation": {
+      "type": "GENERATION",
+      "metadata_keys": [
+        "amul.served_provider",
+        "amul.served_tier"
+      ]
+    },
+    "text_translation": {
+      "type": "GENERATION",
+      "metadata_keys": [
+        "amul.served_provider",
+        "amul.served_tier"
+      ]
+    },
+    "nudge": {
+      "type": "SPAN",
+      "metadata_keys": [],
+      "output": [
+        "armed",
+        "cancel_reason",
+        "sent",
+        "trigger"
+      ]
+    }
+  },
+  "scores": [
+    "turn_outcome"
+  ],
+  "outcomes": [
+    "success",
+    "error",
+    "cancelled",
+    "stale_request",
+    "stt_signal",
+    "hold_message",
+    "greeting_fast_path",
+    "identity_fast_path",
+    "fragment_fast_path",
+    "moderation_rejected",
+    "non_meaningful_hangup",
+    "outbound_declined",
+    "outbound_no_data",
+    "pretranslation_empty"
+  ]
+}

@@ -13,6 +13,7 @@ from typing import Optional
 from pydantic_ai import RunContext
 from pydantic_ai.tools import ToolDefinition
 
+from agents.tools.telemetry import report_tool
 from agents.deps import FarmerContext
 from agents.tools import loan_eligibility as le
 from agents.tools.farmer_envelope import collect_farmer_accounts
@@ -147,4 +148,8 @@ async def check_loan_eligibility(ctx: RunContext[FarmerContext], confirmed: bool
     )
     logger.info("check_loan_eligibility outcome=%s phone=%s code=%s sms=%s",
                 result.outcome, result.phone, result.code, result.sms_status)
+    if result.outcome in (le.DISABLED, le.ERROR):
+        report_tool("unavailable", f"loan eligibility service: {result.outcome}")
+    elif result.outcome == le.NO_PHONE:
+        report_tool("error", "no registered phone on the session")
     return _message_for(result)

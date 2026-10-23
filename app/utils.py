@@ -15,6 +15,7 @@ from pydantic_core import to_jsonable_python
 HISTORY_SUFFIX = "_SVA"
 SESSION_OWNER_SUFFIX = "_active_request"
 SESSION_EPOCH_SUFFIX = "_request_epoch"
+SESSION_TAKEOVER_SUFFIX = "_taken_over_by"
 
 # Conversation-history retention in Redis (env HISTORY_CACHE_TTL_SECONDS, default 2h).
 # Rolling inactivity window: update_message_history rewrites the key with this TTL
@@ -31,6 +32,12 @@ class SessionRequestOwner:
     session_id: str
     request_token: str
     epoch: int
+    #: The trace id this request's turn opens with, made when it claimed the session,
+    #: so the request it takes over from can name it (turn.v1's amul.superseded_by).
+    trace_id: Optional[str] = None
+    #: turn.v1's amul.utterance_id: a request that comes in while another holds the
+    #: session is the same utterance, so it keeps that one's; else its own trace id.
+    utterance_id: Optional[str] = None
 
 
 def _session_owner_key(session_id: str) -> str:
@@ -41,15 +48,60 @@ def _session_epoch_key(session_id: str) -> str:
     return build_cache_key(f"{session_id}_{SESSION_EPOCH_SUFFIX}")
 
 
+def _session_takeover_key(session_id: str) -> str:
+    return build_cache_key(f"{session_id}_{SESSION_TAKEOVER_SUFFIX}")
+
+
+# One step, so two requests claiming at once cannot leave the older one owning the
+# session. The owner's token is "<epoch>:<trace id>:<utterance id>". A request that
+# finds another still holding the session takes its utterance, and records its own
+# trace id under that one's epoch, for it to read once it finds itself stale. A token
+# of another form (an older build's) names no utterance: the request starts its own.
+_CLAIM_SCRIPT = """
+local previous = redis.call('get', KEYS[2])
+local epoch = redis.call('incr', KEYS[1])
+local utterance = ARGV[1]
+if previous then
+    utterance = string.match(previous, '^%d+:%x+:(%x+)$') or ARGV[1]
+    local previous_epoch = string.match(previous, '^(%d+):')
+    if previous_epoch then
+        redis.call('hset', KEYS[3], previous_epoch, ARGV[1])
+        redis.call('expire', KEYS[3], tonumber(ARGV[3]))
+    end
+end
+local token = epoch .. ':' .. ARGV[1] .. ':' .. utterance
+redis.call('set', KEYS[2], token, 'ex', tonumber(ARGV[2]))
+return {epoch, token, utterance}
+"""
+
+
 async def claim_session_request_ownership(session_id: str) -> SessionRequestOwner:
-    epoch = await redis_client.incr(_session_epoch_key(session_id))
-    request_token = f"{epoch}:{uuid.uuid4()}"
-    await redis_client.set(
+    trace_id = uuid.uuid4().hex
+    epoch, request_token, utterance_id = await redis_client.eval(
+        _CLAIM_SCRIPT,
+        3,
+        _session_epoch_key(session_id),
         _session_owner_key(session_id),
-        request_token,
-        ex=settings.session_owner_ttl_seconds,
+        _session_takeover_key(session_id),
+        trace_id,
+        str(settings.session_owner_ttl_seconds),
+        # As long as the conversation's history: a request reads it before its turn ends.
+        str(DEFAULT_CACHE_TTL),
     )
-    return SessionRequestOwner(session_id=session_id, request_token=request_token, epoch=int(epoch))
+    return SessionRequestOwner(
+        session_id=session_id,
+        request_token=request_token,
+        epoch=int(epoch),
+        trace_id=trace_id,
+        utterance_id=utterance_id,
+    )
+
+
+async def session_request_taken_over_by(owner: SessionRequestOwner | None) -> Optional[str]:
+    """The trace id of the request that took the session over from ``owner``, if one did."""
+    if owner is None:
+        return None
+    return await redis_client.hget(_session_takeover_key(owner.session_id), str(owner.epoch))
 
 
 async def is_session_request_owner(owner: SessionRequestOwner | None) -> bool:

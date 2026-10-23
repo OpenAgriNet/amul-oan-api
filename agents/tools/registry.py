@@ -1,5 +1,8 @@
-"""Tools for the Sunbird VA API."""
+"""Tools for the Sunbird VA API. Each is wrapped in ``reporting`` so its TOOL step
+says how the call went (agents/tools/telemetry.py)."""
 from pydantic_ai import Tool
+
+from agents.tools.telemetry import reporting
 
 from agents.tools.ai_call import create_ai_call, prepare_create_ai_call
 from agents.tools.milk_collection import (
@@ -35,7 +38,7 @@ TOOLS = [
 
     # Search Documents
     Tool(
-        search_documents,
+        reporting(search_documents),
         takes_ctx=False, # No context is needed for this tool
         docstring_format='auto',
         require_parameter_descriptions=True,
@@ -44,14 +47,14 @@ TOOLS = [
     # Available to anonymous callers too: a profile location helps, but the tool
     # can ask for a taluka or village when no unambiguous profile is available.
     Tool(
-        find_nearby_vet_offices,
+        reporting(find_nearby_vet_offices),
         takes_ctx=True,
         docstring_format='auto',
         require_parameter_descriptions=True,
     ),
 
     Tool(
-        create_ai_call,
+        reporting(create_ai_call),
         takes_ctx=True,  # needs ctx.deps.ensure_in_scope for moderation gating
         docstring_format='auto',
         require_parameter_descriptions=True,
@@ -59,7 +62,7 @@ TOOLS = [
     ),
 
     Tool(
-        get_farmer_milk_collection_details,
+        reporting(get_farmer_milk_collection_details),
         takes_ctx=True,  # identity and account codes come only from signed-in deps
         docstring_format='auto',
         require_parameter_descriptions=True,
@@ -67,7 +70,7 @@ TOOLS = [
     ),
 
     Tool(
-        get_farmer_bonus_amount,
+        reporting(get_farmer_bonus_amount),
         takes_ctx=True,  # identity and account codes come only from signed-in deps
         docstring_format='auto',
         require_parameter_descriptions=True,
@@ -75,14 +78,14 @@ TOOLS = [
     ),
 
     Tool(
-        get_cattle_trade_prices,
+        reporting(get_cattle_trade_prices),
         takes_ctx=False,
         docstring_format='auto',
         require_parameter_descriptions=True,
     ),
 
     Tool(
-        get_union_scheme_data,
+        reporting(get_union_scheme_data),
         takes_ctx=True,
         docstring_format='auto',
         require_parameter_descriptions=False,
@@ -90,7 +93,7 @@ TOOLS = [
     ),
 
     Tool(
-        check_loan_eligibility,
+        reporting(check_loan_eligibility),
         takes_ctx=True,
         docstring_format='auto',
         prepare=prepare_check_loan_eligibility,  # hidden unless feature on + caller phone resolved
@@ -134,39 +137,39 @@ TOOLS = [
 # gate because it returns a private rich artifact.
 TOOLS.extend([
     Tool(
-        get_vistaar_weather,
+        reporting(get_vistaar_weather),
         takes_ctx=True,
         docstring_format='auto',
         require_parameter_descriptions=True,
     ),
     Tool(
-        get_vistaar_mandi_prices,
+        reporting(get_vistaar_mandi_prices),
         takes_ctx=True,
         docstring_format='auto',
         require_parameter_descriptions=True,
     ),
     Tool(
-        get_vistaar_scheme_info,
+        reporting(get_vistaar_scheme_info),
         takes_ctx=False,
         docstring_format='auto',
         require_parameter_descriptions=True,
     ),
     Tool(
-        get_vistaar_soil_health_card,
+        reporting(get_vistaar_soil_health_card),
         takes_ctx=True,
         docstring_format='auto',
         require_parameter_descriptions=True,
         prepare=prepare_get_vistaar_soil_health_card,
     ),
     Tool(
-        initiate_pm_kisan_status_check,
+        reporting(initiate_pm_kisan_status_check),
         takes_ctx=True,
         docstring_format='auto',
         require_parameter_descriptions=True,
         prepare=prepare_pm_kisan_tool,
     ),
     Tool(
-        check_pm_kisan_status_with_otp,
+        reporting(check_pm_kisan_status_with_otp),
         takes_ctx=True,
         docstring_format='auto',
         require_parameter_descriptions=True,

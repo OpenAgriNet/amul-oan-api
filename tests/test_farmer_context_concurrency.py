@@ -131,7 +131,7 @@ def test_a_declined_query_cancels_the_farmer_context_it_did_not_need(monkeypatch
     assert seen["farmer"] == ["started", "cancelled"]
     assert seen["left_running"] == []
     assert seen["elapsed"] < 0.5, f"the decline waited {seen['elapsed']:.2f}s for the farmer context"
-    assert _outcomes(seen) == ["success"]
+    assert _outcomes(seen) == ["moderation_rejected"]
 
 
 # ── the AI-technician searches inside the load ──────────────────────────────
