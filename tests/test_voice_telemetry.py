@@ -41,6 +41,7 @@ from app.voice import background as bg
 from app.voice import classifiers as vc
 from app.voice import liveness as lv_module
 from app.voice import outbound
+from app.voice import pretranslation as vp
 from app.voice import telemetry as voice_telemetry
 from app.voice import trace as voice_trace
 from app.voice.agent_input import voice_agent_input
@@ -1033,9 +1034,51 @@ def test_the_sink_records_translation_marks_and_why_the_nudge_stopped(trace, mon
     assert trace.response_parts == out
     assert {"first_agent_text_ms", "first_translation_chunk_ms", "ttft_ms", "ttfr_ms"} <= set(trace.timings_ms)
     assert [s["name"] for s in trace.stages] == ["post_translation"]
-    step = trace.sent.step("post_translation").sent
-    assert (step["as_type"], step["input"], step["output"]) == ("generation", "Give the cow water.", "".join(out))
+    # One span for the turn's translation, the batch timed into it without a step of its own.
+    step = trace.sent.step("post_translation")
+    assert (step.sent["as_type"], step.sent["input"], step.sent["output"]) == ("span", "Give the cow water.", "".join(out))
+    assert step.sent["level"] == "DEFAULT"
     assert trace.metadata["nudge"]["cancel_reason"] == "tail_translated_fragment"
+
+
+def _english_pretranslation(monkeypatch):
+    async def _english(text, source_lang, **_kw):
+        return "My cow"
+
+    monkeypatch.setattr(vp, "_translate_to_english_pretranslation", _english)
+
+
+def test_the_sinks_translation_is_one_span_under_the_root_across_its_batches(lf, call, monkeypatch):
+    """Through a whole turn: one post_translation span, a direct child of the root, the
+    English of every batch in and what the caller heard out; the step's time is the
+    batches' time."""
+    _english_pretranslation(monkeypatch)
+    monkeypatch.setattr(voice_agents.voice_agent_signed_in, "iter", lambda **_kw: _answer("Give her water. Twice a day."))
+    _Translation(monkeypatch, replies=[["ગાયને પાણી આપો."], ["દિવસમાં બે વાર."]])
+
+    _run(_turn("મારી ગાય", lang="gu", history=_PRIOR))
+
+    (step,) = lf.steps("post_translation")
+    assert (step.parent, step.sent["as_type"]) == ("turn", "span")
+    assert step.sent["input"] == "Give her water. Twice a day."
+    # Each batch's translation as voice cleaned it for the phone, in order.
+    assert step.sent["output"] == "ગાયને પાણી આપો.દિવસમાં બે વાર."
+    assert step.ended == 1 and step.sent["level"] == "DEFAULT"
+    assert [s["name"] for s in lf.trace.stages if s["name"] == "post_translation"] == ["post_translation"] * 2
+    assert lf.closed["amul.post_translation_ms"].isdigit()
+
+
+def test_a_failed_batch_marks_the_turns_translation_step_an_error(lf, call, monkeypatch):
+    _english_pretranslation(monkeypatch)
+    monkeypatch.setattr(voice_agents.voice_agent_signed_in, "iter", lambda **_kw: _answer("Give her water. Twice a day."))
+    _Translation(monkeypatch, replies=[["ગાયને પાણી આપો."]], fail_on={2})
+
+    _run(_turn("મારી ગાય", lang="gu", history=_PRIOR))
+
+    step = lf.step("post_translation").sent
+    assert (step["level"], step["status_message"]) == ("ERROR", "translategemma down")
+    assert step["input"] == "Give her water. Twice a day." and step["output"] == "ગાયને પાણી આપો."
+    assert lf.closed["amul.outcome"] == "error"
 
 
 def test_a_failed_output_translation_is_counted(trace, monkeypatch):

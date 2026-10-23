@@ -59,12 +59,17 @@ def _keyword_names(calls, function):
     }
 
 
+_OPENERS = {"start_as_current_observation", "start_observation", "_call_observation"}
+
+
 def _observation_names(calls):
-    """The constant names given to start_as_current_observation in a module."""
+    """The constant names given to an observation opener in a module: the SDK's
+    start_as_current_observation and start_observation (a step opened off another span,
+    such as the root), and translation.py's _call_observation, which opens one or the other."""
     return {
         keyword.value.value
         for call in calls
-        if isinstance(call.func, ast.Attribute) and call.func.attr == "start_as_current_observation"
+        if (getattr(call.func, "attr", None) or getattr(call.func, "id", None)) in _OPENERS
         for keyword in call.keywords
         if keyword.arg == "name" and isinstance(keyword.value, ast.Constant) and isinstance(keyword.value.value, str)
     }

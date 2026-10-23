@@ -11,6 +11,7 @@ import json
 from pathlib import Path
 from types import MappingProxyType, SimpleNamespace
 
+import pytest
 from pydantic_ai.messages import ModelResponse, TextPart
 
 from app.channels.chat import WEB
@@ -50,10 +51,13 @@ class _Scheduler:
         pass
 
 
-def _recorded_turn(monkeypatch, turn=None, *, answer="Give clean water daily."):
+def _recorded_turn(monkeypatch, turn=None, *, answer="Give clean water daily.", translate=None):
     """One chat turn with every outside stage stubbed, recorded as Langfuse would get it.
-    The agent streams ``answer`` and its run's new messages hold it, as pydantic-ai's do."""
+    The agent streams ``answer`` and its run's new messages hold it, as pydantic-ai's do.
+    ``translate`` replaces the stubbed translation stream (which echoes ``[text]``)."""
     patch_turn(monkeypatch)
+    if translate is not None:
+        monkeypatch.setattr(chat_service, "translate_text_stream_fast", translate)
 
     def _agent(**kw):
         run = _Run([answer], deps=kw["deps"])
@@ -96,6 +100,32 @@ def test_the_agent_step_is_the_question_in_and_the_agents_own_answer_out(monkeyp
     assert client.io["output"] == "[Give clean water daily.]"  # the root: the answer as delivered, translated
 
 
+def test_post_translation_is_one_span_under_the_root_for_the_whole_answer(monkeypatch):
+    """One step for the turn's translation, a direct child of the root (not of the agent
+    step, which is current while the answer streams): the English given in, what
+    translation delivered out, closed when the answer is out."""
+    client = _recorded_turn(monkeypatch, answer="Give clean water daily. Twice a day.")
+
+    (step,) = client.steps("post_translation")
+    assert (step.parent, step.sent["as_type"]) == ("turn", "span")
+    assert step.sent["input"] == "Give clean water daily. Twice a day."
+    # Two batches, each translated as the stubbed stream echoes it.
+    assert step.sent["output"] == "[Give clean water daily. ][Twice a day.]" == client.io["output"]
+    assert step.ended == 1 and "level" not in step.sent
+
+
+def test_a_batch_that_fails_translation_marks_the_step_an_error_and_goes_out_in_english(monkeypatch):
+    async def _down(text, *_a, **_k):
+        raise RuntimeError("translategemma down")
+        yield  # pragma: no cover - an async generator
+
+    client = _recorded_turn(monkeypatch, translate=_down)
+
+    step = client.step("post_translation").sent
+    assert (step["level"], step["status_message"]) == ("ERROR", "translategemma down")
+    assert step["input"] == step["output"] == "Give clean water daily." == client.io["output"]
+
+
 def test_the_roots_input_is_the_whole_question(monkeypatch):
     """turn.v1's input is the question itself, whole: the session and user ids are capped,
     never the text."""
@@ -110,10 +140,14 @@ def test_the_roots_input_is_the_whole_question(monkeypatch):
 
 def _module_steps(monkeypatch):
     """The steps chat's modules open on their own, each call recorded: pre_translation,
-    post_translation and stream_translation through TranslateGemma and through an LLM
-    tier, and the suggestions after the response. Only the network is stubbed."""
+    stream_translation and text_translation through TranslateGemma and through an LLM
+    tier, under a turn's post_translation span and under the current span, and the
+    suggestions after the response. Only the network is stubbed."""
     client = _Langfuse()
     monkeypatch.setattr(tr, "_get_langfuse", lambda: client)
+    # llm_core targets as the chain hands them to a call: the provider and the tier that served.
+    translategemma = SimpleNamespace(provider="translategemma", served_tier="translategemma:tg[0]")
+    vllm = SimpleNamespace(provider="vllm", served_tier="vllm:gemma[1]")
 
     async def _stream(*_a, **_k):
         yield "ગાયને "
@@ -131,7 +165,7 @@ def _module_steps(monkeypatch):
     async def _completions(**_kw):
         return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="How much water?"))])
 
-    tier = SimpleNamespace(provider="openai", model_name="gpt", handle=SimpleNamespace(
+    tier = SimpleNamespace(provider="openai", model_name="gpt", served_tier="openai:gpt[0]", handle=SimpleNamespace(
         chat=SimpleNamespace(completions=SimpleNamespace(create=_completions))))
 
     monkeypatch.setattr(suggestions_task, "get_langfuse_client", lambda: client)
@@ -154,15 +188,44 @@ def _module_steps(monkeypatch):
 
     async def _go():
         args = ("Give the cow water.", "english", "gu", 0.0, 64)
-        [_ async for _ in tr._translategemma_stream(descriptor, "prompt", *args)]
-        [_ async for _ in tr._llm_translation_stream(object(), "gemma", "instruction", *args, provider="vllm")]
-        await tr._translategemma_unary(descriptor, "prompt", *args)
+        with client.start_as_current_observation(name="post_translation", as_type="span") as span:
+            [_ async for _ in tr._translategemma_stream(descriptor, "prompt", *args, served=translategemma, parent=span)]
+            [_ async for _ in tr._llm_translation_stream(object(), "gemma", "instruction", *args, provider="vllm", served=vllm, parent=span)]
+        await tr._translategemma_unary(descriptor, "prompt", *args, served=translategemma)
         await tr._llm_translation_unary(object(), "gemma", "instruction", *args, provider="openai")
         await tr.pretranslate_with_tier(tier, text="મારી ગાયને કેટલું પાણી?", source_lang="gujarati")
         await suggestions_task.create_suggestions("chat-contract", "gu", execution, None)
 
     asyncio.run(_go())
     return client.observations
+
+
+def test_a_translation_call_that_fails_marks_its_generation_an_error(monkeypatch):
+    """Under a turn's span and under the current span alike: level ERROR and the reason."""
+    client = _Langfuse()
+    monkeypatch.setattr(tr, "_get_langfuse", lambda: client)
+
+    async def _down(*_a, **_k):
+        raise RuntimeError("translategemma down")
+        yield  # pragma: no cover - an async generator
+
+    monkeypatch.setattr(tr, "_raw_translategemma_stream", _down)
+    descriptor = SimpleNamespace(model_id="translategemma-27b-base")
+    args = ("Give the cow water.", "english", "gu", 0.0, 64)
+
+    async def _go():
+        with client.start_as_current_observation(name="post_translation", as_type="span") as span:
+            with pytest.raises(RuntimeError):
+                [_ async for _ in tr._translategemma_stream(descriptor, "prompt", *args, parent=span)]
+        with pytest.raises(RuntimeError):
+            [_ async for _ in tr._translategemma_stream(descriptor, "prompt", *args)]
+
+    asyncio.run(_go())
+    under_span, current = client.steps("stream_translation")
+    assert (under_span.parent, under_span.ended) == ("post_translation", 1)
+    assert current.parent is None
+    for call in (under_span, current):
+        assert (call.sent["level"], call.sent["status_message"]) == ("ERROR", "translategemma down")
 
 
 def _steps_sent(observations):
@@ -194,8 +257,15 @@ def test_the_steps_chat_opens_match_the_contract(monkeypatch):
         assert step["output"] == set(listed[name].get("output", ())), f"step {name}'s output fields {sorted(step['output'])}"
         assert all(key.startswith("amul.") for key in step["metadata_keys"]), f"step {name} sends {sorted(step['metadata_keys'])}"
         assert step["metadata_keys"] <= set(listed[name]["metadata_keys"]), f"step {name} sends {sorted(step['metadata_keys'])}"
-    # Each translation call names the provider that served it, as turn.v1 names it.
-    assert [(o.sent["name"], o.sent["metadata"]["amul.served_provider"]) for o in observations if "translation" in o.sent["name"]] == [
-        ("stream_translation", "translategemma"), ("stream_translation", "vllm"),
-        ("post_translation", "translategemma"), ("post_translation", "openai"), ("pre_translation", "openai"),
+    # Each translation call names the provider and, from an llm_core target, the tier that
+    # served it, as turn.v1 names them; a call made under a turn's post_translation span
+    # nests there, one made outside under the current span.
+    calls = [o for o in observations if o.sent["name"].endswith("_translation") and o.sent["as_type"] == "generation"]
+    assert [(o.sent["name"], o.parent, o.sent["metadata"]) for o in calls] == [
+        ("stream_translation", "post_translation", {"amul.served_provider": "translategemma", "amul.served_tier": "translategemma:tg[0]"}),
+        ("stream_translation", "post_translation", {"amul.served_provider": "vllm", "amul.served_tier": "vllm:gemma[1]"}),
+        ("text_translation", None, {"amul.served_provider": "translategemma", "amul.served_tier": "translategemma:tg[0]"}),
+        ("text_translation", None, {"amul.served_provider": "openai"}),
+        ("pre_translation", None, {"amul.served_provider": "openai", "amul.served_tier": "openai:gpt[0]"}),
     ]
+    assert all(call.ended == 1 for call in calls if call.parent is not None)

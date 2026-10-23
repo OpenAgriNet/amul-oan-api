@@ -1,5 +1,6 @@
 import asyncio
 from contextlib import ExitStack, aclosing, contextmanager, nullcontext
+from contextvars import ContextVar
 from types import MappingProxyType
 from typing import Any, AsyncGenerator, Mapping, Optional
 from functools import lru_cache
@@ -563,11 +564,14 @@ async def _stream_to_client(
     max_output_chars: int | None,
     execution,
     output_chunks: list[str],
+    root=None,
 ):
     """Pass the English stream through, or sentence-batch and stream-translate it.
 
     Everything yielded is also appended to ``output_chunks`` for the trace.
     A batch whose translation fails is sent in English rather than dropped.
+    ``root`` is the turn's root span: the translation is turn.v1's post_translation
+    step, one span under it with each call's generation under that.
     """
     if not translate_to:
         async for chunk in english_src:
@@ -575,11 +579,14 @@ async def _stream_to_client(
             yield chunk
         return
 
+    step = _PostTranslation(root, execution)
+
     async def translate(text: str, label: str):
         # Sentence batching drops the line break before a list item; restore it.
         if output_chunks and _batch_starts_new_line_or_list(text):
             output_chunks.append("\n")
             yield "\n"
+        delivered: list[str] = []
         try:
             async for translated_chunk in translate_text_stream_fast(
                 text=text,
@@ -587,34 +594,99 @@ async def _stream_to_client(
                 target_lang=translate_to,
                 max_output_chars=max_output_chars,
                 execution=execution,
+                parent=step.open(),
             ):
                 output_chunks.append(translated_chunk)
+                delivered.append(translated_chunk)
                 yield translated_chunk
         except Exception as e:
             logger.error(f"{label} translation failed, falling back to English: {e}")
+            step.failed(e)
             output_chunks.append(text)
+            delivered.append(text)
             yield text
+        finally:
+            step.record(text, delivered)
 
-    sentence_buffer = ""
-    batch: list[str] = []
-    batch_word_count = 0
-    async for chunk in english_src:
-        complete_sentences, sentence_buffer = extract_complete_sentences(sentence_buffer + chunk)
-        if not complete_sentences:
-            continue
-        batch.extend(complete_sentences)
-        batch_word_count += sum(len(s.split()) for s in complete_sentences)
-        batch_text = "".join(batch)
-        if should_translate_batch(batch_text, batch_word_count):
-            async for out in translate(batch_text, "Optimised batch"):
+    try:
+        sentence_buffer = ""
+        batch: list[str] = []
+        batch_word_count = 0
+        async for chunk in english_src:
+            complete_sentences, sentence_buffer = extract_complete_sentences(sentence_buffer + chunk)
+            if not complete_sentences:
+                continue
+            batch.extend(complete_sentences)
+            batch_word_count += sum(len(s.split()) for s in complete_sentences)
+            batch_text = "".join(batch)
+            if should_translate_batch(batch_text, batch_word_count):
+                async for out in translate(batch_text, "Optimised batch"):
+                    yield out
+                batch, batch_word_count = [], 0
+        if batch:
+            async for out in translate("".join(batch), "Final batch"):
                 yield out
-            batch, batch_word_count = [], 0
-    if batch:
-        async for out in translate("".join(batch), "Final batch"):
-            yield out
-    if sentence_buffer.strip():
-        async for out in translate(sentence_buffer, "Tail fragment"):
-            yield out
+        if sentence_buffer.strip():
+            async for out in translate(sentence_buffer, "Tail fragment"):
+                yield out
+    finally:
+        step.close()
+
+
+class _PostTranslation:
+    """turn.v1's post_translation step of a chat turn: one span, a direct child of the
+    root, opened at the first batch the sink translates and closed when the answer is
+    out. The English given to translation in, what translation delivered out (a batch
+    whose translation failed went out in English), the step's tiers as the pipeline
+    trace recorded them, and level ERROR with the reason when a batch's translation
+    failed. Each call's stream_translation generation nests under it, so pydantic-ai's
+    spans, opened under the current span (the agent's), do not.
+
+    A turn without a root (tracing off, a sink run on its own) opens no span, and the
+    calls open their generations under the current span as before.
+    """
+
+    def __init__(self, root, execution) -> None:
+        self._root = root
+        self._execution = execution
+        self._span = None
+        self._given: list[str] = []
+        self._delivered: list[str] = []
+        self._failure: str | None = None
+
+    def open(self):
+        """The span, opened at the first batch; None without a root."""
+        if self._span is None and self._root is not None:
+            try:
+                self._span = self._root.start_observation(name="post_translation", as_type="span")
+            except Exception as e:  # pragma: no cover - tracing must never break the turn
+                logger.debug("post_translation span unavailable: %s", e)
+                self._root = None
+        return self._span
+
+    def record(self, given: str, delivered: list[str]) -> None:
+        self._given.append(given)
+        self._delivered.extend(delivered)
+
+    def failed(self, error: BaseException) -> None:
+        # The first failure is the reason; the step stays ERROR however later batches went.
+        if self._failure is None:
+            self._failure = (str(error) or type(error).__name__)[:300]
+
+    def close(self) -> None:
+        if self._span is None:
+            return
+        fields: dict[str, Any] = {"input": "".join(self._given), "output": "".join(self._delivered)}
+        tiers = _step_tiers(self._execution, _LlmStep.POST_TRANSLATION)
+        if tiers:
+            fields["metadata"] = tiers
+        if self._failure is not None:
+            fields.update(level="ERROR", status_message=self._failure)
+        try:
+            self._span.update(**fields)
+            self._span.end()
+        except Exception as e:  # pragma: no cover - tracing must never break the turn
+            logger.debug("post_translation span close failed: %s", e)
 
 
 class _ChatSink:
@@ -650,6 +722,7 @@ class _ChatSink:
             max_output_chars=self._max_output_chars,
             execution=self._execution,
             output_chunks=self._chunks,
+            root=_turn_root.get(),
         )
         if self._persona == "doctor":
             # Defence in depth: also remove a provenance label invented by
@@ -670,6 +743,11 @@ class _ChatSink:
 
 # turn.v1 names the delivery medium a pipeline (amul-telemetry telemetry/turn.v1.yaml).
 _PIPELINE_BY_CHANNEL = {"web": "webapp", "whatsapp": "whatsapp"}
+
+# The turn's root span while its turn runs, for a step opened as the root's direct
+# child while another step is the current span: the sink's post_translation span
+# opens while the agent step is. None outside a turn and without tracing.
+_turn_root: ContextVar[Any] = ContextVar("chat_turn_root", default=None)
 
 
 class _ChatTelemetry:
@@ -739,9 +817,10 @@ class _ChatTelemetry:
                 # turn becomes its own top-level trace and trace-level writes are
                 # dropped (#200). The root observation carries the same amul.* keys
                 # as the trace.
-                stack.enter_context(
+                root = stack.enter_context(
                     client.start_as_current_observation(name=TURN_ROOT, as_type="span", metadata=metadata)
                 )
+                stack.callback(_turn_root.reset, _turn_root.set(root))
             if propagate_attributes:
                 # Trace-level fields, on the root only: set on the current span (the
                 # root) and left before any step opens.
@@ -818,6 +897,17 @@ def _agent_served_tier(pipeline_trace) -> str | None:
     except Exception as e:  # pragma: no cover - tracing must never break the turn
         logger.debug("served tier unavailable: %s", e)
         return None
+
+
+def _step_tiers(execution, step) -> dict[str, str]:
+    """turn.v1's tier metadata for one step (``amul.configured_tier``, ``amul.served_tier``,
+    ``amul.attempts``), from what the walker recorded on the turn's pipeline trace;
+    ``{}`` when nothing was."""
+    try:
+        return _pipeline_trace.step_metadata(execution.begin_trace(), step)
+    except Exception as e:  # pragma: no cover - tracing must never break the turn
+        logger.debug("step tiers unavailable for %s: %s", step, e)
+        return {}
 
 
 def _current_trace_context(client) -> dict[str, str] | None:
