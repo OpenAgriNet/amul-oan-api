@@ -86,9 +86,7 @@ class TestMilkCollectionTool:
         assert "farmer code 0006" in result
         assert "quantity 2.38 liters" in result
         assert "quantity 9.68 liters" in result
-        # Totals come from code, per account and for all accounts together.
-        assert result.count("Total milk 12.06 liters, total amount 502.4 rupees") == 2
-        assert "All accounts together. Summary:" in result
+        assert "total 12.06 liters, total amount 502.4 rupees" in result
 
     def test_one_failed_account_does_not_hide_the_others(self, monkeypatch):
         async def _fake_fetch(account, **kwargs):

@@ -6,7 +6,7 @@ from pydantic_ai import RunContext
 
 from agents.deps import FarmerAccount, FarmerContext
 from agents.tools.beckn.amul import AuthenticatedFarmerAccount, fetch_milk_collection
-from agents.tools.milk_summary import MilkSummary, shift_label, summarize_milk
+from agents.tools.milk_collection import _display_date, milk_totals
 from app.voice.models.milk_collection import FarmerMilkCollectionRequestModel
 from helpers.utils import get_logger
 
@@ -22,38 +22,7 @@ def _num(value) -> str:
     return str(value)
 
 
-def _spoken_summary(s: MilkSummary) -> str:
-    """The figures the agent speaks for totals and averages, computed in code."""
-    if not s.slips:
-        return ""
-    shifts = ", ".join(f"{s.shift_slips[k]} {k}" for k in s.shift_slips)
-    lines = [
-        f"{s.days} days with milk, {s.slips} slips ({shifts}).",
-        f"Total milk {_num(round(s.qty, 2))} liters, total amount {_num(round(s.amount, 2))} rupees.",
-        "; ".join(
-            f"{k} {_num(round(s.shift_qty[k], 2))} liters, {_num(round(s.shift_amount[k], 2))} rupees"
-            for k in s.shift_qty
-        ).capitalize() + ".",
-    ]
-    averages = [
-        f"{_num(round(s.qty_per_day, 2))} liters per day" if s.qty_per_day is not None else None,
-        f"fat {_num(round(s.fat, 2))}" if s.fat is not None else None,
-        f"SNF {_num(round(s.snf, 2))}" if s.snf is not None else None,
-        f"rate {_num(round(s.rate, 2))} rupees per liter" if s.rate is not None else None,
-    ]
-    lines.append("Average " + ", ".join(a for a in averages if a) + ".")
-    if s.highest_day and s.lowest_day:
-        lines.append(
-            f"Highest day {s.highest_day[0]} with {_num(round(s.highest_day[1], 2))} liters; "
-            f"lowest day {s.lowest_day[0]} with {_num(round(s.lowest_day[1], 2))} liters."
-        )
-    if s.deduction_entries:
-        lines.append(
-            f"Deductions {_num(round(s.deductions, 2))} rupees over {s.deduction_entries} entries, as listed."
-        )
-    if s.incomplete_slips:
-        lines.append(f"{s.incomplete_slips} slips have no quantity or amount and count as zero.")
-    return "Summary: " + " ".join(lines)
+_SHIFT_LABELS = {"M": "morning", "E": "evening"}
 
 
 def _format_milk_collection_summary(response) -> str:
@@ -65,14 +34,11 @@ def _format_milk_collection_summary(response) -> str:
     confuse quantity with fat/SNF/amount when several records are present.
     """
     lines: list[str] = []
-    summary = _spoken_summary(summarize_milk(response.milk, response.deduction))
-    if summary:
-        lines.append(summary)
 
     if response.milk:
         lines.append(f"Milk collection records ({len(response.milk)}):")
         for i, r in enumerate(response.milk, 1):
-            shift = shift_label(r.shift)
+            shift = _SHIFT_LABELS.get((r.shift or "").upper(), r.shift or "unknown")
             lines.append(
                 f"  {i}. Date {r.date or 'unknown'}, {shift} shift: "
                 f"quantity {_num(r.qty)} liters, "
@@ -241,8 +207,9 @@ async def fetch_milk_summary_for_accounts(
 
     multi = len(accounts) > 1
     sections: list[str] = []
-    results = []
+    any_success = False
     total_milk = 0
+    all_milk = []
 
     for account in accounts:
         result = await _fetch_one_account(account, fromdate, todate, session_id, tool_call_id)
@@ -253,26 +220,28 @@ async def fetch_milk_summary_for_accounts(
             )
             continue
 
-        results.append(result)
+        any_success = True
         total_milk += len(result.milk)
+        all_milk.extend(result.milk)
         summary = _format_milk_collection_summary(result)
         label = _account_label(account, multi)
         sections.append(f"{label}\n{summary}" if label else summary)
 
-    if not results:
+    if not any_success:
         return "Milk collection lookup failed. Unable to fetch details at the moment."
 
-    if len(results) > 1:
-        combined = _spoken_summary(summarize_milk(
-            [r for result in results for r in result.milk],
-            [d for result in results for d in result.deduction],
-        ))
-        if combined:
-            sections.append("All accounts together. " + combined)
-
     body = "\n\n".join(sections)
+    if all_milk:
+        days, litres, amount, fat, snf = milk_totals(all_milk)
+        body = (
+            f"Summary for {_display_date(fromdate)} to {_display_date(todate)}"
+            f"{', all accounts' if multi else ''}: {days} days with milk, "
+            f"total {_num(round(litres, 2))} liters, total amount {_num(round(amount, 2))} rupees, "
+            f"average fat {_num(None if fat is None else round(fat, 2))}, "
+            f"SNF {_num(None if snf is None else round(snf, 2))}.\n\n{body}"
+        )
     logger.info(
         "Milk collection aggregate: accounts=%s any_success=%s total_milk_records=%s",
-        len(accounts), bool(results), total_milk,
+        len(accounts), any_success, total_milk,
     )
     return f"Milk collection details fetched successfully:\n\n{body}"
