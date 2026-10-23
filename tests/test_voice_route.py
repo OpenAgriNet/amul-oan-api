@@ -553,8 +553,8 @@ def test_a_rendering_failure_is_thrown_into_the_turn_and_the_session_released(mo
 def test_the_routes_timings_open_the_trace(monkeypatch):
     monkeypatch.setattr(settings, "enable_voice_tracing", False)
     turn = SimpleNamespace(
-        session_id="call-1", user_id="u", query="q", source_lang="gu", target_lang="gu",
-        call=SimpleNamespace(provider=None, process_id=None, call_type="inbound"),
+        session_id="call-1", user_id="u", query="q", source_lang="gu", target_lang="gu", persona="farmer",
+        authenticated_user={}, call=SimpleNamespace(provider=None, process_id=None, call_type="inbound", request_epoch=None),
     )
     route = RouteTimings(started_at=time.perf_counter() - 1.0, ownership_claim_ms=3.0, history_load_ms=4.0, history_messages=6)
 

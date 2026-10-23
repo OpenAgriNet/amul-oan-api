@@ -253,7 +253,7 @@ def test_a_live_request_is_not_stale(ownership):
 
 
 def test_a_hung_up_caller_is_stale(ownership):
-    assert asyncio.run(_check(disconnected=True)("before_history_write")) == "client_disconnected"
+    assert asyncio.run(_check(disconnected=True)("before_history_write")) == "cancelled"
 
 
 def test_a_request_that_lost_the_session_is_stale(ownership):

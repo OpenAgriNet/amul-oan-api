@@ -26,11 +26,12 @@ from typing import AsyncIterator, Optional
 import regex
 
 from agents.tools.models.union import UNION_BANNED_MESSAGE, union_banned_message
+from app.llm_core import Step
 from app.services.translation import translate_text, translate_text_stream_fast, translation_channel
 from app.turn.types import StalenessCheck, Turn
 from app.voice.classifiers import _IDENTITY_RESPONSE_EN
 from app.voice.liveness import nudge_stopped, stop_nudge
-from app.voice.trace import current_trace
+from app.voice.trace import current_trace, step_tiers
 from helpers.utils import get_logger, normalize_voice_output
 
 logger = get_logger(__name__)
@@ -506,22 +507,32 @@ class VoiceSink:
             return
         trace = current_trace()
         try:
+            # turn.v1's post_translation step, one per batch: the English in, what
+            # was spoken out, and the tier that served (written when the step closes).
             with trace.stage(
-                "output_translation",
+                "post_translation",
                 as_type="generation",
-                input={"chars": len(text_to_translate)},
+                input=trace.text(text_to_translate),
                 metadata={"target_lang": self._target_lang},
-            ):
-                async with aclosing(
-                    _voice_translation(text_to_translate, self._target_lang, self._execution)
-                ) as translated:
-                    async for chunk in translated:
-                        if await self._stale("during_output_translation"):
-                            return
-                        cleaned = _prepare_voice_output(chunk, self._target_lang) if chunk else chunk
-                        if cleaned and cleaned.strip():
-                            trace.mark("first_translation_chunk_ms")
-                        yield cleaned
+            ) as step:
+                spoken: list[str] = []
+                try:
+                    async with aclosing(
+                        _voice_translation(text_to_translate, self._target_lang, self._execution)
+                    ) as translated:
+                        async for chunk in translated:
+                            if await self._stale("during_output_translation"):
+                                return
+                            cleaned = _prepare_voice_output(chunk, self._target_lang) if chunk else chunk
+                            if cleaned and cleaned.strip():
+                                trace.mark("first_translation_chunk_ms")
+                                spoken.append(cleaned)
+                            yield cleaned
+                finally:
+                    step.record(
+                        output=trace.text("".join(spoken)),
+                        metadata=step_tiers(self._execution, Step.POST_TRANSLATION),
+                    )
         except Exception as e:
             trace.increment("output_translation_errors")
             self._failed = True

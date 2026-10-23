@@ -208,7 +208,7 @@ async def test_pretranslation_uses_provider_protocol_and_trace(monkeypatch):
     )
     assert result == "translated"
     assert calls["request"]["model"] == "claude-haiku"
-    assert calls["observation"]["name"] == "query_pretranslation"
+    assert calls["observation"]["name"] == "pre_translation"
     assert calls["observation"]["metadata"]["translation_provider"] == "anthropic"
     assert calls["output"] == "translated"
 

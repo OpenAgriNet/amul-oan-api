@@ -71,6 +71,9 @@ class TelephonyCall:
     provider: Optional[str] = None
     #: ``outbound`` for a call we placed, else ``inbound``. For the trace.
     call_type: str = "inbound"
+    #: The session ownership epoch this request claimed, when the adapter claimed
+    #: one. For the trace (turn.v1's ``amul.request_epoch``).
+    request_epoch: Optional[int] = None
 
 
 @dataclass(frozen=True)
@@ -200,7 +203,7 @@ class StalenessCheck(Protocol):
     A call turn goes stale when the caller hangs up or a newer request takes
     over the session; one that keeps talking can speak over the newer one.
     Returns None while the turn should carry on, otherwise the outcome to
-    record (voice's are ``client_disconnected`` and ``stale_request``), and the
+    record (voice's are ``cancelled`` and ``stale_request``), and the
     turn stops without emitting or writing anything more. ``reason`` names the
     point that asked, for the logs. Chat has none.
     """
