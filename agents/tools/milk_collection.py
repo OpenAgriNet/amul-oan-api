@@ -2,6 +2,7 @@
 Tool for fetching farmer milk collection and deduction details.
 """
 import asyncio
+from datetime import datetime
 
 from pydantic_ai import RunContext
 from pydantic_ai.tools import ToolDefinition
@@ -12,6 +13,7 @@ from agents.tools.beckn.amul import (
     fetch_authenticated_farmers,
     fetch_milk_collection,
 )
+from agents.tools.milk_summary import MilkSummary, summarize_milk
 from agents.tools.models.milk_collection import FarmerMilkCollectionRequestModel
 from helpers.utils import get_logger
 
@@ -144,6 +146,60 @@ def _format_milk_collection_markdown(response) -> str:
     return "\n".join(sections)
 
 
+def _account_label(account) -> str:
+    parts = [account.society_name] if account.society_name else []
+    parts.append(f"farmer code {account.farmer_code}")
+    return ", ".join(parts)
+
+
+def _display_date(value: str) -> str:
+    """YYYY-MM-DD (validated tool input) -> dd-mm-yyyy, as the slips show dates."""
+    return datetime.strptime(value, "%Y-%m-%d").strftime("%d-%m-%Y")
+
+
+def _format_day(day: tuple[str, float] | None) -> str:
+    return "-" if day is None else f"{day[0]} ({_format_number(day[1], 2)} L)"
+
+
+def _format_summary_markdown(
+    columns: list[tuple[str, MilkSummary]], fromdate: str, todate: str
+) -> str:
+    """One column per account, plus "All accounts" when there are several."""
+    shifts = [label for label in ("morning", "evening") if any(label in s.shift_qty for _, s in columns)]
+    shifts += sorted({label for _, s in columns for label in s.shift_qty} - set(shifts))
+
+    def slips(s: MilkSummary) -> str:
+        split = ", ".join(f"{s.shift_slips.get(label, 0)} {label}" for label in shifts)
+        return f"{s.slips} ({split})" if split else str(s.slips)
+
+    rows = [
+        ("Period", lambda s: f"{_display_date(fromdate)} to {_display_date(todate)}"),
+        ("Days with milk", lambda s: str(s.days)),
+        ("Slips", slips),
+        ("Total milk (L)", lambda s: _format_number(s.qty, 2)),
+        ("Total amount (Rs)", lambda s: _format_number(s.amount, 2)),
+    ]
+    for label in shifts:
+        rows.append((f"{label.capitalize()} milk (L)", lambda s, k=label: _format_number(s.shift_qty.get(k, 0.0), 2)))
+        rows.append((f"{label.capitalize()} amount (Rs)", lambda s, k=label: _format_number(s.shift_amount.get(k, 0.0), 2)))
+    rows += [
+        ("Average milk per day (L)", lambda s: _format_number(s.qty_per_day, 2)),
+        ("Average FAT", lambda s: _format_number(s.fat, 2)),
+        ("Average SNF", lambda s: _format_number(s.snf, 2)),
+        ("Average rate (Rs per L)", lambda s: _format_number(s.rate, 2)),
+        ("Highest day", lambda s: _format_day(s.highest_day)),
+        ("Lowest day", lambda s: _format_day(s.lowest_day)),
+        ("Deductions (Rs)", lambda s: f"{_format_number(s.deductions, 2)} ({s.deduction_entries} entries)"),
+    ]
+    if any(s.incomplete_slips for _, s in columns):
+        rows.append(("Slips missing qty or amount", lambda s: str(s.incomplete_slips)))
+
+    headers = ["Measure", *(name for name, _ in columns)] if len(columns) > 1 else ["Measure", "Value"]
+    return _build_markdown_table(
+        headers, [[label, *(render(s) for _, s in columns)] for label, render in rows]
+    )
+
+
 async def get_farmer_milk_collection_details(
     ctx: RunContext[FarmerContext],
     fromdate: str,
@@ -158,7 +214,9 @@ async def get_farmer_milk_collection_details(
         todate: End date in YYYY-MM-DD format.
 
     Returns:
-        str: Deterministic markdown tables for milk and deductions, or a clear failure message.
+        str: A summary table (totals, averages, best and worst day, computed here so the
+             model never adds slips up), then the milk and deduction tables, or a
+             clear failure message.
     """
     logger.info(
         "Farmer milk collection tool invoked from=%s to=%s",
@@ -229,10 +287,11 @@ async def get_farmer_milk_collection_details(
         return_exceptions=True,
     )
 
-    responses = [
-        response for response in outcomes
+    fetched = [
+        (account, response) for account, response in zip(accounts, outcomes)
         if response is not None and not isinstance(response, BaseException)
     ]
+    responses = [response for _, response in fetched]
     if not responses:
         logger.info(
             "Farmer milk collection lookup failed for all authenticated accounts from=%s to=%s",
@@ -252,7 +311,24 @@ async def get_farmer_milk_collection_details(
         deduction=[record for result in responses for record in result.deduction],
     )
 
-    formatted = _format_milk_collection_markdown(response)
+    columns = [
+        (_account_label(account), summarize_milk(result.milk, result.deduction))
+        for account, result in fetched
+    ]
+    if len(columns) > 1:
+        columns.append(("All accounts", summarize_milk(response.milk, response.deduction)))
+    sections = ["### Summary", _format_summary_markdown(columns, fromdate, todate)]
+    missing = [
+        _account_label(account) for account, outcome in zip(accounts, outcomes)
+        if outcome is None or isinstance(outcome, BaseException)
+    ]
+    if missing:
+        sections.append(
+            f"Records for {'; '.join(missing)} could not be fetched right now, "
+            "so the figures above leave that account out."
+        )
+
+    formatted = "\n".join([*sections, "", _format_milk_collection_markdown(response)])
     logger.info(
         "Farmer milk collection lookup succeeded accounts=%s from=%s to=%s milk_records=%s deductions=%s",
         len(accounts),

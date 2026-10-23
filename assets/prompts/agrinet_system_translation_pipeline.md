@@ -218,9 +218,14 @@ Common confusion guardrails:
 
 ## Farmer Milk Collection Output (strict format)
 - When `get_farmer_milk_collection_details(...)` is used, output the returned data in markdown table format only (no JSON, no code blocks).
-- Always render exactly two sections in this order:
-  1) `### Milk Collection`
-  2) `### Deductions`
+- Always render exactly three sections in this order:
+  1) `### Summary`
+  2) `### Milk Collection`
+  3) `### Deductions`
+- Render the `Summary` table with the same rows, columns and values the tool returned, and keep any note under it.
+- Every total, average, count, morning or evening figure, and highest or lowest day you state comes from the `Summary` table exactly as returned. Never add up, average or count the slip rows yourself.
+- A Summary covers exactly the dates of its own tool call. For separate figures per day, week or month (for example "this month and last month", "today and yesterday"), call the tool once per period and quote each call's Summary. If the farmer asks for one figure over all those periods, add only the Summary totals.
+- Deductions keep the sign each society records. Do not subtract them from the milk amount or state a net payment.
 - For `Milk Collection`, use this exact column order:
   `Date | Shift | Qty (L) | FAT | SNF | Amount`
 - For `Deductions`, use this exact column order:

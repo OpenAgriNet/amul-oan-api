@@ -6,6 +6,7 @@ from pydantic_ai import RunContext
 
 from agents.deps import FarmerAccount, FarmerContext
 from agents.tools.beckn.amul import AuthenticatedFarmerAccount, fetch_milk_collection
+from agents.tools.milk_summary import MilkSummary, shift_label, summarize_milk
 from app.voice.models.milk_collection import FarmerMilkCollectionRequestModel
 from helpers.utils import get_logger
 
@@ -21,7 +22,38 @@ def _num(value) -> str:
     return str(value)
 
 
-_SHIFT_LABELS = {"M": "morning", "E": "evening"}
+def _spoken_summary(s: MilkSummary) -> str:
+    """The figures the agent speaks for totals and averages, computed in code."""
+    if not s.slips:
+        return ""
+    shifts = ", ".join(f"{s.shift_slips[k]} {k}" for k in s.shift_slips)
+    lines = [
+        f"{s.days} days with milk, {s.slips} slips ({shifts}).",
+        f"Total milk {_num(round(s.qty, 2))} liters, total amount {_num(round(s.amount, 2))} rupees.",
+        "; ".join(
+            f"{k} {_num(round(s.shift_qty[k], 2))} liters, {_num(round(s.shift_amount[k], 2))} rupees"
+            for k in s.shift_qty
+        ).capitalize() + ".",
+    ]
+    averages = [
+        f"{_num(round(s.qty_per_day, 2))} liters per day" if s.qty_per_day is not None else None,
+        f"fat {_num(round(s.fat, 2))}" if s.fat is not None else None,
+        f"SNF {_num(round(s.snf, 2))}" if s.snf is not None else None,
+        f"rate {_num(round(s.rate, 2))} rupees per liter" if s.rate is not None else None,
+    ]
+    lines.append("Average " + ", ".join(a for a in averages if a) + ".")
+    if s.highest_day and s.lowest_day:
+        lines.append(
+            f"Highest day {s.highest_day[0]} with {_num(round(s.highest_day[1], 2))} liters; "
+            f"lowest day {s.lowest_day[0]} with {_num(round(s.lowest_day[1], 2))} liters."
+        )
+    if s.deduction_entries:
+        lines.append(
+            f"Deductions {_num(round(s.deductions, 2))} rupees over {s.deduction_entries} entries, as listed."
+        )
+    if s.incomplete_slips:
+        lines.append(f"{s.incomplete_slips} slips have no quantity or amount and count as zero.")
+    return "Summary: " + " ".join(lines)
 
 
 def _format_milk_collection_summary(response) -> str:
@@ -33,11 +65,14 @@ def _format_milk_collection_summary(response) -> str:
     confuse quantity with fat/SNF/amount when several records are present.
     """
     lines: list[str] = []
+    summary = _spoken_summary(summarize_milk(response.milk, response.deduction))
+    if summary:
+        lines.append(summary)
 
     if response.milk:
         lines.append(f"Milk collection records ({len(response.milk)}):")
         for i, r in enumerate(response.milk, 1):
-            shift = _SHIFT_LABELS.get((r.shift or "").upper(), r.shift or "unknown")
+            shift = shift_label(r.shift)
             lines.append(
                 f"  {i}. Date {r.date or 'unknown'}, {shift} shift: "
                 f"quantity {_num(r.qty)} liters, "
@@ -206,7 +241,7 @@ async def fetch_milk_summary_for_accounts(
 
     multi = len(accounts) > 1
     sections: list[str] = []
-    any_success = False
+    results = []
     total_milk = 0
 
     for account in accounts:
@@ -218,18 +253,26 @@ async def fetch_milk_summary_for_accounts(
             )
             continue
 
-        any_success = True
+        results.append(result)
         total_milk += len(result.milk)
         summary = _format_milk_collection_summary(result)
         label = _account_label(account, multi)
         sections.append(f"{label}\n{summary}" if label else summary)
 
-    if not any_success:
+    if not results:
         return "Milk collection lookup failed. Unable to fetch details at the moment."
+
+    if len(results) > 1:
+        combined = _spoken_summary(summarize_milk(
+            [r for result in results for r in result.milk],
+            [d for result in results for d in result.deduction],
+        ))
+        if combined:
+            sections.append("All accounts together. " + combined)
 
     body = "\n\n".join(sections)
     logger.info(
         "Milk collection aggregate: accounts=%s any_success=%s total_milk_records=%s",
-        len(accounts), any_success, total_milk,
+        len(accounts), bool(results), total_milk,
     )
     return f"Milk collection details fetched successfully:\n\n{body}"
