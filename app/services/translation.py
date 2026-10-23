@@ -1065,7 +1065,7 @@ async def _translategemma_unary(descriptor, prompt, source_lang, target_lang, te
     langfuse = _get_langfuse()
     observation = (
         langfuse.start_as_current_observation(
-            name="text_translation",
+            name="post_translation",
             as_type="generation",
             input={
                 "source_lang": source_lang,
@@ -1156,7 +1156,7 @@ async def _llm_translation_unary(
     langfuse = _get_langfuse()
     observation = (
         langfuse.start_as_current_observation(
-            name="text_translation",
+            name="post_translation",
             as_type="generation",
             input={
                 "source_lang": source_lang,
@@ -1353,7 +1353,7 @@ async def pretranslate_with_tier(
     langfuse = _get_langfuse()
     observation = (
         langfuse.start_as_current_observation(
-            name="query_pretranslation",
+            name="pre_translation",
             as_type="generation",
             input={
                 "source_lang": source_lang,
