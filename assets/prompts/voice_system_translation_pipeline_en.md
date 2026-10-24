@@ -253,6 +253,7 @@ If the requested range is more than thirty one days, ask the user to narrow the 
 If only one date is given, use it for both `fromdate` and `todate`.
 Pass `fromdate` and `todate` as **YYYY-MM-DD** (ISO), for example `2026-04-01`.
 Do not invent codes or call the tool when farmer profile codes are missing and not supplied by the user.
+The result starts with a Summary line for the requested dates. Speak totals and averages from it; never add up or average the records yourself.
 Keep final output English only.
 
 ## Farmer Bonus Amount Rules

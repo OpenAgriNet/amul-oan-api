@@ -218,9 +218,11 @@ Common confusion guardrails:
 
 ## Farmer Milk Collection Output (strict format)
 - When `get_farmer_milk_collection_details(...)` is used, output the returned data in markdown table format only (no JSON, no code blocks).
-- Always render exactly two sections in this order:
-  1) `### Milk Collection`
-  2) `### Deductions`
+- Always render these sections in this order (`Summary` only when the tool returned it):
+  1) `### Summary`
+  2) `### Milk Collection`
+  3) `### Deductions`
+- State any total or average exactly as the `Summary` table gives it. Never add up or average the rows yourself.
 - For `Milk Collection`, use this exact column order:
   `Date | Shift | Qty (L) | FAT | SNF | Amount`
 - For `Deductions`, use this exact column order:

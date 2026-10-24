@@ -2,6 +2,7 @@
 Tool for fetching farmer milk collection and deduction details.
 """
 import asyncio
+from datetime import datetime
 
 from pydantic_ai import RunContext
 from pydantic_ai.tools import ToolDefinition
@@ -93,11 +94,55 @@ def _build_markdown_table(headers: list[str], rows: list[list[str]]) -> str:
     return "\n".join([header_line, separator_line, *row_lines])
 
 
-def _format_milk_collection_markdown(response) -> str:
+def milk_totals(milk) -> tuple[int, float, float, float | None, float | None]:
+    """Days with milk, litres, amount, and FAT/SNF averaged by litres (as a dairy does).
+
+    Computed here so the model quotes a total instead of adding slips up: live chat
+    stated a wrong total in 80% of the answers that gave one (29 Sep-12 Oct 2026).
+    """
+    def by_litres(attr: str) -> float | None:
+        pairs = [(getattr(r, attr), r.qty) for r in milk if getattr(r, attr) is not None and r.qty]
+        litres = sum(q for _, q in pairs)
+        return sum(v * q for v, q in pairs) / litres if litres else None
+
+    days = len({r.date for r in milk if r.qty})
+    return (
+        days,
+        sum(r.qty or 0 for r in milk),
+        sum(r.amount or 0 for r in milk),
+        by_litres("fat"),
+        by_litres("snf"),
+    )
+
+
+def _display_date(value: str) -> str:
+    """YYYY-MM-DD (validated tool input) -> dd-mm-yyyy, as the slips show dates."""
+    return datetime.strptime(value, "%Y-%m-%d").strftime("%d-%m-%Y")
+
+
+def _format_milk_collection_markdown(response, fromdate: str, todate: str) -> str:
     """
     Format tool response as deterministic markdown tables for frontend rendering.
     """
     sections: list[str] = []
+
+    if response.milk:
+        days, litres, amount, fat, snf = milk_totals(response.milk)
+        sections.append("### Summary")
+        sections.append(
+            _build_markdown_table(
+                ["Period", "Days with milk", "Total milk (L)", "Total amount (Rs)", "Average FAT", "Average SNF"],
+                [[
+                    f"{_display_date(fromdate)} to {_display_date(todate)}",
+                    str(days),
+                    _format_number(litres, 2),
+                    _format_number(amount, 2),
+                    _format_number(fat, 2),
+                    _format_number(snf, 2),
+                ]],
+            )
+        )
+        sections.append("")
 
     sections.append("### Milk Collection")
     if response.milk:
@@ -158,7 +203,7 @@ async def get_farmer_milk_collection_details(
         todate: End date in YYYY-MM-DD format.
 
     Returns:
-        str: Deterministic markdown tables for milk and deductions, or a clear failure message.
+        str: Deterministic markdown tables (summary, milk, deductions), or a clear failure message.
     """
     logger.info(
         "Farmer milk collection tool invoked from=%s to=%s",
@@ -252,7 +297,7 @@ async def get_farmer_milk_collection_details(
         deduction=[record for result in responses for record in result.deduction],
     )
 
-    formatted = _format_milk_collection_markdown(response)
+    formatted = _format_milk_collection_markdown(response, fromdate, todate)
     logger.info(
         "Farmer milk collection lookup succeeded accounts=%s from=%s to=%s milk_records=%s deductions=%s",
         len(accounts),
