@@ -8,9 +8,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from agents.deps import FarmerAccount, FarmerContext
 from agents.voice.tools import bonus as bonus_tool
-from agents.voice.tools import farmer_ticket_summary as ticket_tool
 from app.voice.models.bonus import FarmerBonusAmountRecordModel
-from agents.tools.models.farmer_ticket_summary import FarmerTicketSummaryResponseModel
 
 
 def _ctx(accounts=None, mobile="9000000000"):
@@ -334,72 +332,3 @@ class TestBonusPrepareGuard:
         assert "union_code" not in parameters
         assert "society_code" not in parameters
         assert "farmer_code" not in parameters
-
-
-class TestVoiceFarmerTicketSummaryTool:
-    def _summary(self):
-        return FarmerTicketSummaryResponseModel.model_validate({
-            "farmerDetails": {"farmerName": "FARMER1", "societyName": "DEMO_2004"},
-            "pendingTickets": [{"ticketNumber": "T-1", "bookDateTime": "2026-10-20T10:00:00"}],
-            "lastLactationDetail": [{
-                "animalTagNumber": "TAG-1",
-                "lastBreedingActivity": {
-                    "lastAI": "2026-09-01T00:00:00", "lastAITicketNumber": "AI-1",
-                    "bullId": "BULL-7", "semenType": "Sexed",
-                    "lastPD": "2026-10-01T00:00:00", "pdStatus": "Positive",
-                    "lastCalving": "2025-12-01T00:00:00",
-                },
-            }],
-        })
-
-    def test_success_is_spoken_text_and_partial_failure_warns(self, monkeypatch):
-        monkeypatch.setenv("PASHUGPT_TOKEN", "test-token")
-
-        async def fake_api(request, token):
-            return self._summary() if request.farmer_code == "0001" else None
-
-        monkeypatch.setattr(ticket_tool, "get_farmer_ticket_summary_api", fake_api)
-        result = asyncio.run(ticket_tool.get_farmer_ticket_summary(_ctx(
-            _accounts(("0001", "2004", "0001"), ("0001", "2005", "0002"))
-        )))
-        assert "Ticket T-1 was booked on 20 October 2026" in result
-        assert "Animal TAG-1" in result
-        assert "last A I on 01 September 2026" in result
-        assert "Some linked accounts could not be checked: 1 of 2" in result
-        assert "|" not in result
-
-    def test_missing_identity_is_hidden_and_not_called(self, monkeypatch):
-        called = False
-
-        async def unexpected(*args, **kwargs):
-            nonlocal called
-            called = True
-
-        monkeypatch.setattr(ticket_tool, "get_farmer_ticket_summary_api", unexpected)
-        result = asyncio.run(ticket_tool.get_farmer_ticket_summary(_ctx(mobile=None)))
-        assert "signed-in profile" in result
-        assert called is False
-        sentinel = object()
-        assert asyncio.run(
-            ticket_tool.prepare_get_farmer_ticket_summary(_ctx(mobile=None), sentinel)
-        ) is None
-
-    def test_empty_and_total_failure_are_distinct(self, monkeypatch):
-        monkeypatch.setenv("PASHUGPT_TOKEN", "test-token")
-        ctx = _ctx(_accounts(("0001", "2004", "0001")))
-
-        async def empty(request, token):
-            return FarmerTicketSummaryResponseModel()
-
-        monkeypatch.setattr(ticket_tool, "get_farmer_ticket_summary_api", empty)
-        assert "No ticket, breeding, or calving records" in asyncio.run(
-            ticket_tool.get_farmer_ticket_summary(ctx)
-        )
-
-        async def failed(request, token):
-            return None
-
-        monkeypatch.setattr(ticket_tool, "get_farmer_ticket_summary_api", failed)
-        assert "Unable to fetch ticket details" in asyncio.run(
-            ticket_tool.get_farmer_ticket_summary(ctx)
-        )

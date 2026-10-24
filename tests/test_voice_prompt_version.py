@@ -49,7 +49,6 @@ LIVE_TOOLS = [
     "create_ai_call",
     "get_farmer_milk_collection_details",
     "get_farmer_bonus_amount",
-    "get_farmer_ticket_summary",
     "get_union_scheme_data",
     "signal_conversation_state",
 ]
@@ -245,15 +244,6 @@ class TestNewVariantInvariants:
         # Voice must not prescribe markdown table output for bonus
         assert "### Bonus Amount" not in text
         assert "| Period | Society | Farmer | Bonus Amount |" not in text
-
-    @pytest.mark.parametrize("version", list(VARIANTS))
-    def test_ticket_summary_tool_routing_and_privacy_rules(self, version):
-        text = _load(version)
-        lower = text.lower()
-        assert "get_farmer_ticket_summary" in text
-        assert "pending ticket" in lower
-        assert "calving" in lower
-        assert "never ask for or invent" in lower
 
     @pytest.mark.parametrize("version", NEW_VARIANTS)
     def test_ai_booking_no_ordinal_choice(self, version):
