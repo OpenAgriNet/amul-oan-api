@@ -30,6 +30,7 @@ from typing import Optional
 from agents.tools.farmer import normalize_phone_to_mobile
 from agents.tools.farmer_cache import get_or_fetch_farmer_data
 from app.config import settings
+from app.llm_core import Step
 from app.turn.types import BackgroundFactory, ClassifierResult, Turn
 from app.utils import format_message_pairs
 from app.voice import outbound as _outbound
@@ -40,7 +41,7 @@ from app.voice.liveness import nudge_stopped
 from app.voice.moderation import ModerationVerdict, check_moderation
 from app.voice.non_meaningful import NonMeaningfulVerdict, check_non_meaningful_streak
 from app.voice.outbound_consent import ConsentVerdict, classify_consent
-from app.voice.trace import current_trace, sanitize_text
+from app.voice.trace import check_mode, current_trace, step_tiers
 from helpers.utils import get_logger
 
 logger = get_logger(__name__)
@@ -311,42 +312,26 @@ class VoiceBackground:
                 moderation_error,
             )
             self._moderation_verdict = None
-        moderation_duration_ms = self._duration_ms("moderation")
         trace.set_moderation(self._moderation_verdict)
         moderation_payload = trace.metadata.get("moderation", {})
         verdict = self._moderation_verdict
+        # turn.v1's moderation step: the text in, the verdict out, and how the check
+        # concluded. A check that raised let the turn through.
         trace.record_child_observation(
             name="moderation",
             as_type="generation",
-            input={
-                "source_lang": self._source_lang,
-                "text": sanitize_text(self._turn.query),
-                "recent_history_text": sanitize_text(self._moderation_recent_history),
-            },
+            input=trace.text(self._turn.query),
             output=(
-                {
-                    "category": getattr(verdict, "category", None),
-                    "reason": getattr(verdict, "reason", None),
-                    "rejected": getattr(verdict, "rejected", None),
-                    "failed_open": getattr(verdict, "failed_open", None),
-                    "failed_closed": getattr(verdict, "failed_closed", None),
-                }
+                {"category": verdict.category, "reason": verdict.reason, "rejected": verdict.rejected}
                 if verdict is not None
-                else {"available": False}
+                else None
             ),
             metadata={
-                "duration_ms": round(moderation_duration_ms, 2),
-                "status": moderation_status,
-                "source_lang": self._source_lang,
-                "pipeline_profile": trace.metadata.get("pipeline_profile"),
-                "requested_tier": moderation_payload.get("requested_tier"),
-                "requested_provider": moderation_payload.get("requested_provider"),
-                "requested_model": moderation_payload.get("requested_model"),
-                "actual_tier": moderation_payload.get("actual_tier"),
-                "actual_provider": moderation_payload.get("actual_provider"),
-                "actual_model": moderation_payload.get("actual_model"),
-                "fallback_used": moderation_payload.get("fallback_used"),
-                "attempts": moderation_payload.get("attempts"),
+                "amul.check_mode": check_mode(
+                    failed_closed=verdict is not None and verdict.failed_closed,
+                    failed_open=verdict is None or verdict.failed_open,
+                ),
+                **step_tiers(self._execution, Step.MODERATION),
             },
             model=moderation_payload.get("actual_model") or moderation_payload.get("requested_model"),
             level="ERROR" if moderation_status == "error" else "DEFAULT",
@@ -371,6 +356,7 @@ class VoiceBackground:
         task = self._non_meaningful_task
         trace = current_trace()
         should_gate = _should_gate_non_meaningful_llm(self._non_meaningful_turns)
+        non_meaningful_error: Optional[str] = None
         try:
             if not should_gate and not task.done():
                 await _cancel_and_reap(task)
@@ -420,7 +406,8 @@ class VoiceBackground:
             )
         except asyncio.CancelledError:
             raise
-        except Exception as non_meaningful_error:
+        except Exception as exc:
+            non_meaningful_error = str(exc)[:300]
             trace.attach_stage_timing(
                 "non_meaningful",
                 self._duration_ms("non_meaningful"),
@@ -430,23 +417,41 @@ class VoiceBackground:
             logger.error(
                 "Non-meaningful task raised unexpectedly for session_id=%s error=%s",
                 self._turn.session_id,
-                non_meaningful_error,
+                exc,
             )
             self._non_meaningful_verdict = NonMeaningfulVerdict(
                 five_consecutive_non_meaningful=False,
-                reason=f"task error: {type(non_meaningful_error).__name__}",
+                reason=f"task error: {type(exc).__name__}",
                 failed_open=True,
             )
+        verdict = self._non_meaningful_verdict
         trace.metadata["non_meaningful"] = {
-            "available": self._non_meaningful_verdict is not None,
-            "five_consecutive_non_meaningful": bool(
-                getattr(self._non_meaningful_verdict, "five_consecutive_non_meaningful", False)
-            ),
-            "failed_open": bool(getattr(self._non_meaningful_verdict, "failed_open", False)),
-            "reason": getattr(self._non_meaningful_verdict, "reason", ""),
+            "available": verdict is not None,
+            "five_consecutive_non_meaningful": bool(getattr(verdict, "five_consecutive_non_meaningful", False)),
+            "failed_open": bool(getattr(verdict, "failed_open", False)),
+            "reason": getattr(verdict, "reason", ""),
             "turn_count": len(self._non_meaningful_turns),
             "gate_skipped": not should_gate,
         }
+        # turn.v1's non_meaningful step: the streak verdict, and how the check
+        # concluded (skipped when voice did not gate on it).
+        trace.record_child_observation(
+            name="non_meaningful",
+            as_type="generation",
+            output={
+                "non_meaningful": bool(getattr(verdict, "five_consecutive_non_meaningful", False)),
+                "reason": getattr(verdict, "reason", ""),
+                "streak": len(self._non_meaningful_turns),
+            },
+            metadata={
+                "amul.check_mode": check_mode(
+                    skipped=not should_gate, failed_open=bool(getattr(verdict, "failed_open", False))
+                ),
+                **step_tiers(self._execution, Step.NON_MEANINGFUL),
+            },
+            level="ERROR" if non_meaningful_error is not None else "DEFAULT",
+            status_message=non_meaningful_error,
+        )
         if self._non_meaningful_verdict is not None:
             logger.info(
                 "Non-meaningful verdict: five_consecutive_non_meaningful=%s failed_open=%s reason=%r session_id=%s process_id=%s",

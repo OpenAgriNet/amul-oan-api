@@ -1,16 +1,15 @@
-import json
 import asyncio
-from contextlib import nullcontext
 from typing import Literal
 
 from app.models.telemetry import CanonicalTelemetryEvent
+from app.observability import non_turn_root
 from app.services.telemetry_mapper import map_canonical_event_to_langfuse
+from app.services.telemetry_stamps import FRONTEND_EVENT, non_turn_v1_metadata
 from helpers.utils import get_logger
 
 try:
-    from langfuse import propagate_attributes, get_client as get_langfuse_client
+    from langfuse import get_client as get_langfuse_client
 except ImportError:
-    propagate_attributes = None
     get_langfuse_client = None
 
 logger = get_logger(__name__)
@@ -19,29 +18,18 @@ logger = get_logger(__name__)
 WriteStatus = Literal["queued", "skipped_unconfigured", "failed"]
 
 
-def _stringify_metadata_for_propagation(metadata: dict) -> dict[str, str]:
-    """
-    propagate_attributes metadata is OTEL-style baggage and expects string values.
-    Keep full metadata for observation writes, but pass a string-safe copy for propagation.
-    """
-    safe: dict[str, str] = {}
-    for key, value in metadata.items():
-        if value is None:
-            continue
-        if isinstance(value, str):
-            safe[key] = value
-        elif isinstance(value, (int, float, bool)):
-            safe[key] = str(value)
-        else:
-            safe[key] = json.dumps(value, ensure_ascii=True, default=str)
-    return safe
-
-
 async def write_canonical_event_to_langfuse(
     canonical: CanonicalTelemetryEvent,
 ) -> tuple[WriteStatus, str | None]:
     """
     Best-effort writer for telemetry canonical events to Langfuse.
+
+    Each event is a turn.v1 frontend_event trace (amul-telemetry
+    telemetry/turn.v1.yaml): a root named frontend_event with the amul.* keys,
+    the session and the user, and under it the ``frontend.<event>`` observation
+    with what the frontend sent. turn.v1 keeps a trace's input and output for
+    turns. A feedback's ``user_feedback`` score is on this trace until the
+    frontend sends the turn's trace id with it.
 
     The ingest endpoint must not fail if Langfuse is unavailable, so this function
     always returns a status instead of raising.
@@ -55,37 +43,24 @@ async def write_canonical_event_to_langfuse(
         return "skipped_unconfigured", f"langfuse client not configured: {exc}"
 
     mapped = map_canonical_event_to_langfuse(canonical)
-    tags = mapped.get("tags", [])
-    metadata = mapped.get("metadata", {})
-    propagation_metadata = _stringify_metadata_for_propagation(metadata)
-    session_id = canonical.session_id
-    user_id = canonical.user_id
-
-    trace_ctx = (
-        propagate_attributes(
-            session_id=(session_id or "")[:200] if session_id else None,
-            user_id=(user_id or "")[:200] if user_id else None,
-            metadata=propagation_metadata,
-            tags=tags,
-        )
-        if propagate_attributes is not None
-        else nullcontext()
+    root_metadata = non_turn_v1_metadata(
+        FRONTEND_EVENT,
+        # The frontend telemetry is the web app's; WhatsApp has none.
+        pipeline="webapp",
+        event=canonical.event_name,
     )
 
     try:
-        with trace_ctx:
+        with non_turn_root(
+            FRONTEND_EVENT, root_metadata, session_id=canonical.session_id, user_id=canonical.user_id
+        ):
             with langfuse.start_as_current_observation(
                 name=mapped["observation_name"],
                 as_type="generation",
                 input=mapped.get("input"),
                 output=mapped.get("output"),
-                metadata=metadata,
+                metadata=mapped.get("metadata", {}),
             ) as observation:
-                if mapped.get("input") is not None:
-                    langfuse.set_current_trace_io(input=mapped["input"])
-                if mapped.get("output") is not None:
-                    langfuse.set_current_trace_io(output=mapped["output"])
-
                 # Best-effort score capture for feedback events.
                 score = mapped.get("score")
                 if score and score.get("value") is not None:

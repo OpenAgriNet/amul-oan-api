@@ -321,8 +321,9 @@ reads it. So a slot lands in the same PR as the code that reads it, never ahead 
 
    The model that answered and whether it fell back are recorded, with voice's keys:
    `llm_core`'s streaming walker notes the tier it committed to and any fallback on the turn's
-   pipeline trace. `VOICE_TRACE_USER_ID_MODE` (default `hash`) is voice-oan-api#345: `phone`
-   sends the caller's phone as the Langfuse user id. The Prometheus series keep their names, but
+   pipeline trace. The trace carries the caller's words and phone as they are, with nothing
+   hashed (turn.v1, decided 2026-10-20); voice-oan-api#345's `VOICE_TRACE_USER_ID_MODE` and the
+   text modes are no longer read. The Prometheus series keep their names, but
    their `step` label takes `llm_core`'s step names: `pretranslation` is `pre_translation`,
    `chat` is `agent`, and a post-translation fallback event's `posttranslation` is
    `post_translation`; a TranslateGemma tier counts as `kind=oss`, where voice counted it as
@@ -346,8 +347,7 @@ reads it. So a slot lands in the same PR as the code that reads it, never ahead 
 7. Cutover: the amul-oan-api image deployed as the voice service with
    `PIPELINE_CHANNEL=voice`, `LANGFUSE_TRACING_ENVIRONMENT=voice-production`,
    `VOICE_ROUTE_ENABLED=true` and `HISTORY_CACHE_TTL_SECONDS=86400` (voice keeps history for 24
-   hours, this repo's default is 2), `VOICE_TRACE_USER_ID_MODE=phone` where that Langfuse may
-   hold phone numbers (prod voice sends the phone today), the telephony
+   hours, this repo's default is 2), the telephony
    provider pointed at it, voice-oan-api kept deployable for rollback, and a new era in
    amul-telemetry's `telemetry/eras.yaml`. The voice deployment boots from `PIPELINE_CONFIG_PATH` with voice's
    steps; the live `llm_pipeline_config:voice` key can override it after that. With

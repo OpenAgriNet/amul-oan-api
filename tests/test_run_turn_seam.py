@@ -250,7 +250,7 @@ def test_artifact_encoding_failure_is_recorded_as_error_not_cancelled(monkeypatc
         asyncio.run(_collect(_stream(source_lang="gu", target_lang="gu")))
 
     assert _outcomes(seen) == ["error"]
-    assert ("exit", "chat.translation") in seen["spans"], "the root span was left open"
+    assert ("exit", "turn") in seen["spans"], "the root span was left open"
 
 
 # ── run_turn itself ─────────────────────────────────────────────────────────
@@ -459,7 +459,7 @@ def test_disconnect_raised_by_send_closes_the_turn_before_the_response_returns(m
 
     outcomes, spans = asyncio.run(_go())
     assert outcomes == ["cancelled"]
-    assert spans[-1] == ("exit", "chat.translation"), spans
+    assert spans[-1] == ("exit", "turn"), spans
 
 
 def test_disconnect_that_cancels_the_stream_closes_the_turn_before_background_work(monkeypatch):
@@ -497,9 +497,9 @@ def test_disconnect_that_cancels_the_stream_closes_the_turn_before_background_wo
 
     outcomes, spans = asyncio.run(_go())
     assert outcomes == ["cancelled"]
-    assert spans[-1] == ("exit", "chat.translation"), spans
+    assert spans[-1] == ("exit", "turn"), spans
     assert len(spans_when_suggestions_ran) == 1, "background work did not run"
-    assert spans_when_suggestions_ran[0][-1] == ("exit", "chat.translation"), (
+    assert spans_when_suggestions_ran[0][-1] == ("exit", "turn"), (
         "suggestions ran while the turn's root span was still open"
     )
 
@@ -537,7 +537,7 @@ def test_disconnect_before_the_first_chunk_is_recorded_as_cancelled(monkeypatch)
 
     outcomes, spans = asyncio.run(_go())
     assert outcomes == ["cancelled"]
-    assert spans[-1] == ("exit", "chat.translation"), spans
+    assert spans[-1] == ("exit", "turn"), spans
 
 
 def test_turn_close_completes_even_if_the_turn_awaits_while_unwinding(monkeypatch):
