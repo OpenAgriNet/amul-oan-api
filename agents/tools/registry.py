@@ -10,6 +10,10 @@ from agents.tools.bonus import (
     get_farmer_bonus_amount,
     prepare_get_farmer_bonus_amount,
 )
+from agents.tools.farmer_ticket_summary import (
+    get_farmer_ticket_summary,
+    prepare_get_farmer_ticket_summary,
+)
 from agents.tools.cattle_trade import get_cattle_trade_prices
 from agents.tools.search import search_documents
 from agents.tools.vet_offices import find_nearby_vet_offices
@@ -72,6 +76,14 @@ TOOLS = [
         docstring_format='auto',
         require_parameter_descriptions=True,
         prepare=prepare_get_farmer_bonus_amount,  # hide unless a farmer is resolved
+    ),
+
+    Tool(
+        get_farmer_ticket_summary,
+        takes_ctx=True,
+        docstring_format='auto',
+        require_parameter_descriptions=True,
+        prepare=prepare_get_farmer_ticket_summary,
     ),
 
     Tool(

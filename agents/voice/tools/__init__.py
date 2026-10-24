@@ -16,6 +16,10 @@ from agents.voice.tools.common import fire_tool_call_nudge
 from agents.voice.tools.union_schemes import get_union_scheme_data, prepare_get_union_scheme_data
 from agents.voice.tools.loan import check_loan_eligibility, prepare_check_loan_eligibility
 from agents.voice.tools.bonus import get_farmer_bonus_amount, prepare_get_farmer_bonus_amount
+from agents.voice.tools.farmer_ticket_summary import (
+    get_farmer_ticket_summary,
+    prepare_get_farmer_ticket_summary,
+)
 from agents.voice.services.farmer_identity import prepare_requires_farmer_identity
 from agents.tools.cattle_trade import get_cattle_trade_prices
 
@@ -135,6 +139,13 @@ SIGNED_IN_FARMER_TOOLS = [
         docstring_format='auto',
         require_parameter_descriptions=False,
         prepare=prepare_get_farmer_bonus_amount,
+    ),
+    Tool(
+        _with_nudge_signal(get_farmer_ticket_summary),
+        takes_ctx=True,
+        docstring_format='auto',
+        require_parameter_descriptions=False,
+        prepare=prepare_get_farmer_ticket_summary,
     ),
 ]
 
