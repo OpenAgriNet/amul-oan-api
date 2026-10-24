@@ -116,12 +116,14 @@ def test_signed_in_farmer_tools_drops_brittle_three():
     from agents.voice.tools import SIGNED_IN_FARMER_TOOLS
     from agents.voice.tools.bonus import prepare_get_farmer_bonus_amount
 
-    assert len(SIGNED_IN_FARMER_TOOLS) == 2, (
-        f"expected get_union_scheme_data + get_farmer_bonus_amount; "
+    assert len(SIGNED_IN_FARMER_TOOLS) == 3, (
+        f"expected union scheme, bonus, and farmer ticket summary tools; "
         f"got {len(SIGNED_IN_FARMER_TOOLS)} tools"
     )
     names = {getattr(t.function, "__name__", "") for t in SIGNED_IN_FARMER_TOOLS}
-    assert names == {"get_union_scheme_data", "get_farmer_bonus_amount"}
+    assert names == {
+        "get_union_scheme_data", "get_farmer_bonus_amount", "get_farmer_ticket_summary"
+    }
     bonus_tool = next(
         t
         for t in SIGNED_IN_FARMER_TOOLS

@@ -77,10 +77,12 @@ def test_the_agents_have_voices_tools():
         "get_cattle_trade_prices", "signal_conversation_state", "find_nearby_vet_offices", "check_loan_eligibility",
     ]
     assert [tool.name for tool in BASE_TOOLS] == base
-    assert [tool.name for tool in SIGNED_IN_FARMER_TOOLS] == ["get_union_scheme_data", "get_farmer_bonus_amount"]
+    assert [tool.name for tool in SIGNED_IN_FARMER_TOOLS] == [
+        "get_union_scheme_data", "get_farmer_bonus_amount", "get_farmer_ticket_summary"
+    ]
     assert sorted(voice_agent_module.voice_agent._function_toolset.tools) == sorted(base)
     assert sorted(voice_agent_module.voice_agent_signed_in._function_toolset.tools) == sorted(
-        [*base, "get_union_scheme_data", "get_farmer_bonus_amount"]
+        [*base, "get_union_scheme_data", "get_farmer_bonus_amount", "get_farmer_ticket_summary"]
     )
 
 

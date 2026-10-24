@@ -2,8 +2,10 @@ import asyncio
 from types import SimpleNamespace
 
 from agents.tools import bonus as bonus_tool
+from agents.tools import farmer_ticket_summary as ticket_tool
 from agents.tools.models.bonus import FarmerBonusAmountRecordModel
 from agents.tools.models.farmer import FarmerModel
+from agents.tools.models.farmer_ticket_summary import FarmerTicketSummaryResponseModel
 
 
 def _ctx():
@@ -34,6 +36,36 @@ def _patch_farmers(monkeypatch, farmers):
         return farmers
 
     monkeypatch.setattr(bonus_tool, "get_farmer_data_by_mobile", lookup)
+
+
+def _patch_ticket_farmers(monkeypatch, farmers):
+    async def lookup(mobile):
+        assert mobile == "9000000000"
+        return farmers
+
+    monkeypatch.setattr(ticket_tool, "get_farmer_data_by_mobile", lookup)
+
+
+def _ticket_summary(**overrides):
+    data = {
+        "farmerDetails": {
+            "farmerName": "FARMER1", "farmerCode": "0001",
+            "societyName": "DEMO_2004", "societyCode": "2004",
+        },
+        "pendingTickets": [{"ticketNumber": "T-1", "bookDateTime": "2026-10-20T10:00:00"}],
+        "lastLactationDetail": [{
+            "animalTagNumber": "TAG-1",
+            "lastBreedingActivity": {
+                "lastAI": "2026-09-01T00:00:00", "lastAITicketNumber": "AI-1",
+                "bullId": "BULL-7", "semenType": "Sexed",
+                "lastPD": "2026-10-01T00:00:00", "lastPDTicketNumber": "PD-1",
+                "pdStatus": "Positive", "lastCalving": "2025-12-01T00:00:00",
+                "lastCalvingTicketNumber": "C-1",
+            },
+        }],
+    }
+    data.update(overrides)
+    return FarmerTicketSummaryResponseModel.model_validate(data)
 
 
 class TestBonusTool:
@@ -264,3 +296,82 @@ class TestBonusTool:
 
         assert "fetched successfully" in result
         assert "| 2026-04-01 - 2026-04-01 | - | - | 0.00 |" in result
+
+
+class TestFarmerTicketSummaryTool:
+    def test_success_formats_full_account_summary(self, monkeypatch):
+        _patch_ticket_farmers(monkeypatch, [_farmer()])
+        monkeypatch.setattr(ticket_tool, "get_config_value", lambda name: "test-token")
+
+        async def fake_api(request, token):
+            assert request.to_query_params() == {
+                "unionCode": "0001", "societyCode": "2004", "farmerCode": "0001"
+            }
+            assert token == "test-token"
+            return _ticket_summary()
+
+        monkeypatch.setattr(ticket_tool, "get_farmer_ticket_summary_api", fake_api)
+        result = asyncio.run(ticket_tool.get_farmer_ticket_summary(_ctx()))
+        assert "### FARMER1 (0001)" in result
+        assert "Ticket T-1 booked 20-Oct-2026" in result
+        assert "Animal TAG-1" in result
+        assert "Last AI 01-Sep-2026" in result
+        assert "Last PD 01-Oct-2026" in result
+        assert "Last calving 01-Dec-2025" in result
+
+    def test_partial_success_is_returned_with_warning(self, monkeypatch):
+        _patch_ticket_farmers(
+            monkeypatch,
+            [_farmer(), _farmer(societyCode="2005", farmerCode="0002")],
+        )
+        monkeypatch.setattr(ticket_tool, "get_config_value", lambda name: "test-token")
+
+        async def fake_api(request, token):
+            return _ticket_summary() if request.farmer_code == "0001" else None
+
+        monkeypatch.setattr(ticket_tool, "get_farmer_ticket_summary_api", fake_api)
+        result = asyncio.run(ticket_tool.get_farmer_ticket_summary(_ctx()))
+        assert "Ticket T-1" in result
+        assert "Some linked accounts could not be checked (1 of 2)" in result
+
+    def test_all_failures_and_empty_success_are_distinct(self, monkeypatch):
+        _patch_ticket_farmers(monkeypatch, [_farmer()])
+        monkeypatch.setattr(ticket_tool, "get_config_value", lambda name: "test-token")
+
+        async def failed(request, token):
+            return None
+
+        monkeypatch.setattr(ticket_tool, "get_farmer_ticket_summary_api", failed)
+        assert "Unable to fetch ticket details" in asyncio.run(
+            ticket_tool.get_farmer_ticket_summary(_ctx())
+        )
+
+        async def empty(request, token):
+            return FarmerTicketSummaryResponseModel()
+
+        monkeypatch.setattr(ticket_tool, "get_farmer_ticket_summary_api", empty)
+        assert "No ticket, breeding, or calving records" in asyncio.run(
+            ticket_tool.get_farmer_ticket_summary(_ctx())
+        )
+
+    def test_missing_identity_or_token_never_calls_provider(self, monkeypatch):
+        called = False
+
+        async def unexpected(*args, **kwargs):
+            nonlocal called
+            called = True
+
+        monkeypatch.setattr(ticket_tool, "get_farmer_ticket_summary_api", unexpected)
+        ctx = _ctx()
+        ctx.deps.mobile = None
+        assert "signed-in farmer profile" in asyncio.run(
+            ticket_tool.get_farmer_ticket_summary(ctx)
+        )
+        assert called is False
+
+        _patch_ticket_farmers(monkeypatch, [_farmer()])
+        monkeypatch.setattr(ticket_tool, "get_config_value", lambda name: None)
+        assert "Provider access is not configured" in asyncio.run(
+            ticket_tool.get_farmer_ticket_summary(_ctx())
+        )
+        assert called is False
