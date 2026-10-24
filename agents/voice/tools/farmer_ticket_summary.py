@@ -1,30 +1,20 @@
 """Signed-in voice tool for farmer ticket and breeding summaries."""
 
-import asyncio
 import os
 from datetime import datetime
 
 from pydantic_ai import RunContext
-from pydantic_ai.tools import ToolDefinition
 
 from agents.deps import FarmerContext
-from agents.tools.farmer_ticket_summary_backend import get_farmer_ticket_summary_api
-from agents.tools.models.farmer_ticket_summary import (
-    FarmerTicketSummaryRequestModel,
-    FarmerTicketSummaryResponseModel,
+from agents.tools.farmer_ticket_summary_backend import (
+    format_breeding_activity,
+    get_linked_farmer_ticket_summaries,
+    prepare_get_farmer_ticket_summary,
 )
+from agents.tools.models.farmer_ticket_summary import FarmerTicketSummaryResponseModel
 from helpers.utils import get_logger
 
 logger = get_logger(__name__)
-
-
-async def prepare_get_farmer_ticket_summary(
-    ctx: RunContext[FarmerContext], tool_def: ToolDefinition
-) -> ToolDefinition | None:
-    if (getattr(ctx.deps, "mobile", None) or "").strip():
-        return tool_def
-    logger.info("Hiding farmer ticket summary tool: authenticated mobile is missing")
-    return None
 
 
 def _text(value: object, fallback: str = "unknown") -> str:
@@ -66,38 +56,15 @@ def _format_account(response: FarmerTicketSummaryResponseModel, account) -> str:
     if not response.last_lactation_detail:
         lines.append("No animal breeding or calving history was found.")
     for detail in response.last_lactation_detail:
-        activity = detail.last_breeding_activity
-        facts: list[str] = []
-        if activity is not None:
-            if activity.last_ai or activity.last_ai_ticket_number:
-                fact = f"last A I on {_date(activity.last_ai)}"
-                if activity.last_ai_ticket_number:
-                    fact += f", ticket {_text(activity.last_ai_ticket_number)}"
-                bull = activity.bull_id or (
-                    str(activity.ai_bull_id)
-                    if activity.ai_bull_id is not None
-                    else None
-                )
-                if bull:
-                    fact += f", bull {_text(bull)}"
-                if activity.semen_type:
-                    fact += f", semen type {_text(activity.semen_type)}"
-                facts.append(fact)
-            if activity.last_pd or activity.last_pd_ticket_number or activity.pd_status:
-                fact = f"last P D on {_date(activity.last_pd)}"
-                if activity.last_pd_ticket_number:
-                    fact += f", ticket {_text(activity.last_pd_ticket_number)}"
-                if activity.pd_status:
-                    fact += f", status {_text(activity.pd_status)}"
-                facts.append(fact)
-            if activity.last_calving or activity.last_calving_ticket_number:
-                fact = f"last calving on {_date(activity.last_calving)}"
-                if activity.last_calving_ticket_number:
-                    fact += f", ticket {_text(activity.last_calving_ticket_number)}"
-                facts.append(fact)
+        facts = format_breeding_activity(
+            detail.last_breeding_activity,
+            _date,
+            _text,
+            spoken=True,
+        )
         lines.append(
             f"Animal {_text(detail.animal_tag_number)}: "
-            + ("; ".join(facts) if facts else "no breeding activity available")
+            + "; ".join(facts)
             + "."
         )
     return "\n".join(lines)
@@ -130,27 +97,7 @@ async def get_farmer_ticket_summary(ctx: RunContext[FarmerContext]) -> str:
         logger.error("PASHUGPT_TOKEN is not set")
         return "Farmer ticket summary lookup failed. Service is not configured."
 
-    outcomes = await asyncio.gather(
-        *(
-            get_farmer_ticket_summary_api(
-                FarmerTicketSummaryRequestModel(
-                    unionCode=account.union_code or "",
-                    societyCode=account.society_code or "",
-                    farmerCode=account.farmer_code or "",
-                ),
-                token,
-            )
-            for account in accounts
-        ),
-        return_exceptions=True,
-    )
-    successful: list[tuple[object, FarmerTicketSummaryResponseModel]] = []
-    failed = 0
-    for account, outcome in zip(accounts, outcomes):
-        if outcome is None or isinstance(outcome, BaseException):
-            failed += 1
-        else:
-            successful.append((account, outcome))
+    successful, failed = await get_linked_farmer_ticket_summaries(accounts, token)
     if not successful:
         return "Farmer ticket summary lookup failed. Unable to fetch ticket details now."
     if not any(response.has_data() for _, response in successful):

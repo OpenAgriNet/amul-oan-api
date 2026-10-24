@@ -53,6 +53,11 @@ class LastBreedingActivityModel(BaseModel):
         None, alias="lastCalvingTicketNumber"
     )
 
+    def bull_identifier(self) -> str | None:
+        return self.bull_id or (
+            str(self.ai_bull_id) if self.ai_bull_id is not None else None
+        )
+
 
 class LastLactationDetailModel(BaseModel):
     model_config = ConfigDict(extra="ignore", populate_by_name=True)
@@ -82,8 +87,4 @@ class FarmerTicketSummaryResponseModel(BaseModel):
         return [] if value is None else value
 
     def has_data(self) -> bool:
-        return bool(
-            self.farmer_details
-            or self.pending_tickets
-            or self.last_lactation_detail
-        )
+        return bool(self.pending_tickets or self.last_lactation_detail)
