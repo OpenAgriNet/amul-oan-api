@@ -93,11 +93,13 @@ async def _set_claimed_event(
     lease_token: str,
     expected_status: str,
     **values,
-) -> bool:
+) -> None:
     """Update an event only while this worker still owns its current lease."""
     values.setdefault("call_updated_at", _now())
+    values.setdefault("call_lease_expires_at", None)
+    values.setdefault("call_lease_token", None)
     async with get_webhook_session() as session:
-        result = await session.execute(
+        await session.execute(
             update(HeatAlertWebhookEvent)
             .where(
                 HeatAlertWebhookEvent.id == event_id,
@@ -107,7 +109,6 @@ async def _set_claimed_event(
             .values(**values)
         )
         await session.commit()
-    return bool(result.rowcount)
 
 
 async def _claim_due_event() -> HeatAlertWebhookEvent | None:
@@ -241,13 +242,13 @@ async def _resolve_account(event: HeatAlertWebhookEvent):
 
 
 async def _reserve_provider_slot(
-    event_id: uuid.UUID, lease_token: str, union_code: str
+    event_id: uuid.UUID, lease_token: str
 ) -> int | None:
     now = _now()
     async with get_webhook_session() as session:
         await session.execute(
             pg_insert(OutboundCallDispatchState)
-            .values(id=1, updated_at=now)
+            .values(id=1)
             .on_conflict_do_nothing(index_elements=["id"])
         )
         state = (
@@ -283,22 +284,16 @@ async def _reserve_provider_slot(
         state.next_allowed_at = now + timedelta(
             seconds=max(1, settings.raya_outbound_call_min_interval_seconds)
         )
-        state.updated_at = now
         event.call_status = "dispatching"
         event.call_dispatch_attempts += 1
         event.call_lease_expires_at = now + _LEASE
-        event.resolved_union_code = union_code
         event.call_updated_at = now
         await session.commit()
         return event.call_dispatch_attempts
 
 
-async def _dispatch(
-    event: HeatAlertWebhookEvent, lease_token: str, union_code: str
-) -> None:
-    dispatch_attempt = await _reserve_provider_slot(
-        event.id, lease_token, union_code
-    )
+async def _dispatch(event: HeatAlertWebhookEvent, lease_token: str) -> None:
+    dispatch_attempt = await _reserve_provider_slot(event.id, lease_token)
     if dispatch_attempt is None:
         return
     agent_id = (settings.raya_heat_alert_agent_id or "").strip()
@@ -324,8 +319,6 @@ async def _dispatch(
                 call_status="scheduled",
                 call_last_error=exc.category,
                 call_next_attempt_at=_now() + _retry_delay(dispatch_attempt),
-                call_lease_expires_at=None,
-                call_lease_token=None,
             )
         else:
             await _set_claimed_event(
@@ -334,8 +327,6 @@ async def _dispatch(
                 "dispatching",
                 call_status="dispatch_failed",
                 call_last_error=exc.category,
-                call_lease_expires_at=None,
-                call_lease_token=None,
             )
         return
     except OutboundCallConfigurationError:
@@ -345,8 +336,6 @@ async def _dispatch(
             "dispatching",
             call_status="dispatch_failed",
             call_last_error="configuration",
-            call_lease_expires_at=None,
-            call_lease_token=None,
         )
         return
     except OutboundCallAmbiguousFailure as exc:
@@ -356,8 +345,6 @@ async def _dispatch(
             "dispatching",
             call_status="ambiguous",
             call_last_error=exc.category,
-            call_lease_expires_at=None,
-            call_lease_token=None,
         )
         return
     await _set_claimed_event(
@@ -368,8 +355,6 @@ async def _dispatch(
         call_status="initiated",
         outbound_call_uuid=accepted.call_uuid,
         call_last_error=None,
-        call_lease_expires_at=None,
-        call_lease_token=None,
     )
 
 
@@ -388,8 +373,6 @@ async def _process(event: HeatAlertWebhookEvent) -> None:
             "checking",
             call_status="eligibility_failed",
             call_last_error=error,
-            call_lease_expires_at=None,
-            call_lease_token=None,
         )
         return
     token = str(get_config_value("PASHUGPT_TOKEN") or "").strip()
@@ -416,12 +399,9 @@ async def _process(event: HeatAlertWebhookEvent) -> None:
             "checking",
             call_status="suppressed_pending",
             call_last_error=None,
-            resolved_union_code=account.union_code,
-            call_lease_expires_at=None,
-            call_lease_token=None,
         )
         return
-    await _dispatch(event, lease_token, account.union_code)
+    await _dispatch(event, lease_token)
 
 
 async def _run_once() -> bool:

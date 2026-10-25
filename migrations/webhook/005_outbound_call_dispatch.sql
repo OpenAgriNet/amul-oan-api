@@ -10,7 +10,6 @@ ALTER TABLE heat_alert_webhook_events
     ADD COLUMN IF NOT EXISTS call_lease_token VARCHAR(36),
     ADD COLUMN IF NOT EXISTS call_last_error VARCHAR(64),
     ADD COLUMN IF NOT EXISTS call_updated_at TIMESTAMPTZ,
-    ADD COLUMN IF NOT EXISTS resolved_union_code VARCHAR(64),
     ADD COLUMN IF NOT EXISTS outbound_call_uuid VARCHAR(64),
     ADD COLUMN IF NOT EXISTS voice_session_id VARCHAR(128),
     ADD COLUMN IF NOT EXISTS voice_process_id VARCHAR(128);
@@ -31,9 +30,15 @@ CREATE INDEX IF NOT EXISTS ix_heat_alert_events_voice_process_id
 
 CREATE TABLE IF NOT EXISTS outbound_call_dispatch_state (
     id INTEGER PRIMARY KEY,
-    next_allowed_at TIMESTAMPTZ,
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    next_allowed_at TIMESTAMPTZ
 );
+
+-- PR #452 was exercised on development before merge. Remove columns from the
+-- earlier deployed draft that have no runtime or operational consumer.
+ALTER TABLE heat_alert_webhook_events
+    DROP COLUMN IF EXISTS resolved_union_code;
+ALTER TABLE outbound_call_dispatch_state
+    DROP COLUMN IF EXISTS updated_at;
 
 INSERT INTO outbound_call_dispatch_state (id)
 VALUES (1)

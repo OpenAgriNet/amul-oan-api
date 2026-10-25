@@ -16,7 +16,6 @@ logger = get_logger(__name__)
 @dataclass(frozen=True)
 class HeatAlertCallContext:
     event_id: str
-    campaign: str = "heat_alert_ai_booking"
     animal_number: str | None = None
     tag_number: str | None = None
 

@@ -72,7 +72,6 @@ async def voice_endpoint(
             provider=request.provider,
             process_id=request.process_id,
             call_type=request.call_type,
-            campaign=request.campaign,
             heat_alert_event_id=request.heat_alert_event_id,
             provider_call_uuid=request.provider_call_uuid,
             owner=owner,

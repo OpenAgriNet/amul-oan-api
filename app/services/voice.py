@@ -58,7 +58,7 @@ VOICE_SURFACE = SurfaceProfile(
 
 
 async def _is_outbound_consent_turn(
-    session_id: str, call_type: str, history: list, campaign: str | None = None
+    session_id: str, call_type: str, history: list, *, is_heat_alert_call: bool = False
 ) -> bool:
     """Whether this turn is the farmer's reply to the provider's opening question.
 
@@ -66,7 +66,7 @@ async def _is_outbound_consent_turn(
     read on every turn while outbound calls are on, because the provider is not
     guaranteed to re-stamp call_type after the first request.
     """
-    if campaign == "heat_alert_ai_booking":
+    if is_heat_alert_call:
         return False
     if not runtime.surface_setting("voice", "outbound_intro_enabled", settings.outbound_intro_enabled):
         return False
@@ -95,7 +95,6 @@ async def stream_voice_message(
     http_request: Optional[Request],
     background_tasks: BackgroundTasks,
     route: Optional[RouteTimings] = None,
-    campaign: Optional[str] = None,
     heat_alert_event_id: Optional[str] = None,
     provider_call_uuid: Optional[str] = None,
 ) -> AsyncGenerator[str, None]:
@@ -115,9 +114,11 @@ async def stream_voice_message(
             event_id=heat_alert_event_id,
             provider_call_uuid=provider_call_uuid,
         )
-        trusted_campaign = heat_alert_context.campaign if heat_alert_context else None
         consent_turn = await _is_outbound_consent_turn(
-            session_id, call_type, history, trusted_campaign
+            session_id,
+            call_type,
+            history,
+            is_heat_alert_call=heat_alert_context is not None,
         )
         if consent_turn:
             logger.info(
@@ -141,7 +142,6 @@ async def stream_voice_message(
                 outbound_consent_turn=consent_turn,
                 provider=provider,
                 call_type=call_type,
-                campaign=trusted_campaign,
                 heat_alert_event_id=(
                     heat_alert_context.event_id if heat_alert_context else None
                 ),

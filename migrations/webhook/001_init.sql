@@ -41,7 +41,6 @@ CREATE TABLE IF NOT EXISTS heat_alert_webhook_events (
     call_lease_token VARCHAR(36),
     call_last_error VARCHAR(64),
     call_updated_at TIMESTAMPTZ,
-    resolved_union_code VARCHAR(64),
     outbound_call_uuid VARCHAR(64),
     voice_session_id VARCHAR(128),
     voice_process_id VARCHAR(128),
@@ -84,8 +83,7 @@ CREATE INDEX IF NOT EXISTS ix_heat_alert_events_voice_process_id
 
 CREATE TABLE IF NOT EXISTS outbound_call_dispatch_state (
     id INTEGER PRIMARY KEY,
-    next_allowed_at TIMESTAMPTZ,
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    next_allowed_at TIMESTAMPTZ
 );
 
 INSERT INTO outbound_call_dispatch_state (id)

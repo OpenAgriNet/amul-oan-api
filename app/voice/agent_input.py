@@ -492,7 +492,6 @@ async def _voice_agent_input(
         target_lang=requested_target_lang,
         session_id=session_id,
         process_id=process_id,
-        outbound_campaign=turn.call.campaign if turn.call is not None else None,
         heat_alert_event_id=(
             turn.call.heat_alert_event_id if turn.call is not None else None
         ),
@@ -546,7 +545,7 @@ async def _voice_agent_input(
     query_hints_request = _build_query_hints_request(deps)
     if query_hints_request is not None:
         model_input_history.append(query_hints_request)
-    if deps.outbound_campaign == "heat_alert_ai_booking":
+    if deps.heat_alert_event_id:
         model_input_history.append(
             ModelRequest(parts=[UserPromptPart(content=(
                 "Hints for the current user query:\n"

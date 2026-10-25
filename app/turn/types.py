@@ -71,7 +71,6 @@ class TelephonyCall:
     provider: Optional[str] = None
     #: ``outbound`` for a call we placed, else ``inbound``. For the trace.
     call_type: str = "inbound"
-    campaign: Optional[str] = None
     heat_alert_event_id: Optional[str] = None
     heat_alert_animal_number: Optional[str] = None
     heat_alert_tag_number: Optional[str] = None

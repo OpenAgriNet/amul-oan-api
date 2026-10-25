@@ -43,7 +43,6 @@ class FarmerContext(BaseModel):
     target_lang: str = Field(description="The target language for the response (gu=Gujarati, en=English).", default='gu')
     provider: Optional[Literal['RAYA']] = Field(default=None, description="The provider for the voice service - can be RAYA or None.")
     process_id: Optional[str] = Field(default=None, description="The process ID for tracking and hold messages.")
-    outbound_campaign: Optional[str] = Field(default=None, description="Server-validated outbound campaign for this call.")
     heat_alert_event_id: Optional[str] = Field(default=None, description="Server-resolved heat-alert event associated with this call.")
     heat_alert_animal_number: Optional[str] = Field(default=None, description="Animal number for the correlated heat alert.")
     heat_alert_tag_number: Optional[str] = Field(default=None, description="Animal tag for the correlated heat alert.")

@@ -106,7 +106,6 @@ class HeatAlertWebhookEvent(WebhookBase):
     call_lease_token: Mapped[str | None] = mapped_column(String(36))
     call_last_error: Mapped[str | None] = mapped_column(String(64))
     call_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    resolved_union_code: Mapped[str | None] = mapped_column(String(64))
     outbound_call_uuid: Mapped[str | None] = mapped_column(String(64))
     voice_session_id: Mapped[str | None] = mapped_column(String(128))
     voice_process_id: Mapped[str | None] = mapped_column(String(128))
@@ -127,6 +126,3 @@ class OutboundCallDispatchState(WebhookBase):
 
     id: Mapped[int] = mapped_column(primary_key=True, default=1)
     next_allowed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default=func.now()
-    )
