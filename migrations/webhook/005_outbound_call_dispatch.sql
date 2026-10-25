@@ -1,6 +1,7 @@
 -- Durable, rate-limited outbound calls for newly received heat alerts.
 
 ALTER TABLE heat_alert_webhook_events
+    ADD COLUMN IF NOT EXISTS union_code VARCHAR(64),
     ADD COLUMN IF NOT EXISTS call_due_at TIMESTAMPTZ,
     ADD COLUMN IF NOT EXISTS call_next_attempt_at TIMESTAMPTZ,
     ADD COLUMN IF NOT EXISTS call_status VARCHAR(32) NOT NULL DEFAULT 'scheduled',
@@ -16,6 +17,8 @@ ALTER TABLE heat_alert_webhook_events
 
 CREATE INDEX IF NOT EXISTS ix_heat_alert_events_call_due_at
     ON heat_alert_webhook_events (call_due_at);
+CREATE INDEX IF NOT EXISTS ix_heat_alert_events_union_code
+    ON heat_alert_webhook_events (union_code);
 CREATE INDEX IF NOT EXISTS ix_heat_alert_events_call_next_attempt_at
     ON heat_alert_webhook_events (call_next_attempt_at);
 CREATE INDEX IF NOT EXISTS ix_heat_alert_events_call_lease_expires_at

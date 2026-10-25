@@ -111,6 +111,7 @@ async def receive_heat_alert(payload: HeatAlertWebhookRequest) -> HeatAlertWebho
         pashuaadhar_no=payload.pashuaadhar_no,
         farm_name=payload.farm_name,
         farm_id=payload.farm_id,
+        union_code=payload.union_code,
         society_code=payload.society_code,
         farmer_code=payload.farmer_code,
         farmer_contact=payload.farmer_contact,

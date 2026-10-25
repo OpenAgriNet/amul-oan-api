@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS heat_alert_webhook_events (
 
     farm_name VARCHAR(256),
     farm_id VARCHAR(64),
+    union_code VARCHAR(64),
     society_code VARCHAR(64),
     farmer_code VARCHAR(64),
     farmer_contact VARCHAR(32),
@@ -67,6 +68,8 @@ CREATE INDEX IF NOT EXISTS ix_heat_alert_webhook_events_society_code
     ON heat_alert_webhook_events (society_code);
 CREATE INDEX IF NOT EXISTS ix_heat_alert_webhook_events_farmer_code
     ON heat_alert_webhook_events (farmer_code);
+CREATE INDEX IF NOT EXISTS ix_heat_alert_events_union_code
+    ON heat_alert_webhook_events (union_code);
 CREATE INDEX IF NOT EXISTS ix_heat_alert_events_call_due_at
     ON heat_alert_webhook_events (call_due_at);
 CREATE INDEX IF NOT EXISTS ix_heat_alert_events_call_next_attempt_at

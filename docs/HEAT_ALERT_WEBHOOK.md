@@ -16,6 +16,10 @@ Auth:
 
 Request body uses the partner's wire keys (including spaces/casing), for example:
 `alertID`, `deviceid`, `tag no`, `Pashuaadhar No`, `AI Window start_time`.
+Optional `union_code`, `society_code`, and `farmer_code` values are persisted and
+used to narrow the phone-linked farmer account. Every supplied code must match;
+when some codes are omitted, the remaining filters must still resolve exactly one
+authenticated account.
 `farmer_contact`, `Pashuaadhar No`, `tag no`, and `booking_url` must be non-empty
 because they are sent to the single-farmer Sarlaben WhatsApp API. A missing value
 returns `422` before the event is stored.
@@ -66,7 +70,8 @@ Persistence:
 - DB missing/unconfigured → `503`
 
 Retention:
-- background worker hard-deletes rows older than `WEBHOOK_RETENTION_HOURS` (default `24`)
+- background worker deletes legacy and terminal rows older than
+  `WEBHOOK_RETENTION_HOURS` (default `24`); unfinished call work is retained
 - cadence: `WEBHOOK_CLEANUP_INTERVAL_SECONDS` (default `900`)
 - worker is a no-op when `WEBHOOK_DB_URL` is unset
 

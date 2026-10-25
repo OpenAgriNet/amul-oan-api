@@ -37,6 +37,7 @@ class HeatAlertWebhookEvent(WebhookBase):
         Index("ix_heat_alert_events_received_at", "received_at"),
         Index("ix_heat_alert_events_farmer_contact", "farmer_contact"),
         Index("ix_heat_alert_events_device_id", "device_id"),
+        Index("ix_heat_alert_events_union_code", "union_code"),
         Index("ix_heat_alert_events_call_due_at", "call_due_at"),
         Index("ix_heat_alert_events_call_next_attempt_at", "call_next_attempt_at"),
         Index("ix_heat_alert_events_call_lease_expires_at", "call_lease_expires_at"),
@@ -74,6 +75,7 @@ class HeatAlertWebhookEvent(WebhookBase):
 
     farm_name: Mapped[str | None] = mapped_column(String(256))
     farm_id: Mapped[str | None] = mapped_column(String(64))
+    union_code: Mapped[str | None] = mapped_column(String(64))
     society_code: Mapped[str | None] = mapped_column(String(64), index=True)
     farmer_code: Mapped[str | None] = mapped_column(String(64), index=True)
     farmer_contact: Mapped[str | None] = mapped_column(String(32))

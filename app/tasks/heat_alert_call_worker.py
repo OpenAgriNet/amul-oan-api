@@ -223,6 +223,7 @@ async def _eligibility_retry(
 
 async def _resolve_account(event: HeatAlertWebhookEvent):
     mobile = normalize_phone_to_mobile(event.farmer_contact or "")
+    union = (event.union_code or "").strip()
     society = (event.society_code or "").strip()
     farmer = (event.farmer_code or "").strip()
     if not mobile:
@@ -232,6 +233,8 @@ async def _resolve_account(event: HeatAlertWebhookEvent):
     except Exception:
         return "profile_unavailable", None
     matches = authenticated_accounts(profiles or [])
+    if union:
+        matches = [account for account in matches if account.union_code == union]
     if society:
         matches = [account for account in matches if account.society_code == society]
     if farmer:
