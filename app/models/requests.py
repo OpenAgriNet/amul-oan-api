@@ -34,6 +34,9 @@ class VoiceRequest(BaseChatRequest):
         'inbound',
         description="Direction of the call as reported by the provider (inbound=farmer called us, outbound=we called the farmer). Optional; defaults to inbound.",
     )
+    campaign: Optional[str] = Field(None, description="Trusted outbound campaign hint; validated against server-side call state")
+    heat_alert_event_id: Optional[str] = Field(None, description="Heat-alert correlation id forwarded from outbound agent arguments")
+    provider_call_uuid: Optional[str] = Field(None, description="Outbound provider call UUID when supplied separately from session/process id")
 
 
 class TranscribeRequest(BaseModel):

@@ -697,6 +697,38 @@ class Settings(BaseSettings):
     sarlaben_whatsapp_timeout_seconds: float = float(
         os.getenv("SARLABEN_WHATSAPP_TIMEOUT_SECONDS", "15")
     )
+    # Durable outbound calls scheduled from accepted heat alerts. The API key is
+    # intentionally env-only; never put a real value in example.env.
+    heat_alert_call_delay_seconds: int = int(
+        os.getenv("HEAT_ALERT_CALL_DELAY_SECONDS", "600")
+    )
+    heat_alert_call_worker_interval_seconds: int = int(
+        os.getenv("HEAT_ALERT_CALL_WORKER_INTERVAL_SECONDS", "5")
+    )
+    heat_alert_call_max_eligibility_attempts: int = int(
+        os.getenv("HEAT_ALERT_CALL_MAX_ELIGIBILITY_ATTEMPTS", "3")
+    )
+    heat_alert_call_max_dispatch_attempts: int = int(
+        os.getenv("HEAT_ALERT_CALL_MAX_DISPATCH_ATTEMPTS", "3")
+    )
+    heat_alert_call_retry_base_seconds: int = int(
+        os.getenv("HEAT_ALERT_CALL_RETRY_BASE_SECONDS", "60")
+    )
+    raya_outbound_call_api_url: str = os.getenv(
+        "RAYA_OUTBOUND_CALL_API_URL", "https://v1.getraya.app/api/call"
+    )
+    raya_outbound_call_api_key: Optional[str] = os.getenv(
+        "RAYA_OUTBOUND_CALL_API_KEY"
+    )
+    raya_heat_alert_agent_id: Optional[str] = os.getenv(
+        "RAYA_HEAT_ALERT_AGENT_ID", "5e590861-dae3-4b91-ba95-cdd0df9a3ed7"
+    )
+    raya_outbound_call_timeout_seconds: float = float(
+        os.getenv("RAYA_OUTBOUND_CALL_TIMEOUT_SECONDS", "15")
+    )
+    raya_outbound_call_min_interval_seconds: int = int(
+        os.getenv("RAYA_OUTBOUND_CALL_MIN_INTERVAL_SECONDS", "20")
+    )
 
     # ── Onex-Aura / OneXtel SMS gateway (DLT-approved KDCC micro-loan template) ─
     # When false, SMS is a dry-run: nothing is sent, the code is still issued and

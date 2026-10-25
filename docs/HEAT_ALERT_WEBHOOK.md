@@ -37,6 +37,14 @@ send, the partner gets `500` and its retry sends a second message.
 The internal `called` and `call_booked` status columns both default to `false`.
 They are managed by application actions and are not accepted from webhook payloads.
 
+New rows also receive a durable outbound-call due time (10 minutes by default).
+At that time the worker resolves the exact farmer account, calls
+`GetFarmerTicketSummary`, and proceeds only when `pendingTickets` is empty.
+Any pending ticket suppresses the call. Lookup failures fail closed and retry;
+they never allow a call. A successful provider initiation sets `called=true`,
+and a confirmed AI booking during the correlated conversation sets
+`call_booked=true`.
+
 Successful response (`202 Accepted`):
 ```json
 {
@@ -64,7 +72,7 @@ Env reference: the heat-alert block in `example.env`.
 1. Create a dedicated Postgres DB/user for webhook storage.
 2. Apply the schema migration before deploying the matching application code:
    - fresh database: `psql "$WEBHOOK_DSN" -f migrations/webhook/001_init.sql`
-   - existing database: apply `migrations/webhook/003_booking_url.sql`, then `migrations/webhook/004_call_flags.sql`
+   - existing database: apply `migrations/webhook/003_booking_url.sql`, `migrations/webhook/004_call_flags.sql`, then `migrations/webhook/005_outbound_call_dispatch.sql`
 3. Set runtime env on this service:
    - `WEBHOOK_SHARED_TOKEN`
    - `WEBHOOK_DB_URL` (`postgresql+asyncpg://...`)
@@ -72,6 +80,14 @@ Env reference: the heat-alert block in `example.env`.
    - optional: `SARLABEN_WHATSAPP_BASE_URL` (defaults to `https://comm.amul.in/sarlaben`)
    - optional: `SARLABEN_WHATSAPP_TIMEOUT_SECONDS` (defaults to `15`)
    - optional: `WEBHOOK_DB_POOL_SIZE`, `WEBHOOK_RETENTION_HOURS`, `WEBHOOK_CLEANUP_INTERVAL_SECONDS`
+   - outbound calls: `RAYA_OUTBOUND_CALL_API_KEY`, `RAYA_HEAT_ALERT_AGENT_ID`
+   - optional outbound settings: `HEAT_ALERT_CALL_DELAY_SECONDS`,
+     `HEAT_ALERT_CALL_WORKER_INTERVAL_SECONDS`,
+     `HEAT_ALERT_CALL_MAX_ELIGIBILITY_ATTEMPTS`,
+     `HEAT_ALERT_CALL_MAX_DISPATCH_ATTEMPTS`,
+     `HEAT_ALERT_CALL_RETRY_BASE_SECONDS`, `RAYA_OUTBOUND_CALL_API_URL`,
+     `RAYA_OUTBOUND_CALL_TIMEOUT_SECONDS`,
+     `RAYA_OUTBOUND_CALL_MIN_INTERVAL_SECONDS`
 4. Restart the API process and confirm startup log includes webhook cleanup worker start (or the "not started: WEBHOOK_DB_URL not configured" skip line).
 5. Smoke test:
    ```bash

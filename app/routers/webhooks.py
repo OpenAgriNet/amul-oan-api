@@ -1,6 +1,6 @@
 """Inbound partner webhook endpoints."""
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 from uuid import UUID
 
@@ -9,6 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from app.auth.webhook_token import require_webhook_token
+from app.config import settings
 from app.core.webhook_db import get_webhook_session, webhook_db_configured
 from app.models.heat_alert import HeatAlertWebhookRequest, HeatAlertWebhookResponse
 from app.models.webhook import HeatAlertWebhookEvent
@@ -89,6 +90,9 @@ async def receive_heat_alert(payload: HeatAlertWebhookRequest) -> HeatAlertWebho
         )
 
     received_at = datetime.now(timezone.utc)
+    call_due_at = received_at + timedelta(
+        seconds=max(0, settings.heat_alert_call_delay_seconds)
+    )
     payload_raw = payload.model_dump(by_alias=True, mode="json")
     partner_alert_epoch_s = _parse_epoch_seconds(payload.alert_time)
     ai_window_start_at = _parse_iso8601_utc(payload.ai_window_start_time)
@@ -122,6 +126,10 @@ async def receive_heat_alert(payload: HeatAlertWebhookRequest) -> HeatAlertWebho
         partner_timestamp_at=partner_timestamp_at,
         partner_alert_epoch_s=partner_alert_epoch_s,
         payload_raw=payload_raw,
+        call_due_at=call_due_at,
+        call_next_attempt_at=call_due_at,
+        call_status="scheduled",
+        call_updated_at=received_at,
     )
 
     try:

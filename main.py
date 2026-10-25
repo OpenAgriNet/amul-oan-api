@@ -15,6 +15,10 @@ from app.tasks.webhook_cleanup_worker import (
     start_webhook_cleanup_worker,
     stop_webhook_cleanup_worker,
 )
+from app.tasks.heat_alert_call_worker import (
+    start_heat_alert_call_worker,
+    stop_heat_alert_call_worker,
+)
 
 # Configure observability (Langfuse + pydantic-ai instrumentation) before router
 # imports that pull in agents, tools, and voice/chat pipelines.
@@ -72,8 +76,10 @@ async def lifespan(app: FastAPI):
     await start_farmer_refresh_worker()
     await start_health_poller()
     await start_webhook_cleanup_worker()
+    await start_heat_alert_call_worker()
     yield
     # Shutdown
+    await stop_heat_alert_call_worker()
     await stop_webhook_cleanup_worker()
     await stop_health_poller()
     await stop_farmer_refresh_worker()

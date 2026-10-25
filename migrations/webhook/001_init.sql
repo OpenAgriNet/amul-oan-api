@@ -32,6 +32,18 @@ CREATE TABLE IF NOT EXISTS heat_alert_webhook_events (
     booking_url TEXT,
     called BOOLEAN NOT NULL DEFAULT FALSE,
     call_booked BOOLEAN NOT NULL DEFAULT FALSE,
+    call_due_at TIMESTAMPTZ,
+    call_next_attempt_at TIMESTAMPTZ,
+    call_status VARCHAR(32) NOT NULL DEFAULT 'scheduled',
+    call_eligibility_attempts INTEGER NOT NULL DEFAULT 0,
+    call_dispatch_attempts INTEGER NOT NULL DEFAULT 0,
+    call_lease_expires_at TIMESTAMPTZ,
+    call_last_error VARCHAR(64),
+    call_updated_at TIMESTAMPTZ,
+    resolved_union_code VARCHAR(64),
+    outbound_call_uuid VARCHAR(64),
+    voice_session_id VARCHAR(128),
+    voice_process_id VARCHAR(128),
 
     ai_window_start_at TIMESTAMPTZ,
     ai_window_end_at TIMESTAMPTZ,
@@ -55,3 +67,26 @@ CREATE INDEX IF NOT EXISTS ix_heat_alert_webhook_events_society_code
     ON heat_alert_webhook_events (society_code);
 CREATE INDEX IF NOT EXISTS ix_heat_alert_webhook_events_farmer_code
     ON heat_alert_webhook_events (farmer_code);
+CREATE INDEX IF NOT EXISTS ix_heat_alert_events_call_due_at
+    ON heat_alert_webhook_events (call_due_at);
+CREATE INDEX IF NOT EXISTS ix_heat_alert_events_call_next_attempt_at
+    ON heat_alert_webhook_events (call_next_attempt_at);
+CREATE INDEX IF NOT EXISTS ix_heat_alert_events_call_lease_expires_at
+    ON heat_alert_webhook_events (call_lease_expires_at);
+CREATE UNIQUE INDEX IF NOT EXISTS ix_heat_alert_events_outbound_call_uuid
+    ON heat_alert_webhook_events (outbound_call_uuid)
+    WHERE outbound_call_uuid IS NOT NULL;
+CREATE INDEX IF NOT EXISTS ix_heat_alert_events_voice_session_id
+    ON heat_alert_webhook_events (voice_session_id);
+CREATE INDEX IF NOT EXISTS ix_heat_alert_events_voice_process_id
+    ON heat_alert_webhook_events (voice_process_id);
+
+CREATE TABLE IF NOT EXISTS outbound_call_dispatch_state (
+    id INTEGER PRIMARY KEY,
+    next_allowed_at TIMESTAMPTZ,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+INSERT INTO outbound_call_dispatch_state (id)
+VALUES (1)
+ON CONFLICT (id) DO NOTHING;

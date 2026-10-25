@@ -31,6 +31,7 @@ from app.turn.types import (
     Turn,
 )
 from app.utils import SessionRequestOwner, release_session_request_ownership
+from app.services.heat_alert_call_tracking import associate_heat_alert_voice_call
 from app.voice import outbound as _outbound
 from app.voice.agent_input import voice_agent_input
 from app.voice.background import voice_background
@@ -56,13 +57,17 @@ VOICE_SURFACE = SurfaceProfile(
 )
 
 
-async def _is_outbound_consent_turn(session_id: str, call_type: str, history: list) -> bool:
+async def _is_outbound_consent_turn(
+    session_id: str, call_type: str, history: list, campaign: str | None = None
+) -> bool:
     """Whether this turn is the farmer's reply to the provider's opening question.
 
     The stage is read from Redis (not history) so it survives trimming, and is
     read on every turn while outbound calls are on, because the provider is not
     guaranteed to re-stamp call_type after the first request.
     """
+    if campaign == "heat_alert_ai_booking":
+        return False
     if not runtime.surface_setting("voice", "outbound_intro_enabled", settings.outbound_intro_enabled):
         return False
     stage = await _outbound.get_stage(session_id)
@@ -90,6 +95,9 @@ async def stream_voice_message(
     http_request: Optional[Request],
     background_tasks: BackgroundTasks,
     route: Optional[RouteTimings] = None,
+    campaign: Optional[str] = None,
+    heat_alert_event_id: Optional[str] = None,
+    provider_call_uuid: Optional[str] = None,
 ) -> AsyncGenerator[str, None]:
     """The voice transport's adapter over ``run_turn``.
 
@@ -101,7 +109,16 @@ async def stream_voice_message(
     call_type = _outbound.normalize_call_type(call_type)
     target = (target_lang or "gu").strip().lower()
     try:
-        consent_turn = await _is_outbound_consent_turn(session_id, call_type, history)
+        heat_alert_context = await associate_heat_alert_voice_call(
+            session_id=session_id,
+            process_id=process_id,
+            event_id=heat_alert_event_id,
+            provider_call_uuid=provider_call_uuid,
+        )
+        trusted_campaign = heat_alert_context.campaign if heat_alert_context else None
+        consent_turn = await _is_outbound_consent_turn(
+            session_id, call_type, history, trusted_campaign
+        )
         if consent_turn:
             logger.info(
                 "Outbound consent turn; session_id=%s process_id=%s query_chars=%s",
@@ -124,6 +141,16 @@ async def stream_voice_message(
                 outbound_consent_turn=consent_turn,
                 provider=provider,
                 call_type=call_type,
+                campaign=trusted_campaign,
+                heat_alert_event_id=(
+                    heat_alert_context.event_id if heat_alert_context else None
+                ),
+                heat_alert_animal_number=(
+                    heat_alert_context.animal_number if heat_alert_context else None
+                ),
+                heat_alert_tag_number=(
+                    heat_alert_context.tag_number if heat_alert_context else None
+                ),
             ),
         )
         surface = dataclasses.replace(VOICE_SURFACE, telemetry=partial(VoiceTelemetry, route=route))
