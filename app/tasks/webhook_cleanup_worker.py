@@ -1,7 +1,8 @@
 """Background worker that enforces webhook data retention.
 
-Deletes rows older than ``WEBHOOK_RETENTION_HOURS`` from the dedicated webhook
-Postgres table at a fixed cadence (``WEBHOOK_CLEANUP_INTERVAL_SECONDS``).
+Deletes legacy rows and terminal call records older than
+``WEBHOOK_RETENTION_HOURS`` at a fixed cadence
+(``WEBHOOK_CLEANUP_INTERVAL_SECONDS``). Unfinished call work is retained.
 """
 from __future__ import annotations
 
@@ -9,7 +10,7 @@ import asyncio
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from sqlalchemy import delete
+from sqlalchemy import and_, delete, func, or_
 
 from app.config import settings
 from app.core.webhook_db import get_webhook_session, webhook_db_configured
@@ -22,9 +23,31 @@ _worker_task: Optional[asyncio.Task] = None
 
 
 async def _cleanup_once() -> int:
-    """Delete rows older than the configured retention horizon."""
+    """Delete expired legacy or terminal rows without dropping queued work."""
     cutoff = datetime.now(timezone.utc) - timedelta(hours=settings.webhook_retention_hours)
-    stmt = delete(HeatAlertWebhookEvent).where(HeatAlertWebhookEvent.received_at < cutoff)
+    terminal_statuses = (
+        "suppressed_pending",
+        "eligibility_failed",
+        "dispatch_failed",
+        "initiated",
+        "ambiguous",
+    )
+    stmt = delete(HeatAlertWebhookEvent).where(
+        or_(
+            and_(
+                HeatAlertWebhookEvent.call_due_at.is_(None),
+                HeatAlertWebhookEvent.received_at < cutoff,
+            ),
+            and_(
+                HeatAlertWebhookEvent.call_status.in_(terminal_statuses),
+                func.coalesce(
+                    HeatAlertWebhookEvent.call_updated_at,
+                    HeatAlertWebhookEvent.received_at,
+                )
+                < cutoff,
+            ),
+        )
+    )
     async with get_webhook_session() as session:
         result = await session.execute(stmt)
         await session.commit()

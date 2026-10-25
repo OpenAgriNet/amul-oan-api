@@ -4,7 +4,7 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass
 
-from sqlalchemy import or_, select, update
+from sqlalchemy import and_, or_, select, update
 
 from app.core.webhook_db import get_webhook_session, webhook_db_configured
 from app.models.webhook import HeatAlertWebhookEvent
@@ -52,8 +52,15 @@ async def associate_heat_alert_voice_call(
                     select(HeatAlertWebhookEvent)
                     .where(
                         HeatAlertWebhookEvent.id == parsed_event_id,
-                        HeatAlertWebhookEvent.called.is_(True),
-                        HeatAlertWebhookEvent.call_status == "initiated",
+                        or_(
+                            and_(
+                                HeatAlertWebhookEvent.called.is_(True),
+                                HeatAlertWebhookEvent.call_status == "initiated",
+                            ),
+                            HeatAlertWebhookEvent.call_status.in_(
+                                ("dispatching", "ambiguous")
+                            ),
+                        ),
                     )
                     .limit(1)
                 )
@@ -100,7 +107,12 @@ async def mark_heat_alert_call_booked(event_id: str | None) -> bool:
                 update(HeatAlertWebhookEvent)
                 .where(
                     HeatAlertWebhookEvent.id == parsed,
-                    HeatAlertWebhookEvent.called.is_(True),
+                    or_(
+                        HeatAlertWebhookEvent.called.is_(True),
+                        HeatAlertWebhookEvent.call_status.in_(
+                            ("dispatching", "ambiguous")
+                        ),
+                    ),
                 )
                 .values(call_booked=True)
             )

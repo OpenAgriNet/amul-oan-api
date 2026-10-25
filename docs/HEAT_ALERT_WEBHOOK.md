@@ -45,6 +45,11 @@ they never allow a call. A successful provider initiation sets `called=true`,
 and a confirmed AI booking during the correlated conversation sets
 `call_booked=true`.
 
+Call claims carry an ownership token, preventing an expired worker from
+dispatching after another worker reclaims the row. Retention cleanup preserves
+scheduled, checking, retrying, and dispatching records until they reach a
+terminal state.
+
 Successful response (`202 Accepted`):
 ```json
 {

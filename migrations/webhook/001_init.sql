@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS heat_alert_webhook_events (
     call_eligibility_attempts INTEGER NOT NULL DEFAULT 0,
     call_dispatch_attempts INTEGER NOT NULL DEFAULT 0,
     call_lease_expires_at TIMESTAMPTZ,
+    call_lease_token VARCHAR(36),
     call_last_error VARCHAR(64),
     call_updated_at TIMESTAMPTZ,
     resolved_union_code VARCHAR(64),

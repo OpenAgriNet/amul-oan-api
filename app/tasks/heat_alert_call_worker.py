@@ -88,15 +88,26 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-async def _set_event(event_id: uuid.UUID, **values) -> None:
+async def _set_claimed_event(
+    event_id: uuid.UUID,
+    lease_token: str,
+    expected_status: str,
+    **values,
+) -> bool:
+    """Update an event only while this worker still owns its current lease."""
     values.setdefault("call_updated_at", _now())
     async with get_webhook_session() as session:
-        await session.execute(
+        result = await session.execute(
             update(HeatAlertWebhookEvent)
-            .where(HeatAlertWebhookEvent.id == event_id)
+            .where(
+                HeatAlertWebhookEvent.id == event_id,
+                HeatAlertWebhookEvent.call_lease_token == lease_token,
+                HeatAlertWebhookEvent.call_status == expected_status,
+            )
             .values(**values)
         )
         await session.commit()
+    return bool(result.rowcount)
 
 
 async def _claim_due_event() -> HeatAlertWebhookEvent | None:
@@ -115,6 +126,7 @@ async def _claim_due_event() -> HeatAlertWebhookEvent | None:
                 call_next_attempt_at=now,
                 call_last_error="eligibility_lease_expired",
                 call_lease_expires_at=None,
+                call_lease_token=None,
                 call_updated_at=now,
             )
         )
@@ -128,6 +140,7 @@ async def _claim_due_event() -> HeatAlertWebhookEvent | None:
                 call_status="ambiguous",
                 call_last_error="dispatch_lease_expired",
                 call_lease_expires_at=None,
+                call_lease_token=None,
                 call_updated_at=now,
             )
         )
@@ -153,9 +166,10 @@ async def _claim_due_event() -> HeatAlertWebhookEvent | None:
         if event is None:
             await session.commit()
             return None
+        lease_token = str(uuid.uuid4())
         event.call_status = "checking"
-        event.call_eligibility_attempts += 1
         event.call_lease_expires_at = now + _LEASE
+        event.call_lease_token = lease_token
         event.call_updated_at = now
         await session.commit()
         return event
@@ -168,46 +182,67 @@ def _retry_delay(attempt: int) -> timedelta:
     return timedelta(seconds=seconds)
 
 
-async def _eligibility_retry(event: HeatAlertWebhookEvent, category: str) -> None:
-    if event.call_eligibility_attempts >= max(
-        1, settings.heat_alert_call_max_eligibility_attempts
-    ):
-        await _set_event(
-            event.id,
-            call_status="eligibility_failed",
-            call_last_error=category,
-            call_lease_expires_at=None,
-        )
-        return
-    await _set_event(
-        event.id,
-        call_status="eligibility_retry",
-        call_last_error=category,
-        call_next_attempt_at=_now() + _retry_delay(event.call_eligibility_attempts),
-        call_lease_expires_at=None,
-    )
+async def _eligibility_retry(
+    event_id: uuid.UUID, lease_token: str, category: str
+) -> None:
+    """Count only actual eligibility failures, never scheduling deferrals."""
+    now = _now()
+    async with get_webhook_session() as session:
+        event = (
+            await session.execute(
+                select(HeatAlertWebhookEvent)
+                .where(
+                    HeatAlertWebhookEvent.id == event_id,
+                    HeatAlertWebhookEvent.call_status == "checking",
+                    HeatAlertWebhookEvent.call_lease_token == lease_token,
+                    HeatAlertWebhookEvent.call_lease_expires_at > now,
+                )
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
+        if event is None:
+            await session.commit()
+            return
+        event.call_eligibility_attempts += 1
+        if event.call_eligibility_attempts >= max(
+            1, settings.heat_alert_call_max_eligibility_attempts
+        ):
+            event.call_status = "eligibility_failed"
+        else:
+            event.call_status = "eligibility_retry"
+            event.call_next_attempt_at = now + _retry_delay(
+                event.call_eligibility_attempts
+            )
+        event.call_last_error = category
+        event.call_lease_expires_at = None
+        event.call_lease_token = None
+        event.call_updated_at = now
+        await session.commit()
 
 
 async def _resolve_account(event: HeatAlertWebhookEvent):
     mobile = normalize_phone_to_mobile(event.farmer_contact or "")
     society = (event.society_code or "").strip()
     farmer = (event.farmer_code or "").strip()
-    if not mobile or not society or not farmer:
+    if not mobile:
         return "missing_account", None
     try:
         profiles = await fetch_authenticated_farmers(mobile)
     except Exception:
         return "profile_unavailable", None
-    matches = [
-        account for account in authenticated_accounts(profiles or [])
-        if account.society_code == society and account.farmer_code == farmer
-    ]
+    matches = authenticated_accounts(profiles or [])
+    if society:
+        matches = [account for account in matches if account.society_code == society]
+    if farmer:
+        matches = [account for account in matches if account.farmer_code == farmer]
     if len(matches) != 1:
         return "account_not_resolved", None
     return None, matches[0]
 
 
-async def _reserve_provider_slot(event_id: uuid.UUID) -> int | None:
+async def _reserve_provider_slot(
+    event_id: uuid.UUID, lease_token: str, union_code: str
+) -> int | None:
     now = _now()
     async with get_webhook_session() as session:
         await session.execute(
@@ -225,14 +260,23 @@ async def _reserve_provider_slot(event_id: uuid.UUID) -> int | None:
         event = (
             await session.execute(
                 select(HeatAlertWebhookEvent)
-                .where(HeatAlertWebhookEvent.id == event_id)
+                .where(
+                    HeatAlertWebhookEvent.id == event_id,
+                    HeatAlertWebhookEvent.call_status == "checking",
+                    HeatAlertWebhookEvent.call_lease_token == lease_token,
+                    HeatAlertWebhookEvent.call_lease_expires_at > now,
+                )
                 .with_for_update()
             )
-        ).scalar_one()
+        ).scalar_one_or_none()
+        if event is None:
+            await session.commit()
+            return None
         if state.next_allowed_at and state.next_allowed_at > now:
             event.call_status = "scheduled"
             event.call_next_attempt_at = state.next_allowed_at
             event.call_lease_expires_at = None
+            event.call_lease_token = None
             event.call_updated_at = now
             await session.commit()
             return None
@@ -243,13 +287,18 @@ async def _reserve_provider_slot(event_id: uuid.UUID) -> int | None:
         event.call_status = "dispatching"
         event.call_dispatch_attempts += 1
         event.call_lease_expires_at = now + _LEASE
+        event.resolved_union_code = union_code
         event.call_updated_at = now
         await session.commit()
         return event.call_dispatch_attempts
 
 
-async def _dispatch(event: HeatAlertWebhookEvent) -> None:
-    dispatch_attempt = await _reserve_provider_slot(event.id)
+async def _dispatch(
+    event: HeatAlertWebhookEvent, lease_token: str, union_code: str
+) -> None:
+    dispatch_attempt = await _reserve_provider_slot(
+        event.id, lease_token, union_code
+    )
     if dispatch_attempt is None:
         return
     agent_id = (settings.raya_heat_alert_agent_id or "").strip()
@@ -268,63 +317,86 @@ async def _dispatch(event: HeatAlertWebhookEvent) -> None:
         if exc.retryable and dispatch_attempt < max(
             1, settings.heat_alert_call_max_dispatch_attempts
         ):
-            await _set_event(
+            await _set_claimed_event(
                 event.id,
+                lease_token,
+                "dispatching",
                 call_status="scheduled",
                 call_last_error=exc.category,
                 call_next_attempt_at=_now() + _retry_delay(dispatch_attempt),
                 call_lease_expires_at=None,
+                call_lease_token=None,
             )
         else:
-            await _set_event(
+            await _set_claimed_event(
                 event.id,
+                lease_token,
+                "dispatching",
                 call_status="dispatch_failed",
                 call_last_error=exc.category,
                 call_lease_expires_at=None,
+                call_lease_token=None,
             )
         return
     except OutboundCallConfigurationError:
-        await _set_event(
+        await _set_claimed_event(
             event.id,
+            lease_token,
+            "dispatching",
             call_status="dispatch_failed",
             call_last_error="configuration",
             call_lease_expires_at=None,
+            call_lease_token=None,
         )
         return
     except OutboundCallAmbiguousFailure as exc:
-        await _set_event(
+        await _set_claimed_event(
             event.id,
+            lease_token,
+            "dispatching",
             call_status="ambiguous",
             call_last_error=exc.category,
             call_lease_expires_at=None,
+            call_lease_token=None,
         )
         return
-    await _set_event(
+    await _set_claimed_event(
         event.id,
+        lease_token,
+        "dispatching",
         called=True,
         call_status="initiated",
         outbound_call_uuid=accepted.call_uuid,
         call_last_error=None,
         call_lease_expires_at=None,
+        call_lease_token=None,
     )
 
 
 async def _process(event: HeatAlertWebhookEvent) -> None:
+    lease_token = event.call_lease_token
+    if not lease_token:
+        return
     error, account = await _resolve_account(event)
     if error == "profile_unavailable":
-        await _eligibility_retry(event, error)
+        await _eligibility_retry(event.id, lease_token, error)
         return
     if error:
-        await _set_event(
+        await _set_claimed_event(
             event.id,
+            lease_token,
+            "checking",
             call_status="eligibility_failed",
             call_last_error=error,
             call_lease_expires_at=None,
+            call_lease_token=None,
         )
         return
     token = str(get_config_value("PASHUGPT_TOKEN") or "").strip()
     if not token:
-        await _eligibility_retry(event, "ticket_provider_not_configured")
+        await _eligibility_retry(
+            event.id, lease_token, "ticket_provider_not_configured"
+        )
         return
     summary = await get_farmer_ticket_summary_api(
         FarmerTicketSummaryRequestModel(
@@ -335,19 +407,21 @@ async def _process(event: HeatAlertWebhookEvent) -> None:
         token,
     )
     if summary is None:
-        await _eligibility_retry(event, "ticket_summary_unavailable")
+        await _eligibility_retry(event.id, lease_token, "ticket_summary_unavailable")
         return
     if summary.pending_tickets:
-        await _set_event(
+        await _set_claimed_event(
             event.id,
+            lease_token,
+            "checking",
             call_status="suppressed_pending",
             call_last_error=None,
             resolved_union_code=account.union_code,
             call_lease_expires_at=None,
+            call_lease_token=None,
         )
         return
-    await _set_event(event.id, resolved_union_code=account.union_code)
-    await _dispatch(event)
+    await _dispatch(event, lease_token, account.union_code)
 
 
 async def _run_once() -> bool:

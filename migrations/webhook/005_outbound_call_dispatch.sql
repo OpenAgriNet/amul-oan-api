@@ -7,6 +7,7 @@ ALTER TABLE heat_alert_webhook_events
     ADD COLUMN IF NOT EXISTS call_eligibility_attempts INTEGER NOT NULL DEFAULT 0,
     ADD COLUMN IF NOT EXISTS call_dispatch_attempts INTEGER NOT NULL DEFAULT 0,
     ADD COLUMN IF NOT EXISTS call_lease_expires_at TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS call_lease_token VARCHAR(36),
     ADD COLUMN IF NOT EXISTS call_last_error VARCHAR(64),
     ADD COLUMN IF NOT EXISTS call_updated_at TIMESTAMPTZ,
     ADD COLUMN IF NOT EXISTS resolved_union_code VARCHAR(64),

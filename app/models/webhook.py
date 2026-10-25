@@ -103,6 +103,7 @@ class HeatAlertWebhookEvent(WebhookBase):
         nullable=False, default=0, server_default="0"
     )
     call_lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    call_lease_token: Mapped[str | None] = mapped_column(String(36))
     call_last_error: Mapped[str | None] = mapped_column(String(64))
     call_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     resolved_union_code: Mapped[str | None] = mapped_column(String(64))
