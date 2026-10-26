@@ -25,6 +25,7 @@ from app.llm_core import runtime
 from app.llm_core.config_model import NamedProfile, PipelineConfig, Provider, Step, StepConfig, Tier
 from app.routers import voice as voice_router
 from app.services import chat as chat_service
+from app.services import heat_alert_call
 from app.services import voice as voice_service
 from app.turn.types import (
     AgentActivityEmission,
@@ -53,6 +54,16 @@ REPO = Path(__file__).resolve().parents[1]
 _OWNER = SessionRequestOwner(
     session_id="call-1", request_token="token-1", epoch=1, trace_id="ab" * 16, utterance_id="cd" * 16
 )
+
+
+@pytest.fixture(autouse=True)
+def _not_a_collar_call(monkeypatch):
+    """stream_voice_message asks Redis whether the call is a collar heat-alert call; here it never is."""
+
+    async def _none(session_id, user_id, call_type):
+        return None
+
+    monkeypatch.setattr(heat_alert_call, "context_for_call", _none)
 
 
 @pytest.fixture
