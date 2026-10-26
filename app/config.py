@@ -245,6 +245,8 @@ class Settings(BaseSettings):
     jwt_public_key_path: str = os.getenv("JWT_PUBLIC_KEY_PATH", "jwt_public_key.pem")
     jwt_private_key: Optional[str] = os.getenv("JWT_PRIVATE_KEY")  # PEM string; overrides path if set
     jwt_private_key_path: Optional[str] = os.getenv("JWT_PRIVATE_KEY_PATH")
+    # Verification-only services can delegate issuance to the matching signer.
+    anonymous_token_issuer_url: Optional[str] = None
 
     # Webview / App FE URL (served behind FCM auth; JWT token appended for FE)
     app_fe_url: Optional[str] = os.getenv("APP_FE_URL")

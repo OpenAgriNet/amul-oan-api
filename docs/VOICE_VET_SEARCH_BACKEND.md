@@ -10,7 +10,8 @@ The default is `marqo`, preserving existing deployments. Unknown values fail
 through the existing tool retry contract; a failed Beckn request does not silently
 switch back to Marqo. Switching this read path does not configure pipeline writes.
 
-DEV voice uses its configured public JWT verification key. Obtain a test token
-from the matching chat issuer rather than mounting its signing key into voice.
-Voice's anonymous-token endpoint cannot issue tokens in a verification-only
-deployment.
+DEV voice uses its configured public JWT verification key. Configure
+`ANONYMOUS_TOKEN_ISSUER_URL` to the matching chat issuer's `/api/auth/anonymous`
+endpoint to delegate anonymous-token requests without copying its signing key
+into voice. Issuer failures return 503. Without this setting, local token issuance
+is unchanged and requires the deployment's own signing key.
