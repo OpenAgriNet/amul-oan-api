@@ -19,6 +19,7 @@ from sqlalchemy import (
     UniqueConstraint,
     false,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -36,6 +37,14 @@ class HeatAlertWebhookEvent(WebhookBase):
         Index("ix_heat_alert_events_received_at", "received_at"),
         Index("ix_heat_alert_events_farmer_contact", "farmer_contact"),
         Index("ix_heat_alert_events_device_id", "device_id"),
+        Index("ix_heat_alert_events_union_code", "union_code"),
+        Index("ix_heat_alert_events_call_due_at", "call_due_at"),
+        Index(
+            "ix_heat_alert_events_outbound_call_uuid",
+            "outbound_call_uuid",
+            unique=True,
+            postgresql_where=text("outbound_call_uuid IS NOT NULL"),
+        ),
         UniqueConstraint(
             "alert_id",
             "farmer_contact",
@@ -62,6 +71,7 @@ class HeatAlertWebhookEvent(WebhookBase):
 
     farm_name: Mapped[str | None] = mapped_column(String(256))
     farm_id: Mapped[str | None] = mapped_column(String(64))
+    union_code: Mapped[str | None] = mapped_column(String(64))
     society_code: Mapped[str | None] = mapped_column(String(64), index=True)
     farmer_code: Mapped[str | None] = mapped_column(String(64), index=True)
     farmer_contact: Mapped[str | None] = mapped_column(String(32))
@@ -82,8 +92,17 @@ class HeatAlertWebhookEvent(WebhookBase):
     # The outbound call (app/services/heat_alert_call.py): when it is due, the
     # provider's id once placed, and why it was not.
     call_due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    call_status: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="scheduled", server_default="scheduled"
+    )
+    call_attempts: Mapped[int] = mapped_column(
+        nullable=False, default=0, server_default="0"
+    )
     outbound_call_uuid: Mapped[str | None] = mapped_column(String(64))
     call_error: Mapped[str | None] = mapped_column(String(64))
+    call_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    voice_session_id: Mapped[str | None] = mapped_column(String(128))
+    voice_process_id: Mapped[str | None] = mapped_column(String(128))
 
     # Parsed timestamps (if parseable) improve queryability.
     ai_window_start_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

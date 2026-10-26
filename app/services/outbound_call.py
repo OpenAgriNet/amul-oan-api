@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+import uuid
 from datetime import datetime, time, timedelta, timezone
 from typing import Any, Awaitable, Callable, Mapping
 from zoneinfo import ZoneInfo
@@ -36,14 +37,25 @@ class OutboundCallError(RuntimeError):
     provider answered 429 (and said when), or the request never reached it.
     """
 
-    def __init__(self, reason: str, retry_after: float | None = None):
+    def __init__(
+        self,
+        reason: str,
+        retry_after: float | None = None,
+        *,
+        ambiguous: bool = False,
+    ):
         super().__init__(reason)
         self.retry_after = retry_after
+        self.ambiguous = ambiguous
 
 
 def mobile_number(value: str | None) -> str:
     """The 10-digit form the API takes; contacts arrive with or without +91 / 0."""
-    digits = re.sub(r"\D", "", value or "")[-10:]
+    digits = re.sub(r"\D", "", value or "")
+    if len(digits) == 12 and digits.startswith("91"):
+        digits = digits[2:]
+    elif len(digits) == 11 and digits.startswith("0"):
+        digits = digits[1:]
     if len(digits) != 10:
         raise OutboundCallError("invalid_number")
     return digits
@@ -70,8 +82,8 @@ async def initiate_call(
             )
     except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
         raise OutboundCallError("unreachable", retry_after=5) from exc
-    except httpx.HTTPError as exc:  # sent but unanswered: the call may exist
-        raise OutboundCallError(type(exc).__name__) from exc
+    except (httpx.TimeoutException, httpx.TransportError) as exc:
+        raise OutboundCallError("ambiguous_transport", ambiguous=True) from exc
 
     try:
         data = response.json()
@@ -80,9 +92,16 @@ async def initiate_call(
     if response.status_code == 429:
         # Rate-limit bodies carry retry_after; concurrency-limit bodies do not.
         raise OutboundCallError("rate_limited", retry_after=float(data.get("retry_after") or 20))
+    if response.status_code >= 500:
+        raise OutboundCallError(f"http_{response.status_code}", ambiguous=True)
     if response.status_code != 200 or not data.get("uuid"):
         raise OutboundCallError(f"http_{response.status_code}")
-    return str(data["uuid"])
+    call_uuid = str(data["uuid"])
+    try:
+        uuid.UUID(call_uuid)
+    except (ValueError, TypeError, AttributeError) as exc:
+        raise OutboundCallError("invalid_success_response", ambiguous=True) from exc
+    return call_uuid
 
 
 def after_quiet_hours(at: datetime) -> datetime:

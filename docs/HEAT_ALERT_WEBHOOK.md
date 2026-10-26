@@ -41,17 +41,21 @@ They are managed by application actions and are not accepted from webhook payloa
 
 With `HEAT_ALERT_CALL_AGENT_ID` and `RAYA_CALL_API_KEY` set, each new alert gets a
 call `HEAT_ALERT_CALL_DELAY_SECONDS` (default 600) after it is stored, through the
-Raya call API (`RAYA_CALL_API_URL`) with that agent. The agent receives
+Raya call API (`RAYA_CALL_API_URL`) with that agent. At dispatch time the exact
+farmer account is resolved and the ticket-summary provider is checked; an
+account with any pending ticket is not called. The agent receives
 `agent_args`: `script` (`assets/prompts/heat_alert_call_script_gu.md` rendered
-with the animal and tag numbers), `animal_no`, `tag_no`, `alert_id`.
+with the animal and tag numbers), `animal_no`, `tag_no`, the partner `alert_id`,
+and the internal `heat_alert_event_id` used for voice correlation.
 
-Before dialling, the row is claimed by setting `called=true` in one statement that
-also checks `call_booked=false` and that the AI window has not ended, so a second
-replica or a restart cannot ring the same farmer twice. Calls due between 22:00 and
-06:00 IST move to 06:00. The provider's call id lands in `outbound_call_uuid`; a
-refused call leaves `called=true` with the reason in `call_error`. Timers live in
-the process; on startup every row with a due time and `called=false` is rescheduled.
-Nothing sets `call_booked` yet.
+Before dialling, the row is atomically claimed and both `call_booked=false` and
+the AI-window cutoff are rechecked. `called=true` is written only after Raya
+accepts the request and returns a valid UUID. Calls due between 22:00 and 06:00
+IST move to 06:00; offset-less partner timestamps are interpreted as IST. The
+provider call id lands in `outbound_call_uuid`, while safe failure categories
+land in `call_error`. On confirmed AI booking, the correlated row is updated to
+`call_booked=true`. This flow schedules one call only; it does not make follow-up
+calls.
 
 Successful response (`202 Accepted`):
 ```json

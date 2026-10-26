@@ -34,6 +34,8 @@ class VoiceRequest(BaseChatRequest):
         'inbound',
         description="Direction of the call as reported by the provider (inbound=farmer called us, outbound=we called the farmer). Optional; defaults to inbound.",
     )
+    heat_alert_event_id: Optional[str] = Field(None, description="Heat-alert event id forwarded by Raya")
+    provider_call_uuid: Optional[str] = Field(None, description="Raya outbound call UUID")
 
 
 class TranscribeRequest(BaseModel):

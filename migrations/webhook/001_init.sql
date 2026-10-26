@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS heat_alert_webhook_events (
 
     farm_name VARCHAR(256),
     farm_id VARCHAR(64),
+    union_code VARCHAR(64),
     society_code VARCHAR(64),
     farmer_code VARCHAR(64),
     farmer_contact VARCHAR(32),
@@ -33,8 +34,13 @@ CREATE TABLE IF NOT EXISTS heat_alert_webhook_events (
     called BOOLEAN NOT NULL DEFAULT FALSE,
     call_booked BOOLEAN NOT NULL DEFAULT FALSE,
     call_due_at TIMESTAMPTZ,
+    call_status VARCHAR(32) NOT NULL DEFAULT 'scheduled',
+    call_attempts INTEGER NOT NULL DEFAULT 0,
     outbound_call_uuid VARCHAR(64),
     call_error VARCHAR(64),
+    call_updated_at TIMESTAMPTZ,
+    voice_session_id VARCHAR(128),
+    voice_process_id VARCHAR(128),
 
     ai_window_start_at TIMESTAMPTZ,
     ai_window_end_at TIMESTAMPTZ,
@@ -58,3 +64,10 @@ CREATE INDEX IF NOT EXISTS ix_heat_alert_webhook_events_society_code
     ON heat_alert_webhook_events (society_code);
 CREATE INDEX IF NOT EXISTS ix_heat_alert_webhook_events_farmer_code
     ON heat_alert_webhook_events (farmer_code);
+CREATE INDEX IF NOT EXISTS ix_heat_alert_events_union_code
+    ON heat_alert_webhook_events (union_code);
+CREATE INDEX IF NOT EXISTS ix_heat_alert_events_call_due_at
+    ON heat_alert_webhook_events (call_due_at);
+CREATE UNIQUE INDEX IF NOT EXISTS ix_heat_alert_events_outbound_call_uuid
+    ON heat_alert_webhook_events (outbound_call_uuid)
+    WHERE outbound_call_uuid IS NOT NULL;

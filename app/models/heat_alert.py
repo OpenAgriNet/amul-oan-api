@@ -83,6 +83,9 @@ class HeatAlertWebhookRequest(BaseModel):
     society_code: str | None = Field(
         default=None, description="Society / mandali code", max_length=64
     )
+    union_code: str | None = Field(
+        default=None, description="Union code", max_length=64
+    )
     farmer_code: str | None = Field(default=None, description="Farmer code", max_length=64)
     farmer_contact: str = Field(description="Farmer phone / contact", max_length=32)
     system_tag_no: str | None = Field(default=None, description="System tag number", max_length=64)
@@ -106,6 +109,7 @@ class HeatAlertWebhookRequest(BaseModel):
         "ai_window_end_time",
         "alert_time",
         "timestamp",
+        "union_code",
         "society_code",
         "farmer_code",
         "farmer_contact",

@@ -3,6 +3,7 @@
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
@@ -13,7 +14,7 @@ from app.config import settings
 from app.core.webhook_db import get_webhook_session, webhook_db_configured
 from app.models.heat_alert import HeatAlertWebhookRequest, HeatAlertWebhookResponse
 from app.models.webhook import HeatAlertWebhookEvent
-from app.services import heat_alert_call
+from app.services import heat_alert_call, outbound_call
 from app.services.whatsapp_heat_alert import (
     WhatsAppHeatAlertConfigurationError,
     WhatsAppHeatAlertDeliveryError,
@@ -22,6 +23,7 @@ from app.services.whatsapp_heat_alert import (
 from helpers.utils import get_logger
 
 logger = get_logger(__name__)
+_PARTNER_TIMEZONE = ZoneInfo("Asia/Kolkata")
 
 router = APIRouter(prefix="/webhooks", tags=["webhooks"])
 
@@ -37,7 +39,7 @@ def _parse_iso8601_utc(value: str | None) -> Optional[datetime]:
     except ValueError:
         return None
     if dt.tzinfo is None:
-        return dt.replace(tzinfo=timezone.utc)
+        dt = dt.replace(tzinfo=_PARTNER_TIMEZONE)
     return dt.astimezone(timezone.utc)
 
 
@@ -91,11 +93,11 @@ async def receive_heat_alert(payload: HeatAlertWebhookRequest) -> HeatAlertWebho
         )
 
     received_at = datetime.now(timezone.utc)
-    call_due_at = (
-        received_at + timedelta(seconds=settings.heat_alert_call_delay_seconds)
-        if heat_alert_call.enabled()
-        else None
-    )
+    call_due_at = None
+    if heat_alert_call.enabled():
+        call_due_at = outbound_call.after_quiet_hours(
+            received_at + timedelta(seconds=settings.heat_alert_call_delay_seconds)
+        )
     payload_raw = payload.model_dump(by_alias=True, mode="json")
     partner_alert_epoch_s = _parse_epoch_seconds(payload.alert_time)
     ai_window_start_at = _parse_iso8601_utc(payload.ai_window_start_time)
@@ -114,6 +116,7 @@ async def receive_heat_alert(payload: HeatAlertWebhookRequest) -> HeatAlertWebho
         pashuaadhar_no=payload.pashuaadhar_no,
         farm_name=payload.farm_name,
         farm_id=payload.farm_id,
+        union_code=payload.union_code,
         society_code=payload.society_code,
         farmer_code=payload.farmer_code,
         farmer_contact=payload.farmer_contact,
@@ -130,6 +133,8 @@ async def receive_heat_alert(payload: HeatAlertWebhookRequest) -> HeatAlertWebho
         partner_alert_epoch_s=partner_alert_epoch_s,
         payload_raw=payload_raw,
         call_due_at=call_due_at,
+        call_status="scheduled",
+        call_updated_at=received_at,
     )
 
     try:
