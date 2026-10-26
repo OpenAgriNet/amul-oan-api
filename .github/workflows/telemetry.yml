@@ -1,13 +1,23 @@
 name: telemetry
 
-# Runs the chat telemetry tests (stamps, and chat.py against its contract) on
-# every PR. What reads the telemetry, and its tests, are in amul-telemetry.
+# Runs deterministic glossary checks and the chat telemetry tests (stamps, and
+# chat.py against its contract) on every PR. What reads the telemetry, and its
+# tests, are in amul-telemetry.
 on:
   pull_request:
   push:
     branches: [main]
 
 jobs:
+  glossary:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - run: python -m helpers.glossary_validation
+
   telemetry:
     runs-on: ubuntu-latest
     steps:

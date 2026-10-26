@@ -11,11 +11,14 @@ import string
 import aiohttp
 from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar
-from pathlib import Path
 from typing import Literal, NamedTuple, Optional
 from helpers.utils import get_logger, normalize_voice_output
 from agents.tools.models.union import UNION_BANNED_MESSAGE_VARIANTS, union_banned_message
-from agents.tools.terms import get_mini_glossary_for_text, get_ambiguity_hints_for_query
+from agents.tools.terms import (
+    GU_TERM_POLICY,
+    get_ambiguity_hints_for_query,
+    get_mini_glossary_for_text,
+)
 
 from app import llm_core
 from app.llm_core import Step as _Step
@@ -93,7 +96,7 @@ VOICE_GU_PREFERRED_TRANSLATION_RULES = [
     "Avoid brackets, markdown, list scaffolding, and repeated parenthetical restatements.",
     "Use 'માખણ' for butter, 'મલાઈ' for cream, 'વલોણું/વલોણાથી' for churning, and 'ઘી બનાવવું' for making ghee.",
     "Use 'ચીરો' for incision/cut (not 'ચૂભો' which is not a real word).",
-    "Use 'માનસિક આઘાત' for mental trauma/stress in animals (not 'તણાવ').",
+    "Use 'તણાવ' for stress and 'માનસિક આઘાત' only for explicit mental trauma.",
     "Use 'ફીણ' for foam (not 'ફી').",
     "Use 'દવા' for medicine (Gujarati does not pluralise as 'દવાઓ').",
     "For feed meant for a pregnant animal, say 'ગાભણ પશુ માટેનું દાણ' or 'ગાભણ દાણ'. Never invent 'ગર્ભચારો' and never say 'ગર્ભ માટેનો ચારો'.",
@@ -107,26 +110,8 @@ VOICE_GU_PREFERRED_TRANSLATION_RULES = [
     "When 'AI' appears in product or helpline naming (Amul AI, AI helpline, AI assistant, AI-powered helpline), treat it as Artificial Intelligence, not breeding artificial insemination, unless the sentence is clearly about beejdan, semen, technician booking, or insemination procedure.",
 ]
 
-# Voice channel (§14): glossary entries voice has that chat lacks — ASR spelling
-# variants (e.g. ભંચ→Buffalo) + extra dairy terms. Loaded as TermPairs and
-# searched ONLY by the voice-only _get_glossary_hints_for_gu_query, so chat's
-# shared glossary (TERM_PAIRS / get_mini_glossary) is untouched.
-
-
-def _load_gu_term_policy() -> dict:
-    candidates = [
-        Path.cwd() / "assets/gu_term_policy.json",
-        Path(__file__).resolve().parents[2] / "assets/gu_term_policy.json",
-    ]
-    for path in candidates:
-        if path.exists():
-            try:
-                with path.open("r", encoding="utf-8") as f:
-                    return json.load(f)
-            except Exception as e:
-                logger.warning("Failed loading Gujarati term policy at %s: %s", path, e)
-                return {}
-    return {}
+# Voice pretranslation consumes the same row-owned Gujarati and transliteration
+# aliases as chat. Channel-specific replacement behavior remains separate.
 
 
 def _gu_policy_pattern(src: str, dst: str) -> str:
@@ -188,7 +173,6 @@ GU_POST_REPLACEMENTS_BASE = [
     (r"(?<=[૦-૯])પ", "૫"),
     (r"પ(?=[૦-૯])", "૫"),
 ]
-GU_TERM_POLICY = _load_gu_term_policy()
 GU_POLICY_REPLACEMENTS = _build_gu_policy_replacements(GU_TERM_POLICY)
 GU_POST_REPLACEMENTS = GU_POST_REPLACEMENTS_BASE + GU_POLICY_REPLACEMENTS
 # Shared policy terms voice leaves as they are, as voice-oan-api does. Voice
@@ -249,6 +233,17 @@ _KDCC_RENDERINGS = re.compile(
 # district" weather/market answers from arming (and from being stream-buffered).
 _KDCC_EN = re.compile(r"kheda[\s\-]+(?:district|dist\.?)[^.\n]{0,80}?bank")
 
+# Global Gujarati rewrites cannot distinguish these pairs. Gate the correction
+# on an unambiguous English source and do nothing for mixed Bull/Bullock or
+# Insemination/Conception sentences.
+_BULL_SOURCE_ONLY = re.compile(
+    r"^(?=[\s\S]*\bbull\b)(?![\s\S]*\bbullock\b)"
+)
+_INSEMINATION_SOURCE_ONLY = re.compile(
+    r"^(?=[\s\S]*\binsemination\b)"
+    r"(?![\s\S]*\b(?:conception|pregnan(?:cy|t))\b)"
+)
+
 # ── The assistant's own name (AMUL-112) ──────────────────────────────────────
 # The agent introduces itself in English ("I am Sarlaben, ...") and the translator
 # spells the name off the Latin letters: સર્લાબેન, सारलाबेन and সারলাবেন were all
@@ -277,6 +272,16 @@ _PROTECTED_OUTPUT = {
             _KDCC_EN,
             _KDCC_RENDERINGS,
             _KDCC_PINNED,
+        ),
+        (
+            _BULL_SOURCE_ONLY,
+            re.compile(r"બળદ"),
+            "બુલ",
+        ),
+        (
+            _INSEMINATION_SOURCE_ONLY,
+            re.compile(r"ગર્ભાધાન"),
+            "બીજદાન",
         ),
         (
             # TranslateGemma transliterates this name letter-by-letter off the Latin
