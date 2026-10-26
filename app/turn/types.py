@@ -65,6 +65,8 @@ class HeatAlertCall:
     union_code: str = ""
     society_code: str = ""
     farmer_code: str = ""
+    #: What Sarlaben already said on this call, word for word, before the farmer's first reply.
+    script: str = ""
 
 
 @dataclass(frozen=True)
