@@ -9,6 +9,7 @@ from agents.voice.tools.milk_collection import get_farmer_milk_collection_detail
 from agents.voice.tools.terms import search_terms
 from agents.voice.tools.search import search_documents
 from agents.voice.tools.vet_offices import find_nearby_vet_offices
+from agents.voice.tools.vistaar import get_vistaar_weather, get_vistaar_mandi_prices
 from agents.voice.tools.ai_call import create_ai_call
 from agents.voice.tools.conversation_state import signal_conversation_state
 from agents.voice.tools.farmer_cached import get_farmer_profile, get_herd_summary, list_animal_tags
@@ -80,6 +81,20 @@ BASE_TOOLS = [
     # record never resolved can still be placed by the taluka they say out loud.
     Tool(
         _with_nudge_signal(find_nearby_vet_offices),
+        takes_ctx=True,
+        docstring_format='auto',
+        require_parameter_descriptions=True,
+    ),
+    # Bharat Vistaar weather and mandi prices (AMUL-81). Not identity-gated
+    # either: with no farmer district they fall back to Anand and say so.
+    Tool(
+        _with_nudge_signal(get_vistaar_weather),
+        takes_ctx=True,
+        docstring_format='auto',
+        require_parameter_descriptions=True,
+    ),
+    Tool(
+        _with_nudge_signal(get_vistaar_mandi_prices),
         takes_ctx=True,
         docstring_format='auto',
         require_parameter_descriptions=True,
