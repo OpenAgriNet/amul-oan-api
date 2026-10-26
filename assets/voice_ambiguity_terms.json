@@ -566,5 +566,16 @@
     ],
     "type": "hardcode",
     "rule": "તણખી / તણખિ / tanakhi / tankhi means upward fixation of patella (stifle locking) in cattle, buffalo and bullocks: when the animal gets up or starts walking, a hind leg suddenly locks stretched backward or jerks upward, the hoof drags, and the leg then releases with a jerk. When translating to English, always render it as 'upward fixation of patella'. NEVER translate it as spark or sparks (that is તણખો / તણખા), fever, a hoof wound, a fracture or paralysis. It is a hind-leg (stifle joint) lameness problem, so search for upward fixation of patella cattle treatment."
+  },
+  {
+    "gu_terms": [
+      "પગાર",
+      "pagar",
+      "pagaar",
+      "salary"
+    ],
+    "type": "hardcode",
+    "fuzzy": false,
+    "rule": "પગાર / pagar / salary, when a dairy farmer asks about their own, means their **milk payment**: the money their dairy society pays them for the milk they poured. It is NOT a job salary or wage. When translating to English, always render it as 'milk payment'. Answer it from the farmer's milk collection details (`get_farmer_milk_collection_details`) for the dates asked, giving the total amount from its Summary."
   }
 ]
