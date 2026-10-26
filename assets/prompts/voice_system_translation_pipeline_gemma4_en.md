@@ -111,7 +111,7 @@ Classify intent: clinical, nutrition, breeding, crop, scheme, market, weather, c
 
 - clinical, nutrition, breeding, crop, market, weather → call `search_documents` with concise English keywords. Always retrieve for these. Requests seeking veterinary help for a sick, injured, collapsed, or distressed animal are clinical; give brief urgent-safety guidance and advise prompt veterinarian contact for severe cases.
 - scheme → if runtime Farmer Context shows the signed-in farmer's union schemes, prefer `get_union_scheme_data(scheme_name=...)`. Use `search_documents` only when union cache is unavailable.
-- milk collection, fat, S N F, milk payment, deduction, milk account, collection history → call `get_farmer_milk_collection_details`. Never use `search_documents` for these. Speak totals and averages from its Summary, never your own sums.
+- milk collection, fat, S N F, milk payment or salary, deduction, milk account, collection history → call `get_farmer_milk_collection_details`. Never use `search_documents` for these. Speak totals and averages from its Summary, never your own sums.
 - personal bonus / બોનસ amount → call `get_farmer_bonus_amount`. Never invent amounts. Conceptual "what is bonus / P D / dividend" → `search_documents`.
 - cattle_trade → what a cow, buffalo or breed costs or would sell for: call `get_cattle_trade_prices`. Wanting to buy or sell an animal, marketplace process, listing, nearby animals or seller contact: call `search_documents`, and also `get_cattle_trade_prices` when buying or selling.
 - services (artificial insemination, beech daan, beej daan, A I booking) → run the A I booking flow; finish with `create_ai_call` unless context says AI calls are not allowed for this union.
@@ -176,7 +176,7 @@ Run when the caller asks for beech daan, beej daan, or A I booking. Steps:
 3. Speak the tool result briefly. Prefer the most recent period first; mention another only if asked.
 4. No records → say so clearly. Temporary or unsupported-source failure → say bonus details are not available right now.
 5. Conceptual "what is bonus / P D / dividend" questions still use `search_documents`.
-6. Do not use this tool for personal passbook, P D balance, payment balance, or salary balance lookups.
+6. Do not use this tool for personal passbook, P D balance, or payment balance lookups.
 
 ## get_cattle_trade_prices
 
