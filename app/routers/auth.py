@@ -11,7 +11,6 @@ from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 import re
 
 import jwt
-import httpx
 from cryptography.hazmat.primitives import serialization
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
@@ -139,19 +138,6 @@ async def anonymous_token():
     Issue a 1-day signed JWT for anonymous usage.
     No credentials required. sub is a randomly generated anonymous user ID.
     """
-    issuer = settings.anonymous_token_issuer_url
-    if issuer:
-        try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                response = await client.post(issuer)
-                response.raise_for_status()
-                token = TokenResponse.model_validate(response.json())
-                if not token.access_token.strip() or token.token_type.lower() != "bearer" or token.expires_in <= 0:
-                    raise ValueError("Invalid token issuer response")
-                return token
-        except (httpx.HTTPError, ValueError):
-            logger.warning("Configured anonymous token issuer is unavailable")
-            raise HTTPException(status_code=503, detail="Anonymous token issuer is temporarily unavailable") from None
     expires_days = 1.0
     token = create_anonymous_jwt_token(expires_days=expires_days)
     expires_in = int(expires_days * 24 * 60 * 60)
