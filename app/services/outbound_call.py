@@ -34,11 +34,14 @@ class OutboundCallError(RuntimeError):
 
     ``retry_after`` is set only when retrying cannot place a second call: the
     provider answered 429 (and said when), or the request never reached it.
+    ``ambiguous`` means the request was sent and never answered properly, so
+    the call may exist; such a failure must not be dialled again blindly.
     """
 
-    def __init__(self, reason: str, retry_after: float | None = None):
+    def __init__(self, reason: str, retry_after: float | None = None, *, ambiguous: bool = False):
         super().__init__(reason)
         self.retry_after = retry_after
+        self.ambiguous = ambiguous
 
 
 def mobile_number(value: str | None) -> str:
@@ -53,7 +56,7 @@ async def initiate_call(
     agent_id: str, to_number: str, agent_args: Mapping[str, Any] | None = None
 ) -> str:
     """Place one call now and return the provider's call UUID."""
-    api_key = (settings.raya_call_api_key or "").strip()
+    api_key = (settings.raya_outbound_call_api_key or "").strip()
     if not api_key:
         raise OutboundCallError("not_configured")
     body = {
@@ -66,12 +69,12 @@ async def initiate_call(
     try:
         async with httpx.AsyncClient(timeout=_TIMEOUT_SECONDS) as client:
             response = await client.post(
-                settings.raya_call_api_url, headers={"X-API-Key": api_key}, json=body
+                settings.raya_outbound_call_api_url, headers={"X-API-Key": api_key}, json=body
             )
     except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
         raise OutboundCallError("unreachable", retry_after=5) from exc
-    except httpx.HTTPError as exc:  # sent but unanswered: the call may exist
-        raise OutboundCallError(type(exc).__name__) from exc
+    except httpx.HTTPError as exc:
+        raise OutboundCallError(type(exc).__name__, ambiguous=True) from exc
 
     try:
         data = response.json()
@@ -80,7 +83,9 @@ async def initiate_call(
     if response.status_code == 429:
         # Rate-limit bodies carry retry_after; concurrency-limit bodies do not.
         raise OutboundCallError("rate_limited", retry_after=float(data.get("retry_after") or 20))
-    if response.status_code != 200 or not data.get("uuid"):
+    if response.status_code >= 500 or (response.status_code == 200 and not data.get("uuid")):
+        raise OutboundCallError(f"http_{response.status_code}", ambiguous=True)
+    if response.status_code != 200:
         raise OutboundCallError(f"http_{response.status_code}")
     return str(data["uuid"])
 

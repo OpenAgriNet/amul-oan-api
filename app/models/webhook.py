@@ -62,6 +62,7 @@ class HeatAlertWebhookEvent(WebhookBase):
 
     farm_name: Mapped[str | None] = mapped_column(String(256))
     farm_id: Mapped[str | None] = mapped_column(String(64))
+    union_code: Mapped[str | None] = mapped_column(String(64))
     society_code: Mapped[str | None] = mapped_column(String(64), index=True)
     farmer_code: Mapped[str | None] = mapped_column(String(64), index=True)
     farmer_contact: Mapped[str | None] = mapped_column(String(32))
