@@ -264,8 +264,9 @@ class TestNewVariantInvariants:
         text = _load(version)
         words = len(text.split())
         lines = text.count("\n") + 1
-        # New variants must stay leaner than the legacy mixed prompt.
-        assert words <= 4500, f"{version} prompt grew to {words} words (limit 4500)"
+        # New variants must stay leaner than the legacy mixed prompt. Raised from
+        # 4500 for the home-remedy routing line (AMUL-75): gpt-5.1 sat at 4499.
+        assert words <= 4550, f"{version} prompt grew to {words} words (limit 4550)"
         assert lines <= 320, f"{version} prompt grew to {lines} lines (limit 320)"
 
 
