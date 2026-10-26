@@ -231,6 +231,7 @@ async def context_for_call(session_id: str, mobile: str | None, call_type: str |
         union_code=account.union_code if account else "",
         society_code=account.society_code if account else "",
         farmer_code=account.farmer_code if account else "",
+        script=agent_args(event)["script"],
     )
     await set_cache(_session_key(session_id), asdict(call), ttl=_SESSION_TTL)
     logger.info("Voice session is a heat-alert call session_id=%s event_id=%s", session_id, call.event_id)
