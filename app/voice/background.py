@@ -30,6 +30,7 @@ from typing import Optional
 from agents.tools.farmer import normalize_phone_to_mobile
 from agents.tools.farmer_cache import get_or_fetch_farmer_data
 from app.config import settings
+from app.services.memory import MEMORY_ENABLED, MEMORY_VOICE_TIMEOUT_SECONDS, fetch_memory_context
 from app.turn.types import BackgroundFactory, ClassifierResult, Turn
 from app.utils import format_message_pairs
 from app.voice import outbound as _outbound
@@ -180,6 +181,14 @@ class VoiceBackground:
             ),
         )
         self._mobile = normalize_phone_to_mobile(turn.user_id)
+        self._memory_read_allowed = bool(
+            MEMORY_ENABLED
+            and turn.authenticated_user
+            and turn.user_id
+            and turn.user_id != "anonymous"
+            and self._mobile
+        )
+        self._memory_task: Optional[asyncio.Task] = None
         self._farmer_task = (
             asyncio.create_task(get_or_fetch_farmer_data(self._mobile))
             if self._mobile
@@ -238,6 +247,33 @@ class VoiceBackground:
             return None
         return await self._farmer_task
 
+    @property
+    def memory_read_allowed(self) -> bool:
+        """Whether the authenticated telephony request established a phone identity."""
+        return self._memory_read_allowed
+
+    def start_memory(self, query: str) -> None:
+        """Start voice recall once pretranslation has produced the English query."""
+        if self._memory_task is None and self._memory_read_allowed:
+            self._memory_task = asyncio.create_task(
+                fetch_memory_context(
+                    self._mobile,
+                    query,
+                    allowed=True,
+                    timeout_seconds=MEMORY_VOICE_TIMEOUT_SECONDS,
+                )
+            )
+
+    async def memory_context(self) -> str:
+        if self._memory_task is None:
+            return ""
+        try:
+            return await self._memory_task
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            return ""
+
     async def consent(self) -> Optional[ConsentVerdict]:
         """The verdict on an outbound call's consent turn, else None."""
         if self._consent_task is None:
@@ -267,7 +303,12 @@ class VoiceBackground:
         return None
 
     async def close(self) -> None:
-        tasks = (self._moderation_task, self._non_meaningful_task, self._consent_task)
+        tasks = (
+            self._moderation_task,
+            self._non_meaningful_task,
+            self._consent_task,
+            self._memory_task,
+        )
         for task in (task for task in tasks if task is not None):
             try:
                 if task.done():

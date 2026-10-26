@@ -27,6 +27,7 @@ from agents.deps import FarmerContext
 from agents.farmer_context import FarmerContextBundle, get_farmer_context_bundle_by_mobile
 from agents.tools.farmer import normalize_phone_to_mobile
 from agents.tools.session_shc import get_session_shc_context
+from app.services.memory import MEMORY_ENABLED, fetch_memory_context
 from app.services.translation import (
     translate_text,
     pretranslate_with_tier,
@@ -473,6 +474,9 @@ def _build_deps(
             normalize_phone_to_mobile(user_info["phone"])
             if persona == "farmer" and user_info and user_info.get("phone")
             else None
+        ),
+        memory_read_allowed=bool(
+            MEMORY_ENABLED and persona == "farmer" and user_info and user_info.get("phone")
         ),
         persona=persona,
     )
@@ -1031,15 +1035,23 @@ async def _chat_agent_input(
     deps.update_moderation_str(moderation_str)
 
     if persona == "farmer":
-        deps.soil_health_card_context = (
-            await get_session_shc_context(session_id, deps.mobile)
-        ) or ""
+        shc_context, memory_context = await asyncio.gather(
+            get_session_shc_context(session_id, deps.mobile),
+            fetch_memory_context(
+                deps.mobile,
+                pretranslated.query,
+                allowed=deps.memory_read_allowed,
+            ),
+        )
+        deps.soil_health_card_context = shc_context or ""
+        deps.memory_context = memory_context or ""
     user_message = deps.get_user_message()
     logger.info(
-        "request_id=%s running_agent=True user_query=%s private_shc_context=%s",
+        "request_id=%s running_agent=True user_query=%s private_shc_context=%s memory_used=%s",
         request_id,
         deps.query,
         bool(deps.soil_health_card_context),
+        bool(deps.memory_context),
     )
 
     # Run the main agent
