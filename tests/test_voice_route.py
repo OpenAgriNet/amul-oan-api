@@ -31,6 +31,7 @@ from app.turn.types import (
     ArtifactEmission,
     SideChannelEmission,
     Surface,
+    TelephonyCall,
     TextEmission,
 )
 from app.utils import SessionRequestOwner
@@ -49,7 +50,9 @@ from tests.test_chat_turn_sequence import _delta
 from tests.test_voice_agent_input import _Run
 
 REPO = Path(__file__).resolve().parents[1]
-_OWNER = SessionRequestOwner(session_id="call-1", request_token="token-1", epoch=1)
+_OWNER = SessionRequestOwner(
+    session_id="call-1", request_token="token-1", epoch=1, trace_id="ab" * 16, utterance_id="cd" * 16
+)
 
 
 @pytest.fixture
@@ -471,6 +474,8 @@ def test_the_adapter_composes_a_voice_turn(monkeypatch):
     assert (turn.session_id, turn.history_session_id, turn.persona, turn.channel) == ("call-1", "call-1", "farmer", None)
     assert dict(turn.authenticated_user) == {"sub": "x"}
     assert (turn.call.process_id, turn.call.provider, turn.call.call_type) == ("proc-1", "RAYA", "inbound")
+    # What the claim made, for the trace: the epoch, the trace id the turn opens with, its utterance.
+    assert (turn.call.request_epoch, turn.call.trace_id, turn.call.utterance_id) == (1, "ab" * 16, "cd" * 16)
     assert isinstance(kwargs["is_stale"], CallStaleness)
     assert isinstance(kwargs["side_channel"], RayaNudgeSender)
 
@@ -553,8 +558,8 @@ def test_a_rendering_failure_is_thrown_into_the_turn_and_the_session_released(mo
 def test_the_routes_timings_open_the_trace(monkeypatch):
     monkeypatch.setattr(settings, "enable_voice_tracing", False)
     turn = SimpleNamespace(
-        session_id="call-1", user_id="u", query="q", source_lang="gu", target_lang="gu",
-        call=SimpleNamespace(provider=None, process_id=None, call_type="inbound"),
+        session_id="call-1", user_id="u", query="q", source_lang="gu", target_lang="gu", persona="farmer",
+        authenticated_user={}, call=TelephonyCall(process_id=None),
     )
     route = RouteTimings(started_at=time.perf_counter() - 1.0, ownership_claim_ms=3.0, history_load_ms=4.0, history_messages=6)
 

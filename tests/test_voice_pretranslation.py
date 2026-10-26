@@ -327,9 +327,10 @@ async def _render(text_en, target_lang, *, execution):
     return f"<{target_lang}> {text_en}"
 
 
-def _pretranslate(monkeypatch, turn, *, replies=(), background=None, tiers=()):
+def _pretranslate(monkeypatch, turn, *, replies=(), background=None, tiers=(), execution=None):
     """Runs voice's step with each attempt answered from ``replies`` in order;
-    an exception there is raised by that attempt."""
+    an exception there is raised by that attempt. ``execution`` is the turn's, as
+    run_turn hands it over; one is built from ``tiers`` otherwise."""
     calls = []
     answers = list(replies)
 
@@ -342,7 +343,7 @@ def _pretranslate(monkeypatch, turn, *, replies=(), background=None, tiers=()):
 
     monkeypatch.setattr(vp, "_translate_to_english_pretranslation", _attempt)
     step = vp.voice_pretranslation(_render)
-    result = asyncio.run(step(turn, execution=_execution(*tiers), background=background))
+    result = asyncio.run(step(turn, execution=execution or _execution(*tiers), background=background))
     return result, calls
 
 
