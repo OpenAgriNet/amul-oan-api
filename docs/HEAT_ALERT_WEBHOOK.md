@@ -37,6 +37,30 @@ send, the partner gets `500` and its retry sends a second message.
 The internal `called` and `call_booked` status columns both default to `false`.
 They are managed by application actions and are not accepted from webhook payloads.
 
+## Outbound call
+
+With `RAYA_HEAT_ALERT_AGENT_ID` and `RAYA_OUTBOUND_CALL_API_KEY` set, each new alert
+gets a call `HEAT_ALERT_CALL_DELAY_SECONDS` (default 600) after it is stored, through
+the Raya call API (`RAYA_OUTBOUND_CALL_API_URL`) with that agent. The agent receives
+`agent_args`: `script` (`assets/prompts/heat_alert_call_script_gu.md` rendered
+with the animal and tag numbers), `animal_no`, `tag_no`, `alert_id`.
+
+Before dialling, the row is claimed by setting `called=true` in one statement that
+also checks `call_booked=false` and that the AI window has not ended, so a second
+replica or a restart cannot ring the same farmer twice. Calls due between 22:00 and
+06:00 IST move to 06:00. Then two checks, each recorded in `call_error` when it
+stops the call: `HEAT_ALERT_CALL_ONLY_NUMBERS` (test phase: when set, only those
+numbers are rung, `not_in_only_numbers`) and Amul Pashudhan's `GetFarmerTicketSummary`
+for the alert's account (`pending_ticket`). The account is the alert's union, society
+and farmer code; when the partner omits the union code it is taken from the farmer
+cache entry for that phone that matches the other two. A ticket lookup that fails
+does not stop the call.
+
+The provider's call id lands in `outbound_call_uuid`. A refused call (4xx) releases
+the claim with the reason in `call_error`; a timeout or 5xx keeps `called=true`,
+since the call may exist. Timers live in the process; on startup every row with a
+due time and `called=false` is rescheduled. Nothing sets `call_booked` yet.
+
 Successful response (`202 Accepted`):
 ```json
 {
@@ -64,7 +88,7 @@ Env reference: the heat-alert block in `example.env`.
 1. Create a dedicated Postgres DB/user for webhook storage.
 2. Apply the schema migration before deploying the matching application code:
    - fresh database: `psql "$WEBHOOK_DSN" -f migrations/webhook/001_init.sql`
-   - existing database: apply `migrations/webhook/003_booking_url.sql`, then `migrations/webhook/004_call_flags.sql`
+   - existing database: apply `migrations/webhook/003_booking_url.sql`, `migrations/webhook/004_call_flags.sql`, then `migrations/webhook/005_outbound_call.sql`
 3. Set runtime env on this service:
    - `WEBHOOK_SHARED_TOKEN`
    - `WEBHOOK_DB_URL` (`postgresql+asyncpg://...`)
@@ -72,6 +96,7 @@ Env reference: the heat-alert block in `example.env`.
    - optional: `SARLABEN_WHATSAPP_BASE_URL` (defaults to `https://comm.amul.in/sarlaben`)
    - optional: `SARLABEN_WHATSAPP_TIMEOUT_SECONDS` (defaults to `15`)
    - optional: `WEBHOOK_DB_POOL_SIZE`, `WEBHOOK_RETENTION_HOURS`, `WEBHOOK_CLEANUP_INTERVAL_SECONDS`
+   - outbound call: `RAYA_OUTBOUND_CALL_API_KEY`, `RAYA_HEAT_ALERT_AGENT_ID`; optional `RAYA_OUTBOUND_CALL_API_URL`, `HEAT_ALERT_CALL_DELAY_SECONDS`, `HEAT_ALERT_CALL_ONLY_NUMBERS`
 4. Restart the API process and confirm startup log includes webhook cleanup worker start (or the "not started: WEBHOOK_DB_URL not configured" skip line).
 5. Smoke test:
    ```bash

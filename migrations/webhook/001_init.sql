@@ -32,6 +32,10 @@ CREATE TABLE IF NOT EXISTS heat_alert_webhook_events (
     booking_url TEXT,
     called BOOLEAN NOT NULL DEFAULT FALSE,
     call_booked BOOLEAN NOT NULL DEFAULT FALSE,
+    union_code VARCHAR(64),
+    call_due_at TIMESTAMPTZ,
+    outbound_call_uuid VARCHAR(64),
+    call_error VARCHAR(64),
 
     ai_window_start_at TIMESTAMPTZ,
     ai_window_end_at TIMESTAMPTZ,
