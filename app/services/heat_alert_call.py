@@ -6,15 +6,21 @@ booking. The row's ``called`` flag is the claim: it flips to true before the
 dial, inside the same statement that checks the alert is still worth a call,
 so neither a retry nor a second replica recovering the same row can ring twice.
 ``call_error`` says why a claimed row was not rung, or how the dial failed.
+
+When the farmer answers, Raya sends the voice turn with ``session_id`` equal to
+the call UUID it returned to us and ``call_type=outbound`` (seen 2026-10-26);
+``context_for_call`` matches that to the call we placed, so the voice agent
+knows which animal it is about and books for that account.
 """
 from __future__ import annotations
 
 import asyncio
 import uuid
-from datetime import datetime, timezone
+from dataclasses import asdict
+from datetime import datetime, timedelta, timezone
 
 import httpx
-from sqlalchemy import or_, select, update
+from sqlalchemy import func, or_, select, update
 
 from agents.tools.beckn.amul import AuthenticatedFarmerAccount, authenticated_accounts, fetch_authenticated_farmers
 from agents.tools.farmer import normalize_phone_to_mobile
@@ -22,12 +28,33 @@ from app.config import get_config_value, settings
 from app.core.webhook_db import get_webhook_session, webhook_db_configured
 from app.models.webhook import HeatAlertWebhookEvent
 from app.services import outbound_call
+from app.turn.types import HeatAlertCall
+from app.utils import get_cache, set_cache
+from app.voice.outbound import is_outbound
 from helpers.utils import get_logger, get_prompt
 
 logger = get_logger(__name__)
 
 SCRIPT_PROMPT = "heat_alert_call_script_gu"
 _ATTEMPTS = 3
+# A farmer answers within minutes of the dial; the row itself lives 24 h.
+_ANSWER_WINDOW = timedelta(hours=3)
+_SESSION_TTL = 4 * 60 * 60
+
+# Identifiers are read out character by character, as Amul's script does
+# ("S1325" -> "એસ વન થ્રી ટુ ફાઈવ"); the TTS would otherwise guess.
+_SPOKEN = {
+    **dict(zip("0123456789", ["ઝીરો", "વન", "ટુ", "થ્રી", "ફોર", "ફાઈવ", "સિક્સ", "સેવન", "એઈટ", "નાઈન"])),
+    **dict(zip("૦૧૨૩૪૫૬૭૮૯", ["ઝીરો", "વન", "ટુ", "થ્રી", "ફોર", "ફાઈવ", "સિક્સ", "સેવન", "એઈટ", "નાઈન"])),
+    **dict(zip("ABCDEFGHIJKLMNOPQRSTUVWXYZ", [
+        "એ", "બી", "સી", "ડી", "ઈ", "એફ", "જી", "એચ", "આઈ", "જે", "કે", "એલ", "એમ",
+        "એન", "ઓ", "પી", "ક્યુ", "આર", "એસ", "ટી", "યુ", "વી", "ડબલ્યુ", "એક્સ", "વાય", "ઝેડ",
+    ])),
+}
+
+
+def spoken(identifier: str | None) -> str:
+    return " ".join(_SPOKEN.get(c.upper(), c) for c in (identifier or "").strip() if not c.isspace())
 
 
 def enabled() -> bool:
@@ -39,7 +66,7 @@ def agent_args(event: HeatAlertWebhookEvent) -> dict[str, str]:
     """What the agent gets: the rendered script plus the identifiers it names."""
     animal_no, tag_no = event.pashuaadhar_no or "", event.tag_no or ""
     return {
-        "script": get_prompt(SCRIPT_PROMPT, {"animal_no": animal_no, "tag_no": tag_no}).strip(),
+        "script": get_prompt(SCRIPT_PROMPT, {"animal_no": spoken(animal_no), "tag_no": spoken(tag_no)}).strip(),
         "animal_no": animal_no,
         "tag_no": tag_no,
         "alert_id": event.alert_id,
@@ -174,6 +201,74 @@ async def _record(event_id: uuid.UUID, **values) -> None:
             update(HeatAlertWebhookEvent).where(HeatAlertWebhookEvent.id == event_id).values(**values)
         )
         await session.commit()
+
+
+def _session_key(session_id: str) -> str:
+    return f"{session_id}_heat_alert_call"
+
+
+async def context_for_call(session_id: str, mobile: str | None, call_type: str | None) -> HeatAlertCall | None:
+    """The heat alert this voice session answers, if it is one of our calls.
+
+    Raya's session id for a call we placed is the call UUID it returned, so the
+    match is exact; the phone we rang in the last few hours is the fallback on an
+    outbound turn. Kept on the session once found.
+    """
+    cached = await get_cache(_session_key(session_id))
+    if isinstance(cached, dict) and cached.get("event_id"):
+        return HeatAlertCall(**cached)
+    if not webhook_db_configured():
+        return None
+    event = await _placed_call(session_id, mobile if is_outbound(call_type) else None)
+    if event is None:
+        return None
+    account = await _account(event)
+    call = HeatAlertCall(
+        event_id=str(event.id),
+        alert_id=event.alert_id,
+        animal_no=event.pashuaadhar_no or "",
+        tag_no=event.tag_no or "",
+        union_code=account.union_code if account else "",
+        society_code=account.society_code if account else "",
+        farmer_code=account.farmer_code if account else "",
+        script=agent_args(event)["script"],
+    )
+    await set_cache(_session_key(session_id), asdict(call), ttl=_SESSION_TTL)
+    logger.info("Voice session is a heat-alert call session_id=%s event_id=%s", session_id, call.event_id)
+    return call
+
+
+async def _placed_call(session_id: str, mobile: str | None) -> HeatAlertWebhookEvent | None:
+    placed = HeatAlertWebhookEvent.outbound_call_uuid.is_not(None)
+    async with get_webhook_session() as session:
+        event = (
+            await session.execute(
+                select(HeatAlertWebhookEvent).where(placed, HeatAlertWebhookEvent.outbound_call_uuid == session_id).limit(1)
+            )
+        ).scalar_one_or_none()
+        if event is None and mobile:
+            since = datetime.now(timezone.utc) - _ANSWER_WINDOW
+            event = (
+                await session.execute(
+                    select(HeatAlertWebhookEvent)
+                    .where(
+                        placed,
+                        func.right(func.regexp_replace(HeatAlertWebhookEvent.farmer_contact, r"\D", "", "g"), 10) == mobile,
+                        HeatAlertWebhookEvent.call_due_at > since,
+                    )
+                    .order_by(HeatAlertWebhookEvent.call_due_at.desc())
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+    return event
+
+
+async def mark_booked(event_id: str) -> None:
+    """The farmer booked the AI visit on our call."""
+    try:
+        await _record(uuid.UUID(event_id), call_booked=True)
+    except Exception:
+        logger.exception("Could not mark heat-alert call booked event_id=%s", event_id)
 
 
 async def recover() -> int:

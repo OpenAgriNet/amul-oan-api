@@ -416,6 +416,7 @@ async def _book_via_network(
     _ai_tool_input: dict,
     tool_call_id: str | None = None,
     guard: bool | None = None,
+    heat_alert_event_id: str | None = None,
 ) -> str:
     """Book via the Amul Beckn network with moderation and idempotency guards.
 
@@ -524,6 +525,10 @@ async def _book_via_network(
 
         # Mark this session as booked so a re-run (or retry) does not double-book.
         await _mark_session_booked(session_id, result.ticket, species.value, guard)
+        if heat_alert_event_id:
+            from app.services.heat_alert_call import mark_booked
+
+            await mark_booked(heat_alert_event_id)
 
         logger.info(
             "Network AI call succeeded for union=%s society=%s farmer=%s species=%s ticket=%s",

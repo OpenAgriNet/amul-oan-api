@@ -172,6 +172,28 @@ def _build_runtime_context_request(deps: FarmerContext) -> ModelRequest:
     return ModelRequest(parts=[UserPromptPart(content="\n".join(context_lines))])
 
 
+def _heat_alert_hint(call) -> str:
+    """This turn is the farmer's answer to Sarlaben's heat-alert call."""
+    account = (
+        f"union {call.union_code}, society {call.society_code}, farmer code {call.farmer_code}"
+        if call.union_code and call.society_code and call.farmer_code
+        else "the farmer's account from the farmer context"
+    )
+    said = f" Sarlaben has already said, word for word: «{call.script}»." if call.script else ""
+    return (
+        "- This is Sarlaben's outbound heat-alert call, not a call the farmer made. The digital "
+        f"collar on their animal (animal number {call.animal_no or 'unknown'}, tag {call.tag_no or 'unknown'}) "
+        "detected heat signs, and the farmer has just been asked whether to register an artificial "
+        f"insemination (AI) ticket for it.{said} The conversation continues from there: the current "
+        "message is the farmer's reply, and earlier replies are in the history.\n"
+        f"- If they agree: run the AI booking flow for {account}. Ask whether the animal is a cow or a "
+        "buffalo if they have not said, then call create_ai_call.\n"
+        "- If they decline or are unsure: thank them briefly, say they can book later through the "
+        "WhatsApp link or by calling, and end the call.\n"
+        "- Do not ask what they are calling about and do not offer milk details."
+    )
+
+
 def _build_query_hints_request(deps: FarmerContext) -> Optional[ModelRequest]:
     """Per-query hints derived from the caller's current utterance: disambiguation
     rules (for ambiguous terms) and the voice answer mode. Kept OUT of the stable
@@ -528,6 +550,9 @@ async def _voice_agent_input(
         farmer_accounts=farmer_accounts,
         farmer_village=farmer_village,
         farmer_district=farmer_district,
+        heat_alert_event_id=(
+            turn.call.heat_alert.event_id if turn.call is not None and turn.call.heat_alert else None
+        ),
     )
     # Let side-effecting tools (bookings) self-gate on the concurrent
     # moderation verdict before performing any write.
@@ -563,6 +588,12 @@ async def _voice_agent_input(
     query_hints_request = _build_query_hints_request(deps)
     if query_hints_request is not None:
         model_input_history.append(query_hints_request)
+    if turn.call is not None and turn.call.heat_alert is not None:
+        model_input_history.append(
+            ModelRequest(parts=[UserPromptPart(content=(
+                "Hints for the current user query:\n" + _heat_alert_hint(turn.call.heat_alert)
+            ))])
+        )
     if outbound_milk_hint is not None:
         # Appended after the per-query hints, immediately before the user
         # message: this turn's instruction is the readout, and it must sit

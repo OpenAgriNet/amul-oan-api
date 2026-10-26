@@ -55,6 +55,21 @@ class Surface(str, Enum):
 
 
 @dataclass(frozen=True)
+class HeatAlertCall:
+    """The collar heat alert an outbound call was placed for (app/services/heat_alert_call.py)."""
+
+    event_id: str
+    alert_id: str
+    animal_no: str
+    tag_no: str
+    union_code: str = ""
+    society_code: str = ""
+    farmer_code: str = ""
+    #: What Sarlaben already said on this call, word for word, before the farmer's first reply.
+    script: str = ""
+
+
+@dataclass(frozen=True)
 class TelephonyCall:
     """The phone call a voice turn belongs to, as the voice adapter found it.
 
@@ -71,6 +86,9 @@ class TelephonyCall:
     provider: Optional[str] = None
     #: ``outbound`` for a call we placed, else ``inbound``. For the trace.
     call_type: str = "inbound"
+    #: Set when the call is Sarlaben's heat-alert call: the farmer has just been
+    #: asked whether to book an AI visit, and this turn is their answer.
+    heat_alert: Optional[HeatAlertCall] = None
     #: The session ownership epoch this request claimed, when the adapter claimed
     #: one. For the trace (turn.v1's ``amul.request_epoch``).
     request_epoch: Optional[int] = None

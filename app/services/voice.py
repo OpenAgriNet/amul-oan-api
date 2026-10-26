@@ -16,8 +16,10 @@ from typing import AsyncGenerator, Optional
 
 from fastapi import BackgroundTasks, Request
 
+from agents.tools.farmer import normalize_phone_to_mobile
 from app.config import settings
 from app.llm_core import runtime
+from app.services import heat_alert_call
 from app.services.chat import _BackgroundTasksScheduler, run_turn
 from app.turn.types import (
     AgentActivityEmission,
@@ -101,7 +103,11 @@ async def stream_voice_message(
     call_type = _outbound.normalize_call_type(call_type)
     target = (target_lang or "gu").strip().lower()
     try:
-        consent_turn = await _is_outbound_consent_turn(session_id, call_type, history)
+        heat_alert = await heat_alert_call.context_for_call(
+            session_id, normalize_phone_to_mobile(user_id or ""), call_type
+        )
+        # The heat-alert call has its own opening question; the milk-readout consent gate is not it.
+        consent_turn = False if heat_alert else await _is_outbound_consent_turn(session_id, call_type, history)
         if consent_turn:
             logger.info(
                 "Outbound consent turn; session_id=%s process_id=%s query_chars=%s",
@@ -124,6 +130,7 @@ async def stream_voice_message(
                 outbound_consent_turn=consent_turn,
                 provider=provider,
                 call_type=call_type,
+                heat_alert=heat_alert,
                 request_epoch=owner.epoch if owner is not None else None,
                 trace_id=owner.trace_id if owner is not None else None,
                 utterance_id=owner.utterance_id if owner is not None else None,
