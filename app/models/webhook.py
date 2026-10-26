@@ -79,6 +79,11 @@ class HeatAlertWebhookEvent(WebhookBase):
     call_booked: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default=false()
     )
+    # The outbound call (app/services/heat_alert_call.py): when it is due, the
+    # provider's id once placed, and why it was not.
+    call_due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    outbound_call_uuid: Mapped[str | None] = mapped_column(String(64))
+    call_error: Mapped[str | None] = mapped_column(String(64))
 
     # Parsed timestamps (if parseable) improve queryability.
     ai_window_start_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
