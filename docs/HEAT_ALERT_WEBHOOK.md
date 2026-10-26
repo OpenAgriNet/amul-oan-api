@@ -59,7 +59,14 @@ does not stop the call.
 The provider's call id lands in `outbound_call_uuid`. A refused call (4xx) releases
 the claim with the reason in `call_error`; a timeout or 5xx keeps `called=true`,
 since the call may exist. Timers live in the process; on startup every row with a
-due time and `called=false` is rescheduled. Nothing sets `call_booked` yet.
+due time and `called=false` is rescheduled.
+
+When the farmer answers, Raya sends the voice turn with `call_type=outbound`. The
+voice adapter matches that phone to a call we placed in the last three hours
+(`outbound_call_uuid` set), keeps the match on the session in Redis, skips the
+milk-readout consent gate, and tells the agent which animal and account the call
+is about so a "yes" runs the AI booking for it. A booking made on that session
+sets `call_booked=true`.
 
 Successful response (`202 Accepted`):
 ```json
