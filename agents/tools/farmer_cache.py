@@ -676,6 +676,7 @@ async def _fetch_animals(envelope: FarmerDataEnvelope, only: Optional[list[str]]
         return AnimalRecord(
             tagNumber=tag,
             animalType=animal.animal_type,
+            animalName=animal.animal_name,
             breed=animal.breed,
             milkingStage=animal.milking_stage,
             pregnancyStage=animal.pregnancy_stage,
