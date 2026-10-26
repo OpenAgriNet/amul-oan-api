@@ -28,7 +28,8 @@ from typing import Any, Optional
 
 from app.core.cache import cache, redis_client, build_cache_key
 from app.config import settings
-from app.observability import start_observation
+from app.observability import non_turn_root
+from app.services.telemetry_stamps import BACKGROUND_JOB, non_turn_v1_metadata
 from agents.tools.models.farmer_transport import AnimalRecord, FarmerDataEnvelope, FarmerRecord
 from agents.tools.models.union import is_ai_call_banned_union
 from agents.tools.beckn.amul import fetch_animal_profile, search_ai_technicians
@@ -631,13 +632,15 @@ async def drain_farmer_refresh_queue_once(batch: int = FARMER_REFRESH_QUEUE_BATC
     processed = 0
     for phone in members:
         try:
-            # Root span so the nested API-call observations have a parent and
-            # are queryable in Langfuse (background refreshes aren't tied to a
-            # voice session).
-            with start_observation(
-                "farmer_background_refresh",
-                input={"phone_hash": _cache_key(phone)[:12]},
-                metadata={"reason": "background_refresh"},
+            # Its own trace, so the nested API calls have a root. No turn caused it:
+            # chat and voice share the queue, so it has no session or pipeline.
+            with non_turn_root(
+                BACKGROUND_JOB,
+                non_turn_v1_metadata(
+                    BACKGROUND_JOB,
+                    job="farmer_background_refresh",
+                    farmer_id=normalize_phone_to_mobile(phone),
+                ),
             ):
                 await refresh_farmer_data(phone, background=True)
             processed += 1
@@ -673,6 +676,7 @@ async def _fetch_animals(envelope: FarmerDataEnvelope, only: Optional[list[str]]
         return AnimalRecord(
             tagNumber=tag,
             animalType=animal.animal_type,
+            animalName=animal.animal_name,
             breed=animal.breed,
             milkingStage=animal.milking_stage,
             pregnancyStage=animal.pregnancy_stage,

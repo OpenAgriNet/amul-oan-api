@@ -131,6 +131,9 @@ async def stream_voice_message(
                 provider=provider,
                 call_type=call_type,
                 heat_alert=heat_alert,
+                request_epoch=owner.epoch if owner is not None else None,
+                trace_id=owner.trace_id if owner is not None else None,
+                utterance_id=owner.utterance_id if owner is not None else None,
             ),
         )
         surface = dataclasses.replace(VOICE_SURFACE, telemetry=partial(VoiceTelemetry, route=route))

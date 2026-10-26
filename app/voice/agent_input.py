@@ -60,7 +60,7 @@ from app.voice.farmer import (
 )
 from app.voice.history import clean_message_history_for_openai, history_pair
 from app.voice.liveness import nudge_stopped
-from app.voice.trace import current_trace
+from app.voice.trace import check_mode, current_trace, step_tiers
 from helpers.utils import get_logger, get_today_date_str
 
 logger = get_logger(__name__)
@@ -308,21 +308,33 @@ class _AgentRun:
         self._session_id = session_id
         self._process_id = process_id
         self._user_query = user_query
+        self._step = None
 
     @contextmanager
     def observe(self):
+        """turn.v1's agent step: the English question in, the English answer out
+        (``after_run`` writes it, inside this), pydantic-ai's spans under it.
+        ``run_turn`` is handed None so the step's output stays voice's."""
         self._started_at = time.monotonic()
-        with boundary_capture_context(
-            session_id=self._session_id,
-            process_id=self._process_id,
-            user_query=self._user_query,
-        ):
-            yield None
+        trace = current_trace()
+        with trace.observation("agent", as_type="agent", input=trace.text(self._user_query)) as step:
+            self._step = step
+            with boundary_capture_context(
+                session_id=self._session_id,
+                process_id=self._process_id,
+                user_query=self._user_query,
+            ):
+                yield None
 
     def after_run(self, new_messages) -> None:
         trace = current_trace()
         agent = self._execution.info(Step.AGENT)
         answered_by = _answered_by(self._execution)
+        if self._step is not None:
+            self._step.record(
+                output=trace.text(_agent_text(new_messages)),
+                metadata=step_tiers(self._execution, Step.AGENT),
+            )
         trace.attach_stage_timing(
             "agent",
             (time.monotonic() - self._started_at) * 1000.0,
@@ -378,34 +390,38 @@ async def _voice_agent_input(
     trace = current_trace()
     if mobile:
         try:
-            with trace.stage("farmer_context"):
+            # turn.v1's farmer_context step: the farmer block built for the agent,
+            # from the fetch to the scheme summary, with the block as its output.
+            with trace.stage("farmer_context") as farmer_step:
                 envelope = await background.farmer_data()
-            if envelope is None:
-                # A concurrent fetch (e.g. the outbound prefetch) may have
-                # landed while ours was giving up. Cheap Redis re-read
-                # before we commit to an unresolved turn.
-                envelope = await get_farmer_data_cached_only(mobile)
-                if envelope is not None:
-                    logger.info("Farmer context resolved on re-read; session_id=%s", session_id)
-            # Scored AFTER the re-read: a recovered envelope must not be
-            # graded UNRESOLVED and have the identity tools withheld.
-            farmer_identity = identity_state_for_envelope(envelope)
-            farmer_info = _build_compact_farmer_summary(envelope)
-            farmer_unions = _collect_farmer_unions(envelope)
-            farmer_accounts = _collect_farmer_accounts(envelope)
-            farmer_village, farmer_district = _collect_farmer_location(envelope)
-            with trace.stage("scheme_summary"):
-                scheme_summary = await _build_union_scheme_summary(farmer_unions)
-            if scheme_summary:
-                farmer_info = f"{farmer_info}\n{scheme_summary}" if farmer_info else scheme_summary
-            ai_technician_info = _build_ai_technician_summary(envelope)
-            trace.set_farmer_context(
-                source=getattr(envelope, "source", None) if envelope else None,
-                stale=getattr(envelope, "stale", None) if envelope else None,
-                unions=farmer_unions,
-                farmer_info_chars=len(farmer_info),
-                technician_info_chars=len(ai_technician_info),
-            )
+                if envelope is None:
+                    # A concurrent fetch (e.g. the outbound prefetch) may have
+                    # landed while ours was giving up. Cheap Redis re-read
+                    # before we commit to an unresolved turn.
+                    envelope = await get_farmer_data_cached_only(mobile)
+                    if envelope is not None:
+                        logger.info("Farmer context resolved on re-read; session_id=%s", session_id)
+                # Scored AFTER the re-read: a recovered envelope must not be
+                # graded UNRESOLVED and have the identity tools withheld.
+                farmer_identity = identity_state_for_envelope(envelope)
+                farmer_info = _build_compact_farmer_summary(envelope)
+                farmer_unions = _collect_farmer_unions(envelope)
+                farmer_accounts = _collect_farmer_accounts(envelope)
+                farmer_village, farmer_district = _collect_farmer_location(envelope)
+                with trace.stage("scheme_summary"):
+                    scheme_summary = await _build_union_scheme_summary(farmer_unions)
+                if scheme_summary:
+                    farmer_info = f"{farmer_info}\n{scheme_summary}" if farmer_info else scheme_summary
+                ai_technician_info = _build_ai_technician_summary(envelope)
+                farmer_step.record(
+                    output=trace.set_farmer_context(
+                        source=getattr(envelope, "source", None) if envelope else None,
+                        stale=getattr(envelope, "stale", None) if envelope else None,
+                        unions=farmer_unions,
+                        farmer_info_chars=len(farmer_info),
+                        technician_info_chars=len(ai_technician_info),
+                    )
+                )
             logger.info(
                 "Farmer summary loaded from cache; session_id=%s source=%s stale=%s unions=%s summary_chars=%s technician_chars=%s",
                 session_id,
@@ -442,6 +458,17 @@ async def _voice_agent_input(
             failed_open=consent_verdict.failed_open,
         )
         trace.metadata["outbound_consent_intent"] = consent_verdict.intent
+        # turn.v1's outbound_consent step: the caller's answer to the opening
+        # question. The classifier runs on the non_meaningful step's tier.
+        trace.record_child_observation(
+            name="outbound_consent",
+            as_type="generation",
+            output={"intent": consent_verdict.intent},
+            metadata={
+                "amul.check_mode": check_mode(failed_open=consent_verdict.failed_open),
+                **step_tiers(execution, Step.NON_MEANINGFUL),
+            },
+        )
         logger.info(
             "Outbound consent verdict - session_id=%s process_id=%s intent=%s reason=%r failed_open=%s",
             session_id, process_id, consent_verdict.intent,

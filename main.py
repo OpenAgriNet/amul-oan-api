@@ -105,6 +105,8 @@ app.add_middleware(
     allow_credentials=settings.allowed_credentials,
     allow_methods=settings.allowed_methods,
     allow_headers=settings.allowed_headers,
+    # The chat response's trace id, which a browser client may read only when exposed.
+    expose_headers=["X-Trace-Id"],
 )
 
 
