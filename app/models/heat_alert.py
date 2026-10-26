@@ -80,6 +80,7 @@ class HeatAlertWebhookRequest(BaseModel):
         default=None, description="Partner alert time (often a unix epoch string)"
     )
     timestamp: str = Field(description="Partner event timestamp (ISO string)")
+    union_code: str | None = Field(default=None, description="Union code", max_length=64)
     society_code: str | None = Field(
         default=None, description="Society / mandali code", max_length=64
     )
@@ -106,6 +107,7 @@ class HeatAlertWebhookRequest(BaseModel):
         "ai_window_end_time",
         "alert_time",
         "timestamp",
+        "union_code",
         "society_code",
         "farmer_code",
         "farmer_contact",
