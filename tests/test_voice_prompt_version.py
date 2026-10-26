@@ -51,6 +51,8 @@ LIVE_TOOLS = [
     "get_farmer_bonus_amount",
     "get_union_scheme_data",
     "signal_conversation_state",
+    "get_vistaar_weather",
+    "get_vistaar_mandi_prices",
 ]
 
 ROUTING_INTENTS = [
@@ -264,8 +266,10 @@ class TestNewVariantInvariants:
         text = _load(version)
         words = len(text.split())
         lines = text.count("\n") + 1
-        # New variants must stay leaner than the legacy mixed prompt.
-        assert words <= 4500, f"{version} prompt grew to {words} words (limit 4500)"
+        # New variants must stay leaner than the legacy mixed prompt (~7.9k words).
+        # 4500 -> 4750 for the AMUL-81 weather/mandi routing and rules (gpt-5.1 at
+        # 4655), with room for AMUL-88's vet-office line (#428) on either merge order.
+        assert words <= 4750, f"{version} prompt grew to {words} words (limit 4750)"
         assert lines <= 320, f"{version} prompt grew to {lines} lines (limit 320)"
 
 
