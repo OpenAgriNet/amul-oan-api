@@ -7,9 +7,10 @@ dial, inside the same statement that checks the alert is still worth a call,
 so neither a retry nor a second replica recovering the same row can ring twice.
 ``call_error`` says why a claimed row was not rung, or how the dial failed.
 
-When the farmer answers, Raya stamps the voice turn ``call_type=outbound``;
-``context_for_call`` matches that phone to the call we placed, so the voice
-agent knows which animal it is about and books for that account.
+When the farmer answers, Raya sends the voice turn with ``session_id`` equal to
+the call UUID it returned to us and ``call_type=outbound`` (seen 2026-10-26);
+``context_for_call`` matches that to the call we placed, so the voice agent
+knows which animal it is about and books for that account.
 """
 from __future__ import annotations
 
@@ -209,28 +210,16 @@ def _session_key(session_id: str) -> str:
 async def context_for_call(session_id: str, mobile: str | None, call_type: str | None) -> HeatAlertCall | None:
     """The heat alert this voice session answers, if it is one of our calls.
 
-    Looked up once, on an outbound turn, by the phone we rang in the last few
-    hours; then kept on the session, since the provider only stamps the first turn.
+    Raya's session id for a call we placed is the call UUID it returned, so the
+    match is exact; the phone we rang in the last few hours is the fallback on an
+    outbound turn. Kept on the session once found.
     """
     cached = await get_cache(_session_key(session_id))
     if isinstance(cached, dict) and cached.get("event_id"):
         return HeatAlertCall(**cached)
-    if not (is_outbound(call_type) and mobile and webhook_db_configured()):
+    if not webhook_db_configured():
         return None
-    since = datetime.now(timezone.utc) - _ANSWER_WINDOW
-    async with get_webhook_session() as session:
-        event = (
-            await session.execute(
-                select(HeatAlertWebhookEvent)
-                .where(
-                    func.right(func.regexp_replace(HeatAlertWebhookEvent.farmer_contact, r"\D", "", "g"), 10) == mobile,
-                    HeatAlertWebhookEvent.outbound_call_uuid.is_not(None),
-                    HeatAlertWebhookEvent.call_due_at > since,
-                )
-                .order_by(HeatAlertWebhookEvent.call_due_at.desc())
-                .limit(1)
-            )
-        ).scalar_one_or_none()
+    event = await _placed_call(session_id, mobile if is_outbound(call_type) else None)
     if event is None:
         return None
     account = await _account(event)
@@ -246,6 +235,31 @@ async def context_for_call(session_id: str, mobile: str | None, call_type: str |
     await set_cache(_session_key(session_id), asdict(call), ttl=_SESSION_TTL)
     logger.info("Voice session is a heat-alert call session_id=%s event_id=%s", session_id, call.event_id)
     return call
+
+
+async def _placed_call(session_id: str, mobile: str | None) -> HeatAlertWebhookEvent | None:
+    placed = HeatAlertWebhookEvent.outbound_call_uuid.is_not(None)
+    async with get_webhook_session() as session:
+        event = (
+            await session.execute(
+                select(HeatAlertWebhookEvent).where(placed, HeatAlertWebhookEvent.outbound_call_uuid == session_id).limit(1)
+            )
+        ).scalar_one_or_none()
+        if event is None and mobile:
+            since = datetime.now(timezone.utc) - _ANSWER_WINDOW
+            event = (
+                await session.execute(
+                    select(HeatAlertWebhookEvent)
+                    .where(
+                        placed,
+                        func.right(func.regexp_replace(HeatAlertWebhookEvent.farmer_contact, r"\D", "", "g"), 10) == mobile,
+                        HeatAlertWebhookEvent.call_due_at > since,
+                    )
+                    .order_by(HeatAlertWebhookEvent.call_due_at.desc())
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+    return event
 
 
 async def mark_booked(event_id: str) -> None:

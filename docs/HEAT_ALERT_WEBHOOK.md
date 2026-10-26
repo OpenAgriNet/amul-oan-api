@@ -61,9 +61,11 @@ the claim with the reason in `call_error`; a timeout or 5xx keeps `called=true`,
 since the call may exist. Timers live in the process; on startup every row with a
 due time and `called=false` is rescheduled.
 
-When the farmer answers, Raya sends the voice turn with `call_type=outbound`. The
-voice adapter matches that phone to a call we placed in the last three hours
-(`outbound_call_uuid` set), keeps the match on the session in Redis, skips the
+When the farmer answers, Raya sends the voice turn with `session_id` equal to the
+call UUID it returned on `POST /api/call`, `call_type=outbound` and the phone as
+`+91…` (seen 2026-10-26). The voice adapter matches the session id to
+`outbound_call_uuid`, or failing that the phone to a call placed in the last three
+hours, keeps the match on the session in Redis, skips the
 milk-readout consent gate, and tells the agent which animal and account the call
 is about so a "yes" runs the AI booking for it. A booking made on that session
 sets `call_booked=true`.
