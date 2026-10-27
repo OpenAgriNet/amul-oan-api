@@ -597,20 +597,38 @@ async def get_or_fetch_farmer_data(phone: str) -> Optional[FarmerDataEnvelope]:
     return await _normalize_for_consumer(phone, refreshed)
 
 
+# Cold fetches that outlived their turn's budget, held until they finish so the
+# event loop does not drop them.
+_cold_fetches: set[asyncio.Task] = set()
+
+
 async def refresh_farmer_data_bounded(
     phone: str, timeout: float = FARMER_COLD_FETCH_TIMEOUT
 ) -> Optional[FarmerDataEnvelope]:
     """Blocking refresh with a hard timeout, for a cold/never-cached miss.
 
-    On timeout we defer to the background worker rather than hanging the turn:
-    the in-flight refresh is cancelled (its NX lock is released in its finally),
-    the phone is queued, and the caller proceeds with no farmer data this turn.
+    On timeout the caller proceeds with no farmer data this turn, but the fetch
+    keeps running: it stores what it gets and releases its NX lock in its
+    finally, so the next turn reads the farmer from the cache. The phone is
+    still queued, and its retry wait keeps the next turn from starting a second
+    fetch meanwhile.
+
+    The fetch used to be cancelled here and left to the worker. On prod, 24h to
+    2026-10-26, farmer-profile callbacks landed at p50 1.0s and p99 6.0s, so a
+    fetch that ran out was usually a second or two from done. The worker's
+    refresh fetches every animal before it writes the record, and on voice
+    (2026-10-18..26) a registered caller whose fetch ran out stayed unresolved
+    for a median 28s (p90 45s) of the call, hearing "I cannot fetch your
+    details" on each booking request.
     """
+    fetch = asyncio.create_task(refresh_farmer_data(phone))
+    _cold_fetches.add(fetch)
+    fetch.add_done_callback(_cold_fetches.discard)
     try:
-        return await asyncio.wait_for(refresh_farmer_data(phone), timeout=timeout)
+        return await asyncio.wait_for(asyncio.shield(fetch), timeout=timeout)
     except asyncio.TimeoutError:
         logger.warning(
-            "Cold farmer fetch exceeded %.1fs for phone hash %s...; deferring to worker",
+            "Cold farmer fetch exceeded %.1fs for phone hash %s...; finishing it in the background",
             timeout,
             _cache_key(phone)[:8],
         )
