@@ -485,6 +485,59 @@ def test_the_turns_trace_is_current_only_inside_its_root(lf):
     assert after is not inside
 
 
+def test_answer_evidence_contains_context_and_complete_emitted_reply(lf):
+    private_parts = SimpleNamespace(kind="request", parts=[
+        SimpleNamespace(part_kind="system-prompt", content="hidden instructions"),
+        SimpleNamespace(part_kind="tool-return", content="hidden tool payload"),
+    ])
+    turn = _turn(query="Yes, confirm it", history=(*_PRIOR, private_parts))
+    telemetry = VoiceTelemetry(turn, pipeline_profile="oss", pipeline_trace=None)
+    with telemetry.root():
+        telemetry.record_output("Booking ", "agent")
+        telemetry.record_output("confirmed.", "agent")
+    (evidence,) = [o.kwargs for o in lf.observations if o.kwargs["name"] == "voice_answer_evidence"]
+    assert evidence["input"]["conversation"] == [
+        {"role": "user", "content": "earlier"},
+        {"role": "assistant", "content": "answered"},
+        {"role": "user", "content": "Yes, confirm it"},
+        {"role": "assistant", "content": "Booking confirmed."},
+    ]
+    assert "conversation" not in lf.root.kwargs["input"]
+
+
+@pytest.mark.parametrize("mode", ["none", "preview_hash"])
+def test_answer_evidence_respects_text_capture_mode(lf, monkeypatch, mode):
+    monkeypatch.setattr(settings, "voice_trace_text_mode", mode)
+    telemetry = VoiceTelemetry(_turn(history=_PRIOR), pipeline_profile="oss", pipeline_trace=None)
+    with telemetry.root():
+        telemetry.record_output("answer", "agent")
+    assert not any(o.kwargs["name"] == "voice_answer_evidence" for o in lf.observations)
+
+
+@pytest.mark.parametrize("outcome", ["client_disconnected", "error", "stale_request"])
+def test_answer_evidence_skips_incomplete_turns(lf, outcome):
+    telemetry = VoiceTelemetry(_turn(), pipeline_profile="oss", pipeline_trace=None)
+    with telemetry.root():
+        telemetry.record_output("partial answer", "agent")
+        telemetry.record_outcome(outcome)
+    assert not any(o.kwargs["name"] == "voice_answer_evidence" for o in lf.observations)
+
+
+def test_answer_evidence_failure_does_not_fail_the_call(lf, monkeypatch):
+    telemetry = VoiceTelemetry(_turn(), pipeline_profile="oss", pipeline_trace=None)
+    original = lf.start_as_current_observation
+
+    def capture(**kwargs):
+        if kwargs["name"] == "voice_answer_evidence":
+            raise RuntimeError("test capture failure")
+        return original(**kwargs)
+
+    monkeypatch.setattr(lf, "start_as_current_observation", capture)
+    with telemetry.root():
+        telemetry.record_output("answer", "agent")
+    assert lf.summary["outcome"] == "success"
+
+
 def test_a_voice_turn_sends_no_served_tier_and_a_chat_turn_still_does(lf, call, monkeypatch):
     monkeypatch.setattr(chat_service._pipeline_trace, "served_summary", lambda _pt: "agent=vllm:gemma[0]")
 
