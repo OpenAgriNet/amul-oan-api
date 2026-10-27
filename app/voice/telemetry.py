@@ -56,6 +56,7 @@ class VoiceTelemetry:
         self._pipeline_profile = pipeline_profile
         self._source_lang = (turn.source_lang or "gu").strip().lower()
         self._target_lang = (turn.target_lang or "gu").strip().lower()
+        self._history = turn.history
         trace = create_voice_trace(
             session_id=turn.session_id,
             user_id=turn.user_id,
@@ -93,6 +94,7 @@ class VoiceTelemetry:
                 self._score_pipeline_profile()
                 trace.set_language(self._source_lang, self._target_lang)
                 yield
+                self._record_answer_evidence()
         except Exception as exc:
             trace.finish(trace.outcome or "error", error=exc)
             raise
@@ -104,6 +106,33 @@ class VoiceTelemetry:
                 # Closed from another context, as when the event loop finalises
                 # an abandoned turn; there is nothing to restore there.
                 pass
+
+    def _record_answer_evidence(self) -> None:
+        trace = self._trace
+        if (not trace.enabled or trace.langfuse_client is None or trace.root_observation is None
+                or "text" not in trace.metadata["query"]
+                or trace.outcome not in (None, "success") or not trace.response_parts):
+            return
+        try:
+            conversation = []
+            for message in self._history:
+                role = {"request": "user", "response": "assistant"}.get(getattr(message, "kind", None))
+                if role is None:
+                    continue
+                for part in message.parts:
+                    if (getattr(part, "part_kind", None) in ("user-prompt", "text")
+                            and isinstance(getattr(part, "content", None), str)):
+                        conversation.append({"role": role, "content": part.content})
+            answer = "".join(trace.response_parts)
+            conversation.extend([{"role": "user", "content": trace.query},
+                                 {"role": "assistant", "content": answer}])
+            with trace.langfuse_client.start_as_current_observation(
+                name="voice_answer_evidence", as_type="span",
+                input={"conversation": conversation},
+            ):
+                pass
+        except Exception:
+            logger.debug("Voice answer evidence capture failed")
 
     def _score_pipeline_profile(self) -> None:
         # From inside the root: outside it Langfuse skips the score. score_id is
