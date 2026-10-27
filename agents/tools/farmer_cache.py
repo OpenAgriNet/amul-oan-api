@@ -613,13 +613,15 @@ async def refresh_farmer_data_bounded(
     still queued, and its retry wait keeps the next turn from starting a second
     fetch meanwhile.
 
-    The fetch used to be cancelled here and left to the worker. On prod, 24h to
-    2026-10-26, farmer-profile callbacks landed at p50 1.0s and p99 6.0s, so a
-    fetch that ran out was usually a second or two from done. The worker's
-    refresh fetches every animal before it writes the record, and on voice
-    (2026-10-18..26) a registered caller whose fetch ran out stayed unresolved
-    for a median 28s (p90 45s) of the call, hearing "I cannot fetch your
-    details" on each booking request.
+    The fetch used to be cancelled here, leaving the farmer to the worker,
+    whose refresh fetches every animal before it writes the record (voice,
+    2026-10-18..26: p90 8s, p99 37s, max 340s). Beckn operations kept in prod
+    Redis on 2026-10-26 show farmer-profile callbacks at p50 1.0s and p99 6.0s,
+    so a fetch that ran out usually had its profile a second or two later, with
+    the technician search (booking domain, p90 1.3s) still to follow. On voice
+    over the same days, 72 of the 140 calls with an unresolved turn recovered
+    later in the call, a median 28s (p90 45s) after that turn; until then the
+    caller heard "I cannot fetch your details" on each booking request.
     """
     fetch = asyncio.create_task(refresh_farmer_data(phone))
     _cold_fetches.add(fetch)
