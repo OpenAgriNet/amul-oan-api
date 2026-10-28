@@ -24,7 +24,6 @@ HISTORY_MARKERS = {
     "stt_unclear": "[stt:unclear-speech]",
     "moderation_reject": "[moderation-rejected]",
     "outbound_intro": "[outbound-call-started]",
-    "heat_alert_opening": "[heat-alert-call-started]",
 }
 
 

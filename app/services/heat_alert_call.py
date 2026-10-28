@@ -74,7 +74,8 @@ def agent_args(event: HeatAlertWebhookEvent) -> dict[str, str]:
     """What the agent gets: the rendered script plus the identifiers it names."""
     animal_no, tag_no = event.pashuaadhar_no or "", event.tag_no or ""
     return {
-        "script": get_prompt(SCRIPT_PROMPT, {"animal_no": spoken(animal_no), "tag_no": spoken(tag_no)}).strip(),
+        # One line: Raya drops the line breaks when it speaks the arg, running the words together.
+        "script": " ".join(get_prompt(SCRIPT_PROMPT, {"animal_no": spoken(animal_no), "tag_no": spoken(tag_no)}).split()),
         "animal_no": animal_no,
         "tag_no": tag_no,
         "alert_id": event.alert_id,
