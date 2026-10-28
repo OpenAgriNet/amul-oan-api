@@ -61,7 +61,6 @@ _NON_MEANINGFUL_EXCLUDED_TURNS = frozenset(
         # Not a caller turn at all, so it must neither count toward a hangup
         # streak nor break one, for as long as such histories survive trimming.
         HISTORY_MARKERS["outbound_intro"],
-        HISTORY_MARKERS["heat_alert_opening"],
     }
 )
 
