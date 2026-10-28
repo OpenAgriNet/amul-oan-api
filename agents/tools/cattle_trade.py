@@ -3,6 +3,7 @@
 import re
 from decimal import ROUND_HALF_UP, Decimal
 
+from agents.tools.telemetry import report_tool
 from agents.tools.cattle_trade_backend import get_cattle_trade_rates_api
 from agents.tools.models.cattle_trade import CattleTradeRatesModel
 from app.config import get_config_value
@@ -157,6 +158,7 @@ async def get_cattle_trade_prices(
     token = get_config_value("PASHUGPT_TOKEN")
     if not token:
         logger.error("PASHUGPT_TOKEN is not set")
+        report_tool("unavailable", "PASHUGPT_TOKEN is not set")
         return (
             "Cattle price lookup failed: Amul Pashudhan access is not configured. "
             "Say the rates are unavailable right now. Do not estimate or invent a price."
@@ -164,6 +166,7 @@ async def get_cattle_trade_prices(
 
     rates = await get_cattle_trade_rates_api(token)
     if rates is None:
+        report_tool("unavailable", "Amul Pashudhan rates request failed")
         return (
             "Cattle price lookup failed: Amul Pashudhan rates are unavailable right now. "
             "Say so. Do not estimate or invent a price."
@@ -207,6 +210,7 @@ async def get_cattle_trade_prices(
         return "\n".join(lines)
 
     if (species or "").strip() and _match_key(species) not in _ANY_SPECIES_WORDS:
+        report_tool("no_result", "rates exist only for cows and buffaloes")
         return (
             "Amul Pashudhan average rates are available only for cows and buffaloes. Say only "
             "that, without naming other animals, and do not estimate or invent a price."

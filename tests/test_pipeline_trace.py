@@ -228,3 +228,19 @@ def test_no_update_current_trace_symbol_remains():
     src = __import__("inspect").getsource(trace)
     assert "update_current_trace(" not in src   # no CALL to the missing SDK method
     assert "import get_client" not in src
+
+
+# ── (e) turn.v1 step metadata: what each step's observation carries ────────────
+def test_step_metadata_names_the_configured_and_the_served_tier():
+    cfg = _cfg(100)
+    pt = ExecutionContext("", cfg, "oss").begin_trace()
+    trace.record_served(Step.AGENT, "vllm:gemma(oss-agent)", 1, trace_state=pt)
+
+    assert trace.step_metadata(pt, Step.AGENT) == {
+        "amul.configured_tier": "vllm:gemma@http://oss:8020/v1#oss(8000ms)",
+        "amul.served_tier": "vllm:gemma(oss-agent)[1]",
+        "amul.attempts": "2",
+    }
+    # Before the walker records a served tier, only the configuration is known.
+    assert trace.step_metadata(pt, Step.MODERATION) == {"amul.configured_tier": "vllm:gemma@http://oss:8020/v1#oss(8000ms)"}
+    assert trace.step_metadata(pt, "retrieval") == {} and trace.step_metadata(None, Step.AGENT) == {}

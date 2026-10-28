@@ -389,9 +389,6 @@ class Settings(BaseSettings):
     voice_route_enabled: bool = _get_bool_env("VOICE_ROUTE_ENABLED", default=False)
     # Voice's trace (app/voice/trace.py). Same names and defaults as voice-oan-api.
     enable_voice_tracing: bool = _get_bool_env("ENABLE_VOICE_TRACING", default=True)
-    voice_trace_text_mode: str = os.getenv("VOICE_TRACE_TEXT_MODE", "none")
-    voice_trace_user_id_mode: str = os.getenv("VOICE_TRACE_USER_ID_MODE", "hash")
-    voice_trace_preview_chars: int = int(os.getenv("VOICE_TRACE_PREVIEW_CHARS", "120"))
     voice_trace_log_summary: bool = _get_bool_env("VOICE_TRACE_LOG_SUMMARY", default=True)
     # Voice's agent and its farmer data (agents/voice/), inert on the chat path.
     # Same names and defaults as voice-oan-api.
@@ -697,6 +694,14 @@ class Settings(BaseSettings):
     sarlaben_whatsapp_timeout_seconds: float = float(
         os.getenv("SARLABEN_WHATSAPP_TIMEOUT_SECONDS", "15")
     )
+    # Outbound calls through the Raya call API (app/services/outbound_call.py).
+    raya_outbound_call_api_url: str = os.getenv("RAYA_OUTBOUND_CALL_API_URL", "https://v1.getraya.app/api/call")
+    raya_outbound_call_api_key: Optional[str] = os.getenv("RAYA_OUTBOUND_CALL_API_KEY")
+    # The heat-alert call (app/services/heat_alert_call.py). Unset agent id: no calls.
+    raya_heat_alert_agent_id: Optional[str] = os.getenv("RAYA_HEAT_ALERT_AGENT_ID")
+    heat_alert_call_delay_seconds: int = int(os.getenv("HEAT_ALERT_CALL_DELAY_SECONDS", "600"))
+    # Test phase: comma-separated 10-digit numbers; when set, nobody else is rung.
+    heat_alert_call_only_numbers: str = os.getenv("HEAT_ALERT_CALL_ONLY_NUMBERS", "")
 
     # ── Onex-Aura / OneXtel SMS gateway (DLT-approved KDCC micro-loan template) ─
     # When false, SMS is a dry-run: nothing is sent, the code is still issued and

@@ -78,6 +78,7 @@ class _Beckn:
         self.technicians_fail = technicians_fail
         self.animals = animals
         self.tags = list(TAGS)
+        self.names = {}
         self.farmer_calls = 0
         self.animal_calls = []
 
@@ -101,6 +102,7 @@ class _Beckn:
         return AnimalModel.model_validate({
             "tagNumber": tag,
             "animalType": "Cow",
+            "animalName": self.names.get(tag),
             "lastBreedingActivity": {"aiDate": "2026-09-01", "bullId": "B7"},
         })
 
@@ -136,6 +138,31 @@ def test_voice_reads_a_chat_written_envelope_with_its_history_and_does_not_reque
     assert any("last AI/breeding=" in line and "B7" in line for line in lines)
     summary = _build_ai_technician_summary(envelope)
     assert "none available for this farmer group" in summary
+
+
+def test_voice_has_the_name_the_farmer_gave_an_animal(shared):
+    """Chat prints the animal's name from its profile; voice reads the cached record,
+    so the name has to reach the cache and voice's context."""
+    _, beckn = shared
+    beckn.names = {TAGS[0]: " Gauri "}
+
+    asyncio.run(fc.refresh_farmer_data(PHONE, background=True))
+    envelope = asyncio.run(fc.get_farmer_data_cached_only(PHONE))
+
+    assert [a.animalName for a in _animals(envelope)] == ["gauri", None]
+    lines: list[str] = []
+    _append_animal_records(lines, envelope)
+    breeding = 'last AI/breeding={"aiDate": "2026-09-01", "bullId": "B7"}'
+    assert lines[-2:] == [
+        f"- tag ending five zero six zero, name=gauri, type=cow, {breeding}",
+        f"- tag ending five zero six one, type=cow, {breeding}",
+    ]
+    # A record cached before the name was kept has no such key: no name until its next refresh.
+    cached = envelope.model_dump()
+    for farmer in cached["farmers"]:
+        for animal in farmer["animals"]:
+            del animal["animalName"]
+    assert [a.animalName for a in _animals(FarmerDataEnvelope.model_validate(cached))] == [None, None]
 
 
 def test_voice_reads_chats_failed_technician_lookup_as_a_failure(shared):

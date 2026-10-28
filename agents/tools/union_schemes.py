@@ -3,6 +3,7 @@
 from pydantic_ai import RunContext
 from pydantic_ai.tools import ToolDefinition
 
+from agents.tools.telemetry import reason, report_tool
 from agents.deps import FarmerContext
 from agents.tools.beckn.network import network_union_schemes
 from app.config import settings
@@ -86,6 +87,7 @@ async def get_union_scheme_data(ctx: RunContext[FarmerContext], scheme_name: str
                 "Union scheme tool could not infer a supported union from farmer context farmer_unions=%s",
                 farmer_unions,
             )
+            report_tool("error", "farmer union not in the context")
             return "Scheme data is unavailable because the farmer union could not be determined from the current farmer context."
         target_unions = [normalized_union_name]
     else:
@@ -106,10 +108,11 @@ async def get_union_scheme_data(ctx: RunContext[FarmerContext], scheme_name: str
     )
     try:
         return await network_union_schemes(normalized_scheme_name or "", union=primary_union)
-    except Exception:
+    except Exception as exc:
         logger.exception(
             "Union scheme tool failed via Beckn union=%s scheme_name=%s",
             primary_union,
             normalized_scheme_name,
         )
+        report_tool("unavailable", f"scheme discovery: {reason(exc)}")
         return "Scheme data is temporarily unavailable due to an unexpected error."
