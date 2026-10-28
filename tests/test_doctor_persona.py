@@ -62,11 +62,11 @@ def test_doctor_treatment_prompt_requires_completeness_searches():
         context={"today_date": "Wednesday, 19 August 2026"},
     )
 
-    assert "MUST run four distinct focused searches" in prompt
-    assert "drug names dosage concentration route frequency duration withdrawal" in prompt
-    assert "supportive nutritional supplement dose schedule" in prompt
-    assert "ethnoveterinary aloe vera turmeric lime ingredients quantities" in prompt
-    assert "four mandatory treatment searches were completed" in prompt
+    assert "MUST then run four distinct focused searches" in prompt
+    assert "`<condition> treatment protocol`" in prompt
+    assert "drug names dosage route frequency duration withdrawal" in prompt
+    assert "first run one search with the signs as keywords" in prompt
+    assert "follow the Amul Veterinary Field Reference" in prompt
 
 
 def test_doctor_request_limit_defaults_to_ten_and_is_configurable(monkeypatch):

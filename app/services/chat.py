@@ -163,6 +163,13 @@ _DOCTOR_INLINE_PROVENANCE_RE = re.compile(
     r"\s*\((?:sources?|references?|citations?|સ્ત્રોત|સ્રોત|સંદર્ભ)\s*:[^)]*\)",
     re.IGNORECASE,
 )
+# Gemma sometimes writes a tool call as text ahead of the answer:
+# `<|tool_call>call:search_documents{query:<|"|>…<|"|>,top_k:4}**Treatment…`.
+_DOCTOR_TOOL_CALL_LEAK_RE = re.compile(r"<\|tool_call>.*?\}(?:<tool_call\|>)?")
+
+
+def _clean_doctor_line(line: str) -> str:
+    return _DOCTOR_INLINE_PROVENANCE_RE.sub("", _DOCTOR_TOOL_CALL_LEAK_RE.sub("", line))
 
 
 def sanitize_doctor_answer(text: str) -> str:
@@ -178,7 +185,7 @@ def sanitize_doctor_answer(text: str) -> str:
     for line in text.splitlines(keepends=True):
         if _DOCTOR_PROVENANCE_LINE_RE.match(line):
             continue
-        kept.append(_DOCTOR_INLINE_PROVENANCE_RE.sub("", line))
+        kept.append(_clean_doctor_line(line))
     return "".join(kept).strip()
 
 
@@ -190,9 +197,9 @@ async def _sanitize_doctor_stream(source):
         while "\n" in buffer:
             line, buffer = buffer.split("\n", 1)
             if not _DOCTOR_PROVENANCE_LINE_RE.match(line):
-                yield _DOCTOR_INLINE_PROVENANCE_RE.sub("", line) + "\n"
+                yield _clean_doctor_line(line) + "\n"
     if buffer and not _DOCTOR_PROVENANCE_LINE_RE.match(buffer):
-        yield _DOCTOR_INLINE_PROVENANCE_RE.sub("", buffer)
+        yield _clean_doctor_line(buffer)
 
 
 
