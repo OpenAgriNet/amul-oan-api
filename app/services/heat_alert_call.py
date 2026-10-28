@@ -22,8 +22,14 @@ from datetime import datetime, timedelta, timezone
 import httpx
 from sqlalchemy import func, or_, select, update
 
-from agents.tools.beckn.amul import AuthenticatedFarmerAccount, authenticated_accounts, fetch_authenticated_farmers
+from agents.tools.beckn.amul import (
+    AuthenticatedFarmerAccount,
+    authenticated_accounts,
+    fetch_animal_profile,
+    fetch_authenticated_farmers,
+)
 from agents.tools.farmer import normalize_phone_to_mobile
+from agents.tools.farmer_cache import get_farmer_data_cached_only
 from app.config import get_config_value, settings
 from app.core.webhook_db import get_webhook_session, webhook_db_configured
 from app.models.webhook import HeatAlertWebhookEvent
@@ -154,9 +160,14 @@ async def _account(event: HeatAlertWebhookEvent) -> AuthenticatedFarmerAccount |
     accounts = authenticated_accounts(await fetch_authenticated_farmers(mobile)) if mobile else []
     matches = [
         a for a in accounts
-        if (not society or a.society_code == society) and (not farmer or a.farmer_code == farmer)
+        if (not society or _same_code(a.society_code, society)) and (not farmer or _same_code(a.farmer_code, farmer))
     ]
     return matches[0] if len(matches) == 1 else None
+
+
+def _same_code(a: str | None, b: str | None) -> bool:
+    """Cowfit zero-pads codes PashuGPT does not (society "0958" vs "958")."""
+    return (a or "").strip().lstrip("0") == (b or "").strip().lstrip("0")
 
 
 async def _dial(event: HeatAlertWebhookEvent) -> str:
@@ -232,10 +243,42 @@ async def context_for_call(session_id: str, mobile: str | None, call_type: str |
         society_code=account.society_code if account else "",
         farmer_code=account.farmer_code if account else "",
         script=agent_args(event)["script"],
+        species=await _species(event, account),
     )
     await set_cache(_session_key(session_id), asdict(call), ttl=_SESSION_TTL)
     logger.info("Voice session is a heat-alert call session_id=%s event_id=%s", session_id, call.event_id)
     return call
+
+
+async def _species(event: HeatAlertWebhookEvent, account: AuthenticatedFarmerAccount | None) -> str:
+    """The alert animal's species, so the agent need not ask; "" when unknown.
+
+    The webhook never carries it. The farmer cache has it only for farmers who
+    have used chat or voice, so the animal profile is the fallback.
+    """
+    ids = [i.strip() for i in (event.pashuaadhar_no, event.tag_no) if i and i.strip()]
+    if not ids:
+        return ""
+    try:
+        mobile = normalize_phone_to_mobile(event.farmer_contact or "")
+        envelope = await get_farmer_data_cached_only(mobile) if mobile else None
+        for record in (envelope.farmers if envelope else None) or []:
+            if account and record.farmerCode and not _same_code(record.farmerCode, account.farmer_code):
+                continue
+            for animal in record.animals or []:
+                if str(animal.tagNumber or "").strip() in ids:
+                    return _species_name(animal.animalType)
+        if account:
+            profile = await fetch_animal_profile(ids[0], union_code=account.union_code)
+            return _species_name(profile.animal_type if profile else None)
+    except Exception:
+        logger.exception("Heat-alert species lookup failed id=%s", event.id)
+    return ""
+
+
+def _species_name(value: str | None) -> str:
+    species = (value or "").strip().lower()
+    return species if species in ("cow", "buffalo") else ""
 
 
 async def _placed_call(session_id: str, mobile: str | None) -> HeatAlertWebhookEvent | None:

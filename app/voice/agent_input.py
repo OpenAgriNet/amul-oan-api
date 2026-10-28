@@ -179,6 +179,12 @@ def _heat_alert_hint(call) -> str:
         if call.union_code and call.society_code and call.farmer_code
         else "the farmer's account from the farmer context"
     )
+    species = (
+        f"The animal is a {call.species} (from the farmer's animal records): do not ask whether it is a cow or "
+        f"a buffalo, use species {call.species} in create_ai_call."
+        if call.species
+        else "Ask whether the animal is a cow or a buffalo if they have not said, then call create_ai_call."
+    )
     said = f" Sarlaben has already said, word for word: «{call.script}»." if call.script else ""
     return (
         "- This is Sarlaben's outbound heat-alert call, not a call the farmer made. The digital "
@@ -186,8 +192,7 @@ def _heat_alert_hint(call) -> str:
         "detected heat signs, and the farmer has just been asked whether to register an artificial "
         f"insemination (AI) ticket for it.{said} The conversation continues from there: the current "
         "message is the farmer's reply, and earlier replies are in the history.\n"
-        f"- If they agree: run the AI booking flow for {account}. Ask whether the animal is a cow or a "
-        "buffalo if they have not said, then call create_ai_call.\n"
+        f"- If they agree: run the AI booking flow for {account}. {species}\n"
         "- If they decline or are unsure: thank them briefly, say they can book later through the "
         "WhatsApp link or by calling, and end the call.\n"
         "- Do not ask what they are calling about and do not offer milk details."

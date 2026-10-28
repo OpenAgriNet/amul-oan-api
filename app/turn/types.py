@@ -67,6 +67,8 @@ class HeatAlertCall:
     farmer_code: str = ""
     #: What Sarlaben already said on this call, word for word, before the farmer's first reply.
     script: str = ""
+    #: "cow" or "buffalo" from the farmer's cached animal records; empty when not cached.
+    species: str = ""
 
 
 @dataclass(frozen=True)
