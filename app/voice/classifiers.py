@@ -216,6 +216,33 @@ async def _session_execution(turn: Turn):
     return await llm_core.context(turn.session_id, surface="voice")
 
 
+async def _heat_alert_opening_classifier(turn: Turn) -> Optional[ClassifierResult]:
+    """The first turn of Sarlaben's heat-alert call: speak the alert script.
+
+    Raya's greeting does not fill in per-call agent args (seen 2026-10-28: an
+    empty line), so the opening is ours. Whatever reached us first, "hello" or
+    the no-audio sentinel of a farmer waiting in silence, the reply is the script.
+    """
+    alert = turn.call.heat_alert if turn.call is not None else None
+    if alert is None or not alert.script or _opening_spoken(turn.history):
+        return None
+    logger.info("Heat-alert opening; session_id=%s process_id=%s", turn.session_id, _process_id(turn))
+    return ClassifierResult(
+        canned_text=alert.script,
+        label="heat_alert_opening",
+        history_pair=_history_pair(_HISTORY_MARKERS["heat_alert_opening"], alert.script),
+        outcome="heat_alert_opening",
+    )
+
+
+def _opening_spoken(history) -> bool:
+    marker = _HISTORY_MARKERS["heat_alert_opening"]
+    return any(
+        getattr(part, "content", None) == marker
+        for msg in history or [] for part in getattr(msg, "parts", []) or []
+    )
+
+
 async def _stt_signal_classifier(turn: Turn) -> Optional[ClassifierResult]:
     """The STT sent a no-audio or unclear-speech sentinel instead of words.
 
@@ -355,6 +382,7 @@ def voice_classifiers(render: RenderForCaller) -> tuple[Classifier, ...]:
     already counts as ``non_question``.
     """
     return (
+        _heat_alert_opening_classifier,
         _stt_signal_classifier,
         _hold_message_classifier,
         partial(_greeting_classifier, render=render),
