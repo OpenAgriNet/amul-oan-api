@@ -181,7 +181,7 @@ def _heat_alert_hint(call) -> str:
     )
     species = (
         f"The animal is a {call.species} (from the farmer's animal records): do not ask whether it is a cow or "
-        f"a buffalo, use species {call.species} in create_ai_call."
+        f"a buffalo, use species {call.species} in create_ai_call unless the farmer says otherwise."
         if call.species
         else "Ask whether the animal is a cow or a buffalo if they have not said, then call create_ai_call."
     )
