@@ -201,6 +201,7 @@
     "non_meaningful_hangup",
     "outbound_declined",
     "outbound_no_data",
-    "pretranslation_empty"
+    "pretranslation_empty",
+    "heat_alert_opening"
   ]
 }
