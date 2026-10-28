@@ -61,6 +61,9 @@ _SPOKEN = {
 }
 
 
+_SPECIES_GU = {"cow": "ગાય", "buffalo": "ભેંસ"}
+
+
 def spoken(identifier: str | None) -> str:
     return " ".join(_SPOKEN.get(c.upper(), c) for c in (identifier or "").strip() if not c.isspace())
 
@@ -70,12 +73,16 @@ def enabled() -> bool:
     return bool(settings.raya_heat_alert_agent_id and settings.raya_outbound_call_api_key)
 
 
-def agent_args(event: HeatAlertWebhookEvent) -> dict[str, str]:
-    """What the agent gets: the rendered script plus the identifiers it names."""
+def agent_args(event: HeatAlertWebhookEvent, species: str = "") -> dict[str, str]:
+    """What the agent gets: the rendered script plus the identifiers it names.
+
+    The script names the animal "ગાય" or "ભેંસ" when its species is known, else "ગાય / ભેંસ".
+    """
     animal_no, tag_no = event.pashuaadhar_no or "", event.tag_no or ""
+    context = {"animal_no": spoken(animal_no), "tag_no": spoken(tag_no), "species": _SPECIES_GU.get(species, "ગાય / ભેંસ")}
     return {
         # One line: Raya drops the line breaks when it speaks the arg, running the words together.
-        "script": " ".join(get_prompt(SCRIPT_PROMPT, {"animal_no": spoken(animal_no), "tag_no": spoken(tag_no)}).split()),
+        "script": " ".join(get_prompt(SCRIPT_PROMPT, context).split()),
         "animal_no": animal_no,
         "tag_no": tag_no,
         "alert_id": event.alert_id,
@@ -96,7 +103,12 @@ async def call_farmer(event_id: uuid.UUID) -> None:
         await _record(event_id, call_error=skip)
         return
     try:
-        call_uuid = await _dial(event)
+        species = await _species(event, await _account(event))
+    except Exception:
+        logger.exception("Heat-alert species lookup failed id=%s", event_id)
+        species = ""  # the script then says "ગાય / ભેંસ"
+    try:
+        call_uuid = await _dial(event, species)
     except outbound_call.OutboundCallError as exc:
         logger.warning("Heat-alert call not placed id=%s reason=%s", event_id, exc)
         # A definite refusal releases the claim; an ambiguous one keeps it, the call may exist.
@@ -173,11 +185,11 @@ def _same_code(a: str | None, b: str | None) -> bool:
     return (a or "").strip().lstrip("0") == (b or "").strip().lstrip("0")
 
 
-async def _dial(event: HeatAlertWebhookEvent) -> str:
+async def _dial(event: HeatAlertWebhookEvent, species: str = "") -> str:
     for attempt in range(1, _ATTEMPTS + 1):
         try:
             return await outbound_call.initiate_call(
-                settings.raya_heat_alert_agent_id, event.farmer_contact, agent_args(event)
+                settings.raya_heat_alert_agent_id, event.farmer_contact, agent_args(event, species)
             )
         except outbound_call.OutboundCallError as exc:
             if exc.retry_after is None or attempt == _ATTEMPTS:
@@ -237,6 +249,7 @@ async def context_for_call(session_id: str, mobile: str | None, call_type: str |
     if event is None:
         return None
     account = await _account(event)
+    species = await _species(event, account)
     call = HeatAlertCall(
         event_id=str(event.id),
         alert_id=event.alert_id,
@@ -245,8 +258,8 @@ async def context_for_call(session_id: str, mobile: str | None, call_type: str |
         union_code=account.union_code if account else "",
         society_code=account.society_code if account else "",
         farmer_code=account.farmer_code if account else "",
-        script=agent_args(event)["script"],
-        species=await _species(event, account),
+        script=agent_args(event, species)["script"],
+        species=species,
     )
     await set_cache(_session_key(session_id), asdict(call), ttl=_SESSION_TTL)
     logger.info("Voice session is a heat-alert call session_id=%s event_id=%s", session_id, call.event_id)
