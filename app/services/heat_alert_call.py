@@ -37,6 +37,7 @@ from app.services import outbound_call
 from app.turn.types import HeatAlertCall
 from app.utils import get_cache, set_cache
 from app.voice.outbound import is_outbound
+from helpers.gujarati_numbers import tag_to_gujarati
 from helpers.utils import get_logger, get_prompt
 
 logger = get_logger(__name__)
@@ -49,11 +50,11 @@ _SESSION_TTL = 4 * 60 * 60
 # The lookup runs on the farmer's first reply: past this the agent asks instead.
 _PROFILE_TIMEOUT_S = 3
 
-# Identifiers are read out character by character, as Amul's script does
-# ("S1325" -> "એસ વન થ્રી ટુ ફાઈવ"); the TTS would otherwise guess.
+# Identifiers are read out character by character, digits as Gujarati words
+# ("S123" -> "એસ એક બે ત્રણ", never "એકસો ત્રેવીસ"); the TTS would otherwise guess.
 _SPOKEN = {
-    **dict(zip("0123456789", ["ઝીરો", "વન", "ટુ", "થ્રી", "ફોર", "ફાઈવ", "સિક્સ", "સેવન", "એઈટ", "નાઈન"])),
-    **dict(zip("૦૧૨૩૪૫૬૭૮૯", ["ઝીરો", "વન", "ટુ", "થ્રી", "ફોર", "ફાઈવ", "સિક્સ", "સેવન", "એઈટ", "નાઈન"])),
+    **{d: tag_to_gujarati(d) for d in "0123456789"},
+    **{g: tag_to_gujarati(d) for g, d in zip("૦૧૨૩૪૫૬૭૮૯", "0123456789")},
     **dict(zip("ABCDEFGHIJKLMNOPQRSTUVWXYZ", [
         "એ", "બી", "સી", "ડી", "ઈ", "એફ", "જી", "એચ", "આઈ", "જે", "કે", "એલ", "એમ",
         "એન", "ઓ", "પી", "ક્યુ", "આર", "એસ", "ટી", "યુ", "વી", "ડબલ્યુ", "એક્સ", "વાય", "ઝેડ",
@@ -76,10 +77,10 @@ def enabled() -> bool:
 def agent_args(event: HeatAlertWebhookEvent, species: str = "") -> dict[str, str]:
     """What the agent gets: the rendered script plus the identifiers it names.
 
-    The script names the animal "ગાય" or "ભેંસ" when its species is known, else "ગાય / ભેંસ".
+    The script names the animal "ગાય" or "ભેંસ" when its species is known, else "પશુ" (animal).
     """
     animal_no, tag_no = event.pashuaadhar_no or "", event.tag_no or ""
-    context = {"animal_no": spoken(animal_no), "tag_no": spoken(tag_no), "species": _SPECIES_GU.get(species, "ગાય / ભેંસ")}
+    context = {"animal_no": spoken(animal_no), "tag_no": spoken(tag_no), "species": _SPECIES_GU.get(species, "પશુ")}
     return {
         # One line: Raya drops the line breaks when it speaks the arg, running the words together.
         "script": " ".join(get_prompt(SCRIPT_PROMPT, context).split()),
@@ -106,7 +107,7 @@ async def call_farmer(event_id: uuid.UUID) -> None:
         species = await _species(event, await _account(event))
     except Exception:
         logger.exception("Heat-alert species lookup failed id=%s", event_id)
-        species = ""  # the script then says "ગાય / ભેંસ"
+        species = ""  # the script then says "પશુ"
     try:
         call_uuid = await _dial(event, species)
     except outbound_call.OutboundCallError as exc:
