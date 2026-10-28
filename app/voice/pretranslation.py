@@ -80,7 +80,7 @@ _GARBLED_USER_MARKERS = frozenset(
 )
 # Bookkeeping markers: the user side says nothing, the agent's turn is real.
 _SILENT_USER_MARKERS = frozenset(
-    {_HISTORY_MARKERS["greeting"], _HISTORY_MARKERS["outbound_intro"]}
+    {_HISTORY_MARKERS["greeting"], _HISTORY_MARKERS["outbound_intro"], _HISTORY_MARKERS["heat_alert_opening"]}
 )
 # The agent asking the farmer to say it again. Those exchanges are noise, and
 # keeping them hides the question the farmer is still answering: session
