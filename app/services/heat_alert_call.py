@@ -46,6 +46,8 @@ _ATTEMPTS = 3
 # A farmer answers within minutes of the dial; the row itself lives 24 h.
 _ANSWER_WINDOW = timedelta(hours=3)
 _SESSION_TTL = 4 * 60 * 60
+# The lookup runs on the farmer's first reply: past this the agent asks instead.
+_PROFILE_TIMEOUT_S = 3
 
 # Identifiers are read out character by character, as Amul's script does
 # ("S1325" -> "એસ વન થ્રી ટુ ફાઈવ"); the TTS would otherwise guess.
@@ -268,9 +270,15 @@ async def _species(event: HeatAlertWebhookEvent, account: AuthenticatedFarmerAcc
             for animal in record.animals or []:
                 if str(animal.tagNumber or "").strip() in ids:
                     return _species_name(animal.animalType)
-        if account:
-            profile = await fetch_animal_profile(ids[0], union_code=account.union_code)
+        # The Pashu Aadhaar only: a short collar tag ("1") could name another farmer's animal.
+        if account and event.pashuaadhar_no:
+            profile = await asyncio.wait_for(
+                fetch_animal_profile(event.pashuaadhar_no.strip(), union_code=account.union_code),
+                _PROFILE_TIMEOUT_S,
+            )
             return _species_name(profile.animal_type if profile else None)
+    except asyncio.TimeoutError:
+        logger.warning("Heat-alert species lookup timed out id=%s", event.id)
     except Exception:
         logger.exception("Heat-alert species lookup failed id=%s", event.id)
     return ""
