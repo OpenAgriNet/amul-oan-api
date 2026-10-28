@@ -197,9 +197,10 @@ def test_stt_only_history_not_treated_as_meaningful():
 # ── the chain ──────────────────────────────────────────────────────────────
 
 
-def test_the_chain_is_voices_five_in_voices_order():
+def test_the_chain_is_voices_classifiers_in_voices_order():
     names = [getattr(c, "func", c).__name__ for c in voice_classifiers(_Render())]
     assert names == [
+        "_heat_alert_opening_classifier",
         "_stt_signal_classifier",
         "_hold_message_classifier",
         "_greeting_classifier",
