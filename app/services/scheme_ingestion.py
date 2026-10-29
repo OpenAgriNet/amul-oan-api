@@ -1573,6 +1573,91 @@ async def extract_text_from_pdf_bytes(
     return combined_text
 
 
+# OCR misreads Gujarati 8 and 9 in phone numbers (AMUL-116). Only exact 10-digit runs are
+# checked: tag and policy numbers in the same PDFs often differ by one or two digits.
+_PHONE_NUMBER_RE = re.compile(r"(?<!\d)\d{10}(?!\d)")
+_PHONE_NUMBER_MAX_DIGIT_FIX = 2
+
+
+def _pdf_text_layer_phone_numbers(pdf_bytes: bytes, max_pages: int = SCHEME_PDF_MAX_RENDER_PAGES) -> set[str]:
+    """Return the 10-digit numbers in the PDF's own text layer, digits exactly as written.
+
+    Empty for a scanned PDF (no text layer) or one PyMuPDF cannot read.
+    """
+    try:
+        fitz = _get_pymupdf_module()
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    except Exception as exc:
+        logger.warning("Could not open scheme PDF text layer error=%s", exc)
+        return set()
+
+    numbers: set[str] = set()
+    try:
+        for index in range(min(doc.page_count, max_pages)):
+            numbers.update(_PHONE_NUMBER_RE.findall(doc.load_page(index).get_text()))
+    except Exception as exc:
+        logger.warning("Could not read scheme PDF text layer error=%s", exc)
+        return set()
+    finally:
+        doc.close()
+    return numbers
+
+
+def _correct_ocr_phone_numbers(ocr_text: str, text_layer_numbers: set[str]) -> tuple[str, list[tuple[str, str]]]:
+    """Replace each OCR phone number missing from the text layer with the one text-layer number 1-2 digits away.
+
+    Ties and numbers with no close match are left as OCR read them. Returns the text and the
+    (ocr, text_layer) pairs replaced, one per occurrence.
+    """
+    if not text_layer_numbers:
+        return ocr_text, []
+
+    replacements: dict[str, str | None] = {}
+    corrections: list[tuple[str, str]] = []
+
+    def _replace(match: re.Match[str]) -> str:
+        number = match.group(0)
+        if number in text_layer_numbers:
+            return number
+        if number not in replacements:
+            candidates = [
+                candidate
+                for candidate in text_layer_numbers
+                if sum(a != b for a, b in zip(number, candidate)) <= _PHONE_NUMBER_MAX_DIGIT_FIX
+            ]
+            replacements[number] = candidates[0] if len(candidates) == 1 else None
+        replacement = replacements[number]
+        if replacement is None:
+            return number
+        corrections.append((number, replacement))
+        return replacement
+
+    return _PHONE_NUMBER_RE.sub(_replace, ocr_text), corrections
+
+
+async def _repair_ocr_phone_numbers(
+    content: str,
+    pdf_bytes: bytes,
+    source: SchemeSource,
+    scheme_title: str,
+    scheme_url: str,
+) -> str:
+    if not _PHONE_NUMBER_RE.search(content):
+        return content
+    text_layer_numbers = await asyncio.to_thread(_pdf_text_layer_phone_numbers, pdf_bytes)
+    content, corrections = _correct_ocr_phone_numbers(content, text_layer_numbers)
+    for ocr_number, text_layer_number in corrections:
+        logger.warning(
+            "Corrected OCR phone number from PDF text layer source=%s title=%s url=%s ocr=%s text_layer=%s",
+            source.source_name,
+            scheme_title,
+            scheme_url,
+            ocr_number,
+            text_layer_number,
+        )
+    return content
+
+
 async def _build_pdf_record(
     client: httpx.AsyncClient,
     source: SchemeSource,
@@ -1606,12 +1691,14 @@ async def _build_pdf_record(
                     scheme_url,
                     content_hash,
                 )
+                # Records cached before AMUL-116 still hold the misread numbers; repair them here.
+                content = await _repair_ocr_phone_numbers(prior_content, pdf_bytes, source, scheme_title, scheme_url)
                 return {
                     "union_name": source.union_name,
                     "source_url": source.source_url,
                     "scheme_title": scheme_title,
                     "scheme_url": scheme_url,
-                    "content": prior_content,
+                    "content": content,
                     "content_type": "pdf",
                     "content_hash": content_hash,
                     "ocr_complete": True,
@@ -1644,6 +1731,7 @@ async def _build_pdf_record(
             )
         ocr_stats: dict[str, int] = {}
         content = await extract_text_from_pdf_bytes(client, pdf_bytes, ocr_stats=ocr_stats)
+        content = await _repair_ocr_phone_numbers(content, pdf_bytes, source, scheme_title, scheme_url)
     except SchemeDependencyError:
         raise
     except SchemeFetchError as exc:
