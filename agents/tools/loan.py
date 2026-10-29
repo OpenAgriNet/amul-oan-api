@@ -61,6 +61,14 @@ def _message_for(result: "le.LoanResult") -> str:
             f"this loan. If the farmer agrees, call check_loan_eligibility again with confirmed=true. "
             f"If the farmer declines, do not call again — close the conversation politely."
         )
+    if result.outcome == le.ELIGIBLE and result.reshared:
+        return (
+            f"ALREADY APPROVED. This farmer's micro loan is already approved — do NOT offer the "
+            f"loan again, do NOT ask whether they want it, and do NOT call check_loan_eligibility again. "
+            f"Tell the farmer: their loan is already approved, their loan code is {result.code}, and they "
+            f"should visit their Kheda District Central Co-Operative Bank Limited branch with two "
+            f"documents: their Aadhaar card and proof of society membership."
+        )
     if result.outcome == le.ELIGIBLE:
         return (
             f"APPROVED. Confirm to the farmer that their micro loan of up to ₹{amt:,} from Kheda District Central Co-Operative Bank Limited has been "
