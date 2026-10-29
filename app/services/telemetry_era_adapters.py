@@ -96,6 +96,7 @@ class ChatC2Adapter:
                 "chat.c2 requires an 'Amul AI Agent run' observation to distinguish an agent turn from c2 noise"
             )
         answer = _c2_answer(observations, agent_observation)
+        tool_calls = _tool_calls(observations)
 
         return CanonicalChatTurn(
             source_era=cls.era_id,
@@ -113,6 +114,7 @@ class ChatC2Adapter:
             target_lang=trace.metadata.target_lang,
             original_question=original_question,
             answer=answer,
+            tool_calls=tool_calls,
             root_input=trace.input,
             root_output=trace.output,
             observation_names=_names(observations),
@@ -133,7 +135,7 @@ class ChatC2Adapter:
                 "turn_outcome": "unavailable",
                 "served_tier": "unavailable",
                 "full_turn_latency_ms": "unavailable",
-                "tool_calls": "unavailable",
+                "tool_calls": "derived" if tool_calls else "unavailable",
                 "scores": "unavailable",
             },
         )
@@ -160,6 +162,7 @@ class ChatC3Adapter:
         scores: Sequence[LangfuseScoreSchema] = (),
     ) -> CanonicalChatTurn:
         variant = trace.metadata.variant
+        tool_calls = _tool_calls(observations)
 
         return CanonicalChatTurn(
             source_era=cls.era_id,
@@ -179,6 +182,7 @@ class ChatC3Adapter:
             # c3's agent-action input must not be mistaken for a user question.
             original_question=None,
             answer=trace.output,
+            tool_calls=tool_calls,
             root_input=trace.input,
             root_output=trace.output,
             observation_names=_names(observations),
@@ -199,7 +203,7 @@ class ChatC3Adapter:
                 "turn_outcome": "unavailable",
                 "served_tier": "unavailable",
                 "full_turn_latency_ms": "unavailable",
-                "tool_calls": "unavailable",
+                "tool_calls": "derived" if tool_calls else "unavailable",
                 "scores": "unavailable",
             },
         )

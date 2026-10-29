@@ -714,3 +714,34 @@ def test_anonymous_chat_user_id_is_not_hashed(anonymous_value):
 
     assert turn.user_id_hash is None
     assert turn.field_availability["user_id_hash"] == "unavailable"
+
+
+def test_the_registry_counts_a_chat_moderation_decline_as_refused_or_blocked():
+    from app.services.telemetry_era_registry import default_era_registry_path
+
+    vocabulary = OutcomeVocabulary.from_yaml(default_era_registry_path(), section="chat_outcome_vocabulary")
+
+    assert vocabulary.classify("moderation_rejected") == "refused_or_blocked"
+
+
+def test_chat_c3_adapter_keeps_the_agent_tool_calls():
+    source = ChatC3TraceSchema.model_validate(
+        {
+            "id": "redacted-c3-trace",
+            "name": "Amul AI Agent",
+            "timestamp": "2026-06-10T10:00:00Z",
+            "output": "<redacted answer>",
+            "metadata": {"pipeline": "translation", "channel": "web", "source_lang": "gu", "target_lang": "gu"},
+        }
+    )
+    tool = {
+        "type": "TOOL",
+        "name": "search_documents",
+        "output": "<redacted tool response>",
+        "metadata": {"attributes": {"gen_ai.tool.name": "search_documents", "gen_ai.tool.call.id": "redacted-call-id"}},
+    }
+
+    turn = ChatC3Adapter.adapt(source, observations=[tool], scores=[])
+
+    assert [call.tool_name for call in turn.tool_calls] == ["search_documents"]
+    assert turn.field_availability["tool_calls"] == "derived"

@@ -440,6 +440,9 @@ chat_outcome_vocabulary:
   # Chat began recording turn_outcome on 2026-08-03 (chat.c6b). Missing values
   # before that date remain null; unrecognised recorded values are unclassified.
   delivered: [success]
+  # A moderation decline, as voice records it (amul-oan-api 16146da); before, chat
+  # recorded the decline as success.
+  refused_or_blocked: [moderation_rejected]
   failed: [error, cancelled]
 
 voice_outcome_vocabulary:
