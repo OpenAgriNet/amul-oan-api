@@ -7,6 +7,7 @@ from datetime import datetime
 from pydantic_ai import RunContext
 from pydantic_ai.tools import ToolDefinition
 
+from agents.tools.telemetry import reason, report_tool
 from agents.deps import FarmerContext
 from agents.tools.beckn.amul import authenticated_accounts
 from agents.tools.farmer import get_farmer_data_by_mobile
@@ -133,6 +134,7 @@ async def get_farmer_bonus_amount(ctx: RunContext[FarmerContext]) -> str:
     mobile = (ctx.deps.mobile or "").strip() if ctx and ctx.deps else ""
     if not mobile:
         logger.info("Farmer bonus amount tool refused: no authenticated mobile")
+        report_tool("error", "no signed-in mobile")
         return (
             "Bonus amount lookup failed.\n\n"
             "Your signed-in farmer profile is not available, so bonus amount "
@@ -143,6 +145,7 @@ async def get_farmer_bonus_amount(ctx: RunContext[FarmerContext]) -> str:
         farmers = await get_farmer_data_by_mobile(mobile)
     except Exception as exc:
         logger.warning("Farmer profile lookup for bonus amount failed: %s", exc)
+        report_tool("unavailable", f"farmer profile lookup: {reason(exc)}")
         return (
             "Bonus amount lookup failed.\n\n"
             "Unable to fetch bonus amount details at the moment."
@@ -150,6 +153,7 @@ async def get_farmer_bonus_amount(ctx: RunContext[FarmerContext]) -> str:
 
     accounts = authenticated_accounts(farmers or [])
     if not accounts:
+        report_tool("no_result", "no account for the signed-in mobile")
         return (
             "Bonus amount lookup failed.\n\n"
             "No union, society, and farmer account was found for your signed-in mobile."
@@ -158,6 +162,7 @@ async def get_farmer_bonus_amount(ctx: RunContext[FarmerContext]) -> str:
     token = get_config_value("PASHUGPT_TOKEN")
     if not token:
         logger.error("PASHUGPT_TOKEN is not set")
+        report_tool("unavailable", "PASHUGPT_TOKEN is not set")
         return "Bonus amount lookup failed.\n\nProvider access is not configured."
 
     outcomes = await asyncio.gather(
@@ -191,6 +196,7 @@ async def get_farmer_bonus_amount(ctx: RunContext[FarmerContext]) -> str:
             "(count=%s)",
             len(accounts),
         )
+        report_tool("unavailable", f"bonus provider failed for all {len(accounts)} accounts")
         return (
             "Bonus amount lookup failed.\n\n"
             "Unable to fetch bonus amount details at the moment. "
@@ -203,6 +209,7 @@ async def get_farmer_bonus_amount(ctx: RunContext[FarmerContext]) -> str:
             failed_accounts,
             len(accounts),
         )
+        report_tool("unavailable", f"bonus provider failed for {failed_accounts} of {len(accounts)} accounts")
         return (
             "Bonus amount lookup failed.\n\n"
             "Unable to fetch bonus amount details at the moment. "
@@ -216,6 +223,7 @@ async def get_farmer_bonus_amount(ctx: RunContext[FarmerContext]) -> str:
             "Farmer bonus amount lookup returned no records accounts=%s",
             len(accounts),
         )
+        report_tool("no_result", "no bonus records")
         return (
             "Bonus amount lookup completed.\n\n"
             "No bonus records were found for your signed-in farmer account(s)."

@@ -23,7 +23,7 @@ import random
 import time
 
 import anyio
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from functools import cached_property
 from typing import Any, AsyncIterator, Awaitable, Callable, Optional
@@ -145,6 +145,9 @@ class ExecutionTarget:
 
     tier: Tier
     client_kind: StepClientKind
+    #: Its place in the step's chain (0 = primary, 1 = first fallback, ...), as the
+    #: walker records a served tier; None for a target built outside a chain.
+    index: Optional[int] = None
 
     @cached_property
     def handle(self) -> Any:
@@ -170,6 +173,12 @@ class ExecutionTarget:
     def route(self) -> str:
         route = f"{self.provider}:{self.model_name}"
         return f"{route}({self.tier.label})" if self.tier.label else route
+
+    @property
+    def served_tier(self) -> Optional[str]:
+        """turn.v1's ``amul.served_tier`` for a call this target served: ``route[index]``,
+        as llm_core.trace.step_metadata writes the step's; None outside a chain."""
+        return f"{self.route}[{self.index}]" if self.index is not None else None
 
     @property
     def endpoint(self) -> str:
@@ -738,7 +747,7 @@ class ExecutionContext:
         from app.llm_core.factory import STEP_CLIENT_KIND, tier_client_kind
 
         return ExecutionTarget(
-            tier, tier_client_kind(client_kind or STEP_CLIENT_KIND[step], tier)
+            tier, tier_client_kind(client_kind or STEP_CLIENT_KIND[step], tier), index=0
         )
 
     def target(
@@ -779,13 +788,14 @@ class ExecutionContext:
     ) -> list[ExecutionTarget]:
         from app.llm_core import split
 
-        return await split.resolve_chain(
+        chain = await split.resolve_chain(
             self.session_id,
             step,
             self.config,
             profile_name=self.profile_name,
             client_kind=client_kind,
         )
+        return [replace(target, index=index) for index, target in enumerate(chain)]
 
     def _record_direct_success(self, step: Step, target: ExecutionTarget) -> None:
         _record_served(step, target, 0, self._trace_state)

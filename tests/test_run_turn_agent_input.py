@@ -140,7 +140,9 @@ def test_the_agent_runs_with_what_the_surface_built(monkeypatch):
     # The new messages are saved after the history the surface named, not the turn's.
     assert seen["history_writes"] == [("agent-input", ["saved-before", _NEW_MESSAGE])]
     assert observe.log[0] == "enter" and observe.log[-1] == "exit"
-    assert ("update", {"output": {"response": _trace_outputs(seen)[-1]}}) in observe.log
+    # The agent step's output is the agent's answer, which the surface writes (after_run);
+    # run_turn writes nothing on it, the translated answer least of all.
+    assert not [entry for entry in observe.log if entry[0] == "update"]
     assert _outcomes(seen) == ["success"]
 
 

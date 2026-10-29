@@ -117,6 +117,22 @@ class TestPromptGuidance:
         assert "live data" in rendered
 
     @pytest.mark.parametrize("name", PROMPTS)
+    def test_prices_are_bullets_not_a_table(self, name):
+        # AMUL-113: the translation prompt, which production chat runs, had no
+        # rule against tables, so a question about four commodities came back
+        # as a Commodity | Market | District | State | … table, and the prices
+        # rendered off the edge of the farmer's phone.
+        rendered = self._render(name, True)
+        assert "Never show prices as a table" in rendered
+        assert "price first" in rendered
+        assert "per quintal" in rendered
+        assert "**latest date**" in rendered
+
+    @pytest.mark.parametrize("name", PROMPTS)
+    def test_the_presentation_rule_is_gated_with_the_tools(self, name):
+        assert "as a table" not in self._render(name, False)
+
+    @pytest.mark.parametrize("name", PROMPTS)
     def test_the_block_disappears_when_the_network_flag_is_off(self, name):
         # Advertising a tool the runtime has hidden costs two LLM round-trips a
         # turn: the model calls it, gets `Unknown tool name`, and retries — and
