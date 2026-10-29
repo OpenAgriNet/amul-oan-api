@@ -20,6 +20,7 @@ import pytest
 import agents.tools.farmer_cache as farmer_cache
 import app.services.langfuse_telemetry_writer as writer
 import app.tasks.suggestions as suggestions
+from opentelemetry import trace as otel_trace
 from app import observability
 from app.models.telemetry import CanonicalTelemetryEvent
 from app.routers import health
@@ -45,10 +46,13 @@ class _Langfuse:
     def __init__(self):
         self.log = []
         self.open = []
+        self.parents = {}
 
     @contextlib.contextmanager
     def start_as_current_observation(self, **kwargs):
         self.log.append(("open", kwargs["name"], kwargs))
+        current = otel_trace.get_current_span().get_span_context()
+        self.parents[kwargs["name"]] = (format(current.trace_id, "032x"), format(current.span_id, "016x"))
         self.open.append(kwargs["name"])
         try:
             yield _Observation(self, kwargs["name"])
@@ -226,7 +230,10 @@ def test_suggestions_are_a_step_under_the_root_of_their_turn(lf, monkeypatch):
     assert asyncio.run(suggestions.create_suggestions("s1", "gu", _Execution(), turn_root)) == ["q1", "q2", "q3"]
 
     step = lf.opened("suggestions")
-    assert (step["trace_context"], step["as_type"]) == (turn_root, "generation")
+    # A child of the turn's root span, not opened with trace_context=: Langfuse marks
+    # such a span as the trace's root and writes its name, input and output over the turn's.
+    assert "trace_context" not in step and step["as_type"] == "generation"
+    assert lf.parents["suggestions"] == (turn_root["trace_id"], turn_root["parent_span_id"])
     # A late step writes no trace-level field: only the environment is propagated.
     assert [set(kwargs) for _, kwargs in lf.propagated()] == [{"environment"}]
     assert ("update", "suggestions", {"output": {"suggestions": ["q1", "q2", "q3"]}, "metadata": served}) in lf.log
