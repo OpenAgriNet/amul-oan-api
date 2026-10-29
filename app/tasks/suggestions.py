@@ -2,7 +2,7 @@
 Tasks for creating conversation suggestions.
 """
 
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from helpers.utils import get_logger
 from app.utils import _get_message_history, trim_history, format_message_pairs, set_cache
 from app.core.cache import cache
@@ -22,6 +22,31 @@ try:
 except ImportError:
     propagate_attributes = None
     get_langfuse_client = None
+
+
+@contextmanager
+def _under_turn_root(turn_root: dict[str, str] | None):
+    """Make the turn's root span the current parent, so the step opens as its child.
+
+    Not ``trace_context=``: Langfuse marks a span opened that way as the trace's root,
+    and the server then writes the step's name, input and output over the turn's trace.
+    """
+    if not turn_root:
+        yield
+        return
+    from opentelemetry import context as otel_context, trace as otel_trace
+
+    parent = otel_trace.NonRecordingSpan(otel_trace.SpanContext(
+        trace_id=int(turn_root["trace_id"], 16),
+        span_id=int(turn_root["parent_span_id"], 16),
+        is_remote=False,
+        trace_flags=otel_trace.TraceFlags(otel_trace.TraceFlags.SAMPLED),
+    ))
+    token = otel_context.attach(otel_trace.set_span_in_context(parent))
+    try:
+        yield
+    finally:
+        otel_context.detach(token)
 
 
 def _step_metadata(execution) -> dict[str, str]:
@@ -77,7 +102,6 @@ async def create_suggestions(
         _lf = get_langfuse_client() if get_langfuse_client else None
         _suggestions_obs_ctx = (
             _lf.start_as_current_observation(
-                trace_context=turn_root,
                 name="suggestions",
                 as_type="generation",
                 input={
@@ -92,7 +116,7 @@ async def create_suggestions(
             else nullcontext()
         )
 
-        with environment_ctx:
+        with environment_ctx, _under_turn_root(turn_root):
             with _suggestions_obs_ctx as sug_obs:
                 agent_run = await execution.run(
                     _LlmStep.SUGGESTIONS,
