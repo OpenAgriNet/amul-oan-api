@@ -369,15 +369,17 @@ def test_chat_answers_in_the_pretranslated_language_when_nothing_is_translated(m
     assert doctor.agent is chat_service.doctor_agent
 
 
-def test_a_rejected_query_is_declined_as_a_success(monkeypatch):
+def test_a_rejected_query_is_declined_as_moderation_rejected(monkeypatch):
     patch_turn(monkeypatch)
     _moderation(monkeypatch, category="unsafe", action="I cannot help with that.")
     monkeypatch.setattr(chat_service, "_localize_system_text", _as_is)
 
     declined = _chat_agent_input(_turn())
 
-    assert declined == ClassifierResult(canned_text="I cannot help with that.", label="moderation decline")
-    assert declined.outcome == "success" and declined.history_pair is None
+    assert declined == ClassifierResult(
+        canned_text="I cannot help with that.", label="moderation decline", outcome="moderation_rejected"
+    )
+    assert declined.history_pair is None
 
 
 def test_a_failed_moderation_gets_the_fail_closed_line_as_an_error(monkeypatch):
