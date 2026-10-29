@@ -802,6 +802,10 @@ class Settings(BaseSettings):
     vistaar_max_items: int = Field(default=20, validation_alias="VISTAAR_MAX_ITEMS")
     mandi_max_candidates: int = 3
     mandi_location_ttl_s: int = 3600
+    # Voice-only cap (seconds) on one Vistaar weather/mandi tool call. A voice
+    # turn that runs past the 60 s ingress window drops the call; past this cap
+    # the caller hears the tool's "temporarily unavailable" line instead.
+    voice_vistaar_budget_s: float = Field(default=20.0, validation_alias="VOICE_VISTAAR_BUDGET_S")
     # Direct PashuGPT integrations used by bonus and cattle trade price tools.
     amulpashudhan_base_url: str = Field(
         default="https://api.amulpashudhan.com/configman/v1/PashuGPT",
