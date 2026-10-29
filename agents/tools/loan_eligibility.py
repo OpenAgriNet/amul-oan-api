@@ -306,7 +306,9 @@ async def evaluate_and_issue(
             name = existing.farmer_name if existing is not None else _resolve_name(farmer_name, accounts, elig_row)
 
             # OFFER step — eligible but NOT yet confirmed: reveal no code, send no SMS.
-            if not confirm:
+            # A farmer who already holds an active code is not offered the loan again:
+            # their code is re-shared below whatever `confirm` is (AMUL-41).
+            if not confirm and existing is None:
                 logger.info("Loan OFFER for %s (awaiting confirmation, has_existing=%s)", mobile, existing is not None)
                 return LoanResult(
                     outcome=ELIGIBLE_OFFER, phone=mobile,
@@ -315,10 +317,10 @@ async def evaluate_and_issue(
                     farmer_name=name, checks_applied=checks,
                 )
 
-            # CONFIRMED. Re-share an existing code (+ optional resend), or mint a new one.
+            # Re-share an existing code (+ optional resend), or — confirmed — mint a new one.
             if existing is not None:
                 resent = await _maybe_resend_sms(session, existing, mobile)
-                logger.info("Loan code re-shared (confirmed) for %s (code %s, sms=%s)", mobile, existing.code, resent)
+                logger.info("Loan code re-shared for %s (code %s, sms=%s, confirm=%s)", mobile, existing.code, resent, confirm)
                 return LoanResult(
                     outcome=ELIGIBLE, phone=mobile, code=existing.code,
                     loan_amount=float(existing.loan_amount) if existing.loan_amount else amount,
