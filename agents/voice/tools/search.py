@@ -332,6 +332,15 @@ async def search_documents(
     try:
         del ctx
         query = _validate_search_query(query)
+        backend = os.getenv("VET_SEARCH_BACKEND", "marqo").strip().lower()
+        if backend == "beckn":
+            # The provider owns backend selection, ranking and chunk diversity.
+            # Opt in per deployment so existing Marqo deployments retain their route.
+            from agents.tools.beckn.network import network_search_documents
+
+            return await network_search_documents(query, _resolve_final_top_k(top_k))
+        if backend != "marqo":
+            raise ValueError(f"Unsupported VET_SEARCH_BACKEND: {backend}")
         endpoint_url = os.getenv('MARQO_ENDPOINT_URL')
         if not endpoint_url:
             raise ValueError("Marqo endpoint URL is required")
