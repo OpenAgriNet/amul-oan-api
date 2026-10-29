@@ -28,8 +28,8 @@ def test_budget_stays_inside_a_callers_patience():
     Voice, successful 200s, 2026-09-01..09-16: 94.0% of lookups land within 2s,
     3.9% in 2-4s, only 0.86% in 4-8s, and 1.2% exceed 8s anyway. Raising the
     budget past 4s buys under 1% of lookups and doubles the wait for every slow
-    caller; the worker finishes a fetch that ran out, for the next turn, at no
-    cost to this one.
+    caller; a fetch that runs out keeps going and is cached for the next turn,
+    at no cost to this one.
     """
     assert fc.FARMER_COLD_FETCH_TIMEOUT <= 4.0
 
@@ -104,6 +104,45 @@ def test_next_turn_does_not_re_block_while_the_worker_has_it(monkeypatch):
 
     assert asyncio.run(fc.get_or_fetch_farmer_data(PHONE)) is None
     assert asyncio.run(fc.get_or_fetch_farmer_data(PHONE)) is None
+    assert calls["n"] == 1
+
+
+class _Cache:
+    def __init__(self):
+        self.items = {}
+
+    async def get(self, key, namespace=None):
+        return self.items.get((namespace, key))
+
+    async def set(self, key, value, ttl=None, namespace=None):
+        self.items[(namespace, key)] = value
+
+
+def test_next_turn_reads_what_the_fetch_that_ran_out_stored(monkeypatch):
+    """A registered caller whose first lookup ran past the budget is found on the
+    next turn, without waiting for the worker or starting a second fetch."""
+    redis = _Redis()
+    calls = {"n": 0}
+
+    async def _slow(phone):
+        calls["n"] += 1
+        await asyncio.sleep(0.1)
+        envelope = _envelope()
+        await fc.set_cached_farmer_data(phone, envelope)
+        return envelope
+
+    _cold(monkeypatch, redis, _slow)
+    monkeypatch.setattr(fc, "cache", _Cache())
+
+    async def _two_turns():
+        first = await fc.get_or_fetch_farmer_data(PHONE)
+        await asyncio.sleep(0.3)
+        second = await fc.get_or_fetch_farmer_data(PHONE)
+        return first, second
+
+    first, second = asyncio.run(_two_turns())
+    assert first is None
+    assert second is not None and second.lookupStatus == "found"
     assert calls["n"] == 1
 
 

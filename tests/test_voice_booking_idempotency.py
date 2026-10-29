@@ -105,9 +105,9 @@ def _pending():
     )
 
 
-def _book_ai(session_id="s1", tool_call_id=None):
+def _book_ai(session_id="s1", tool_call_id=None, species=SPECIES):
     return asyncio.run(
-        ai_mod.create_ai_call(_ctx(session_id, tool_call_id), "159", "00002", "5058", TECH_ID, SPECIES)
+        ai_mod.create_ai_call(_ctx(session_id, tool_call_id), "159", "00002", "5058", TECH_ID, species)
     )
 
 
@@ -119,8 +119,44 @@ def test_ai_call_idempotent_on_rerun(monkeypatch, store):
 
     assert len(calls) == 1
     assert "booked successfully" in r1.lower()
-    assert r2 == chat_ai_call.ALREADY_BOOKED_MESSAGE
-    assert store[("ai_call_booked", "s1")] == {"ticket": "T1", "species": SPECIES.value}
+    # The repeat reads back the booking it hit, not a failure (AMUL-106).
+    assert r2 == "Artificial insemination call is already booked. Ticket: T1."
+    assert store[("ai_call_booked", "s1")] == {
+        "ticket": "T1", "species": SPECIES.value, "account": "159/00002/5058"
+    }
+
+
+NOTHING_NEW_BOOKED = (
+    "No new booking was made: only one artificial insemination booking can be made "
+    "per session. This session's booking is for the cow (ticket T1); "
+    "for any other animal, please try again later or contact your society."
+)
+
+
+def test_ai_call_rerun_for_the_other_species_is_told_nothing_was_booked(monkeypatch, store):
+    """One booking per session: a buffalo asked for after the cow was booked must
+    not hear the cow's ticket as its own booking."""
+    calls = _confirms(monkeypatch, [_booked(), _booked("T2")])
+
+    _book_ai(species=AISpecies.COW)
+    r2 = _book_ai(species=AISpecies.BUFFALO)
+
+    assert len(calls) == 1
+    assert r2 == NOTHING_NEW_BOOKED
+
+
+def test_ai_call_rerun_for_another_farmer_record_is_told_nothing_was_booked(monkeypatch, store):
+    """A caller with records in two villages: a cow on the second record is a
+    different visit, not a retry of the first booking."""
+    calls = _confirms(monkeypatch, [_booked(), _booked("T2")])
+
+    _book_ai(species=AISpecies.COW)
+    r2 = asyncio.run(
+        ai_mod.create_ai_call(_ctx("s1"), "159", "00777", "9999", TECH_ID, AISpecies.COW)
+    )
+
+    assert len(calls) == 1
+    assert r2 == NOTHING_NEW_BOOKED
 
 
 def test_ai_call_sends_the_callers_codes_and_tool_call_id(monkeypatch, store):
