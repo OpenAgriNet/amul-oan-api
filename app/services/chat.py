@@ -1,8 +1,9 @@
 import asyncio
-from contextlib import aclosing, contextmanager, nullcontext
+from contextlib import ExitStack, aclosing, contextmanager, nullcontext
+from contextvars import ContextVar
 from types import MappingProxyType
 from typing import Any, AsyncGenerator, Mapping, Optional
-from functools import lru_cache, partial
+from functools import lru_cache
 import regex
 import re
 import time
@@ -32,6 +33,7 @@ from app.services.translation import (
     pretranslate_with_tier,
     translate_text_stream_fast,
     INDIAN_LANGUAGES,
+    LANG_CODES,
 )
 from pydantic_ai.messages import ModelRequest, ModelResponse, UserPromptPart, TextPart
 from app.services.identity_profile import (
@@ -41,7 +43,7 @@ from app.services.identity_profile import (
 )
 from app.personas import ChatPersona
 from app.chat_artifacts import encode_chat_artifacts
-from app.services.telemetry_stamps import CHAT_TURN_V1_ROOT, chat_turn_v1_input, chat_turn_v1_metadata
+from app.services.telemetry_stamps import TURN_ROOT, turn_v1_fields, turn_v1_metadata
 from app.channels.base import ChannelProfile
 from app.turn.types import (
     AgentActivityEmission,
@@ -196,10 +198,6 @@ async def _sanitize_doctor_stream(source):
 
 logger = get_logger(__name__)
 SUGGESTIONS_PENDING_TTL = 30
-# The Gemma pre/post-translation pipeline is the only chat execution path.
-# Kept as a named constant purely so existing Langfuse trace names, tags and
-# metadata keep the value dashboards already filter on.
-_PIPELINE_NAME = "translation"
 GENERIC_UNAVAILABLE_MESSAGE_EN = (
     "I am unable to process your request right now. Please try again later."
 )
@@ -251,7 +249,7 @@ except ImportError:
     propagate_attributes = None
     get_langfuse_client = None
 
-from app.observability import surface_environment
+from app.observability import root_trace_id, surface_environment
 
 # Per-turn resolved-pipeline-config tracer (tracing-only; no behaviour change).
 from app.llm_core import trace as _pipeline_trace
@@ -566,11 +564,14 @@ async def _stream_to_client(
     max_output_chars: int | None,
     execution,
     output_chunks: list[str],
+    root=None,
 ):
     """Pass the English stream through, or sentence-batch and stream-translate it.
 
     Everything yielded is also appended to ``output_chunks`` for the trace.
     A batch whose translation fails is sent in English rather than dropped.
+    ``root`` is the turn's root span: the translation is turn.v1's post_translation
+    step, one span under it with each call's generation under that.
     """
     if not translate_to:
         async for chunk in english_src:
@@ -578,11 +579,14 @@ async def _stream_to_client(
             yield chunk
         return
 
+    step = _PostTranslation(root, execution)
+
     async def translate(text: str, label: str):
         # Sentence batching drops the line break before a list item; restore it.
         if output_chunks and _batch_starts_new_line_or_list(text):
             output_chunks.append("\n")
             yield "\n"
+        delivered: list[str] = []
         try:
             async for translated_chunk in translate_text_stream_fast(
                 text=text,
@@ -590,34 +594,99 @@ async def _stream_to_client(
                 target_lang=translate_to,
                 max_output_chars=max_output_chars,
                 execution=execution,
+                parent=step.open(),
             ):
                 output_chunks.append(translated_chunk)
+                delivered.append(translated_chunk)
                 yield translated_chunk
         except Exception as e:
             logger.error(f"{label} translation failed, falling back to English: {e}")
+            step.failed(e)
             output_chunks.append(text)
+            delivered.append(text)
             yield text
+        finally:
+            step.record(text, delivered)
 
-    sentence_buffer = ""
-    batch: list[str] = []
-    batch_word_count = 0
-    async for chunk in english_src:
-        complete_sentences, sentence_buffer = extract_complete_sentences(sentence_buffer + chunk)
-        if not complete_sentences:
-            continue
-        batch.extend(complete_sentences)
-        batch_word_count += sum(len(s.split()) for s in complete_sentences)
-        batch_text = "".join(batch)
-        if should_translate_batch(batch_text, batch_word_count):
-            async for out in translate(batch_text, "Optimised batch"):
+    try:
+        sentence_buffer = ""
+        batch: list[str] = []
+        batch_word_count = 0
+        async for chunk in english_src:
+            complete_sentences, sentence_buffer = extract_complete_sentences(sentence_buffer + chunk)
+            if not complete_sentences:
+                continue
+            batch.extend(complete_sentences)
+            batch_word_count += sum(len(s.split()) for s in complete_sentences)
+            batch_text = "".join(batch)
+            if should_translate_batch(batch_text, batch_word_count):
+                async for out in translate(batch_text, "Optimised batch"):
+                    yield out
+                batch, batch_word_count = [], 0
+        if batch:
+            async for out in translate("".join(batch), "Final batch"):
                 yield out
-            batch, batch_word_count = [], 0
-    if batch:
-        async for out in translate("".join(batch), "Final batch"):
-            yield out
-    if sentence_buffer.strip():
-        async for out in translate(sentence_buffer, "Tail fragment"):
-            yield out
+        if sentence_buffer.strip():
+            async for out in translate(sentence_buffer, "Tail fragment"):
+                yield out
+    finally:
+        step.close()
+
+
+class _PostTranslation:
+    """turn.v1's post_translation step of a chat turn: one span, a direct child of the
+    root, opened at the first batch the sink translates and closed when the answer is
+    out. The English given to translation in, what translation delivered out (a batch
+    whose translation failed went out in English), the step's tiers as the pipeline
+    trace recorded them, and level ERROR with the reason when a batch's translation
+    failed. Each call's stream_translation generation nests under it, so pydantic-ai's
+    spans, opened under the current span (the agent's), do not.
+
+    A turn without a root (tracing off, a sink run on its own) opens no span, and the
+    calls open their generations under the current span as before.
+    """
+
+    def __init__(self, root, execution) -> None:
+        self._root = root
+        self._execution = execution
+        self._span = None
+        self._given: list[str] = []
+        self._delivered: list[str] = []
+        self._failure: str | None = None
+
+    def open(self):
+        """The span, opened at the first batch; None without a root."""
+        if self._span is None and self._root is not None:
+            try:
+                self._span = self._root.start_observation(name="post_translation", as_type="span")
+            except Exception as e:  # pragma: no cover - tracing must never break the turn
+                logger.debug("post_translation span unavailable: %s", e)
+                self._root = None
+        return self._span
+
+    def record(self, given: str, delivered: list[str]) -> None:
+        self._given.append(given)
+        self._delivered.extend(delivered)
+
+    def failed(self, error: BaseException) -> None:
+        # The first failure is the reason; the step stays ERROR however later batches went.
+        if self._failure is None:
+            self._failure = (str(error) or type(error).__name__)[:300]
+
+    def close(self) -> None:
+        if self._span is None:
+            return
+        fields: dict[str, Any] = {"input": "".join(self._given), "output": "".join(self._delivered)}
+        tiers = _step_tiers(self._execution, _LlmStep.POST_TRANSLATION)
+        if tiers:
+            fields["metadata"] = tiers
+        if self._failure is not None:
+            fields.update(level="ERROR", status_message=self._failure)
+        try:
+            self._span.update(**fields)
+            self._span.end()
+        except Exception as e:  # pragma: no cover - tracing must never break the turn
+            logger.debug("post_translation span close failed: %s", e)
 
 
 class _ChatSink:
@@ -653,6 +722,7 @@ class _ChatSink:
             max_output_chars=self._max_output_chars,
             execution=self._execution,
             output_chunks=self._chunks,
+            root=_turn_root.get(),
         )
         if self._persona == "doctor":
             # Defence in depth: also remove a provenance label invented by
@@ -671,11 +741,33 @@ class _ChatSink:
         return None
 
 
-class _ChatTelemetry:
-    """Chat's turn telemetry: one chat.turn.v1 root, its input, and how the turn ended.
+# turn.v1 names the delivery medium a pipeline (amul-telemetry telemetry/turn.v1.yaml).
+_PIPELINE_BY_CHANNEL = {"web": "webapp", "whatsapp": "whatsapp"}
+# The request's user_id when the client sends none (app/models/requests.py): not a user.
+ANONYMOUS_USER = "anonymous"
 
-    The metadata and input shapes are built in this module on purpose: the
-    chat.turn.v1 contract test reads them from these calls in chat.py.
+# The turn's root span while its turn runs, for a step opened as the root's direct
+# child while another step is the current span: the sink's post_translation span
+# opens while the agent step is. None outside a turn and without tracing.
+_turn_root: ContextVar[Any] = ContextVar("chat_turn_root", default=None)
+
+
+class _ChatTelemetry:
+    """Chat's turn telemetry: one turn.v1 root, named ``turn``, and how the turn went.
+
+    Trace-level fields live on the root span only. ``propagate_attributes`` sets
+    them on the current span and on every span opened inside its context, so it
+    is entered and left before any step opens: a step that carried them would be
+    a trace-level event, and a late one would rewrite the turn (amul-telemetry
+    docs/TRANSFORM.md). The surface's Langfuse environment is the one thing
+    propagated to every span (#422); it is not a trace-level field.
+
+    What is known only at the end (the answer, the outcome, the tier that served)
+    is written when the root closes, with the root as the current span again. A
+    turn that ends as an error marks its root level ERROR with the reason: what the
+    turn raised, else the path that answered it (``fail-closed``). The metadata and
+    field names are built in this module on purpose: the turn.v1 contract test
+    reads them from these calls.
     """
 
     def __init__(self, turn: Turn, *, pipeline_profile: str, pipeline_trace) -> None:
@@ -683,113 +775,161 @@ class _ChatTelemetry:
         self._pipeline_profile = pipeline_profile
         self._pipeline_trace = pipeline_trace
         self._session_id_safe = (turn.session_id or "")[:200]
+        self._output: str | None = None
+        self._output_label: str | None = None
+        self._outcome: str | None = None
+        self._raised: BaseException | None = None
 
     @contextmanager
     def root(self):
         turn = self._turn
         user_info = turn.authenticated_user
         channel = turn.channel.channel.value
-        pipeline_profile = self._pipeline_profile
-        persona = turn.persona
-        # Langfuse: propagate session_id, metadata, and tags for dashboard filtering (max 200 chars per value)
-        # Prefer phone from JWT (weburl-minted tokens) over the query-param user_id
-        effective_user_id = (
-            (user_info.get("phone") or user_info.get("sub")) if user_info else None
-        ) or turn.user_id or "anonymous"
-        effective_user_id = effective_user_id[:200]
-        langfuse_metadata = chat_turn_v1_metadata(
-            pipeline=_PIPELINE_NAME,
-            channel=(channel or "web")[:200],
-            source_lang=(turn.source_lang or "unknown").lower()[:200],
-            target_lang=(turn.target_lang or "unknown").lower()[:200],
-            user_id=effective_user_id,
-            pipeline_profile=pipeline_profile,
-            persona=persona,
+        # turn.v1 writes userId when it is known: the phone from the JWT (weburl-minted
+        # tokens) over the query-param user_id, and none for an anonymous user.
+        known_user = (user_info.get("phone") or user_info.get("sub")) if user_info else None
+        effective_user_id = known_user or (turn.user_id if turn.user_id != ANONYMOUS_USER else None)
+        effective_user_id = effective_user_id[:200] if effective_user_id else None
+        source_lang = (turn.source_lang or "unknown").lower()[:200]
+        target_lang = (turn.target_lang or "unknown").lower()[:200]
+        metadata = turn_v1_metadata(
+            pipeline=_PIPELINE_BY_CHANNEL.get(channel, channel),
+            direction="inbound",
+            # turn.v1 keeps the language's code; a client may send its name ("english").
+            source_lang=LANG_CODES.get(source_lang, source_lang),
+            target_lang=LANG_CODES.get(target_lang, target_lang),
+            translation_mode="translated" if _translates_output(target_lang) else "direct",
+            pipeline_profile=self._pipeline_profile,
+            pipeline_flags=_pipeline_trace.compact_metadata(self._pipeline_trace).get("pipeline_flags"),
+            persona=turn.persona,
+            input_method=turn.input_method,
+            # A farmer id is the phone the verified JWT carries, as the farmer context
+            # and the loan tool read it; a query-param user id is not verified, and an
+            # anonymous user has none. Voice sets it only for a signed-in caller.
+            farmer_id=normalize_phone_to_mobile(user_info.get("phone")) if user_info else None,
         )
-        langfuse_tags = [
-            f"pipeline:{_PIPELINE_NAME}",
-            f"pipeline_profile:{pipeline_profile}",
-            f"persona:{persona}",
-        ]
-        # Serialize the resolved pipeline config into COMPACT flat keys and merge them
-        # into the same langfuse_metadata dict propagate_attributes lands on OTEL span
-        # attributes (a big nested blob is size-capped/dropped; this SDK has no
-        # update_current_trace). Adds `pipeline_profile`, `pipeline_flags`, and one
-        # `pc_<step>` per step (~50 chars each). Full static config is in the
-        # `llm_core.full_config` boot log. Best-effort — never breaks the turn.
-        _pipeline_trace.add_compact_metadata(self._pipeline_trace, langfuse_metadata)
-        session_ctx = (
-            propagate_attributes(
-                environment=surface_environment("chat"),
-                session_id=self._session_id_safe,
-                user_id=effective_user_id,
-                metadata=langfuse_metadata,
-                tags=langfuse_tags,
-            )
-            if propagate_attributes
-            else nullcontext()
-        )
-
-        # THE TURN ROOT SPAN. Without it, propagate_attributes leaves no active span,
-        # so every observation opened during the turn (Moderation, query_pretranslation,
-        # Amul AI Agent, suggestions, each tool call) becomes its OWN top-level trace —
-        # measured at 6 traces for one turn — and every trace-level write made outside
-        # an observation is silently dropped by the SDK ("no active span ... skipped").
-        # That is why trace input/output was missing on many turns, why the chat export
-        # has gaps, and why turn-level scores never landed.
-        root_ctx = (
-            get_langfuse_client().start_as_current_observation(
-                name=CHAT_TURN_V1_ROOT, as_type="span"
-            )
-            if get_langfuse_client
-            else nullcontext()
-        )
-
-        with session_ctx, root_ctx:
-            self._record_input(channel)
-            yield
-
-    def _record_input(self, channel: str) -> None:
-        if not get_langfuse_client:
-            return
-        turn = self._turn
-        try:
-            langfuse = get_langfuse_client()
-            langfuse.set_current_trace_io(
-                input=chat_turn_v1_input(
-                    query=turn.query,
-                    channel=channel,
-                    source_lang=turn.source_lang,
-                    target_lang=turn.target_lang,
-                    persona=turn.persona,
-                )
-            )
-            #this is the same as the update_current_trace method,
-            #but it is more explicit about the type of the output
-            # and is supported by the latest version of the langfuse SDK.
-            # Emit a categorical pipeline_profile score attached to the
-            # *current trace*. Langfuse rolls this up to the session view,
-            # so a Sessions filter "pipeline_profile = oss" works directly.
-            # `score_id` is deterministic per session so subsequent traces
-            # in the same session upsert the same score (no duplicates).
+        environment = surface_environment("chat")
+        client = get_langfuse_client() if get_langfuse_client else None
+        with ExitStack() as stack:
+            if propagate_attributes:
+                # Every span of the turn lands in chat's environment (#422). Not a
+                # trace-level field, so safe on every step.
+                stack.enter_context(propagate_attributes(environment=environment))
+            if client:
+                # THE TURN ROOT SPAN. Without it, every observation opened during the
+                # turn becomes its own top-level trace and trace-level writes are
+                # dropped (#200). The root observation carries the same amul.* keys
+                # as the trace.
+                # Opened with the trace id the transport made for the turn, when it
+                # made one (app/observability.py root_trace_id).
+                with root_trace_id(turn.trace_id):
+                    root = stack.enter_context(
+                        client.start_as_current_observation(name=TURN_ROOT, as_type="span", metadata=metadata)
+                    )
+                stack.callback(_turn_root.reset, _turn_root.set(root))
+            if propagate_attributes:
+                # Trace-level fields, on the root only: set on the current span (the
+                # root) and left before any step opens.
+                with propagate_attributes(
+                    environment=environment,
+                    session_id=self._session_id_safe,
+                    user_id=effective_user_id,
+                    metadata=metadata,
+                ):
+                    pass
+            if client:
+                try:
+                    # The raw question. turn.v1's input is the text itself; the
+                    # channel, languages and persona are amul.* keys.
+                    client.set_current_trace_io(input=turn.query)
+                except Exception as e:
+                    logger.warning("Langfuse: failed to set trace input: %s", e)
             try:
-                langfuse.score_current_trace(
-                    name="pipeline_profile",
-                    value=self._pipeline_profile,
-                    data_type="CATEGORICAL",
-                    score_id=f"variant-{self._session_id_safe}",
-                    comment="Sticky pipeline variant for this session",
-                )
-            except Exception as e:
-                logger.warning("Langfuse: pipeline_profile score failed: %s", e)
+                yield
+            except BaseException as exc:
+                # Kept for the reason an error turn's root gives; how the turn ended
+                # is the outcome run_turn recorded, so a hang-up stays cancelled.
+                self._raised = exc
+                raise
+            finally:
+                self._close(client, environment)
+
+    def _close(self, client, environment: str) -> None:
+        """What the turn knows only at its end, written on the root, which is the
+        current span again here. Best-effort, and synchronous: this runs in a
+        finally that can execute during GeneratorExit."""
+        if not client:
+            return
+        try:
+            fields = turn_v1_fields(outcome=self._outcome, served_tier=_agent_served_tier(self._pipeline_trace))
+            if fields and propagate_attributes:
+                with propagate_attributes(environment=environment, metadata=fields):
+                    pass
+            if self._output is not None:
+                _record_trace_output(self._output, "turn")
+            if self._outcome == "error":
+                # turn.v1: level ERROR and the reason whenever the outcome is error.
+                client.update_current_span(level="ERROR", status_message=self._error_reason())
         except Exception as e:
-            logger.warning("Langfuse: failed to set trace input: %s", e)
+            logger.warning("Langfuse: failed to close the turn root: %s", e)
+
+    def _error_reason(self) -> str:
+        """Why the turn ended as an error: what it raised, else the path that answered it."""
+        if self._raised is not None:
+            return (str(self._raised) or type(self._raised).__name__)[:300]
+        return self._output_label or "the turn ended without an answer"
 
     def record_output(self, text: str, label: str) -> None:
-        _record_trace_output(text, label)
+        # Kept until the root closes: writing it now would put a trace-level field
+        # on whichever step is open (the agent's, for the final answer).
+        self._output = text
+        self._output_label = label
 
     def record_outcome(self, outcome: str) -> None:
+        self._outcome = outcome
         _record_turn_outcome(outcome, self._session_id_safe)
+
+
+def _translates_output(target_lang: str) -> bool:
+    """Whether the sink translates the agent's English for this target language, as
+    ``run_turn`` decides it: an Indian language whose kill switch is on."""
+    return target_lang in INDIAN_LANGUAGES and target_lang not in _disabled_chat_langs()
+
+
+def _agent_served_tier(pipeline_trace) -> str | None:
+    """The tier that produced the answer, as ``route[index]``; None until the agent ran."""
+    try:
+        return _pipeline_trace.step_metadata(pipeline_trace, _LlmStep.AGENT).get("amul.served_tier")
+    except Exception as e:  # pragma: no cover - tracing must never break the turn
+        logger.debug("served tier unavailable: %s", e)
+        return None
+
+
+def _step_tiers(execution, step) -> dict[str, str]:
+    """turn.v1's tier metadata for one step (``amul.configured_tier``, ``amul.served_tier``,
+    ``amul.attempts``), from what the walker recorded on the turn's pipeline trace;
+    ``{}`` when nothing was."""
+    try:
+        return _pipeline_trace.step_metadata(execution.begin_trace(), step)
+    except Exception as e:  # pragma: no cover - tracing must never break the turn
+        logger.debug("step tiers unavailable for %s: %s", step, e)
+        return {}
+
+
+def _current_trace_context(client) -> dict[str, str] | None:
+    """The current span as a Langfuse ``trace_context``, for a step opened later
+    outside it; None without tracing or a span."""
+    if client is None:
+        return None
+    try:
+        trace_id = client.get_current_trace_id()
+        span_id = client.get_current_observation_id()
+    except Exception as e:  # pragma: no cover - tracing must never break the turn
+        logger.debug("trace context unavailable: %s", e)
+        return None
+    if not trace_id or not span_id:
+        return None
+    return {"trace_id": trace_id, "parent_span_id": span_id}
 
 
 class _NoTelemetry:
@@ -837,29 +977,6 @@ async def _identity_classifier(turn: Turn) -> ClassifierResult | None:
             ModelResponse(parts=[TextPart(content=response)]),
         ),
     )
-
-
-def _record_served_tier(execution, _new_messages) -> None:
-    """Which tier ACTUALLY answered, as chat.turn.v1's ``served_tier`` score.
-
-    compact_metadata reports the configured primary, and it is snapshotted before
-    any step runs, so a health-prune or failure fallback is invisible in the
-    trace without this. Recorded once the agent's answer is out, because the
-    walker only knows it then.
-    """
-    if not get_langfuse_client:
-        return
-    try:
-        served = _pipeline_trace.served_summary(execution.begin_trace())
-        if served:
-            get_langfuse_client().score_current_trace(
-                name="served_tier",
-                value=served,
-                data_type="CATEGORICAL",
-                comment="Tier that actually produced this turn, per step",
-            )
-    except Exception as e:
-        logger.warning("Langfuse: failed to record served_tier: %s", e)
 
 
 async def _chat_agent_input(
@@ -924,10 +1041,13 @@ async def _chat_agent_input(
         # from the farmer context, which is why moderation need not wait for it.
         user_message = f"{last_response}{FarmerContext(query=pretranslated.query).get_user_message()}"
         _lf_mod = get_langfuse_client() if get_langfuse_client else None
+        # The turn's root, the current span until moderation opens. The suggestions
+        # step runs after the response, when the root has closed, and nests under it.
+        turn_root = _current_trace_context(_lf_mod)
         _mod_obs_ctx = (
             _lf_mod.start_as_current_observation(
-                # Distinct from Pydantic's "Moderation Agent run" OTEL span to avoid triple duplicate sidebar labels.
-                name="Moderation",
+                # turn.v1's moderation step; distinct from pydantic-ai's "Moderation Agent run" span under it.
+                name="moderation",
                 as_type="generation",
                 input={
                     # Actual model the moderation_agent.run uses below
@@ -938,7 +1058,6 @@ async def _chat_agent_input(
                     "session_id": session_id_safe,
                 },
                 model=request_model_name,
-                metadata={"pipeline": _PIPELINE_NAME},
             )
             if _lf_mod
             else nullcontext()
@@ -957,11 +1076,17 @@ async def _chat_agent_input(
                 moderation_data.action,
             )
             if mod_obs is not None:
+                # turn.v1's moderation output: rejected and category, and chat's
+                # model's action ("allow", or the decline text) under its own name.
+                # turn.v1's reason is a model's reason, which chat's model does not
+                # give (voice's does), so chat sends none.
                 mod_obs.update(
                     output={
+                        "rejected": moderation_data.category != "valid_agricultural",
                         "category": moderation_data.category,
                         "action": moderation_data.action,
-                    }
+                    },
+                    metadata=_pipeline_trace.step_metadata(execution.begin_trace(), _LlmStep.MODERATION),
                 )
             # Generate suggestions after moderation passes
             if moderation_data.category == "valid_agricultural" and persona == "farmer":
@@ -975,7 +1100,7 @@ async def _chat_agent_input(
                     # Deferred, never inline: suggestions read the history
                     # this turn has not written yet.
                     scheduler.schedule(
-                        create_suggestions, session_id, target_lang, execution
+                        create_suggestions, session_id, target_lang, execution, turn_root
                     )
                     logger.info("Successfully added suggestions task")
                 except Exception as e:
@@ -1061,30 +1186,41 @@ async def _chat_agent_input(
 
     logger.info(f"Trimmed history length: {len(trimmed_history)} messages")
 
-    agent_observation_name = "Amul Doctor Agent" if persona == "doctor" else "Amul AI Agent"
+    agent_step: list = []
 
+    @contextmanager
     def observe():
+        """turn.v1's agent step, as voice's: the question the agent is asked in (English
+        when the answer is translated), its own answer out (``after_run`` writes it,
+        inside this), pydantic-ai's "Amul AI Agent run" span and the tool spans under
+        it. The persona is on the root, the moderation action on its step and the
+        model on the generations. The tier that served and the attempts it took are
+        known once the stream ends, so they are written when the observation closes.
+        ``run_turn`` is handed None so the step's output stays the agent's."""
         _lf_ag = get_langfuse_client() if get_langfuse_client else None
-        return (
-            _lf_ag.start_as_current_observation(
-                # Distinct from Pydantic's "Amul AI Agent run" span; keeps gen_ai/tool children grouped under that name.
-                name=agent_observation_name,
-                as_type="generation",
-                input={
-                    "action": moderation_data.action,
-                    "model_name": request_model_name,
-                    "persona": persona,
-                },
-                model=request_model_name,
-                metadata={
-                    "pipeline": _PIPELINE_NAME,
-                    "pipeline_profile": execution.profile_name,
-                    "persona": persona,
-                },
-            )
-            if _lf_ag
-            else nullcontext()
-        )
+        if not _lf_ag:
+            yield None
+            return
+        # An AGENT observation, as turn.v1 declares the step.
+        with _lf_ag.start_as_current_observation(name="agent", as_type="agent", input=pretranslated.query) as agent_obs:
+            agent_step.append(agent_obs)
+            try:
+                yield None
+            finally:
+                try:
+                    step = _pipeline_trace.step_metadata(execution.begin_trace(), _LlmStep.AGENT)
+                    if step:
+                        agent_obs.update(metadata=step)
+                except Exception as e:  # pragma: no cover - tracing must never break the turn
+                    logger.warning("Langfuse: failed to record the agent step's tier: %s", e)
+
+    def after_run(new_messages) -> None:
+        """The agent's own answer, before any translation, on its step."""
+        for agent_obs in agent_step:
+            try:
+                agent_obs.update(output=_agent_text(new_messages))
+            except Exception as e:  # pragma: no cover - tracing must never break the turn
+                logger.warning("Langfuse: failed to record the agent's answer: %s", e)
 
     return AgentInput(
         agent=active_agent,
@@ -1093,8 +1229,19 @@ async def _chat_agent_input(
         deps=deps,
         history=history,
         observe=observe,
-        after_run=partial(_record_served_tier, execution),
+        after_run=after_run,
     )
+
+
+def _agent_text(new_messages) -> str:
+    """The text the agent answered with, as its new messages hold it (as voice reads it)."""
+    return "".join(
+        part.content
+        for message in new_messages
+        if isinstance(message, ModelResponse)
+        for part in message.parts
+        if isinstance(part, TextPart)
+    ).strip()
 
 
 #: The chat surface's population of the seam. Chat is the degenerate case: one
@@ -1125,6 +1272,22 @@ class _BackgroundTasksScheduler:
         self._background_tasks.add_task(fn, *args)
 
 
+# How the client says the question was entered (amul-telemetry#38): typed, speech_to_text,
+# home_question, faq or suggestion. A plain name is kept as sent, so a value the registry
+# does not list yet still reaches the store instead of being lost; anything else is not
+# recorded, and the turn goes on.
+_INPUT_METHOD = re.compile(r"[a-z][a-z_]{0,31}")
+
+
+def _input_method(value: Optional[str]) -> Optional[str]:
+    method = (value or "").strip().lower()
+    if _INPUT_METHOD.fullmatch(method):
+        return method
+    if method:
+        logger.warning("Chat input_method not recorded: not a plain name (%d chars)", len(method))
+    return None
+
+
 async def stream_chat_messages(
     query: str,
     session_id: str,
@@ -1139,6 +1302,8 @@ async def stream_chat_messages(
     history_session_id: str | None = None,
     artifact_sink: list[dict[str, Any]] | None = None,
     emit_artifact_frames: bool = True,
+    input_method: str | None = None,
+    trace_id: str | None = None,
 ) -> AsyncGenerator[str, None]:
     """The chat transport's adapter over ``run_turn``.
 
@@ -1161,6 +1326,8 @@ async def stream_chat_messages(
         # resolved once here rather than re-derived at each use site.
         channel=_profile_for(channel),
         persona=persona,
+        input_method=_input_method(input_method),
+        trace_id=trace_id,
     )
     scheduler = _BackgroundTasksScheduler(background_tasks)
     # aclosing: when the caller closes THIS generator (a hang-up), the turn is
@@ -1262,6 +1429,10 @@ async def run_turn(
         background = None
         liveness = None
         prefetched = None
+        # What the sink has handed the caller, for a turn that stops before its
+        # answer is recorded (a hang-up or a failure mid-answer): turn.v1's output
+        # is the answer as delivered. None once the sink's own record is taken.
+        delivered: list[str] | None = []
         try:
             # Resolve the surface's per-language kill switches before any response
             # path. This keeps deterministic short-circuits and tool language
@@ -1393,7 +1564,7 @@ async def run_turn(
                 is_stale=is_stale,
             )
 
-            with agent_input.observe() as agent_obs:
+            with agent_input.observe():
                 # ── ONE agent-streaming path ─────────────────────────────────
                 # Collapsed from the three duplicated blocks (fallback / anthropic
                 # .iter / openai .run_stream) into a single token stream parameterized
@@ -1439,6 +1610,7 @@ async def run_turn(
                         await liveness.stop()
                         liveness = None
                     # Raw: the sink has already prepared it for the surface.
+                    delivered.append(_out)
                     yield TextEmission(_out, raw=True)
                 logger.info(f"Streaming complete for session {session_id}")
                 if agent_input.after_run is not None:
@@ -1448,15 +1620,8 @@ async def run_turn(
                 trace_output = sink.final_text()
                 if trace_output:
                     telemetry.record_output(trace_output, "final")
+                delivered = None
                 sink_outcome = sink.outcome()
-                if get_langfuse_client and agent_obs is not None:
-                    try:
-                        # Match moderation: structured output so Langfuse shows JSON in the observation panel.
-                        agent_obs.update(
-                            output={"response": trace_output or ""},
-                        )
-                    except Exception as e:
-                        logger.warning("Langfuse: failed to record agent output: %s", e)
 
             # Rich provider documents are deliberately emitted only after the
             # model/translation/trace pipeline is finished. They are not model
@@ -1505,6 +1670,11 @@ async def run_turn(
             _turn_outcome = "error"
             raise
         finally:
+            partial = "".join(delivered or ())
+            if partial:
+                # Stopped mid-answer: what the caller got so far. Voice keeps its
+                # spoken chunks itself and takes no "final" output.
+                telemetry.record_output(partial, "final")
             telemetry.record_outcome(_turn_outcome)
             if liveness is not None:
                 await liveness.stop()

@@ -58,7 +58,8 @@ def test_tools_registry_includes_bonus_with_prepare():
         prepare_get_farmer_bonus_amount,
     )
 
-    registered = [t for t in TOOLS if t.function is get_farmer_bonus_amount]
+    # The registry wraps each tool in ``reporting`` (agents/tools/telemetry.py).
+    registered = [t for t in TOOLS if getattr(t.function, "__wrapped__", t.function) is get_farmer_bonus_amount]
     assert len(registered) == 1
     assert registered[0].prepare is prepare_get_farmer_bonus_amount
     assert registered[0].takes_ctx is True

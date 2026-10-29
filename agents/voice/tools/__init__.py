@@ -18,6 +18,7 @@ from agents.voice.tools.loan import check_loan_eligibility, prepare_check_loan_e
 from agents.voice.tools.bonus import get_farmer_bonus_amount, prepare_get_farmer_bonus_amount
 from agents.voice.services.farmer_identity import prepare_requires_farmer_identity
 from agents.tools.cattle_trade import get_cattle_trade_prices
+from agents.tools.vistaar import get_vistaar_mandi_prices
 
 
 def _with_nudge_signal(func):
@@ -68,6 +69,12 @@ BASE_TOOLS = [
     Tool(
         _with_nudge_signal(get_cattle_trade_prices),
         takes_ctx=False,
+        docstring_format='auto',
+        require_parameter_descriptions=True,
+    ),
+    Tool(
+        _with_nudge_signal(get_vistaar_mandi_prices),
+        takes_ctx=True,
         docstring_format='auto',
         require_parameter_descriptions=True,
     ),

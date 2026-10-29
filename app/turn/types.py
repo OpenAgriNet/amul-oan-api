@@ -91,6 +91,13 @@ class TelephonyCall:
     #: Set when the call is Sarlaben's heat-alert call: the farmer has just been
     #: asked whether to book an AI visit, and this turn is their answer.
     heat_alert: Optional[HeatAlertCall] = None
+    #: The session ownership epoch this request claimed, when the adapter claimed
+    #: one. For the trace (turn.v1's ``amul.request_epoch``).
+    request_epoch: Optional[int] = None
+    #: The trace id the turn opens with, made when the request claimed the session,
+    #: and its utterance's (turn.v1's ``amul.utterance_id``). For the trace.
+    trace_id: Optional[str] = None
+    utterance_id: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -129,6 +136,13 @@ class Turn:
     channel: Optional[ChannelProfile] = None
     #: The call a voice turn belongs to. None on chat.
     call: Optional[TelephonyCall] = None
+    #: How the farmer entered the question, as the chat client reports it
+    #: (amul-telemetry#38). None on voice, and when the client sends none.
+    input_method: Optional[str] = None
+    #: The trace id the turn's root opens with, made by the chat transport before the
+    #: turn so the response can name it (its X-Trace-Id) and a later feedback can
+    #: score the turn. None on voice, which keeps its own on the call.
+    trace_id: Optional[str] = None
 
 
 # ── what a turn emits ───────────────────────────────────────────────────────
@@ -220,7 +234,7 @@ class StalenessCheck(Protocol):
     A call turn goes stale when the caller hangs up or a newer request takes
     over the session; one that keeps talking can speak over the newer one.
     Returns None while the turn should carry on, otherwise the outcome to
-    record (voice's are ``client_disconnected`` and ``stale_request``), and the
+    record (voice's are ``cancelled`` and ``stale_request``), and the
     turn stops without emitting or writing anything more. ``reason`` names the
     point that asked, for the logs. Chat has none.
     """
@@ -384,16 +398,17 @@ class AgentInput:
     deps: Any
     #: The history the agent's new messages are appended to when the turn is saved.
     history: Sequence[ModelMessage]
-    #: Opens the surface's observation around the agent's run. What it yields,
-    #: if not None, is given the answer with ``update(output=...)``.
+    #: Opens the surface's observation around the agent's run, turn.v1's agent
+    #: step; the surface writes its output itself, from ``after_run``.
     observe: Callable[[], AbstractContextManager[Any]] = nullcontext
     #: pydantic-ai ``UsageLimits`` for the run, or None for the agent's own.
     usage_limits: Any = None
     #: Given the agent's new messages, a raw line to say after its answer, or
     #: None. Voice's hangs up when the agent said the conversation is closing.
     closing_line: Optional[Callable[[Sequence[ModelMessage]], Optional[str]]] = None
-    #: Called with the agent's new messages once its answer has been streamed.
-    #: Chat's records which tier served the turn; voice's records the agent's run.
+    #: Called with the agent's new messages once its answer has been streamed,
+    #: inside ``observe``. Chat's and voice's write the agent's answer on its step;
+    #: voice's also records the agent's run.
     after_run: Optional[Callable[[Sequence[ModelMessage]], None]] = None
 
 
