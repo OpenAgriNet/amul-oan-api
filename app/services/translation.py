@@ -260,19 +260,21 @@ _SARLABEN_EN = re.compile(r"sara?la[\s-]?ben")
 _SARLABEN_DEVANAGARI = (_SARLABEN_EN, re.compile(r"सा?र्?ला?\s?बेन"), "सरलाबेन")
 
 # ── A silage supplier's name (AMUL-111) ───────────────────────────────────────
-# The agent names the silage supplier Natural Silage from the union's circulars, and
-# a translator can turn "natural" into a plain word: on 17 Oct 2026 a voice call said
+# The agent names the silage supplier Natural Silage from its search results, and a
+# translator can turn "natural" into a plain word: on 17 Oct 2026 a voice call said
 # કુદરતી સિલેજ. The product says the name નેચરલ સાઇલેજ. The pattern takes "natural"
-# translated or transliterated, followed by any spelling of silage (voice's glossary
-# writes સાયલેજ). Only the two words side by side change: કુદરતી ફળવણી, silage on
-# its own and અકુદરતી (unnatural, kept out by the lookbehind) stay as they are. It
-# stops at the stem, so a case ending glued on (…સાયલેજમાંથી) is kept, and it has
-# no lookahead, which on a streaming buffer would pass at the buffer's end before
-# the next chunk arrives. Like the other gates it ignores case, so a plain "natural
-# silage" arms it too and is said નેચરલ સાઇલેજ, which still means natural silage.
+# translated or transliterated, followed by silage in its usual spellings (voice's
+# glossary writes સાયલેજ). Only the two words side by side on one line change, so a
+# chat list item ending in કુદરતી and the next one starting with સાયલેજ stay two
+# items, and કુદરતી ફળવણી, silage on its own and અકુદરતી (unnatural, kept out by
+# the lookbehind) stay as they are. It stops at the stem, so a case ending glued on
+# (…સાયલેજમાંથી) is kept, and it has no lookahead, which on a streaming buffer would
+# pass at the buffer's end before the next chunk arrives. Like the other gates it
+# ignores case, so a plain "natural silage" arms it too and is said નેચરલ સાઇલેજ,
+# which reads as the English words.
 _NATURAL_SILAGE_EN = re.compile(r"\bnatural[\s\-]*silage\b")
 _NATURAL_SILAGE_RENDERINGS = re.compile(
-    r"(?<![઀-૿])(?:કુદરતી|પ્રાકૃતિક|નૈસર્ગિક|ન[ેૅ]ચ(?:્યુ|ુ)?રલ)\s*-?\s*સ(?:ા[યઇઈ]|[િી])લેજ"
+    r"(?<![઀-૿])(?:કુદરતી|પ્રાકૃતિક|નૈસર્ગિક|ન[ેૅ]ચ(?:્યુ|ુ)?રલ)[^\S\n]*-?[^\S\n]*સ(?:ા[યઇઈ]|[િી])લેજ"
 )
 _NATURAL_SILAGE_PINNED = "નેચરલ સાઇલેજ"
 

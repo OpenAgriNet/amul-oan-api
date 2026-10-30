@@ -335,7 +335,9 @@ def test_natural_silage_gate_does_not_arm_without_the_name(src):
     "રોજ સાયલેજ આપો.",  # silage on its own
     "કુદરતી રીતે બનેલું સાયલેજ",  # the two words apart
     "અકુદરતી સાયલેજ",  # unnatural
-], ids=["natural-service", "silage-alone", "words-apart", "unnatural"])
+    "- લીલો ચારો: તાજો અને કુદરતી\n- સાયલેજ: સૂકી ઋતુમાં સારું",  # two chat list items
+    "આ ચારો તાજો અને કુદરતી\nસાયલેજ પણ આપી શકાય",  # the words on two lines
+], ids=["natural-service", "silage-alone", "words-apart", "unnatural", "list-items", "two-lines"])
 def test_other_natural_and_silage_words_are_left_alone(text):
     src = "Natural Silage sells silage. Natural mating is better than artificial insemination."
     assert _apply_protected_output(text, _protected_output_triggers(src, "gu")) == text
