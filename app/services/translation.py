@@ -261,7 +261,7 @@ _SARLABEN_DEVANAGARI = (_SARLABEN_EN, re.compile(r"सा?र्?ला?\s?ब�
 
 # ── A silage supplier's name (AMUL-111) ───────────────────────────────────────
 # The agent names the silage supplier Natural Silage from the union's circulars, and
-# the translator turns "natural" into a plain word: on 17 Oct 2026 a voice call said
+# a translator can turn "natural" into a plain word: on 17 Oct 2026 a voice call said
 # કુદરતી સિલેજ. The product says the name નેચરલ સાઇલેજ. The pattern takes "natural"
 # translated or transliterated, followed by any spelling of silage (voice's glossary
 # writes સાયલેજ). Only the two words side by side change: કુદરતી ફળવણી, silage on
