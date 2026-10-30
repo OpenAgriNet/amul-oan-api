@@ -259,6 +259,25 @@ _KDCC_EN = re.compile(r"kheda[\s\-]+(?:district|dist\.?)[^.\n]{0,80}?bank")
 _SARLABEN_EN = re.compile(r"sara?la[\s-]?ben")
 _SARLABEN_DEVANAGARI = (_SARLABEN_EN, re.compile(r"सा?र्?ला?\s?बेन"), "सरलाबेन")
 
+# ── A silage supplier's name (AMUL-111) ───────────────────────────────────────
+# The agent names the silage supplier Natural Silage from its search results, and a
+# translator can turn "natural" into a plain word: on 17 Oct 2026 a voice call said
+# કુદરતી સિલેજ. The product says the name નેચરલ સાઇલેજ. The pattern takes "natural"
+# translated or transliterated, followed by silage in its usual spellings (voice's
+# glossary writes સાયલેજ). Only the two words side by side on one line change, so a
+# chat list item ending in કુદરતી and the next one starting with સાયલેજ stay two
+# items, and કુદરતી ફળવણી, silage on its own and અકુદરતી (unnatural, kept out by
+# the lookbehind) stay as they are. It stops at the stem, so a case ending glued on
+# (…સાયલેજમાંથી) is kept, and it has no lookahead, which on a streaming buffer would
+# pass at the buffer's end before the next chunk arrives. Like the other gates it
+# ignores case, so a plain "natural silage" arms it too and is said નેચરલ સાઇલેજ,
+# which reads as the English words.
+_NATURAL_SILAGE_EN = re.compile(r"\bnatural[\s\-]*silage\b")
+_NATURAL_SILAGE_RENDERINGS = re.compile(
+    r"(?<![઀-૿])(?:કુદરતી|પ્રાકૃતિક|નૈસર્ગિક|ન[ેૅ]ચ(?:્યુ|ુ)?રલ)[^\S\n]*-?[^\S\n]*સ(?:ા[યઇઈ]|[િી])લેજ"
+)
+_NATURAL_SILAGE_PINNED = "નેચરલ સાઇલેજ"
+
 # ── The brand, chat only ──────────────────────────────────────────────────────
 # Chat answers spell Amul અમુલ in about 4 of 10 Gujarati mentions (અમુલ પાવર ડેન,
 # અમુલ મિલ્ક-ઓ-ગોલ્ડ) and Bengali sometimes অমূল; the product spells it અમૂલ / আমুল.
@@ -304,6 +323,7 @@ _PROTECTED_OUTPUT = {
             "રમેશ",
         ),
         (_SARLABEN_EN, re.compile(r"સા?ર્?લા?\s?બેન"), "સરલાબેન"),
+        (_NATURAL_SILAGE_EN, _NATURAL_SILAGE_RENDERINGS, _NATURAL_SILAGE_PINNED),
     ],
     "hi": [_SARLABEN_DEVANAGARI],
     "mr": [_SARLABEN_DEVANAGARI],
