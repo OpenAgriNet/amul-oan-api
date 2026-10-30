@@ -451,6 +451,27 @@ async def test_voice_stream_keeps_a_term_whose_words_came_in_the_chunk_before(
     assert out == said
 
 
+@pytest.mark.asyncio
+async def test_a_silage_suppliers_name_is_pinned_on_the_voice_and_chat_streams(
+    monkeypatch, _managed_pipeline
+):
+    """AMUL-111: the translator says the supplier Natural Silage કુદરતી સાયલેજ, the
+    name split across chunks; the caller hears, and chat shows, નેચરલ સાઇલેજ."""
+    from app.voice.sink import _prepare_voice_output, _voice_translation
+
+    src = "You can buy silage from Natural Silage."
+    chunks = ["તમે કુદરતી સા", "યલેજમાંથી સાયલેજ ખરીદી શકો છો।"]
+    said = "તમે નેચરલ સાઇલેજમાંથી સાયલેજ ખરીદી શકો છો."
+
+    _patch_aiohttp(monkeypatch, _FakeResp(sse=_sse(*chunks)))
+    voice = "".join([c async for c in _voice_translation(src, "gu", None)])
+    assert _prepare_voice_output(voice, "gu") == said
+
+    _patch_aiohttp(monkeypatch, _FakeResp(sse=_sse(*chunks)))
+    chat = "".join([c async for c in tr.translate_text_stream_fast(src, "english", "gujarati")])
+    assert chat == said
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # 8. Faithful HTTP status classification
 # ══════════════════════════════════════════════════════════════════════════════
