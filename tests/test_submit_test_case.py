@@ -41,7 +41,7 @@ CHAT_CASE = {
     "persona": "farmer",
     "language": "en",
     "description": "Pregnant buffalo with a swollen leg: no painkillers without a vet.",
-    "case_types": ["should_not_happen"],
+    "case_types": ["wrong_answer"],
     "tags": ["veterinary_advisory"],
     "turns": [
         {"role": "user", "content": QUESTION},

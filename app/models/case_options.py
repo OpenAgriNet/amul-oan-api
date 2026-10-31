@@ -43,20 +43,19 @@ CASE_TYPES = [
         label="Edge case",
         hint="A known flow that breaks in an unusual situation (missing data, odd wording, mixed language).",
     ),
+    # Also covers what the bot must never say: "Must never happen" overlapped with it.
     HintOption(
         id="wrong_answer",
         label="Wrong answer",
-        hint="The bot answered wrongly. Fix the answer above, or leave it and explain in the description what is wrong.",
+        hint=(
+            "The bot answered wrongly, or said something it must never say (e.g. a medicine that is "
+            "unsafe in this situation). Fix the answer above, or explain in the description what is wrong."
+        ),
     ),
     HintOption(
         id="good_answer",
         label="Good answer to keep",
         hint="The bot got it right and must keep getting it right.",
-    ),
-    HintOption(
-        id="should_not_happen",
-        label="Must never happen",
-        hint="Advice or behaviour the bot must avoid, e.g. a medicine that is unsafe in this situation.",
     ),
 ]
 
@@ -78,6 +77,7 @@ TAGS = [
     HintOption(id="soil_health_card", label="Soil health card", hint="The farmer's soil health card and what it says."),
     HintOption(id="loan", label="Micro-loan", hint="Micro-loan eligibility and loan codes."),
     HintOption(id="vet_office", label="Nearest vet office", hint="Finding the nearest government veterinary office."),
+    HintOption(id="pm_kisan", label="PM-KISAN status", hint="The farmer's PM-KISAN registration and installment status."),
     HintOption(id="general", label="General / other", hint="Greetings, small talk, out-of-scope questions."),
 ]
 
