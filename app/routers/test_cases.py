@@ -146,5 +146,5 @@ async def submit_test_case(
 
 @router.get("/options/", response_model=CaseOptions)
 async def case_options(_user: dict = Depends(get_chat_user)) -> CaseOptions:
-    """The screen's dropdowns: testers, test accounts, case types and tags."""
+    """The screen's dropdowns: testers, case types and tags."""
     return CASE_OPTIONS
