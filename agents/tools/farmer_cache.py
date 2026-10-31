@@ -597,20 +597,40 @@ async def get_or_fetch_farmer_data(phone: str) -> Optional[FarmerDataEnvelope]:
     return await _normalize_for_consumer(phone, refreshed)
 
 
+# Cold fetches that outlived their turn's budget, held until they finish so the
+# event loop does not drop them.
+_cold_fetches: set[asyncio.Task] = set()
+
+
 async def refresh_farmer_data_bounded(
     phone: str, timeout: float = FARMER_COLD_FETCH_TIMEOUT
 ) -> Optional[FarmerDataEnvelope]:
     """Blocking refresh with a hard timeout, for a cold/never-cached miss.
 
-    On timeout we defer to the background worker rather than hanging the turn:
-    the in-flight refresh is cancelled (its NX lock is released in its finally),
-    the phone is queued, and the caller proceeds with no farmer data this turn.
+    On timeout the caller proceeds with no farmer data this turn, but the fetch
+    keeps running: it stores what it gets and releases its NX lock in its
+    finally, so the next turn reads the farmer from the cache. The phone is
+    still queued, and its retry wait keeps the next turn from starting a second
+    fetch meanwhile.
+
+    The fetch used to be cancelled here, leaving the farmer to the worker,
+    whose refresh fetches every animal before it writes the record (voice,
+    2026-10-18..26: p90 8s, p99 37s, max 340s). Beckn operations kept in prod
+    Redis on 2026-10-26 show farmer-profile callbacks at p50 1.0s and p99 6.0s,
+    so a fetch that ran out usually had its profile a second or two later, with
+    the technician search (booking domain, p90 1.3s) still to follow. On voice
+    over the same days, 72 of the 140 calls with an unresolved turn recovered
+    later in the call, a median 28s (p90 45s) after that turn; until then the
+    caller heard "I cannot fetch your details" on each booking request.
     """
+    fetch = asyncio.create_task(refresh_farmer_data(phone))
+    _cold_fetches.add(fetch)
+    fetch.add_done_callback(_cold_fetches.discard)
     try:
-        return await asyncio.wait_for(refresh_farmer_data(phone), timeout=timeout)
+        return await asyncio.wait_for(asyncio.shield(fetch), timeout=timeout)
     except asyncio.TimeoutError:
         logger.warning(
-            "Cold farmer fetch exceeded %.1fs for phone hash %s...; deferring to worker",
+            "Cold farmer fetch exceeded %.1fs for phone hash %s...; finishing it in the background",
             timeout,
             _cache_key(phone)[:8],
         )
