@@ -161,14 +161,11 @@ class ChatCase(_Case):
 
 class ManualCase(_Case):
     source: Literal["manual"]
-    # For a case whose answer needs a farmer's data. Chat cases have it in their traces.
-    test_account: Optional[_Alias] = None
 
 
 class BulkCase(_Case):
     source: Literal["bulk"]
     bulk: BulkInfo
-    test_account: Optional[_Alias] = None
 
 
 CASE_SOURCES = ("chat", "manual", "bulk")

@@ -1,8 +1,8 @@
 """What the test case screen offers in its dropdowns (GET /api/test-cases/options/).
 
 The screen hardcoded the case types and tags (src/lib/test-cases/taxonomy.ts in
-amul-ui), and testers and test accounts had no list yet. Keeping them here means
-a new tester, test account or tag is a backend change, not a UI build. Ids are what the screen sends; labels and hints are for display.
+amul-ui), and testers had no list yet. Keeping them here means a new tester or
+tag is a backend change, not a UI build. Ids are what the screen sends; labels and hints are for display.
 Case types and tags are hints for the labeller (#488), and the lists are still
 being reviewed (#486).
 """
@@ -20,7 +20,6 @@ class HintOption(Option):
 
 class CaseOptions(BaseModel):
     testers: list[Option]
-    test_accounts: list[Option]
     case_types: list[HintOption]
     tags: list[HintOption]
 
@@ -31,17 +30,6 @@ TESTERS = [
     Option(id="yash", label="Yash"),
     Option(id="aayush", label="Aayush"),
     Option(id="vishal", label="Vishal"),
-]
-
-# The test farmers of eval set v0, all made up. The mock serves only F1 today;
-# F2 to F6 need it to serve more farmers (#513).
-TEST_ACCOUNTS = [
-    Option(id="f1", label="Banas member, one cow and one buffalo, every lookup succeeds"),
-    Option(id="f2", label="Dudhsagar member, buffaloes only"),
-    Option(id="f3", label="Member of a union where app booking of insemination is switched off"),
-    Option(id="f4", label="Lookups fail or come back empty"),
-    Option(id="f5", label="Mobile not registered with any society"),
-    Option(id="f6", label="One mobile with two member records in two unions"),
 ]
 
 CASE_TYPES = [
@@ -93,4 +81,4 @@ TAGS = [
     HintOption(id="general", label="General / other", hint="Greetings, small talk, out-of-scope questions."),
 ]
 
-CASE_OPTIONS = CaseOptions(testers=TESTERS, test_accounts=TEST_ACCOUNTS, case_types=CASE_TYPES, tags=TAGS)
+CASE_OPTIONS = CaseOptions(testers=TESTERS, case_types=CASE_TYPES, tags=TAGS)

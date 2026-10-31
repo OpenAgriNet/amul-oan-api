@@ -159,7 +159,6 @@ def test_a_chat_case_is_stored_exactly_as_sent(store):
         _chat(case_types=["Wrong answer"]),
         _chat(submitted_by="Tester 4"),
         _chat(language="gujarati"),
-        _chat(test_account="98765 43210"),
         _chat(other_topic="Fodder storage"),
         _chat(tags=["general"], other_topic="   "),
         _chat(turns=[{"role": "user", "content": "Hi", "trace_id": TRACE_ID}, {"role": "assistant", "content": "Hello"}]),
@@ -178,9 +177,9 @@ def test_a_chat_case_is_stored_exactly_as_sent(store):
         _chat(chat={"session_id": "s-1", "removed_turn_count": "3"}),
         _chat(chat={"session_id": "s-1", "removed_turn_count": 3.0}),
         _chat(chat={"session_id": "s-1", "removed_turn_count": 1001}),
-        _manual(test_account="9876543210"),
+        _manual(test_account="f1"),
         _chat(submitted_by="9876543210"),
-        _chat(test_account="f1"),
+        _bulk(test_account="f1"),
     ],
     ids=[
         "no turns",
@@ -206,7 +205,6 @@ def test_a_chat_case_is_stored_exactly_as_sent(store):
         "free-text case type",
         "submitted_by not an id",
         "language not a code",
-        "test_account not an alias",
         "other_topic without the general tag",
         "empty other_topic",
         "trace_id on a farmer turn",
@@ -225,9 +223,9 @@ def test_a_chat_case_is_stored_exactly_as_sent(store):
         "removed_turn_count as text",
         "removed_turn_count as a float",
         "removed_turn_count too big",
-        "test_account that is a phone number",
+        "test_account on a manual case",
         "submitted_by that is a phone number",
-        "chat case with test_account",
+        "test_account on a bulk case",
     ],
 )
 def test_a_body_outside_the_contract_is_a_422(store, body):
@@ -252,7 +250,6 @@ def test_a_body_outside_the_contract_is_a_422(store, body):
         _chat(persona="doctor"),
         _chat(chat={"session_id": "s-1", "removed_turn_count": 3}),
         _manual(),
-        _manual(test_account="f1"),
         _bulk(),
         # 18 code points, but 21 in JavaScript's .length, which is what the screen counts.
         _chat(description="Buffalo 🐃 fever 🤒!!"),
@@ -266,7 +263,6 @@ def test_a_body_outside_the_contract_is_a_422(store, body):
         "doctor persona",
         "removed turns",
         "manual case",
-        "manual case with a test account",
         "bulk case",
         "emoji counted the way the screen counts them",
     ],
@@ -480,7 +476,7 @@ def test_the_dropdown_lists_are_served_as_they_are_kept(store):
 
     assert response.status_code == 200
     assert response.json() == CASE_OPTIONS.model_dump()
-    for name in ("testers", "test_accounts", "case_types", "tags"):
+    for name in ("testers", "case_types", "tags"):
         ids = [option["id"] for option in response.json()[name]]
         assert ids and len(ids) == len(set(ids)), name
 
@@ -491,8 +487,6 @@ def test_every_id_in_the_lists_passes_the_contract(store):
 
     for tester in options.testers:
         assert _post(client, _chat(submitted_by=tester.id)).status_code == 202, tester.id
-    for account in options.test_accounts:
-        assert _post(client, _manual(test_account=account.id)).status_code == 202, account.id
     every_type = [option.id for option in options.case_types]
     every_tag = [option.id for option in options.tags]
     body = _chat(case_types=every_type, tags=every_tag, other_topic="Fodder storage")
