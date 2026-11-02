@@ -55,3 +55,10 @@ def test_voice_says_heifer_and_tdn_as_voice_oan_api_does(answer, term, voice_say
     a female buffalo calf."""
     assert f"'{term}' must be translated as '{voice_says}'" in _instruction("voice", answer)
     assert f"'{term}' must be translated as '{chat_says}'" in _instruction("chat", answer)
+
+
+def test_a_cow_or_buffalo_calf_gets_no_other_species_young_hint():
+    for query in ("મારી ગાયનું બચ્ચું ઝાડા કરે છે", "ભેંસનું બચ્ચું દૂધ પીતું નથી", "બચ્ચું બીમાર છે શું કરવું"):
+        hints = _get_glossary_hints_for_gu_query(query)
+        assert "Lamb" not in hints and "Camel calf" not in hints and "Goat kid" not in hints
+    assert "Camel" in _get_glossary_hints_for_gu_query("મારા ઊંટના બચ્ચાને ઝાડા છે")
