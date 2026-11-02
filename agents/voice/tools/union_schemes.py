@@ -7,6 +7,7 @@ from pydantic_ai import RunContext
 from pydantic_ai.tools import ToolDefinition
 
 from agents.deps import FarmerContext
+from agents.tools.telemetry import reason, report_tool
 from app.voice.models.union import UnionName, resolve_supported_unions
 from app.voice.scheme_ingestion import (
     SUPPORTED_SCHEME_UNIONS,
@@ -73,29 +74,35 @@ async def get_union_scheme_data(ctx: RunContext[FarmerContext], scheme_name: str
         normalized_scheme_name,
     )
     if not normalized_union_name:
+        report_tool("error", "farmer union not in the context")
         return "Scheme data is unavailable because the farmer union could not be determined from the current farmer context."
 
     try:
         UnionName(normalized_union_name)
     except ValueError:
+        report_tool("no_result", f"no scheme catalog for union {normalized_union_name}")
         return f"Scheme data is only available for supported unions: {', '.join(sorted(SUPPORTED_SCHEME_UNIONS))}."
 
     try:
         records = await get_cached_scheme_records_for_union(normalized_union_name)
-    except SchemeDependencyError:
+    except SchemeDependencyError as exc:
         logger.exception("Union scheme tool failed because Redis dependency is unavailable")
+        report_tool("unavailable", f"scheme cache: {reason(exc)}")
         return "Scheme data is temporarily unavailable because the cache dependency is not installed."
-    except SchemeCacheError:
+    except SchemeCacheError as exc:
         logger.exception("Union scheme tool failed because scheme cache access failed")
+        report_tool("unavailable", f"scheme cache: {reason(exc)}")
         return "Scheme data is temporarily unavailable because the cache could not be read."
-    except Exception:
+    except Exception as exc:
         logger.exception("Union scheme tool failed due to unexpected error for union=%s", normalized_union_name)
+        report_tool("unavailable", f"scheme cache: {reason(exc)}")
         return "Scheme data is temporarily unavailable due to an unexpected error."
 
     if normalized_scheme_name:
         records = _filter_scheme_records(records, normalized_scheme_name)
 
     if not records:
+        report_tool("no_result", "no scheme records")
         if normalized_scheme_name:
             return f"Scheme data for '{normalized_scheme_name}' is not available yet for union '{normalized_union_name}'."
         return f"Scheme data is not available yet for union '{normalized_union_name}'."

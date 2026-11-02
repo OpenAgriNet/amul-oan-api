@@ -9,6 +9,7 @@ from pydantic_ai import RunContext
 
 from agents.deps import FarmerContext
 from agents.tools.ai_call import _book_via_network
+from agents.tools.telemetry import report_tool
 from agents.voice.models.ai_call import AISpecies
 from agents.voice.services.farmer_identity import (
     CODE_PATTERN,
@@ -124,6 +125,7 @@ async def create_ai_call(
             "AI call blocked: invalid %s; session=%s union=%s society=%s user_id=%s",
             invalid_field, session_id, union_code, society_code, user_id,
         )
+        report_tool("error", f"invalid {invalid_field}")
         return INVALID_IDENTIFIERS_MESSAGE
 
     # Chat's Beckn booking: one reservation per session whatever

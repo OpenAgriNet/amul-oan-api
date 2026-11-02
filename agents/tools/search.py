@@ -5,6 +5,7 @@ import re
 from pydantic_ai import ModelRetry
 
 from agents.tools.beckn.network import network_search_documents
+from agents.tools.telemetry import reason, report_tool
 from helpers.utils import get_logger
 
 logger = get_logger(__name__)
@@ -109,4 +110,5 @@ async def search_documents(query: str, top_k: int = 8) -> str:
         raise
     except Exception as exc:
         logger.error("Veterinary document search failed for query=%s: %s", query, exc)
+        report_tool("unavailable", f"document search: {reason(exc)}")
         raise ModelRetry("Error searching documents, please try again") from exc

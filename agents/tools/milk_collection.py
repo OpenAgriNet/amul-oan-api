@@ -295,6 +295,12 @@ async def get_farmer_milk_collection_details(
             "Unable to fetch milk collection details at the moment."
         )
 
+    if len(responses) < len(accounts):
+        report_tool(
+            "unavailable",
+            f"milk collection provider failed for {len(accounts) - len(responses)} of {len(accounts)} accounts",
+        )
+
     from agents.tools.models.milk_collection import FarmerMilkCollectionResponseModel
 
     response = FarmerMilkCollectionResponseModel(

@@ -19,8 +19,9 @@ message the reason. ``amul.cache`` (hit, miss) is for a tool that has one.
 
 ``reporting`` wraps a registered tool so its span gets these as the call ends: the
 status the tool reported through ``report_tool``, else ``error`` when it raised,
-``empty`` when it returned nothing, ``success`` otherwise. Chat's registry wraps every
-tool; the voice registry does not yet, and there ``report_tool`` does nothing.
+``empty`` when it returned nothing, ``success`` otherwise. A tool that reports a
+failure and then raises keeps its own status and reason. Chat's and voice's
+registries wrap every tool.
 """
 from __future__ import annotations
 
@@ -115,7 +116,7 @@ def _record(report: Optional[_Report], *, result: Any, raised: Optional[BaseExce
     """Write the status, and the failure, on the current span: the tool's."""
     report = report or _Report()
     status, message = report.status, report.message
-    if raised is not None:
+    if raised is not None and status not in FAILED_STATUSES:
         status, message = "error", reason(raised)
     elif status is None:
         status = "empty" if _is_empty(result) else "success"
