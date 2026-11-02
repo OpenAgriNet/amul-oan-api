@@ -109,6 +109,18 @@ def test_doctor_answer_removes_english_and_gujarati_document_references():
     assert "સંદર્ભ" not in cleaned
 
 
+def test_doctor_answer_removes_tool_call_written_as_text():
+    answer = (
+        '<|tool_call>call:search_documents{query:<|"|>FMD ethnoveterinary remedy<|"|>,top_k:6}'
+        "**Treatment Protocol:**\n- Wash mouth lesions with KMnO4.\n"
+    )
+    cleaned = sanitize_doctor_answer(answer)
+
+    assert cleaned.startswith("**Treatment Protocol:**")
+    assert "tool_call" not in cleaned
+    assert "Wash mouth lesions" in cleaned
+
+
 def test_doctor_stream_removes_reference_label_split_across_chunks():
     async def source():
         for chunk in [
