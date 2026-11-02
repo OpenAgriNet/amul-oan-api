@@ -19,6 +19,7 @@ from agents.voice.tools.bonus import get_farmer_bonus_amount, prepare_get_farmer
 from agents.voice.services.farmer_identity import prepare_requires_farmer_identity
 from agents.tools.cattle_trade import get_cattle_trade_prices
 from agents.tools.vistaar import get_vistaar_mandi_prices
+from agents.voice.tools.vistaar import get_vistaar_weather
 
 
 def _with_nudge_signal(func):
@@ -74,6 +75,14 @@ BASE_TOOLS = [
     ),
     Tool(
         _with_nudge_signal(get_vistaar_mandi_prices),
+        takes_ctx=True,
+        docstring_format='auto',
+        require_parameter_descriptions=True,
+    ),
+    # AMUL-81. Like mandi, not identity-gated: with no farmer district the
+    # forecast falls back to Anand and says so.
+    Tool(
+        _with_nudge_signal(get_vistaar_weather),
         takes_ctx=True,
         docstring_format='auto',
         require_parameter_descriptions=True,
