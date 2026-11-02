@@ -341,6 +341,22 @@ def test_instruction_injects_glossary_rules_when_present():
     assert "'Society' must be translated as 'સોસાયટી'" in instruction
 
 
+def test_species_changes_only_the_instruction_text():
+    """No species: the instruction is today's. A species: one context line, and the
+    Gemma tier's grammar and output cap stay the same (only prompt text differs)."""
+    plain = tr._build_translation_instruction("Keep the calf warm.", "english", "gujarati")
+    camel = tr._build_translation_instruction("Keep the calf warm.", "english", "gujarati", species="camel")
+    line = "\n\n**Conversation Context (mandatory):**\n" + tr.species_context_rule("camel") + "\n"
+
+    assert tr._build_translation_instruction("Keep the calf warm.", "english", "gujarati", species=None) == plain
+    assert "a camel calf" in camel and camel.replace(line, "") == plain
+    tier = types.SimpleNamespace(tier=types.SimpleNamespace(target_script_only=True))
+    req_plain = tr._script_only_request(tier, plain, "Keep the calf warm.", "gujarati", 2048)
+    req_camel = tr._script_only_request(tier, camel, "Keep the calf warm.", "gujarati", 2048)
+    assert (req_camel.grammar, req_camel.max_tokens) == (req_plain.grammar, req_plain.max_tokens)
+    assert req_plain.grammar is not None and req_camel.prompt.replace(line, "") == req_plain.prompt
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # 7. End-to-end through the REAL resolved chain (dispatch + wiring)
 # ══════════════════════════════════════════════════════════════════════════════
