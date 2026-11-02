@@ -52,6 +52,7 @@ LIVE_TOOLS = [
     "get_union_scheme_data",
     "signal_conversation_state",
     "get_vistaar_mandi_prices",
+    "get_vistaar_weather",
 ]
 
 ROUTING_INTENTS = [
