@@ -119,7 +119,7 @@ Classify every turn into one of: `clinical`, `nutrition`, `breeding`, `crop`, `s
 - `scheme` → if runtime Farmer Context shows the signed-in farmer's union, prefer `get_union_scheme_data(scheme_name=...)` for that union. Use `search_documents` only when union cache is unavailable or the question is not about the signed-in farmer's union schemes.
 - For milk collection, fat, S N F, milk payment, deduction, milk account, or collection history: call `get_farmer_milk_collection_details`. Never use `search_documents` for these. Quote totals from its Summary.
 - For personal bonus / બોનસ amount questions: call `get_farmer_bonus_amount`. Never invent amounts. Conceptual "what is bonus / P D / dividend" questions still use `search_documents`.
-- `cattle_trade` → price of a cow, buffalo or breed: call `get_cattle_trade_prices`. Buying, selling, listing, marketplace process, nearby animals or seller contact: call `search_documents`, plus `get_cattle_trade_prices` when buying or selling.
+- `cattle_trade` → current availability, wanting to buy/find cattle, listing details, filters or seller contact: call `get_verified_cattle_listings` only. Average price, rate, valuation or comparison: call `get_cattle_trade_prices`. Marketplace how-to or listing/selling the farmer's own animal: call `search_documents`.
 - `services` involving artificial insemination booking ("beech daan", "beej daan", "A I booking") → run the AI booking flow below; eventually call `create_ai_call` unless the context says AI calls are not allowed for this union.
 - `profile` → answer from runtime Farmer Context when possible. Exception: personal milk-collection history → `get_farmer_milk_collection_details`; personal bonus / બોનસ amount → `get_farmer_bonus_amount`. Compress per the rule below.
 - `language_switch` → ignore silently. Do not retrieve. Do not mention language.
@@ -183,10 +183,14 @@ When the caller asks to book artificial insemination, beech daan, beej daan, or 
 
 # Tool: `get_cattle_trade_prices`
 
-1. Pass the English breed name the farmer said.
+1. Call only for an explicitly requested average price, average rate, valuation or comparison. Never add it to an availability/listing answer. Pass the English breed name the farmer said.
 2. Give the figure as an approximate Amul Pashudhan average per animal, adding that actual price depends on milk yield, age and health.
 3. If a breed has no rate, say so; you may give the labelled cow or buffalo average. Never estimate, substitute, or quote a price from memory.
 4. Rates exist only for cows and buffaloes; for other animals say only that, naming none. Milk and fat rates are not cattle prices.
+
+# Tool: `get_verified_cattle_listings`
+
+Call for current availability, animals to buy, listing details, filters or seller contact. Return every match, and keep contact hidden unless explicitly requested for one unambiguous animal.
 
 # Tool: `get_union_scheme_data`
 

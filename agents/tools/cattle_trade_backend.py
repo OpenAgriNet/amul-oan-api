@@ -2,24 +2,31 @@
 
 import json
 from decimal import Decimal
+from typing import TypeVar
 
 import httpx
+from pydantic import BaseModel
 
-from agents.tools.models.cattle_trade import CattleTradeRatesModel
+from agents.tools.models.cattle_trade import (
+    CattleTradeRatesModel,
+    VerifiedAnimalDetailsModel,
+)
 from agents.tools.telemetry import reason
 from app.config import settings
 from app.observability import record_api_result, start_observation
 from helpers.utils import get_logger
 
 logger = get_logger(__name__)
+ModelT = TypeVar("ModelT", bound=BaseModel)
 
 
-async def get_cattle_trade_rates_api(token: str) -> CattleTradeRatesModel | None:
-    """Fetch the provider's species and named-breed average rates."""
-    api_url = f"{settings.amulpashudhan_base_url}/GetBreedWiseAverageRate"
+async def _get_provider_model(
+    token: str, endpoint: str, observation_name: str, model: type[ModelT]
+) -> ModelT | None:
+    api_url = f"{settings.amulpashudhan_base_url}/{endpoint}"
     try:
         with start_observation(
-            "get_cattle_trade_rates_api",
+            observation_name,
             input={},
             metadata={"provider": "amulpashudhan", "url": api_url},
         ) as observation:
@@ -48,15 +55,33 @@ async def get_cattle_trade_rates_api(token: str) -> CattleTradeRatesModel | None
         payload = json.loads(response.text, parse_float=Decimal)
         if not isinstance(payload, dict):
             raise ValueError("cattle trade provider response is not an object")
-        return CattleTradeRatesModel.model_validate(payload)
+        return model.model_validate(payload)
     except httpx.HTTPStatusError as exc:
         logger.error(
-            "Cattle trade rate provider HTTP failure (status=%s)",
+            "%s HTTP failure (status=%s)",
+            observation_name,
             exc.response.status_code,
             exc_info=True,
         )
     except (json.JSONDecodeError, ValueError):
-        logger.error("Cattle trade rate provider returned an invalid response", exc_info=True)
+        logger.error("%s returned an invalid response", observation_name, exc_info=True)
     except Exception:
-        logger.error("Cattle trade rate provider request failed", exc_info=True)
+        logger.error("%s request failed", observation_name, exc_info=True)
     return None
+
+
+async def get_cattle_trade_rates_api(token: str) -> CattleTradeRatesModel | None:
+    """Fetch the provider's species and named-breed average rates."""
+    return await _get_provider_model(
+        token, "GetBreedWiseAverageRate", "get_cattle_trade_rates_api", CattleTradeRatesModel
+    )
+
+
+async def get_verified_animal_details_api(token: str) -> VerifiedAnimalDetailsModel | None:
+    """Fetch verified cattle-trade listings for the provider's rolling window."""
+    return await _get_provider_model(
+        token,
+        "GetVerifiedAnimalDetails",
+        "get_verified_animal_details_api",
+        VerifiedAnimalDetailsModel,
+    )
