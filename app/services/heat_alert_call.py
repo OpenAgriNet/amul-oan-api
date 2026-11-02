@@ -7,6 +7,13 @@ dial, inside the same statement that checks the alert is still worth a call,
 so neither a retry nor a second replica recovering the same row can ring twice.
 ``call_error`` says why a claimed row was not rung, or how the dial failed.
 
+Dials go out one at a time on the Raya key, RAYA_OUTBOUND_CALL_GAP_SECONDS
+apart across all replicas, so the 06:00 batch of night alerts does not trip
+Raya's rate limit. A dial Raya refuses is tried again later; an unanswered call
+(Raya outcome Failure) is rung again HEAT_ALERT_CALL_RETRIES times,
+HEAT_ALERT_CALL_RETRY_AFTER_SECONDS apart, while the AI window is open. A row
+whose call is settled keeps ``called`` true, so a restart never rings it again.
+
 When the farmer answers, Raya sends the voice turn with ``session_id`` equal to
 the call UUID it returned to us and ``call_type=outbound`` (seen 2026-10-26);
 ``context_for_call`` matches that to the call we placed, so the voice agent
@@ -43,7 +50,17 @@ from helpers.utils import get_logger, get_prompt
 logger = get_logger(__name__)
 
 SCRIPT_PROMPT = "heat_alert_call_script_gu"
-_ATTEMPTS = 3
+# Tries of one dial while Raya refuses it (429, unreachable), waiting retry_after, then twice that, ...
+_RATE_LIMIT_TRIES = 4
+# A dial still refused after that is tried again this much later.
+_REFUSED_RETRY = timedelta(minutes=10)
+# Postgres advisory lock held by the replica whose turn it is to dial.
+_DIAL_LOCK = 4_204_861_330
+_DIAL_LOCK_POLL_S = 2.0
+# Raya's outcome is read this long after the dial, then every _OUTCOME_RECHECK while Pending.
+_OUTCOME_FIRST_CHECK = timedelta(minutes=3)
+_OUTCOME_RECHECK = timedelta(minutes=2)
+_OUTCOME_CHECKS = 8
 # A farmer answers within minutes of the dial; the row itself lives 24 h.
 _ANSWER_WINDOW = timedelta(hours=3)
 _SESSION_TTL = 4 * 60 * 60
@@ -111,12 +128,76 @@ async def call_farmer(event_id: uuid.UUID) -> None:
     try:
         call_uuid = await _dial(event, species)
     except outbound_call.OutboundCallError as exc:
-        logger.warning("Heat-alert call not placed id=%s reason=%s", event_id, exc)
-        # A definite refusal releases the claim; an ambiguous one keeps it, the call may exist.
-        await _record(event_id, called=exc.ambiguous, call_error=str(exc)[:64])
+        reason = str(exc)[:64]
+        logger.warning("Heat-alert call not placed id=%s reason=%s", event_id, reason)
+        now = datetime.now(timezone.utc)
+        if reason == "quiet_hours":
+            await _ring_later(event_id, now, reason)
+        elif exc.retry_after is not None:
+            # Refused before any call existed (rate limit, unreachable): safe to dial again.
+            await _ring_later(event_id, now + _REFUSED_RETRY, reason)
+        else:
+            # Ambiguous (the call may exist) or refused for good (bad number, 4xx):
+            # the claim stays, so nothing rings this row again.
+            await _record(event_id, call_error=reason)
         return
-    logger.info("Heat-alert call placed id=%s call_uuid=%s", event_id, call_uuid)
-    await _record(event_id, outbound_call_uuid=call_uuid)
+    logger.info("Heat-alert call placed id=%s call_uuid=%s attempt=%s", event_id, call_uuid, event.call_attempts + 1)
+    if event.call_attempts + 1 <= settings.heat_alert_call_retries:
+        _follow_up(event_id, call_uuid, _OUTCOME_FIRST_CHECK)
+
+
+async def _ring_later(event_id: uuid.UUID, at: datetime, reason: str | None) -> None:
+    """Release the claim with a new due time; recovery picks it up if this process ends first."""
+    at = outbound_call.after_quiet_hours(at)
+    await _record(event_id, called=False, call_due_at=at, call_error=reason)
+    schedule(event_id, at)
+
+
+def _follow_up(event_id: uuid.UUID, call_uuid: str, delay: timedelta, checks_left: int = _OUTCOME_CHECKS) -> None:
+    outbound_call.schedule(
+        datetime.now(timezone.utc) + delay,
+        lambda: _check_outcome(event_id, call_uuid, checks_left),
+        name=f"heat-alert-outcome:{event_id}",
+    )
+
+
+async def _check_outcome(event_id: uuid.UUID, call_uuid: str, checks_left: int) -> None:
+    """Read how the call ended; ring again if nobody answered and a retry is left."""
+    outcome = await outbound_call.call_outcome(call_uuid)
+    if outcome in (None, "Pending"):
+        if checks_left > 1:
+            _follow_up(event_id, call_uuid, _OUTCOME_RECHECK, checks_left - 1)
+        else:
+            logger.warning("Heat-alert call outcome unknown id=%s call_uuid=%s", event_id, call_uuid)
+        return
+    async with get_webhook_session() as session:
+        # Once per call: a second replica reading the same outcome later must not
+        # release the claim of a retry that is already being dialled.
+        event = (
+            await session.execute(
+                update(HeatAlertWebhookEvent)
+                .where(
+                    HeatAlertWebhookEvent.id == event_id,
+                    HeatAlertWebhookEvent.outbound_call_uuid == call_uuid,
+                    HeatAlertWebhookEvent.call_outcome.is_(None),
+                )
+                .values(call_outcome=outcome)
+                .returning(HeatAlertWebhookEvent)
+            )
+        ).scalar_one_or_none()
+        await session.commit()
+    if event is None or outcome != "Failure":
+        return
+    retry_at = outbound_call.after_quiet_hours(
+        datetime.now(timezone.utc) + timedelta(seconds=settings.heat_alert_call_retry_after_seconds)
+    )
+    if event.call_booked:
+        return
+    if event.ai_window_end_at is not None and retry_at >= event.ai_window_end_at:
+        logger.info("Heat-alert call unanswered, AI window closes before a retry id=%s", event_id)
+        return
+    logger.info("Heat-alert call unanswered, ringing again id=%s at=%s", event_id, retry_at.isoformat())
+    await _ring_later(event_id, retry_at, None)
 
 
 async def _reason_not_to_call(event: HeatAlertWebhookEvent) -> str | None:
@@ -187,16 +268,48 @@ def _same_code(a: str | None, b: str | None) -> bool:
 
 
 async def _dial(event: HeatAlertWebhookEvent, species: str = "") -> str:
-    for attempt in range(1, _ATTEMPTS + 1):
+    """Place the call when it is this replica's turn, and record it in the same transaction.
+
+    The advisory lock makes dials on the Raya key go one at a time across
+    replicas; inside it, the call waits until RAYA_OUTBOUND_CALL_GAP_SECONDS
+    have passed since the last dial anywhere. The UUID is committed as the lock
+    is released, before the farmer can answer.
+    """
+    args = agent_args(event, species)
+    async with get_webhook_session() as session:
+        # A try-lock loop: a blocking lock wait would outlast the 10 s statement timeout.
+        while not (await session.execute(select(func.pg_try_advisory_xact_lock(_DIAL_LOCK)))).scalar():
+            await asyncio.sleep(_DIAL_LOCK_POLL_S)
+        dial = update(HeatAlertWebhookEvent).where(HeatAlertWebhookEvent.id == event.id)
         try:
-            return await outbound_call.initiate_call(
-                settings.raya_heat_alert_agent_id, event.farmer_contact, agent_args(event, species)
-            )
-        except outbound_call.OutboundCallError as exc:
-            if exc.retry_after is None or attempt == _ATTEMPTS:
-                raise
-            await asyncio.sleep(exc.retry_after)
-    raise AssertionError("unreachable")
+            for attempt in range(1, _RATE_LIMIT_TRIES + 1):
+                last = (await session.execute(select(func.max(HeatAlertWebhookEvent.call_dialled_at)))).scalar()
+                if last is not None:
+                    wait = settings.raya_outbound_call_gap_seconds - (datetime.now(timezone.utc) - last).total_seconds()
+                    await asyncio.sleep(max(0.0, wait))
+                try:
+                    call_uuid = await outbound_call.initiate_call(
+                        settings.raya_heat_alert_agent_id, event.farmer_contact, args
+                    )
+                except outbound_call.OutboundCallError as exc:
+                    if exc.retry_after is None or attempt == _RATE_LIMIT_TRIES:
+                        raise
+                    await asyncio.sleep(exc.retry_after * 2 ** (attempt - 1))
+                    continue
+                await session.execute(
+                    dial.values(
+                        outbound_call_uuid=call_uuid,
+                        call_attempts=event.call_attempts + 1,
+                        call_outcome=None,
+                        call_error=None,
+                    )
+                )
+                return call_uuid
+            raise AssertionError("unreachable")
+        finally:
+            # Stamped after the request, refused or not: the gap counts from when Raya last heard from us.
+            await session.execute(dial.values(call_dialled_at=func.clock_timestamp()))
+            await session.commit()
 
 
 async def _claim(event_id: uuid.UUID) -> HeatAlertWebhookEvent | None:
@@ -337,26 +450,52 @@ async def mark_booked(event_id: str) -> None:
         logger.exception("Could not mark heat-alert call booked event_id=%s", event_id)
 
 
-async def recover() -> int:
-    """Reschedule every call still due. Runs at startup on each replica; the claim dedupes."""
-    if not (webhook_db_configured() and enabled()):
-        return 0
+async def owed() -> tuple[list[HeatAlertWebhookEvent], list[HeatAlertWebhookEvent]]:
+    """Rows still owed a call, and placed calls whose outcome may lead to a retry.
+
+    Exactly what ``recover`` schedules; scripts/heat_alert_call_dry_run.py
+    prints it to show what a restart would ring.
+    """
     now = datetime.now(timezone.utc)
+    window_open = or_(HeatAlertWebhookEvent.ai_window_end_at.is_(None), HeatAlertWebhookEvent.ai_window_end_at > now)
     async with get_webhook_session() as session:
-        rows = (
+        due = (
             await session.execute(
-                select(HeatAlertWebhookEvent.id, HeatAlertWebhookEvent.call_due_at).where(
+                select(HeatAlertWebhookEvent).where(
                     HeatAlertWebhookEvent.call_due_at.is_not(None),
                     HeatAlertWebhookEvent.called.is_(False),
                     HeatAlertWebhookEvent.call_booked.is_(False),
-                    or_(
-                        HeatAlertWebhookEvent.ai_window_end_at.is_(None),
-                        HeatAlertWebhookEvent.ai_window_end_at > now,
-                    ),
+                    window_open,
                 )
             )
-        ).all()
-    for event_id, due_at in rows:
-        schedule(event_id, due_at)
-    logger.info("Heat-alert calls rescheduled count=%s", len(rows))
-    return len(rows)
+        ).scalars().all()
+        awaiting = (
+            await session.execute(
+                select(HeatAlertWebhookEvent).where(
+                    HeatAlertWebhookEvent.called.is_(True),
+                    HeatAlertWebhookEvent.call_booked.is_(False),
+                    HeatAlertWebhookEvent.outbound_call_uuid.is_not(None),
+                    HeatAlertWebhookEvent.call_outcome.is_(None),
+                    HeatAlertWebhookEvent.call_attempts <= settings.heat_alert_call_retries,
+                    window_open,
+                )
+            )
+        ).scalars().all()
+    return list(due), list(awaiting)
+
+
+async def recover() -> int:
+    """Reschedule every call still due, and the outcome reads of calls that may need a retry.
+
+    Runs at startup on each replica; the claim dedupes. Rows whose call is
+    settled keep ``called`` true and are not touched.
+    """
+    if not (webhook_db_configured() and enabled()):
+        return 0
+    due, awaiting = await owed()
+    for event in due:
+        schedule(event.id, event.call_due_at)
+    for event in awaiting:
+        _follow_up(event.id, event.outbound_call_uuid, timedelta(0))
+    logger.info("Heat-alert calls rescheduled count=%s outcome_checks=%s", len(due), len(awaiting))
+    return len(due)

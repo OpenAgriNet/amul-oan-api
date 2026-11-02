@@ -36,6 +36,9 @@ CREATE TABLE IF NOT EXISTS heat_alert_webhook_events (
     call_due_at TIMESTAMPTZ,
     outbound_call_uuid VARCHAR(64),
     call_error VARCHAR(64),
+    call_attempts INTEGER NOT NULL DEFAULT 0,
+    call_outcome VARCHAR(16),
+    call_dialled_at TIMESTAMPTZ,
 
     ai_window_start_at TIMESTAMPTZ,
     ai_window_end_at TIMESTAMPTZ,

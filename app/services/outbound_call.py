@@ -59,6 +59,10 @@ async def initiate_call(
     api_key = (settings.raya_outbound_call_api_key or "").strip()
     if not api_key:
         raise OutboundCallError("not_configured")
+    # Checked at the dial itself, not only when scheduling: a call can wait
+    # (rate limit, the dial gap) past 22:00.
+    if in_quiet_hours(datetime.now(timezone.utc)):
+        raise OutboundCallError("quiet_hours")
     body = {
         "agent_id": agent_id,
         "to_number": mobile_number(to_number),
@@ -88,6 +92,24 @@ async def initiate_call(
     if response.status_code != 200:
         raise OutboundCallError(f"http_{response.status_code}")
     return str(data["uuid"])
+
+
+async def call_outcome(call_uuid: str) -> str | None:
+    """Pending, Completed (answered) or Failure (not answered or not dialled); None if unknown."""
+    api_key = (settings.raya_outbound_call_api_key or "").strip()
+    try:
+        async with httpx.AsyncClient(timeout=_TIMEOUT_SECONDS) as client:
+            response = await client.get(
+                f"{settings.raya_outbound_call_api_url.rstrip('/')}/{call_uuid}", headers={"X-API-Key": api_key}
+            )
+        outcome = response.json().get("outcome") if response.status_code == 200 else None
+    except (httpx.HTTPError, ValueError, AttributeError):
+        return None
+    return outcome if outcome in ("Pending", "Completed", "Failure") else None
+
+
+def in_quiet_hours(at: datetime) -> bool:
+    return after_quiet_hours(at) != at
 
 
 def after_quiet_hours(at: datetime) -> datetime:
