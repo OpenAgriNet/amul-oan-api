@@ -703,6 +703,15 @@ class Settings(BaseSettings):
     # Test phase: comma-separated 10-digit numbers; when set, nobody else is rung.
     heat_alert_call_only_numbers: str = os.getenv("HEAT_ALERT_CALL_ONLY_NUMBERS", "")
 
+    # ── Test case intake (POST /api/test-cases/) ─────────────────────────────
+    # Dev only: the route is mounted only when this is on. The test case screen
+    # in amul-ui calls it, and #514's test_case_entry flag follows it.
+    test_cases_route_enabled: bool = _get_bool_env("TEST_CASES_ROUTE_ENABLED", default=False)
+    # Langfuse dataset that keeps each submission exactly as it came. Unset, or
+    # Langfuse not configured: the route returns 503.
+    test_cases_raw_dataset: Optional[str] = os.getenv("TEST_CASES_RAW_DATASET")
+    test_cases_max_body_bytes: int = int(os.getenv("TEST_CASES_MAX_BODY_BYTES", str(512 * 1024)))
+
     # ── Onex-Aura / OneXtel SMS gateway (DLT-approved KDCC micro-loan template) ─
     # When false, SMS is a dry-run: nothing is sent, the code is still issued and
     # stored, and sms_status is recorded as 'dry_run'. Keep OFF while testing.

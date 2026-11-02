@@ -15,3 +15,5 @@ def test_app_assembles_and_registers_chat_routes():
     paths = {getattr(r, "path", None) for r in main.app.routes}
     assert "/api/chat/" in paths
     assert not any(p and p.startswith("/api/voice") for p in paths)
+    assert not any(p and p.startswith("/api/test-cases") for p in paths)
+    assert "/api/ui-flags/" in paths
