@@ -382,6 +382,32 @@ def test_refresh_on_a_turn_queues_animals_past_the_interval(shared):
     assert "name=ganga" in lines[-2]
 
 
+def test_a_read_queues_animals_past_the_interval_on_a_fresh_record(shared):
+    """The worker's refresh after a turn can fail upstream and leave the record
+    fresh with old animals; reads keep queuing it until one succeeds."""
+    redis, beckn = shared
+    asyncio.run(fc.refresh_farmer_data(PHONE, background=True))
+    key = build_cache_key(fc._cache_key(PHONE), namespace=fc.FARMER_CACHE_NAMESPACE)
+    old = datetime.now(timezone.utc) - timedelta(seconds=fc.FARMER_REFRESH_INTERVAL + 60)
+    redis.kv[key]["animalsFetchedAt"] = old.isoformat()
+
+    envelope = asyncio.run(fc.get_farmer_data_cached_only(PHONE))
+
+    assert envelope.staleReason == "animals_expired"
+    assert redis.queued() == {PHONE}
+
+
+def test_farmer_with_no_tags_is_not_queued_for_animals(shared):
+    redis, beckn = shared
+    beckn.tags = []
+
+    asyncio.run(fc.get_or_fetch_farmer_data(PHONE))
+    envelope = asyncio.run(fc.get_farmer_data_cached_only(PHONE))
+
+    assert redis.queued() == set()
+    assert envelope.stale is False
+
+
 def test_refresh_inside_the_interval_fetches_only_new_tags(shared):
     redis, beckn = shared
     asyncio.run(fc.refresh_farmer_data(PHONE, background=True))
