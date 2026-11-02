@@ -341,6 +341,16 @@ def test_instruction_injects_glossary_rules_when_present():
     assert "'Society' must be translated as 'સોસાયટી'" in instruction
 
 
+def test_instruction_names_the_species_only_when_given_one():
+    plain = tr._build_translation_instruction("Keep the calf warm.", "english", "gujarati")
+    camel = tr._build_translation_instruction("Keep the calf warm.", "english", "gujarati", species="camel")
+
+    assert "Conversation Context" not in plain
+    assert tr._build_translation_instruction("Keep the calf warm.", "english", "gujarati", species=None) == plain
+    assert "a camel calf" in camel
+    assert camel.replace("\n\n**Conversation Context (mandatory):**\n" + tr.species_context_rule("camel") + "\n", "") == plain
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # 7. End-to-end through the REAL resolved chain (dispatch + wiring)
 # ══════════════════════════════════════════════════════════════════════════════

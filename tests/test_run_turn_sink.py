@@ -19,6 +19,7 @@ from app.channels.chat import WEB
 from app.llm_core.execution import ExecutionContext
 from app.services import chat as chat_service
 from app.turn.types import TextEmission, Turn
+from pydantic_ai.messages import ModelRequest, UserPromptPart
 from tests.test_chat_turn_contract import patch_turn
 
 
@@ -171,17 +172,22 @@ def test_a_chat_answer_that_fails_mid_stream_is_not_saved(monkeypatch):
 # ── chat's sink on its own ──────────────────────────────────────────────────
 
 
-def _chat_sink(monkeypatch, *, persona, translate_to, translated_suffix="", sent_to_translation=None):
-    async def _translate(text, *_a, **_k):
+def _chat_sink(
+    monkeypatch, *, persona, translate_to, translated_suffix="", sent_to_translation=None,
+    species_sent=None, query="How much water?", history=(),
+):
+    async def _translate(text, *_a, species=None, **_k):
         if sent_to_translation is not None:
             sent_to_translation.append(text)
+        if species_sent is not None:
+            species_sent.append(species)
         yield f"[{text}]{translated_suffix}"
 
     monkeypatch.setattr(chat_service, "translate_text_stream_fast", _translate)
     return chat_service._ChatSink(
-        _turn(persona=persona),
+        _turn(persona=persona, query=query, history=history),
         execution=SimpleNamespace(),
-        deps=SimpleNamespace(response_max_chars=None),
+        deps=SimpleNamespace(response_max_chars=None, query=query),
         translate_to=translate_to,
     )
 
@@ -242,3 +248,28 @@ def test_doctor_trace_output_is_sanitised_after_translation(monkeypatch):
 
     assert sink.final_text()
     assert "Sources" not in sink.final_text()
+
+
+def _farmer(text):
+    return ModelRequest(parts=[UserPromptPart(content=text)])
+
+
+@pytest.mark.parametrize(
+    "query, history, species",
+    [
+        ("મારા ઊંટના બચ્ચાને ઝાડા થયા છે", (), "camel"),
+        ("What should I feed it now?", (_farmer('**User:** "My camel calf has diarrhoea"'),), "camel"),
+        ("My cow is not eating", (_farmer('**User:** "My camel calf has diarrhoea"'),), None),
+        ("Can my goat kid drink cow milk?", (), None),
+        ("How do I care for a newborn calf?", (), None),
+    ],
+)
+def test_chat_sink_tells_translation_the_species_the_farmer_named(monkeypatch, query, history, species):
+    """A chunk like "Keep the calf warm." has no species in it; the farmer's
+    latest message naming an animal decides, and cattle or no species sends none."""
+    sent = []
+    sink = _chat_sink(monkeypatch, persona="farmer", translate_to="gu", species_sent=sent, query=query, history=history)
+
+    asyncio.run(_collect(sink.stream(_english("Keep the calf warm."))))
+
+    assert sent == [species]
