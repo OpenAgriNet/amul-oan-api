@@ -44,6 +44,7 @@ class FarmerContext(BaseModel):
     provider: Optional[Literal['RAYA']] = Field(default=None, description="The provider for the voice service - can be RAYA or None.")
     process_id: Optional[str] = Field(default=None, description="The process ID for tracking and hold messages.")
     moderation_str: Optional[str] = Field(default=None, description="The moderation result of the user's question (chat).")
+    named_species: Optional[str] = Field(default=None, description="camel, goat or sheep when the farmer named that animal alone (chat): its answer is translated with that species' young-animal words.")
     farmer_info: str = Field(default="", description="Pre-built markdown string with farmer profile/animals/vet visits (from JWT or context bundle).")
     farmer_unions: list[str] = Field(default_factory=list, description="Normalized union names derived from the farmer context.")
     # Structured farmer location. `farmer_info` has always RENDERED these into the
