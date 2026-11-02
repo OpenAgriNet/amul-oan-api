@@ -75,15 +75,18 @@ GU_PREFERRED_TRANSLATION_RULES = [
 # calf warm." has no species in it and its calf came out as a cow's calf. When the
 # farmer named one of these (app/services/chat.py `named_species`), every chunk's
 # instruction says whose young the bare words mean. No species, no line.
-SPECIES_CONTEXT_YOUNG = {"camel": "camel calf", "goat": "goat kid", "sheep": "lamb"}
+SPECIES_CONTEXT_YOUNG = {
+    "camel": ("camel calf", "'calf', 'calves', 'young one' or 'newborn'"),
+    "goat": ("goat kid", "'kid', 'kids', 'young one' or 'newborn'"),
+    "sheep": ("lamb", "'young one' or 'newborn'"),
+}
 
 
 def species_context_rule(species: str) -> str:
-    young = SPECIES_CONTEXT_YOUNG[species]
+    young, bare = SPECIES_CONTEXT_YOUNG[species]
     return (
-        f"This text is part of an answer about the farmer's {species}. Every bare 'calf', 'calves', 'kid', "
-        f"'young one' or 'newborn' in it is a {young}: translate it as the {species}'s young, "
-        f"never with a cow's or buffalo's calf word."
+        f"This text is part of an answer about the farmer's {species}. Every bare {bare} in it is a {young}: "
+        f"translate it as the {species}'s young, never with a cow's or buffalo's calf word."
     )
 
 
@@ -621,6 +624,8 @@ def _build_translation_instruction(
                 rules.append(f"Rule: '{en_term.strip()}' must be translated as '{target_term.strip()}'.")
         if rules:
             instruction += "\n\n**Terminology Rules (mandatory):**\n" + "\n".join(rules) + "\n"
+    if species in SPECIES_CONTEXT_YOUNG:
+        instruction += "\n\n**Conversation Context (mandatory):**\n" + species_context_rule(species) + "\n"
     if target_code == "gu":
         _gu_rules = (
             VOICE_GU_PREFERRED_TRANSLATION_RULES if _is_voice_channel()
@@ -631,8 +636,6 @@ def _build_translation_instruction(
             + "\n- ".join(_gu_rules)
             + "\n"
         )
-    if species in SPECIES_CONTEXT_YOUNG:
-        instruction += "\n\n**Conversation Context (mandatory):**\n" + species_context_rule(species) + "\n"
     if max_output_chars:
         instruction += (
             f"\n\n**Length Rule (mandatory):** The translated response must be no more than "

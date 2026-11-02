@@ -523,20 +523,26 @@ async def _reap_prefetch(task: asyncio.Future) -> None:
 _NO_CHUNK = object()
 
 # The species the farmer named, for the translator (translation.species_context_rule).
-# Cattle words are listed so a later "my cow" ends an earlier camel conversation.
+# Read from the English query the agent gets. Cattle and other animals' words are
+# listed so naming one ends an earlier camel conversation; "goat milk" as a product
+# does not name the animal.
 _NAMED_SPECIES = {
-    "camel": re.compile(r"\bcamels?\b|ઊંટ", re.I),
-    "goat": re.compile(r"\bgoats?\b|બકર", re.I),
-    "sheep": re.compile(r"\bsheep\b|\blambs?\b|ઘેટ", re.I),
-    "cattle": re.compile(r"\bcows?\b|\bcattle\b|\bbuffalo(?:e?s)?\b|ગાય|ભેંસ", re.I),
+    "camel": re.compile(r"\bcamels?\b", re.I),
+    "goat": re.compile(r"\bgoats?\b", re.I),
+    "sheep": re.compile(r"\bsheep\b|\blambs?\b|\bewes?\b", re.I),
+    "cattle": re.compile(r"\bcows?\b|\bcattle\b|\bbuffalo(?:e?s)?\b|\bheifers?\b|\bbull(?:ock)?s?\b|\box(?:en)?\b", re.I),
+    "other": re.compile(r"\bhorses?\b|\bfoals?\b|\bmares?\b|\bpoultry\b|\bhens?\b|\bchickens?\b", re.I),
 }
+_SPECIES_MILK = re.compile(r"\b(?:camel|goat|sheep)\s+milk\b", re.I)
 
 
-def named_species(query: str, english_query: str, history) -> str | None:
+def named_species(english_query: str, history) -> str | None:
     """camel, goat or sheep when the farmer's latest message that names an animal
-    names that one alone; None when it names cattle, several, or none. Reads this
-    message (as typed and in English) and then earlier farmer messages, newest first."""
-    texts = [f"{query}\n{english_query}"] + [
+    names that one alone; None when it names cattle, another animal, several, or
+    none (a goat question that mentions a cow gets None: the safe side). Reads this
+    message, then the farmer's messages in ``history`` (the agent's, trimmed),
+    newest first."""
+    texts = [english_query] + [
         part.content
         for message in reversed(history)
         if isinstance(message, ModelRequest)
@@ -544,9 +550,11 @@ def named_species(query: str, english_query: str, history) -> str | None:
         if isinstance(part, UserPromptPart) and isinstance(part.content, str)
     ]
     for text in texts:
+        text = _SPECIES_MILK.sub("", text)
         found = {name for name, pattern in _NAMED_SPECIES.items() if pattern.search(text)}
         if found:
-            return found.pop() if len(found) == 1 and "cattle" not in found else None
+            name = found.pop()
+            return name if not found and name not in ("cattle", "other") else None
     return None
 
 
@@ -747,7 +755,7 @@ class _ChatSink:
         self._translate_to = translate_to
         self._execution = execution
         self._max_output_chars = deps.response_max_chars
-        self._species = named_species(turn.query, deps.query, turn.history) if translate_to else None
+        self._species = deps.named_species if translate_to else None
         self._chunks: list[str] = []
 
     def stream(self, english):
@@ -1223,6 +1231,7 @@ async def _chat_agent_input(
     )
 
     logger.info(f"Trimmed history length: {len(trimmed_history)} messages")
+    deps.named_species = named_species(deps.query, trimmed_history)
 
     agent_step: list = []
 
