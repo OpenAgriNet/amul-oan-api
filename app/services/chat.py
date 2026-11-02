@@ -522,6 +522,41 @@ async def _reap_prefetch(task: asyncio.Future) -> None:
 
 _NO_CHUNK = object()
 
+# The species the farmer named, for the translator (translation.species_context_rule).
+# Read from the English query the agent gets. Cattle and other animals' words are
+# listed so naming one ends an earlier camel conversation; "goat milk" as a product
+# does not name the animal.
+_NAMED_SPECIES = {
+    "camel": re.compile(r"\bcamels?\b", re.I),
+    "goat": re.compile(r"\bgoats?\b", re.I),
+    "sheep": re.compile(r"\bsheep\b|\blambs?\b|\bewes?\b", re.I),
+    "cattle": re.compile(r"\bcows?\b|\bcattle\b|\bbuffalo(?:e?s)?\b|\bheifers?\b|\bbull(?:ock)?s?\b|\box(?:en)?\b", re.I),
+    "other": re.compile(r"\bhorses?\b|\bfoals?\b|\bmares?\b|\bpoultry\b|\bhens?\b|\bchickens?\b", re.I),
+}
+_SPECIES_MILK = re.compile(r"\b(?:camel|goat|sheep)\s+milk\b", re.I)
+
+
+def named_species(english_query: str, history) -> str | None:
+    """camel, goat or sheep when the farmer's latest message that names an animal
+    names that one alone; None when it names cattle, another animal, several, or
+    none (a goat question that mentions a cow gets None: the safe side). Reads this
+    message, then the farmer's messages in ``history`` (the agent's, trimmed),
+    newest first."""
+    texts = [english_query] + [
+        part.content
+        for message in reversed(history)
+        if isinstance(message, ModelRequest)
+        for part in message.parts
+        if isinstance(part, UserPromptPart) and isinstance(part.content, str)
+    ]
+    for text in texts:
+        text = _SPECIES_MILK.sub("", text)
+        found = {name for name, pattern in _NAMED_SPECIES.items() if pattern.search(text)}
+        if found:
+            name = found.pop()
+            return name if not found and name not in ("cattle", "other") else None
+    return None
+
 
 async def _gate_first_chunk(english_src, background):
     """Pull the agent's first chunk, then ask the gate before anything is emitted.
@@ -572,6 +607,7 @@ async def _stream_to_client(
     execution,
     output_chunks: list[str],
     root=None,
+    species: str | None = None,
 ):
     """Pass the English stream through, or sentence-batch and stream-translate it.
 
@@ -602,6 +638,7 @@ async def _stream_to_client(
                 max_output_chars=max_output_chars,
                 execution=execution,
                 parent=step.open(),
+                species=species,
             ):
                 output_chunks.append(translated_chunk)
                 delivered.append(translated_chunk)
@@ -718,6 +755,7 @@ class _ChatSink:
         self._translate_to = translate_to
         self._execution = execution
         self._max_output_chars = deps.response_max_chars
+        self._species = deps.named_species if translate_to else None
         self._chunks: list[str] = []
 
     def stream(self, english):
@@ -730,6 +768,7 @@ class _ChatSink:
             execution=self._execution,
             output_chunks=self._chunks,
             root=_turn_root.get(),
+            species=self._species,
         )
         if self._persona == "doctor":
             # Defence in depth: also remove a provenance label invented by
@@ -1192,6 +1231,7 @@ async def _chat_agent_input(
     )
 
     logger.info(f"Trimmed history length: {len(trimmed_history)} messages")
+    deps.named_species = named_species(deps.query, trimmed_history)
 
     agent_step: list = []
 
