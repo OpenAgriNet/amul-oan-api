@@ -361,6 +361,27 @@ def test_refresh_on_a_turn_keeps_the_animals(shared):
     assert redis.queued() == set()
 
 
+def test_refresh_on_a_turn_queues_animals_past_the_interval(shared):
+    """A name added upstream after the animals were fetched. A turn's
+    max-serve-stale fetch restarts the record's clock and keeps the old animals,
+    so the worker has to be queued or voice reads them as fresh for another
+    interval and never sees the name."""
+    redis, beckn = shared
+    asyncio.run(fc.refresh_farmer_data(PHONE, background=True))
+    key = build_cache_key(fc._cache_key(PHONE), namespace=fc.FARMER_CACHE_NAMESPACE)
+    old = datetime.now(timezone.utc) - timedelta(seconds=fc.FARMER_MAX_SERVE_STALE_SECONDS + 60)
+    redis.kv[key]["fetchedAt"] = redis.kv[key]["animalsFetchedAt"] = old.isoformat()
+    beckn.names = {TAGS[0]: "ganga"}
+
+    asyncio.run(fc.get_or_fetch_farmer_data(PHONE))
+    assert redis.queued() == {PHONE}
+
+    assert asyncio.run(fc.drain_farmer_refresh_queue_once()) == 1
+    lines: list[str] = []
+    _append_animal_records(lines, asyncio.run(fc.get_farmer_data_cached_only(PHONE)))
+    assert "name=ganga" in lines[-2]
+
+
 def test_refresh_inside_the_interval_fetches_only_new_tags(shared):
     redis, beckn = shared
     asyncio.run(fc.refresh_farmer_data(PHONE, background=True))

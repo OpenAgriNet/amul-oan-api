@@ -375,7 +375,8 @@ async def refresh_farmer_data(phone: str, *, background: bool = False) -> Option
     has: chat's worker pops from the same queue, and its refresh must not wipe
     what voice fetched. ``background`` is the worker's refresh; with the voice
     route on it fetches new tags' animals, and all of them once the interval has
-    passed. A refresh on a turn leaves that to the worker.
+    passed. A refresh on a turn leaves that to the worker, and queues it when
+    the animals are missing or past the interval.
     """
     phone = _normalize_cache_phone(phone)
     lock_key = _refresh_lock_key(phone)
@@ -410,8 +411,12 @@ async def refresh_farmer_data(phone: str, *, background: bool = False) -> Option
                     await _fetch_animals(envelope, only=new_tags)
             # Queued once the lock is released (finally): a worker that took the
             # phone while this refresh held the lock would wait for it and keep
-            # its envelope, animals still missing.
-            enqueue_animals_after_unlock = _needs_animals(envelope)
+            # its envelope, animals still missing. A refresh on a turn also
+            # queues animals past the interval: it restarts the record's own
+            # clock, so nothing else would fetch them until that runs out.
+            enqueue_animals_after_unlock = _needs_animals(envelope) or (
+                not background and settings.voice_route_enabled and _animals_expired(envelope)
+            )
             await set_cached_farmer_data(phone, envelope)
             if any(technician_lookup_failed(group) for group in envelope.aiTechnicians):
                 # The backoff stays, so the retry waits for it instead of
