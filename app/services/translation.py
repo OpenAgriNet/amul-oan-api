@@ -67,6 +67,7 @@ GU_PREFERRED_TRANSLATION_RULES = [
     "Prefer 'બાવલું' over 'પાહો' for udder context.",
     "Prefer 'ધાર' over 'ટીપાં' for milk streams.",
     "Use 'ગાભણ' for pregnant livestock context.",
+    "For a camel, goat or sheep, name the species with the young-animal word: a camel's young is 'ઊંટનું બચ્ચું', a goat's young 'બકરીનું બચ્ચું', a sheep's young 'ઘેટાનું બચ્ચું'; a she-camel is 'ઊંટડી'. A cow's calf is 'વાછરડું' ('વાછરડી' female, 'વાછરડો' male) and a buffalo's calf is 'પાડું' ('પાડી' female, 'પાડો' male); never use these for a camel, goat or sheep.",
     "Do not output editorial markers like 'red colour' or formatting instructions.",
 ]
 
@@ -82,6 +83,7 @@ VOICE_GU_PREFERRED_TRANSLATION_RULES = [
     "Prefer 'બાવલું' over 'પાહો' for udder context.",
     "Prefer 'ધાર' over 'ટીપાં' for milk streams.",
     "Use 'ગાભણ' for pregnant livestock context.",
+    "For a camel, goat or sheep, name the species with the young-animal word: a camel's young is 'ઊંટનું બચ્ચું', a goat's young 'બકરીનું બચ્ચું', a sheep's young 'ઘેટાનું બચ્ચું'; a she-camel is 'ઊંટડી'. A cow's calf is 'વાછરડું' ('વાછરડી' female, 'વાછરડો' male) and a buffalo's calf is 'પાડું' ('પાડી' female, 'પાડો' male); never use these for a camel, goat or sheep.",
     "Use 'ફેટ' for fat/milk-fat (not 'ચરબી').",
     "Use 'એસ.એન.એફ.' for SNF (not 'ઘન પદાર્થો').",
     "Use 'બેક્ટેરિયા' for bacteria (not 'જંતુઓ').",
