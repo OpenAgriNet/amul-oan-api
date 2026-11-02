@@ -175,6 +175,12 @@ def _canonical_history_user_text(kind: str, fallback: str = "") -> str:
     return _HISTORY_MARKERS.get(kind, fallback or kind)
 
 
+# A species' young ('ઊંટનું બચ્ચું') fuzzy-matches any '<animal>નું બચ્ચું', so a cow
+# or buffalo calf would get a Lamb or Camel calf hint. Hint these rows only when
+# the species itself is in the farmer's words.
+_SPECIES_YOUNG_HINT_STEMS = {"camel calf": "ઊંટ", "goat kid": "બકર", "lamb": "ઘેટ"}
+
+
 def _get_glossary_hints_for_gu_query(text: str, max_results: int = 7) -> str:
     """Fuzzy-match Gujarati input against glossary gu/transliteration fields.
 
@@ -191,6 +197,9 @@ def _get_glossary_hints_for_gu_query(text: str, max_results: int = 7) -> str:
     scored: list[tuple[str, str, float]] = []
 
     for tp in TERM_PAIRS:
+        stem = _SPECIES_YOUNG_HINT_STEMS.get((tp.en or "").strip().lower())
+        if stem and stem not in text:
+            continue
         scores: list[float] = []
         gu_lower = (tp.gu or "").lower().strip()
         translit_lower = (tp.transliteration or "").lower().strip()

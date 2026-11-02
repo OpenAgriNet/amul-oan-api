@@ -40,11 +40,13 @@ def test_channel_resets_after_context_block():
     assert _VOICE_ONLY not in prompt   # back to chat default
 
 
-def test_chat_rules_constant_unchanged():
+def test_chat_and_voice_rules_keep_their_channel_split():
     assert len(GU_PREFERRED_TRANSLATION_RULES) == 7
     assert "feminine self-reference" in "\n".join(GU_PREFERRED_TRANSLATION_RULES)
     assert _VOICE_ONLY not in "\n".join(GU_PREFERRED_TRANSLATION_RULES)
     assert _VOICE_ONLY in "\n".join(VOICE_GU_PREFERRED_TRANSLATION_RULES)
+    for rules in (GU_PREFERRED_TRANSLATION_RULES, VOICE_GU_PREFERRED_TRANSLATION_RULES):
+        assert "ઊંટનું બચ્ચું" in "\n".join(rules)
 
 
 def test_standalone_society_in_mini_glossary_for_compact_profile_line():
