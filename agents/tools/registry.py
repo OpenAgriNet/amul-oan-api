@@ -89,7 +89,7 @@ TOOLS = [
 
     Tool(
         reporting(get_verified_cattle_listings),
-        takes_ctx=False,
+        takes_ctx=True,
         docstring_format='auto',
         require_parameter_descriptions=True,
     ),

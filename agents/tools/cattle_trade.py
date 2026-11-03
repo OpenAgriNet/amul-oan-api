@@ -3,6 +3,10 @@
 import re
 from decimal import ROUND_HALF_UP, Decimal
 
+from pydantic_ai import RunContext
+from rapidfuzz import fuzz
+
+from agents.deps import FarmerContext
 from agents.tools.telemetry import report_tool
 from agents.tools.cattle_trade_backend import (
     get_cattle_trade_rates_api,
@@ -50,6 +54,16 @@ _SPECIES_WORDS = {
 _ANY_SPECIES_WORDS = {"cattle", "animal", "animals", "livestock", "pashu", "dhor", "all", "both"}
 # Words a breed name may carry that are not part of the breed itself.
 _NOISE_WORDS = {"breed", "jaat", "jat", "olad", "nasl", "female"}
+_DISTRICT_GROUPS = {
+    "banaskantha": {"banaskantha", "vavtharad"},
+}
+_STATUS_ALIASES = {
+    "notpregnant": "nonpregnant",
+    "notpregnancy": "nonpregnant",
+    "nonpregnant": "nonpregnant",
+    "inmilk": "milking",
+    "notmilking": "dry",
+}
 
 
 def _words(value: str) -> list[str]:
@@ -230,6 +244,41 @@ def _text_key(value: str | None) -> str:
     return "".join(char for char in (value or "").casefold() if char.isalnum())
 
 
+def _status_key(value: str | None) -> str:
+    key = _text_key(value)
+    return _STATUS_ALIASES.get(key, key)
+
+
+def _matching_location_keys(
+    requested: str, actual_values: list[str | None], *, district: bool = False
+) -> set[str]:
+    requested_key = _text_key(requested)
+    actual_keys = {_text_key(value) for value in actual_values if _text_key(value)}
+    if not requested_key:
+        return actual_keys
+
+    if district and requested_key in _DISTRICT_GROUPS:
+        return actual_keys & _DISTRICT_GROUPS[requested_key]
+    if requested_key in actual_keys:
+        return {requested_key}
+
+    contained = {
+        key for key in actual_keys if requested_key in key or key in requested_key
+    }
+    if len(contained) == 1:
+        return contained
+
+    ranked = sorted(
+        ((fuzz.WRatio(requested_key, key), key) for key in actual_keys),
+        reverse=True,
+    )
+    if not ranked or ranked[0][0] < 85:
+        return set()
+    if len(ranked) > 1 and ranked[0][0] - ranked[1][0] < 10:
+        return set()
+    return {ranked[0][1]}
+
+
 def _breed_matches(actual: str, requested: str) -> bool:
     actual_breed = _Breed(actual, Decimal(0))
     key = _breed_key(requested) or _match_key(requested)
@@ -254,7 +303,13 @@ def _age(value: str | None) -> str:
     match = re.fullmatch(r"(\d+)\.(\d+)", value.strip())
     if not match:
         return f"age {value}"
-    return f"age {int(match.group(1))} years {int(match.group(2))} months"
+    years, months = (int(part) for part in match.groups())
+    parts = []
+    if years:
+        parts.append(f"{years} {'year' if years == 1 else 'years'}")
+    if months:
+        parts.append(f"{months} {'month' if months == 1 else 'months'}")
+    return "age " + (" ".join(parts) or "0 months")
 
 
 def _date(value) -> str:
@@ -281,27 +336,45 @@ def _filter_animals(
     pregnancy_status: str | None,
 ):
     requested_species = _species_of(species or "")
-    if species and not requested_species:
+    if species and not requested_species and _match_key(species) not in _ANY_SPECIES_WORDS:
         return []
     maximum = Decimal(str(max_price)) if max_price is not None else None
     minimum_milk = Decimal(str(min_milk_per_day)) if min_milk_per_day is not None else None
+    animals = list(_verified_animals(details))
+    district_keys = (
+        _matching_location_keys(
+            district,
+            [animal.district_name for animal, _ in animals],
+            district=True,
+        )
+        if district
+        else None
+    )
+    village_keys = (
+        _matching_location_keys(
+            village,
+            [animal.village_name for animal, _ in animals],
+        )
+        if village
+        else None
+    )
     matches = []
-    for animal, animal_breed in _verified_animals(details):
+    for animal, animal_breed in animals:
         if requested_species and _species_of(animal.cattle_type) != requested_species:
             continue
         if breed and not _breed_matches(animal_breed, breed):
             continue
-        if district and _text_key(animal.district_name) != _text_key(district):
+        if district_keys is not None and _text_key(animal.district_name) not in district_keys:
             continue
-        if village and _text_key(animal.village_name) != _text_key(village):
+        if village_keys is not None and _text_key(animal.village_name) not in village_keys:
             continue
         if maximum is not None and animal.cattle_price > maximum:
             continue
         if minimum_milk is not None and animal.milk_per_day < minimum_milk:
             continue
-        if milking_status and _text_key(animal.milking_status) != _text_key(milking_status):
+        if milking_status and _status_key(animal.milking_status) != _status_key(milking_status):
             continue
-        if pregnancy_status and _text_key(animal.pregnancy_status) != _text_key(
+        if pregnancy_status and _status_key(animal.pregnancy_status) != _status_key(
             pregnancy_status
         ):
             continue
@@ -338,6 +411,7 @@ def _animal_line(index, animal, breed: str, include_contact: bool) -> str:
 
 
 async def get_verified_cattle_listings(
+    ctx: RunContext[FarmerContext],
     species: str | None = None,
     breed: str | None = None,
     district: str | None = None,
@@ -347,6 +421,7 @@ async def get_verified_cattle_listings(
     milking_status: str | None = None,
     pregnancy_status: str | None = None,
     include_contact: bool = False,
+    listing_number: int | None = None,
 ) -> str:
     """
     Get every verified cow or buffalo currently listed for sale by Amul Pashudhan.
@@ -355,19 +430,20 @@ async def get_verified_cattle_listings(
     asks for individual animal details, or explicitly asks for a listed animal's seller
     contact. Use the cattle-price tool instead for average price questions. Return every
     matching listing; do not rank or truncate the provider results. Set include_contact
-    only after the farmer explicitly asks for seller contact or says they want to contact
-    the seller about a specific, unambiguous animal.
+    only after the farmer explicitly asks for seller contact. Repeat the same filters from
+    the most recently shown list and pass the listing number the farmer selected from it.
 
     Args:
         species: Optional "cow" or "buffalo" filter.
         breed: Optional breed filter, including common spellings such as Gir or Mehsani.
-        district: Optional exact district-name filter.
-        village: Optional exact village-name filter.
+        district: Optional district-name filter; common spelling variants are matched.
+        village: Optional village-name filter; common spelling variants are matched.
         max_price: Optional maximum listed price in rupees.
         min_milk_per_day: Optional minimum provider-reported milk-per-day value.
         milking_status: Optional exact status such as "Milking" or "Dry".
         pregnancy_status: Optional exact status such as "Pregnant" or "Non Pregnant".
         include_contact: Whether to include seller name and mobile after an explicit request.
+        listing_number: Number from the most recently shown list using the same filters; required for contact.
 
     Returns:
         Every matching verified listing, a no-result message, or an unavailable message.
@@ -382,33 +458,61 @@ async def get_verified_cattle_listings(
         report_tool("unavailable", "Amul Pashudhan verified-animal request failed")
         return "Current verified-animal listings are unavailable right now. Please try again later."
 
+    requested_district = (district or "").strip()
+    requested_village = (village or "").strip()
+    default_district = None
+    if not requested_district and not requested_village:
+        default_district = ctx.deps.get_farmer_district()
+    effective_district = requested_district or default_district
+
     has_filters = any(
         value is not None and value != ""
         for value in (
             species,
             breed,
-            district,
-            village,
+            requested_district,
+            requested_village,
             max_price,
             min_milk_per_day,
             milking_status,
             pregnancy_status,
         )
     )
-    matches = _filter_animals(
+    all_location_matches = _filter_animals(
         details,
         species,
         breed,
-        district,
-        village,
+        None,
+        None,
         max_price,
         min_milk_per_day,
         milking_status,
         pregnancy_status,
     )
+    matches = _filter_animals(
+        details,
+        species,
+        breed,
+        effective_district,
+        requested_village,
+        max_price,
+        min_milk_per_day,
+        milking_status,
+        pregnancy_status,
+    )
+    elsewhere_count = (
+        len(all_location_matches) - len(matches) if default_district else 0
+    )
     window = f"{_date(details.from_date)} to {_date(details.to_date)}"
     if not matches:
         report_tool("no_result", "no verified cattle listings matched")
+        if default_district and elsewhere_count:
+            return (
+                f"No verified animals match in the farmer's district, {default_district}, "
+                f"for {window}. {elsewhere_count} matching "
+                f"{'animal is' if elsewhere_count == 1 else 'animals are'} available elsewhere. "
+                "Ask for another district or village to see them."
+            )
         if not has_filters:
             return (
                 f"No verified cows or buffaloes are currently listed for the provider's "
@@ -419,8 +523,49 @@ async def get_verified_cattle_listings(
             "Try another breed, location or filter."
         )
 
-    show_contact = include_contact and len(matches) == 1
-    if not has_filters:
+    if listing_number is not None and not 1 <= listing_number <= len(matches):
+        report_tool("no_result", "invalid verified cattle listing number")
+        return (
+            f"Listing number {listing_number} is not in the current filtered list. "
+            f"Ask the farmer to choose a number from 1 to {len(matches)}."
+        )
+
+    if include_contact and listing_number is None:
+        contact_instruction = (
+            "Seller contact requires a listing number. Ask the farmer to choose one "
+            "of the numbered listings."
+        )
+    else:
+        contact_instruction = None
+
+    if listing_number is not None:
+        animal, animal_breed = matches[listing_number - 1]
+        # Product decision: seller PII is intentionally returned to chat and voice.
+        # Tool/turn telemetry redaction is a separate, explicitly deferred follow-up.
+        return "\n".join(
+            [
+                f"Selected verified listing {listing_number} for {window}.",
+                _animal_line(
+                    listing_number,
+                    animal,
+                    animal_breed,
+                    include_contact,
+                ),
+            ]
+        )
+
+    if default_district:
+        noun = "animal" if len(matches) == 1 else "animals"
+        header = (
+            f"Found {len(matches)} verified {noun} in the farmer's district, "
+            f"{default_district}, for {window}."
+        )
+        if elsewhere_count:
+            header += (
+                f" {elsewhere_count} matching "
+                f"{'animal is' if elsewhere_count == 1 else 'animals are'} available elsewhere."
+            )
+    elif not has_filters:
         header = (
             f"Found {len(matches)} verified animals for the provider window {window}: "
             f"{details.total_cows} cows and {details.total_buffaloes} buffaloes."
@@ -431,14 +576,11 @@ async def get_verified_cattle_listings(
 
     lines = [header]
     lines.extend(
-        _animal_line(index, animal, animal_breed, show_contact)
+        _animal_line(index, animal, animal_breed, False)
         for index, (animal, animal_breed) in enumerate(matches, 1)
     )
-    if include_contact and len(matches) > 1:
-        lines.append(
-            "More than one animal matches. Ask the farmer to identify one listing before "
-            "sharing seller contact details."
-        )
-    elif not include_contact:
+    if contact_instruction:
+        lines.append(contact_instruction)
+    else:
         lines.append("Seller contact is available on request for a specific animal.")
     return "\n".join(lines)

@@ -188,7 +188,7 @@ Run when the caller asks for beech daan, beej daan, or A I booking. Steps:
 
 ## get_verified_cattle_listings
 
-Call for current availability, animals to buy, listing details, filters or seller contact. Return every match, and keep contact hidden unless explicitly requested for one unambiguous animal.
+Call for availability, animals to buy, listing details, filters or seller contact. Say the total and at most three numbered matches, then ask for narrower filters or a listing number. Hide contact by default. On an explicit contact request, reuse the displayed filters with `include_contact=True` and the selected `listing_number`; speak the returned seller name and mobile digit by digit without assuming gender.
 
 ## get_vistaar_mandi_prices
 
