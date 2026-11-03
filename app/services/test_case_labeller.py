@@ -59,6 +59,23 @@ class Label(BaseModel):
     edge_case: str
     answer_type: str
 
+    # Small slips in an otherwise good reply are not errors: null for "nothing",
+    # "Answer" or " ait_booking ". A feature or answer type off the lists still is.
+    @field_validator("sub_tags", mode="before")
+    @classmethod
+    def _no_tags(cls, value):
+        return [] if value is None else value
+
+    @field_validator("edge_case", mode="before")
+    @classmethod
+    def _no_edge_case(cls, value):
+        return "" if value is None else value
+
+    @field_validator("feature", "answer_type", mode="before")
+    @classmethod
+    def _tidy_id(cls, value):
+        return value.strip().lower() if isinstance(value, str) else value
+
     @field_validator("feature")
     @classmethod
     def _known_feature(cls, value: str) -> str:
@@ -126,12 +143,21 @@ def build_prompt(case: Case) -> str:
     return "\n\n".join(parts)
 
 
-_FENCE = re.compile(r"^```(?:json)?\s*|\s*```$")
+def _json_object(content: str):
+    """The reply as JSON. A model without JSON mode may wrap the object in a code
+    fence or a sentence, so the text from the first { to the last } is tried too."""
+    try:
+        return json.loads(content)
+    except ValueError:
+        start, end = content.find("{"), content.rfind("}")
+        if start == -1 or end < start:
+            raise
+        return json.loads(content[start : end + 1])
 
 
 def parse_label(content: str) -> Label:
     try:
-        data = json.loads(_FENCE.sub("", content.strip()))
+        data = _json_object(content.strip())
     except (ValueError, TypeError) as exc:
         raise LabelError("the reply is not JSON") from exc
     try:

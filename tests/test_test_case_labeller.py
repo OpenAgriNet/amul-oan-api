@@ -75,6 +75,14 @@ def test_dates_amounts_cycles_and_ordinary_words_stay(text):
 def test_a_good_reply_is_a_label():
     assert parse_label(json.dumps(GOOD)).model_dump() == GOOD
     assert parse_label("```json\n" + json.dumps(GOOD) + "\n```").feature == "ait_booking"
+    assert parse_label("Here is the label: " + json.dumps(GOOD) + " Hope it helps.").feature == "ait_booking"
+
+
+def test_small_slips_in_a_good_reply_are_not_errors():
+    label = parse_label(json.dumps({**GOOD, "feature": " AIT_Booking ", "answer_type": "ASK:Species", "edge_case": None, "sub_tags": None}))
+
+    assert (label.feature, label.answer_type, label.edge_case, label.sub_tags) == ("ait_booking", "ask:species", "", [])
+    assert parse_label(json.dumps({**GOOD, "answer_type": "Answer"})).answer_type == "answer"
 
 
 @pytest.mark.parametrize(
