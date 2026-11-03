@@ -702,6 +702,7 @@ def test_a_voice_tool_call_wakes_the_nudge(monkeypatch):
 def test_memory_episode_listing_uses_event_time_and_reads_selected_record(monkeypatch):
     from unittest.mock import AsyncMock
 
+    from agents.tools.memory_tools import _render_read
     from app.services.memory_store import MemoryStore
 
     farmer = "9876543210"
@@ -726,6 +727,7 @@ def test_memory_episode_listing_uses_event_time_and_reads_selected_record(monkey
         assert entry["record_kind"] == "episode"
         read = await store.read(entry["id"])
         assert read["chunks"] == [{"number": 1, "text": "A prior conversation"}]
+        assert "Conversation ended: 2026-10-30T10:00:00Z (chat)" in _render_read(read)
         assert {"is_empty": {"key": "record_kind"}} in store._filter(kind="matter")["must"][-1]["should"]
 
     asyncio.run(run())

@@ -217,7 +217,8 @@ async def list_memories(
 
 def _render_read(body):
     entry = body["entry"]
-    output = CONTEXT + f"Selected memory_ref: {entry['id']}. State: {entry.get('status', 'n/a')}.\n"
+    kind = entry.get("record_kind", "matter")
+    output = CONTEXT + f"Selected memory_ref: {entry['id']} ({kind}). State: {entry.get('status', 'n/a')}.\n"
     if kind == "episode" and entry.get("episode_ended_at"):
         output += f"Conversation ended: {entry['episode_ended_at']} ({entry.get('source_surface', 'unknown')}).\n"
         if entry.get("episode_part_number") != entry.get("episode_part_count"):
