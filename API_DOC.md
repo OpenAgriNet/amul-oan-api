@@ -17,11 +17,13 @@ Handles chat sessions between a user and the AI assistant.
   - `source_lang`: The source language of the query. Defaults to `gu`.
   - `target_lang`: The target language for the response. Defaults to `gu`.
   - `user_id`: User identifier. Defaults to `anonymous`.
+  - `input_method`: How the farmer entered the question: `typed`, `speech_to_text` (spoken, even if edited before sending), `home_question` (a question on the home screen), `faq` (an FAQ question) or `suggestion` (a follow-up suggestion). Optional; recorded on the turn's telemetry. Omit it when not known.
 
 - **Response**:
   - **Content-Type**: `text/event-stream`
   - **Format**: Raw text chunks streamed directly (UTF-8). Concatenate chunks in order for the full response.
   - No SSE envelope; each chunk is plain text.
+  - **Header** `X-Trace-Id`: the turn's trace id (32 hex characters), also `trace_id` in the JSON body when `stream=false`. Keep it with the answer: a Feedback telemetry event that carries it as `trace_id` (next to `qid` and `sid`, `POST /api/observability-service/action/data/v3/telemetry`) puts the farmer's rating on that turn.
 
 - **Description**:
   - Initiates a chat session with the AI assistant. Uses the `agrinet_agent` to process the query and streams the response. Every chat turn runs the Gemma-based translation pipeline: the query is translated to English, the agent responds in English, and the response is translated to `target_lang` before streaming. Requires TranslateGemma vLLM endpoints. See [Translation Pipeline API](docs/TRANSLATION_PIPELINE_API.md).

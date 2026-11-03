@@ -21,16 +21,17 @@ from __future__ import annotations
 import re
 from contextlib import aclosing
 from functools import lru_cache
-from typing import AsyncIterator, Optional
+from typing import Any, AsyncIterator, Optional
 
 import regex
 
 from agents.tools.models.union import UNION_BANNED_MESSAGE, union_banned_message
+from app.llm_core import Step
 from app.services.translation import translate_text, translate_text_stream_fast, translation_channel
 from app.turn.types import StalenessCheck, Turn
 from app.voice.classifiers import _IDENTITY_RESPONSE_EN
 from app.voice.liveness import nudge_stopped, stop_nudge
-from app.voice.trace import current_trace
+from app.voice.trace import current_trace, step_tiers
 from helpers.utils import get_logger, normalize_voice_output
 
 logger = get_logger(__name__)
@@ -286,8 +287,8 @@ async def render_for_caller(text_en: str, target_lang: str, *, execution) -> str
         return _trouble_message(normalized_target)
 
 
-async def _voice_translation(text: str, target_lang: str, execution) -> AsyncIterator[str]:
-    """``translate_text_stream_fast`` in the voice channel.
+async def _voice_translation(text: str, target_lang: str, execution, parent=None) -> AsyncIterator[str]:
+    """``translate_text_stream_fast`` in the voice channel, its generation under ``parent``.
 
     The channel is set around each step of the translation rather than across
     this generator's yields, so it never leaks into the code consuming them.
@@ -297,6 +298,7 @@ async def _voice_translation(text: str, target_lang: str, execution) -> AsyncIte
         source_lang="english",
         target_lang=target_lang,
         execution=execution,
+        parent=parent,
     )
     async with aclosing(stream):
         while True:
@@ -359,6 +361,13 @@ class VoiceSink:
         self._last_emitted_sig_char: str | None = None
         self._spoken: list[str] = []
         self._failed = False
+        # turn.v1's post_translation step: one span for the turn, opened at the first
+        # batch translated and closed when the stream ends, the English given in and
+        # what was spoken out; each batch's generation nests under it.
+        self._post_translation: Any | None = None
+        self._translated_in: list[str] = []
+        self._translated_out: list[str] = []
+        self._translation_failure: str | None = None
 
     def stream(self, english: AsyncIterator[str]) -> AsyncIterator[str]:
         return self._stream(english)
@@ -405,6 +414,7 @@ class VoiceSink:
                     yield text
         except Exception as error:
             self._failed = True
+            current_trace().record_failure(error)
             logger.error(
                 "Voice agent stream failed %s first token; session_id=%s process_id=%s error=%s",
                 "after" if self._agent_started else "before",
@@ -415,7 +425,28 @@ class VoiceSink:
             if not await self._stale("after_stream_error"):
                 yield self._emit(_trouble_message(self._target_lang))
         finally:
+            self._close_post_translation()
             nudge_stopped("stream_ended")
+
+    def _post_translation_step(self, trace) -> Any:
+        """The turn's post_translation span, opened at the first batch."""
+        if self._post_translation is None:
+            self._post_translation = trace.observation("post_translation", under_root=True).__enter__()
+        return self._post_translation
+
+    def _close_post_translation(self) -> None:
+        step = self._post_translation
+        if step is None:
+            return
+        self._post_translation = None
+        step.record(
+            input=step.trace.text("".join(self._translated_in)),
+            output=step.trace.text("".join(self._translated_out)),
+            metadata=step_tiers(self._execution, Step.POST_TRANSLATION),
+        )
+        if self._translation_failure is not None:
+            step.record(level="ERROR", status_message=self._translation_failure)
+        step.__exit__(None, None, None)
 
     async def _speak(self, english: AsyncIterator[str]) -> AsyncIterator[str]:
         sentence_buffer = ""
@@ -505,15 +536,14 @@ class VoiceSink:
             yield _prepare_voice_output(canned_ban, self._target_lang)
             return
         trace = current_trace()
+        step = self._post_translation_step(trace)
+        self._translated_in.append(text_to_translate)
         try:
-            with trace.stage(
-                "output_translation",
-                as_type="generation",
-                input={"chars": len(text_to_translate)},
-                metadata={"target_lang": self._target_lang},
-            ):
+            # One batch of the turn's post_translation step: timed into
+            # amul.post_translation_ms, its call's generation under the step's span.
+            with trace.stage("post_translation", metadata={"target_lang": self._target_lang}, observe=False):
                 async with aclosing(
-                    _voice_translation(text_to_translate, self._target_lang, self._execution)
+                    _voice_translation(text_to_translate, self._target_lang, self._execution, parent=step.observation)
                 ) as translated:
                     async for chunk in translated:
                         if await self._stale("during_output_translation"):
@@ -521,10 +551,15 @@ class VoiceSink:
                         cleaned = _prepare_voice_output(chunk, self._target_lang) if chunk else chunk
                         if cleaned and cleaned.strip():
                             trace.mark("first_translation_chunk_ms")
+                            self._translated_out.append(cleaned)
                         yield cleaned
         except Exception as e:
             trace.increment("output_translation_errors")
+            trace.record_failure(e)
             self._failed = True
+            if self._translation_failure is None:
+                # The first failure is the step's reason; the caller heard the trouble line.
+                self._translation_failure = (str(e) or type(e).__name__)[:300]
             logger.error(
                 "Translation pipeline output translation failed for session_id=%s error=%s",
                 self._session_id,

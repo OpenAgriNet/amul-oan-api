@@ -73,6 +73,9 @@ def _append_animal_records(lines: list[str], envelope: FarmerDataEnvelope) -> No
             if not masked:
                 continue
             parts = [f"tag ending {masked}"]
+            # The name the farmer calls the animal, so a spoken name finds its record.
+            if data.get("animalName"):
+                parts.append(f"name={data['animalName']}")
             if data.get("animalType"):
                 parts.append(f"type={data['animalType']}")
             breeding = data.get("lastBreedingActivity")
@@ -93,6 +96,17 @@ def _normalize_farmer_name(value) -> str:
     # collapses distinct names and villages (કડી and કડા both became કડ).
     cleaned = regex.sub(r"[^\p{L}\p{M}\p{N}\s]", "", str(value or ""))
     return regex.sub(r"\s+", " ", cleaned).strip().casefold()
+
+
+def _first_value(data: dict, *keys: str):
+    """The first of ``keys`` that is set, keeping a count of 0."""
+    return next((data[key] for key in keys if data.get(key) is not None), None)
+
+
+def _herd_count(counts: list) -> Optional[int]:
+    """Sum of the records' counts, or None when no record has one."""
+    known = [int(count) for count in counts if count is not None]
+    return sum(known) if known else None
 
 
 def _build_compact_farmer_summary(envelope: Optional[FarmerDataEnvelope]) -> str:
@@ -140,19 +154,26 @@ def _build_compact_farmer_summary(envelope: Optional[FarmerDataEnvelope]) -> str
     # context (the brittle get_herd_summary / list_animal_tags / get_farmer_profile
     # tools were dropped — they read the same cache and returned "not available"
     # when the upstream record omitted totalAnimals even though tags were present).
-    first_data = first.model_dump()
-    total_animals = first.totalAnimals
-    if total_animals is None and tags:
-        total_animals = len(tags)  # fallback when upstream omits the count
+    # Summed over every record: each is its own account with its own animals,
+    # and the tags and per-animal records below cover all of them.
+    total_animals = _herd_count(
+        [
+            record.totalAnimals if record.totalAnimals is not None
+            else len(_extract_farmer_tags([record])) or None  # upstream omitted the count
+            for record in envelope.farmers
+        ]
+    )
     if total_animals is not None:
         lines.append(f"- Total animals: {total_animals}")
-    cow = first_data.get("cow") or first_data.get("Cow")
+    cow = _herd_count([_first_value(r.model_dump(), "cow", "Cow") for r in envelope.farmers])
     if cow is not None:
         lines.append(f"- Cows: {cow}")
-    buffalo = first_data.get("buffalo") or first_data.get("Buffalo")
+    buffalo = _herd_count([_first_value(r.model_dump(), "buffalo", "Buffalo") for r in envelope.farmers])
     if buffalo is not None:
         lines.append(f"- Buffaloes: {buffalo}")
-    milking = first_data.get("totalMilkingAnimals") or first_data.get("Milking Animal")
+    milking = _herd_count(
+        [_first_value(r.model_dump(), "totalMilkingAnimals", "Milking Animal") for r in envelope.farmers]
+    )
     if milking is not None:
         lines.append(f"- Milking animals: {milking}")
     if tags:

@@ -1,0 +1,104 @@
+{
+  "schema_version": "turn.v1",
+  "note": "The traces amul-oan-api sends beside its turns, as turn.v1 (amul-telemetry telemetry/turn.v1.yaml): by kind, then by job or event, the trace fields, the amul.* metadata keys and the scores of each. Each root is named after its kind and has no input or output; what the job or the frontend sent is on the observation under it. No turn caused a background job here, so none carries a session or a pipeline (the farmer refresh queue is shared by chat and voice). A frontend event is the web app's; only the anonymous token carries a user id. Suggestions are not listed: they are the turn's suggestions step (chat.json).",
+  "background_job": {
+    "farmer_background_refresh": {
+      "trace_fields": [],
+      "metadata_keys": [
+        "amul.farmer_id",
+        "amul.job",
+        "amul.kind",
+        "amul.release",
+        "amul.schema_version",
+        "amul.service"
+      ],
+      "scores": []
+    },
+    "health_check": {
+      "trace_fields": [],
+      "metadata_keys": [
+        "amul.job",
+        "amul.kind",
+        "amul.release",
+        "amul.schema_version",
+        "amul.service"
+      ],
+      "scores": []
+    }
+  },
+  "frontend_event": {
+    "anonymous_token_issued": {
+      "trace_fields": [
+        "session_id",
+        "user_id"
+      ],
+      "metadata_keys": [
+        "amul.event",
+        "amul.kind",
+        "amul.pipeline",
+        "amul.release",
+        "amul.schema_version",
+        "amul.service"
+      ],
+      "scores": []
+    },
+    "error": {
+      "trace_fields": [
+        "session_id"
+      ],
+      "metadata_keys": [
+        "amul.event",
+        "amul.kind",
+        "amul.pipeline",
+        "amul.release",
+        "amul.schema_version",
+        "amul.service"
+      ],
+      "scores": []
+    },
+    "feedback": {
+      "trace_fields": [
+        "session_id"
+      ],
+      "metadata_keys": [
+        "amul.event",
+        "amul.kind",
+        "amul.pipeline",
+        "amul.release",
+        "amul.schema_version",
+        "amul.service"
+      ],
+      "scores": [
+        "user_feedback"
+      ]
+    },
+    "question": {
+      "trace_fields": [
+        "session_id"
+      ],
+      "metadata_keys": [
+        "amul.event",
+        "amul.kind",
+        "amul.pipeline",
+        "amul.release",
+        "amul.schema_version",
+        "amul.service"
+      ],
+      "scores": []
+    },
+    "question_response": {
+      "trace_fields": [
+        "session_id"
+      ],
+      "metadata_keys": [
+        "amul.event",
+        "amul.kind",
+        "amul.pipeline",
+        "amul.release",
+        "amul.schema_version",
+        "amul.service"
+      ],
+      "scores": []
+    }
+  }
+}

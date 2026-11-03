@@ -51,6 +51,7 @@ LIVE_TOOLS = [
     "get_farmer_bonus_amount",
     "get_union_scheme_data",
     "signal_conversation_state",
+    "get_vistaar_mandi_prices",
 ]
 
 ROUTING_INTENTS = [

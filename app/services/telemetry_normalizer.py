@@ -153,6 +153,7 @@ def _normalize_target_event(
             event_name="question",
             session_id=event.sid,
             question_id=event.qid,
+            trace_id=event.trace_id,
             pipeline=details.pipeline,
             payload=event.model_dump(),
         )
@@ -164,6 +165,7 @@ def _normalize_target_event(
             event_name="question_response",
             session_id=event.sid,
             question_id=event.qid,
+            trace_id=event.trace_id,
             pipeline=details.pipeline,
             payload=event.model_dump(),
         )
@@ -174,6 +176,7 @@ def _normalize_target_event(
             event_name="error",
             session_id=event.sid,
             question_id=event.qid,
+            trace_id=event.trace_id,
             payload=event.model_dump(),
         )
         return "normalized", canonical, None
@@ -183,6 +186,7 @@ def _normalize_target_event(
         event_name="feedback",
         session_id=event.sid,
         question_id=event.qid,
+        trace_id=event.trace_id,
         pipeline=details.pipeline,
         payload=event.model_dump(),
     )

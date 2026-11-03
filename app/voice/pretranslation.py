@@ -43,7 +43,7 @@ from app.voice.history import HISTORY_MARKERS as _HISTORY_MARKERS
 from app.voice.history import history_pair as _history_pair
 from app.voice.moderation import pretranslation_timeout_s
 from app.voice.stt_signals import detect_stt_signal
-from app.voice.trace import current_trace
+from app.voice.trace import current_trace, step_tiers
 from helpers.utils import get_logger
 
 logger = get_logger(__name__)
@@ -175,6 +175,12 @@ def _canonical_history_user_text(kind: str, fallback: str = "") -> str:
     return _HISTORY_MARKERS.get(kind, fallback or kind)
 
 
+# A species' young ('ઊંટનું બચ્ચું') fuzzy-matches any '<animal>નું બચ્ચું', so a cow
+# or buffalo calf would get a Lamb or Camel calf hint. Hint these rows only when
+# the species itself is in the farmer's words.
+_SPECIES_YOUNG_HINT_STEMS = {"camel calf": "ઊંટ", "goat kid": "બકર", "lamb": "ઘેટ"}
+
+
 def _get_glossary_hints_for_gu_query(text: str, max_results: int = 7) -> str:
     """Fuzzy-match Gujarati input against glossary gu/transliteration fields.
 
@@ -191,6 +197,9 @@ def _get_glossary_hints_for_gu_query(text: str, max_results: int = 7) -> str:
     scored: list[tuple[str, str, float]] = []
 
     for tp in TERM_PAIRS:
+        stem = _SPECIES_YOUNG_HINT_STEMS.get((tp.en or "").strip().lower())
+        if stem and stem not in text:
+            continue
         scores: list[float] = []
         gu_lower = (tp.gu or "").lower().strip()
         translit_lower = (tp.transliteration or "").lower().strip()
@@ -623,22 +632,28 @@ async def _voice_pretranslation(
             return translated
 
         try:
+            # turn.v1's pre_translation step: the question in, the English out, and
+            # the tier that served once the walker ran (written when the step closes).
             with trace.stage(
-                "pretranslation",
+                "pre_translation",
                 as_type="generation",
-                input=trace.metadata.get("query"),
+                input=trace.text(query),
                 metadata={
                     "provider": _pretrans_provider_label,
                     "source_lang": requested_source_lang,
                     "pipeline_profile": execution.profile_name,
                 },
                 model=_pretrans_model,
-            ):
-                processing_query = await execution.run_adapter(
-                    Step.PRE_TRANSLATION,
-                    _run_pretranslation_attempt,
-                    client_kind=StepClientKind.RAW_OPENAI,
-                )
+            ) as step:
+                try:
+                    processing_query = await execution.run_adapter(
+                        Step.PRE_TRANSLATION,
+                        _run_pretranslation_attempt,
+                        client_kind=StepClientKind.RAW_OPENAI,
+                    )
+                finally:
+                    step.record(metadata=step_tiers(execution, Step.PRE_TRANSLATION))
+                step.record(output=trace.text(processing_query))
             _pretranslation_fallback_used = (
                 len(_pretranslation_attempts) > 1
                 and _pretranslation_attempts[0].get("status") == "error"

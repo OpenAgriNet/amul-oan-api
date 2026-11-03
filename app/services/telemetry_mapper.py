@@ -17,16 +17,14 @@ def map_canonical_event_to_langfuse(canonical: CanonicalTelemetryEvent) -> dict[
         "user_id": canonical.user_id,
         "pipeline": canonical.pipeline,
         "ts": canonical.ts,
-        "trace_name": "frontend.telemetry",
         "observation_name": f"frontend.{canonical.event_name}",
-        "tags": [f"frontend-event:{canonical.event_name}"],
         "metadata": {
             "schema_version": canonical.schema_version,
         },
     }
 
     if canonical.pipeline:
-        mapped["tags"].append(f"pipeline:{canonical.pipeline}")
+        mapped["metadata"]["pipeline"] = canonical.pipeline
 
     payload = canonical.payload
     target = payload.get("target") if isinstance(payload.get("target"), dict) else {}

@@ -13,7 +13,8 @@ from app.core.cache import cache, reserve, ReservationOutcome, release_reservati
 from agents.tools.beckn.operations import BecknNotSentError
 from agents.tools.models.ai_call import AISpecies
 from agents.tools.models.union import any_union_banned_from_ai_calls, union_banned_message
-from app.observability import start_observation
+from agents.tools.telemetry import reason, report_tool
+from app.observability import record_api_result, start_observation
 from helpers.utils import get_logger
 
 logger = get_logger(__name__)
@@ -25,9 +26,14 @@ AI_CALL_CACHE_NAMESPACE = "ai_call_booked"
 
 # Shared by both booking routes (direct PashuGPT and Beckn network) so the two
 # cannot drift into telling the farmer different things.
-ALREADY_BOOKED_MESSAGE = (
-    "This session already has an active artificial insemination booking. "
-    "Please try again later or contact your society for assistance."
+ALREADY_BOOKED_MESSAGE = "Artificial insemination call is already booked. Ticket: {ticket}."
+# A request for another animal (the other species, or another of the caller's
+# farmer records) after the session's booking: nothing new is booked, so it must
+# not be told the earlier ticket as if it were its own.
+ALREADY_BOOKED_OTHER_ANIMAL_MESSAGE = (
+    "No new booking was made: only one artificial insemination booking can be made "
+    "per session. This session's booking is for the {booked_species} (ticket {ticket}); "
+    "for any other animal, please try again later or contact your society."
 )
 # A second booking while the session's earlier one is still in flight, or was
 # neither confirmed nor refused: that one may have booked the visit.
@@ -177,12 +183,14 @@ def _is_refused(exc: BaseException) -> bool:
     return isinstance(exc, httpx.HTTPStatusError) and 400 <= exc.response.status_code < 500
 
 
-async def _already_booked_message(session_id: str) -> str:
+async def _already_booked_message(session_id: str, species_value: str, account: str) -> str:
     """What a second booking in the session is told.
 
     Only a confirmed booking leaves its ticket on the reservation. Without one,
     the earlier booking is still in flight or was never confirmed, and may or may
-    not have booked the visit, so the farmer is not told it is active.
+    not have booked the visit, so the farmer is not told it is active. A repeat
+    for the same farmer record and species gets that booking's ticket back; a
+    request for another animal is told nothing new was booked.
     """
     try:
         marker = await cache.get(session_id, namespace=AI_CALL_CACHE_NAMESPACE)
@@ -190,12 +198,24 @@ async def _already_booked_message(session_id: str) -> str:
         logger.warning("Failed to read AI call reservation: %s", e)
         marker = None
     if isinstance(marker, dict) and marker.get("ticket"):
-        return ALREADY_BOOKED_MESSAGE
+        booked_species = marker.get("species")
+        booked_account = marker.get("account")
+        if (booked_species and booked_species != species_value) or (
+            booked_account and booked_account != account
+        ):
+            return ALREADY_BOOKED_OTHER_ANIMAL_MESSAGE.format(
+                booked_species=booked_species, ticket=marker["ticket"]
+            )
+        return ALREADY_BOOKED_MESSAGE.format(ticket=marker["ticket"])
     return ALREADY_REQUESTED_MESSAGE
 
 
 async def _mark_session_booked(
-    session_id: str | None, ticket: str | None, species_value: str, guard: bool | None = None
+    session_id: str | None,
+    ticket: str | None,
+    species_value: str,
+    account: str,
+    guard: bool | None = None,
 ) -> None:
     """Mark this session as booked so a re-run (or retry) does not double-book."""
     if guard is None:
@@ -204,7 +224,7 @@ async def _mark_session_booked(
         try:
             await cache.set(
                 session_id,
-                {"ticket": ticket, "species": species_value},
+                {"ticket": ticket, "species": species_value, "account": account},
                 ttl=settings.ai_call_cooldown_ttl_seconds,
                 namespace=AI_CALL_CACHE_NAMESPACE,
             )
@@ -322,6 +342,7 @@ async def create_ai_call(
             getattr(ctx.deps, "farmer_profile_status", None) if ctx else None,
             session_id,
         )
+        report_tool("error", "no farmer profile")
         return NO_FARMER_PROFILE_MESSAGE
 
     # An invented identifier cannot be resolved or booked.
@@ -331,12 +352,14 @@ async def create_ai_call(
             "AI call blocked: invalid %s; session=%s union=%s society=%s farmer=%s user_id=%s",
             invalid_field, session_id, union_code, society_code, farmer_code, user_id,
         )
+        report_tool("error", f"invalid {invalid_field}")
         return INVALID_IDENTIFIERS_MESSAGE
 
     from agents.tools.beckn.amul import resolve_authenticated_account, search_ai_technicians
 
     mobile = (getattr(ctx.deps, "mobile", None) or "").strip()
     if not mobile:
+        report_tool("error", "no signed-in mobile")
         return (
             "Artificial insemination call booking failed.\n\n"
             "Your signed-in farmer profile is not available."
@@ -351,6 +374,7 @@ async def create_ai_call(
             tool_call_id=tool_call_id,
         )
         if account is None:
+            report_tool("error", "the account is not on the signed-in profile")
             return (
                 "Artificial insemination call booking failed.\n\n"
                 "The selected farmer account does not belong to your signed-in profile."
@@ -364,12 +388,14 @@ async def create_ai_call(
         )
         technician = next((candidate for candidate in technicians if candidate.userId == user_id), None)
         if technician is None or not technician.userId:
+            report_tool("error", "the technician is not available for the society")
             return (
                 "Artificial insemination call booking failed.\n\n"
                 "The selected technician is not available for your society."
             )
     except Exception as exc:
         logger.warning("AI booking identity verification failed: %s", exc)
+        report_tool("unavailable", f"identity verification: {reason(exc)}")
         return (
             "Artificial insemination call booking failed.\n\n"
             "Unable to verify your farmer and technician details at the moment."
@@ -409,6 +435,7 @@ async def _book_via_network(
     _ai_tool_input: dict,
     tool_call_id: str | None = None,
     guard: bool | None = None,
+    heat_alert_event_id: str | None = None,
 ) -> str:
     """Book via the Amul Beckn network with moderation and idempotency guards.
 
@@ -423,17 +450,17 @@ async def _book_via_network(
         society_code,
     )
 
-    with start_observation(
-        "ai_call_booking",
-        as_type="generation",
-        input=_ai_tool_input,
-        metadata={"tool_name": "create_ai_call", "route": "beckn_network"},
-    ) as ai_tool_obs:
-        # Atomic reservation immediately before the irreversible write.
-        _allowed, _owned = await _reserve_booking_slot(session_id, guard)
-        if not _allowed:
-            return await _already_booked_message(session_id)
+    # What a repeat in this session is matched against.
+    account = f"{union_code}/{society_code}/{farmer_code}"
 
+    # Atomic reservation immediately before the irreversible write.
+    _allowed, _owned = await _reserve_booking_slot(session_id, guard)
+    if not _allowed:
+        return await _already_booked_message(session_id, species.value, account)
+
+    # The booking as an API step (turn.v1's "<api name>" SPAN): ok out, level ERROR
+    # with the reason when the visit was not booked.
+    with start_observation("ai_call_booking", input=_ai_tool_input) as ai_tool_obs:
         try:
             result = await network_create_ai_call_result(
                 union_code,
@@ -476,15 +503,15 @@ async def _book_via_network(
                 # deliberate — a possible ~30-minute lockout is preferable to a
                 # possible duplicate visit and duplicate SMS.
                 failure_message = UNCONFIRMED_MESSAGE
-            if ai_tool_obs is not None:
-                ai_tool_obs.update(
-                    output={
-                        "success": False,
-                        "pre_send_failure": pre_send,
-                        "refused": refused,
-                        "message": failure_message,
-                    }
-                )
+            record_api_result(
+                ai_tool_obs,
+                ok=False,
+                reason=f"booking request: {reason(e)}",
+                pre_send_failure=pre_send,
+                refused=refused,
+                message=failure_message,
+            )
+            report_tool("error" if refused else "unavailable", f"booking request: {reason(e)}")
             return failure_message
 
         if not result.ok:
@@ -508,18 +535,22 @@ async def _book_via_network(
             # provider error after the BPP accepted it, or a callback with no
             # ticket may all have booked the visit, and the farmer is told so.
             told = result.message if result.authoritative_no_booking else UNCONFIRMED_MESSAGE
-            if ai_tool_obs is not None:
-                ai_tool_obs.update(
-                    output={
-                        "success": False,
-                        "authoritative_no_booking": result.authoritative_no_booking,
-                        "message": result.message,
-                    }
-                )
+            record_api_result(
+                ai_tool_obs,
+                ok=False,
+                reason=result.message,
+                authoritative_no_booking=result.authoritative_no_booking,
+                message=result.message,
+            )
+            report_tool("error" if result.authoritative_no_booking else "unavailable", result.message)
             return told
 
         # Mark this session as booked so a re-run (or retry) does not double-book.
-        await _mark_session_booked(session_id, result.ticket, species.value, guard)
+        await _mark_session_booked(session_id, result.ticket, species.value, account, guard)
+        if heat_alert_event_id:
+            from app.services.heat_alert_call import mark_booked
+
+            await mark_booked(heat_alert_event_id)
 
         logger.info(
             "Network AI call succeeded for union=%s society=%s farmer=%s species=%s ticket=%s",
@@ -529,12 +560,5 @@ async def _book_via_network(
             species.value,
             result.ticket,
         )
-        if ai_tool_obs is not None:
-            ai_tool_obs.update(
-                output={
-                    "success": True,
-                    "ticket_number": result.ticket,
-                    "message": result.message,
-                }
-            )
+        record_api_result(ai_tool_obs, ok=True, ticket_number=result.ticket, message=result.message)
         return result.message

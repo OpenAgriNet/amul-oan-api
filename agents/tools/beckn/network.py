@@ -27,6 +27,7 @@ from typing import Any, Optional
 
 import httpx
 
+from agents.tools.telemetry import report_tool
 from agents.tools.scheme_codes import resolve_scheme_code
 from app.config import settings
 from helpers.utils import get_logger
@@ -151,10 +152,12 @@ async def network_search_documents(query: str, top_k: int = 12) -> str:
     if errors.get(VET_LEG) or not isinstance(result, dict) or result.get("error"):
         # Same distinction as everywhere else: a dead leg is not an empty KB.
         logger.warning("network vet search leg failed error=%s", errors.get(VET_LEG))
+        report_tool("unavailable", f"vet document leg failed: {errors.get(VET_LEG)}")
         return "The document search is temporarily unavailable. Please try again shortly."
     items = _items(results.get(VET_LEG))[:top_k]
     if not items:
         logger.info("network vet search returned no items query=%s", query)
+        report_tool("no_result", "no documents returned")
         return "No relevant documents were found on the network for this query."
     lines: list[str] = []
     for i, it in enumerate(items, 1):
@@ -266,11 +269,13 @@ async def network_union_schemes(query: str, union: Optional[str] = None) -> str:
     ]
     if not out:
         if unavailable:
+            report_tool("unavailable", "scheme legs failed: " + " and ".join(unavailable))
             return (
                 "Scheme information ("
                 + " and ".join(unavailable)
                 + ") is temporarily unavailable. Please try again shortly."
             )
+        report_tool("no_result", "no scheme data returned")
         return "No scheme data was found on the network for this query."
     import json
     payload = json.dumps(out, ensure_ascii=False, indent=2)

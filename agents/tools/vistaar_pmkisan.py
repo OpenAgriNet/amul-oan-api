@@ -16,6 +16,7 @@ from agents.tools.beckn.operations import (
     get_beckn_operation_client,
     get_beckn_operation_store,
 )
+from agents.tools.telemetry import report_tool
 from agents.tools.session_pmkisan import (
     allow_otp_request,
     clear_pending_otp,
@@ -78,7 +79,8 @@ def _tag_codes(tags: object) -> set[str]:
     return codes
 
 
-def _init_outcome(payload: Mapping[str, Any]) -> str | None:
+def _init_outcome(payload: Mapping[str, Any]) -> tuple[str | None, str]:
+    """The init outcome, and BV's reason when it refused to send an OTP."""
     for order in _orders(payload):
         items = order.get("items")
         for item in items if isinstance(items, list) else []:
@@ -86,14 +88,22 @@ def _init_outcome(payload: Mapping[str, Any]) -> str | None:
                 continue
             tags = item.get("tags")
             if "otp_status" in _tag_codes(tags):
-                return "otp_sent"
+                return "otp_sent", ""
             for tag in tags if isinstance(tags, list) else []:
                 descriptor = tag.get("descriptor") if isinstance(tag, Mapping) else None
                 if isinstance(descriptor, Mapping) and descriptor.get("code") == "otp_error":
-                    # BV also answers "Try again" when its own service fails.
                     short_desc = str(descriptor.get("short_desc") or "")
-                    return "no_record" if "no record found" in short_desc.lower() else "service_error"
-    return None
+                    lowered = short_desc.lower()
+                    if "no record found" in lowered:
+                        return "no_record", short_desc
+                    # "This mobile number taged with multiple records."
+                    if "multiple record" in lowered:
+                        return "multiple_records", short_desc
+                    # BV answers "Try again" when its own service fails.
+                    if "try again" in lowered:
+                        return "service_error", short_desc
+                    return "not_accepted", short_desc
+    return None, ""
 
 
 def _status_order(payload: Mapping[str, Any]) -> Mapping[str, Any] | None:
@@ -111,6 +121,10 @@ def _mask_phone(value: object) -> str:
 
 def _mask_keep_last4(value: str) -> str:
     return "*" * max(len(value) - 4, 0) + value[-4:]
+
+
+def _mask_numbers(text: str) -> str:
+    return re.sub(r"\d{5,}", lambda match: _mask_keep_last4(match.group()), to_ascii_digits(text))
 
 
 def _mask_registration(text: str, identifier: str) -> str:
@@ -212,6 +226,7 @@ async def initiate_pm_kisan_status_check(
     except Exception:
         logger.exception("PM-KISAN OTP request limit could not be checked")
         _redact_tool_span("state_unavailable")
+        report_tool("unavailable", "PM-KISAN session state: OTP limit could not be checked")
         return "The PM-KISAN status service is temporarily unavailable. Please try again later."
     if not allowed:
         _redact_tool_span("rate_limited")
@@ -233,6 +248,7 @@ async def initiate_pm_kisan_status_check(
     except Exception:
         logger.exception("PM-KISAN session state could not be created")
         _redact_tool_span("state_unavailable")
+        report_tool("unavailable", "PM-KISAN session state could not be created")
         return "The PM-KISAN status service is temporarily unavailable. Please try again later."
 
     try:
@@ -246,11 +262,13 @@ async def initiate_pm_kisan_status_check(
     except Exception:
         logger.exception("PM-KISAN init transaction failed")
         _redact_tool_span("network_error")
+        report_tool("unavailable", "PM-KISAN init transaction failed")
         return "The PM-KISAN request is pending or unavailable. Please try again shortly."
 
     if result.operation.state is OperationState.NACKED:
         await clear_pm_kisan_session(session_id, ctx.deps.mobile)
         _redact_tool_span("rejected")
+        report_tool("error", "PM-KISAN rejected the request")
         return "The PM-KISAN request was rejected. Please try again later."
     if result.operation.state is OperationState.TIMED_OUT_PENDING:
         _redact_tool_span("pending")
@@ -258,20 +276,38 @@ async def initiate_pm_kisan_status_check(
     if not result.ok or not isinstance(result.payload, Mapping):
         await clear_pm_kisan_session(session_id, ctx.deps.mobile)
         _redact_tool_span("invalid_response")
+        report_tool("unavailable", "PM-KISAN init: no usable on_init")
         return "The PM-KISAN service returned an unreadable response. Please try again later."
 
-    outcome = _init_outcome(result.payload)
+    outcome, reason = _init_outcome(result.payload)
     if outcome == "otp_sent":
         _redact_tool_span("otp_sent")
         return "OTP_SENT. Ask the farmer for the 4-digit OTP sent to their registered mobile."
     await clear_pm_kisan_session(session_id, ctx.deps.mobile)
     if outcome == "no_record":
         _redact_tool_span("no_record")
+        report_tool("no_result", "no PM-KISAN record for the identifier")
         return "NO_RECORD. Ask the farmer to check the identifier and start again."
+    if outcome == "multiple_records":
+        _redact_tool_span("multiple_records")
+        return (
+            "MULTIPLE_RECORDS. This mobile number is linked to more than one PM-KISAN record, so "
+            "PM-KISAN cannot check it by mobile. Ask the farmer for their PM-KISAN registration "
+            "number or Aadhaar instead."
+        )
     if outcome == "service_error":
         _redact_tool_span("service_error")
+        report_tool("unavailable", "PM-KISAN service error")
         return "SERVICE_ERROR. The PM-KISAN service is not responding. Ask the farmer to try again later."
+    if outcome == "not_accepted":
+        _redact_tool_span("not_accepted")
+        return (
+            f'NOT_ACCEPTED. PM-KISAN did not send an OTP for this identifier: "{_mask_numbers(reason)[:200]}". '
+            "Explain this to the farmer in plain words and ask them to check it, or to use their "
+            "registration number or Aadhaar."
+        )
     _redact_tool_span("invalid_response")
+    report_tool("unavailable", "PM-KISAN init: unreadable response")
     return "The PM-KISAN service returned an unreadable response. Please try again later."
 
 
@@ -323,6 +359,7 @@ async def check_pm_kisan_status_with_otp(ctx: RunContext[FarmerContext]) -> str:
     except Exception:
         logger.exception("PM-KISAN session state could not be read")
         _redact_tool_span("state_unavailable")
+        report_tool("unavailable", "PM-KISAN session state could not be read")
         return "The PM-KISAN status service is temporarily unavailable. Please try again later."
     if not state:
         _redact_tool_span("missing_state")
@@ -375,11 +412,13 @@ async def check_pm_kisan_status_with_otp(ctx: RunContext[FarmerContext]) -> str:
         except Exception:
             logger.exception("PM-KISAN session state could not be saved")
         _redact_tool_span("network_error")
+        report_tool("unavailable", "PM-KISAN status transaction failed")
         return "The OTP could not be verified right now. Ask the farmer to send the same OTP again shortly."
 
     if result.operation.state is OperationState.NACKED:
         await clear_pm_kisan_session(session_id, mobile)
         _redact_tool_span("rejected")
+        report_tool("error", "PM-KISAN rejected the OTP request")
         return "The PM-KISAN OTP request was rejected. Ask the farmer to start again."
     if result.operation.state is OperationState.TIMED_OUT_PENDING:
         _redact_tool_span("pending")

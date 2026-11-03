@@ -327,6 +327,31 @@ def log_full_config(pipeline: Any) -> None:
         logger.warning("llm_core.trace: log_full_config failed: %s", e)
 
 
+def step_metadata(pt: Optional[PipelineTrace], step: Any) -> dict[str, str]:
+    """turn.v1's metadata for one step's observation, from what the walker recorded:
+
+    * ``amul.configured_tier``: the step's primary tier, as ``pc_<step>`` says it;
+    * ``amul.served_tier``: the tier that produced the output, as ``route[index]``;
+    * ``amul.attempts``: tiers tried before the step produced its output, so ``1``
+      when the primary answered.
+
+    Only what was recorded is returned; ``{}`` for an unknown step or no trace."""
+    if pt is None:
+        return {}
+    rec = pt.steps.get(getattr(step, "value", step))
+    if rec is None:
+        return {}
+    out: dict[str, str] = {}
+    if rec.provider is not None or rec.model is not None:
+        out["amul.configured_tier"] = (
+            f"{rec.provider}:{rec.model}@{rec.endpoint}#{rec.kind}({rec.timeout_ms}ms)"[:_ATTR_CAP]
+        )
+    if rec.tier_served_index is not None:
+        out["amul.served_tier"] = f"{rec.tier_served_route}[{rec.tier_served_index}]"[:_ATTR_CAP]
+        out["amul.attempts"] = str(rec.tier_served_index + 1)
+    return out
+
+
 def served_summary(pt: Optional[PipelineTrace]) -> Optional[str]:
     """Compact served routes, e.g. ``"agent=vllm:gemma[0]"``.
 

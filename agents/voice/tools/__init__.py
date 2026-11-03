@@ -24,6 +24,7 @@ from agents.tools.memory_tools import (
     read_memory,
     search_memories,
 )
+from agents.tools.vistaar import get_vistaar_mandi_prices
 
 
 def _with_nudge_signal(func):
@@ -74,6 +75,12 @@ BASE_TOOLS = [
     Tool(
         _with_nudge_signal(get_cattle_trade_prices),
         takes_ctx=False,
+        docstring_format='auto',
+        require_parameter_descriptions=True,
+    ),
+    Tool(
+        _with_nudge_signal(get_vistaar_mandi_prices),
+        takes_ctx=True,
         docstring_format='auto',
         require_parameter_descriptions=True,
     ),

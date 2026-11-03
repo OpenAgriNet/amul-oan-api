@@ -20,6 +20,7 @@ from typing import Any, Callable, Optional
 import httpx
 from pydantic_ai import RunContext
 
+from agents.tools.telemetry import reason, report_tool
 from agents.deps import FarmerContext
 from agents.tools.districts import (
     DEFAULT_LOCATION,
@@ -483,6 +484,7 @@ async def get_vistaar_weather(
     """
     where, refusal = await _resolve_search_location(ctx, location)
     if refusal is not None:
+        report_tool("no_result", "place not covered")
         return refusal
     assert where is not None
 
@@ -494,10 +496,12 @@ async def get_vistaar_weather(
 
     try:
         items, used = await _search_candidates(build, where)
-    except Exception:
+    except Exception as exc:
         logger.exception("vistaar weather failed district=%s", where.location.key)
+        report_tool("unavailable", f"Bharat Vistaar weather: {reason(exc)}")
         return "Weather is temporarily unavailable from Bharat Vistaar."
     if not items:
+        report_tool("no_result", "no forecast returned")
         return f"No weather forecast was returned for {_location_phrase(where, used)}."
     header = f"Weather forecast for {_location_phrase(where, used)}:\n"
     body = header + _format_items(items)
@@ -543,6 +547,7 @@ async def get_vistaar_mandi_prices(
     """
     where, refusal = await _resolve_search_location(ctx, location)
     if refusal is not None:
+        report_tool("no_result", "place not covered")
         return refusal
     assert where is not None
     from_date, to_date = _resolve_date_range(price_date, price_date_to)
@@ -572,11 +577,13 @@ async def get_vistaar_mandi_prices(
         # A failed leg is NOT an empty market. Never fall through to the
         # "No mandi prices were found…" line below on infrastructure failure.
         logger.warning("vistaar mandi leg unavailable commodity=%s", commodity_name)
+        report_tool("unavailable", "Bharat Vistaar mandi leg failed")
         return "Mandi prices are temporarily unavailable from Bharat Vistaar. Please try again shortly."
-    except Exception:
+    except Exception as exc:
         logger.exception(
             "vistaar mandi failed commodity=%s from=%s to=%s", commodity_name, from_date, to_date
         )
+        report_tool("unavailable", f"Bharat Vistaar mandi: {reason(exc)}")
         return "Mandi prices are temporarily unavailable from Bharat Vistaar."
     place = _location_phrase(where, used)
     logger.info(
@@ -584,6 +591,7 @@ async def get_vistaar_mandi_prices(
         commodity_name, place, where.source, from_date, to_date, len(items),
     )
     if not items:
+        report_tool("no_result", "no mandi prices in the window")
         return (
             f"No mandi prices were found for '{commodity_name}' near {place} "
             f"between {from_date} and {to_date}."
@@ -628,6 +636,7 @@ async def get_vistaar_scheme_info(scheme_code: SchemeCode) -> str:
         # NEVER echo the internal code list at the farmer — agrinet_system_translation_pipeline.md
         # ("Do not mention internal tool mechanics"). Name schemes, not codes.
         logger.info("vistaar scheme: unresolvable scheme_code=%r", scheme_code)
+        report_tool("no_result", "no central scheme matched")
         return (
             "I could not match that to a central government scheme. I can look up "
             f"schemes such as {scheme_names_sentence()}."
@@ -640,10 +649,13 @@ async def get_vistaar_scheme_info(scheme_code: SchemeCode) -> str:
         items = await _vistaar_search(intent)
     except VistaarLegUnavailable:
         logger.warning("vistaar scheme leg unavailable code=%s", code)
+        report_tool("unavailable", "Bharat Vistaar scheme leg failed")
         return "Scheme information is temporarily unavailable from Bharat Vistaar. Please try again shortly."
-    except Exception:
+    except Exception as exc:
         logger.exception("vistaar scheme failed code=%s", code)
+        report_tool("unavailable", f"Bharat Vistaar scheme: {reason(exc)}")
         return "Scheme information is temporarily unavailable from Bharat Vistaar."
     if not items:
+        report_tool("no_result", "no scheme information returned")
         return f"No information was found for the {SCHEME_LABELS.get(code, code)} scheme."
     return _format_items(items)

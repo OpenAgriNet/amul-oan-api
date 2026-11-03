@@ -6,6 +6,7 @@ the adapter renders each emission, that the turn stays transport-free, and that
 deferred work really runs after the response through the real router.
 """
 import ast
+import contextlib
 import asyncio
 import dataclasses
 import os
@@ -25,6 +26,7 @@ from app.channels.chat import WEB, WHATSAPP, WHATSAPP_RESPONSE_MAX_CHARS
 from app.chat_artifacts import CHAT_ARTIFACTS_START, encode_chat_artifacts
 from app.routers import chat as chat_router
 from app.services import chat as chat_service
+from app.services.telemetry_stamps import TURN_ROOT
 from app.turn.types import (
     AgentActivityEmission,
     ArtifactEmission,
@@ -250,7 +252,7 @@ def test_artifact_encoding_failure_is_recorded_as_error_not_cancelled(monkeypatc
         asyncio.run(_collect(_stream(source_lang="gu", target_lang="gu")))
 
     assert _outcomes(seen) == ["error"]
-    assert ("exit", "chat.translation") in seen["spans"], "the root span was left open"
+    assert ("exit", "turn") in seen["spans"], "the root span was left open"
 
 
 # ── run_turn itself ─────────────────────────────────────────────────────────
@@ -405,6 +407,57 @@ def test_json_response_carries_artifacts_without_a_frame(monkeypatch):
     assert body["response"].strip()
 
 
+@pytest.mark.parametrize(
+    ("sent", "recorded"),
+    [
+        (None, None),
+        ("speech_to_text", "speech_to_text"),
+        (" FAQ ", "faq"),
+        ("voice_note", "voice_note"),  # a name the registry does not list yet: kept as sent
+        ("faq; drop", None),  # not a plain name: not recorded, and the farmer still gets the answer
+    ],
+)
+def test_the_turn_records_how_the_question_was_entered(monkeypatch, sent, recorded):
+    """amul-telemetry#38: the client says how the farmer entered the question, on the
+    request /chat already authenticates, and it lands on the turn's root."""
+    seen = patch_turn(monkeypatch)
+    params = {"query": "How much water?", "source_lang": "gu", "target_lang": "gu"}
+    if sent is not None:
+        params["input_method"] = sent
+
+    response = _client(monkeypatch).get("/chat/", params=params)
+
+    assert response.status_code == 200 and response.text.strip()
+    roots = [c.kwargs for c in seen["langfuse"].start_as_current_observation.call_args_list if c.kwargs.get("name") == TURN_ROOT]
+    assert len(roots) == 1
+    assert roots[0]["metadata"].get("amul.input_method") == recorded
+
+
+def test_the_response_names_the_turns_trace(monkeypatch):
+    """The router makes the turn's trace id, opens the root with it and sends it back as
+    X-Trace-Id (and trace_id in a JSON body), so a later feedback can score the turn."""
+    patch_turn(monkeypatch)
+    pinned = []
+
+    @contextlib.contextmanager
+    def _root_trace_id(trace_id):
+        pinned.append(trace_id)
+        yield
+
+    monkeypatch.setattr(chat_service, "root_trace_id", _root_trace_id)
+    client = _client(monkeypatch)
+    params = {"query": "How much water?", "source_lang": "gu", "target_lang": "gu"}
+
+    streamed = client.get("/chat/", params=params)
+    json_response = client.get("/chat/", params={**params, "stream": False})
+
+    assert streamed.status_code == 200 and streamed.text.strip()
+    assert json_response.status_code == 200
+    assert [streamed.headers["x-trace-id"], json_response.headers["x-trace-id"]] == pinned
+    assert json_response.json()["trace_id"] == json_response.headers["x-trace-id"]
+    assert len(set(pinned)) == 2 and all(len(trace_id) == 32 and int(trace_id, 16) for trace_id in pinned)
+
+
 def _asgi_app(monkeypatch):
     async def _no_history(_key):
         return []
@@ -459,7 +512,7 @@ def test_disconnect_raised_by_send_closes_the_turn_before_the_response_returns(m
 
     outcomes, spans = asyncio.run(_go())
     assert outcomes == ["cancelled"]
-    assert spans[-1] == ("exit", "chat.translation"), spans
+    assert spans[-1] == ("exit", "turn"), spans
 
 
 def test_disconnect_that_cancels_the_stream_closes_the_turn_before_background_work(monkeypatch):
@@ -497,9 +550,9 @@ def test_disconnect_that_cancels_the_stream_closes_the_turn_before_background_wo
 
     outcomes, spans = asyncio.run(_go())
     assert outcomes == ["cancelled"]
-    assert spans[-1] == ("exit", "chat.translation"), spans
+    assert spans[-1] == ("exit", "turn"), spans
     assert len(spans_when_suggestions_ran) == 1, "background work did not run"
-    assert spans_when_suggestions_ran[0][-1] == ("exit", "chat.translation"), (
+    assert spans_when_suggestions_ran[0][-1] == ("exit", "turn"), (
         "suggestions ran while the turn's root span was still open"
     )
 
@@ -537,7 +590,7 @@ def test_disconnect_before_the_first_chunk_is_recorded_as_cancelled(monkeypatch)
 
     outcomes, spans = asyncio.run(_go())
     assert outcomes == ["cancelled"]
-    assert spans[-1] == ("exit", "chat.translation"), spans
+    assert spans[-1] == ("exit", "turn"), spans
 
 
 def test_turn_close_completes_even_if_the_turn_awaits_while_unwinding(monkeypatch):

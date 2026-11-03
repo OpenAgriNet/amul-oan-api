@@ -240,8 +240,10 @@ async def test_records_outside_the_turn_are_masked(client, monkeypatch):
 @pytest.mark.parametrize(("short_desc", "outcome"), [
     ("No Record Found for this (00000000000) Aadhar/Ben_id/Mobile.", "NO_RECORD"),
     ("Try again", "SERVICE_ERROR"),
+    ("This mobile number taged with multiple records.", "MULTIPLE_RECORDS"),
+    ("Some new BV reason for 9876543210", 'NOT_ACCEPTED. PM-KISAN did not send an OTP for this identifier: "Some new BV reason for ******3210"'),
 ])
-async def test_bv_outage_is_not_reported_as_a_wrong_id(client, short_desc, outcome):
+async def test_bv_init_refusal_gets_its_own_outcome(client, short_desc, outcome):
     client.init_payload = _on_init("otp_error", short_desc)
     answer = await vistaar_pmkisan.initiate_pm_kisan_status_check(_ctx(), identifier="GJ123456789")
     assert answer.startswith(outcome)

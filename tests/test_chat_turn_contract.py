@@ -87,9 +87,17 @@ def patch_turn(monkeypatch, *, agent_text="Give clean water daily.", artifact=No
             seen["spans"].append(("exit", self.name))
             return False
 
+    def _current_span():
+        open_spans = []
+        for event, name in seen["spans"]:
+            open_spans.append(name) if event == "enter" else open_spans.remove(name)
+        return open_spans[-1] if open_spans else None
+
     client = MagicMock()
     client.set_current_trace_io.side_effect = lambda **kw: seen["trace_io"].append(kw)
     client.start_as_current_observation.side_effect = lambda **kw: _Span(kw.get("name"))
+    client.get_current_trace_id.side_effect = lambda: "contract-trace" if _current_span() else None
+    client.get_current_observation_id.side_effect = _current_span
     monkeypatch.setattr(chat_service, "get_langfuse_client", lambda: client)
     seen["langfuse"] = client
     monkeypatch.setattr(chat_service, "propagate_attributes", None)
@@ -239,9 +247,11 @@ def test_suggestions_are_deferred_not_run_inline(monkeypatch):
     tasks = seen["background_tasks"].tasks
     assert len(tasks) == 1
     assert tasks[0].func is chat_service.create_suggestions
-    session_id, target_lang, execution = tasks[0].args
+    session_id, target_lang, execution, turn_root = tasks[0].args
     assert (session_id, target_lang) == ("contract", "gu")
     assert execution is not None
+    # They are a step of the turn, under its root, which has closed when they run.
+    assert turn_root == {"trace_id": "contract-trace", "parent_span_id": "turn"}
 
 
 # ── history ─────────────────────────────────────────────────────────────────
@@ -275,12 +285,12 @@ def test_one_root_span_wraps_the_whole_turn(monkeypatch):
     seen = _drive(monkeypatch)
     spans = seen["spans"]
 
-    assert [s for s in spans if s[1] == "chat.translation"] == [
-        ("enter", "chat.translation"),
-        ("exit", "chat.translation"),
+    assert [s for s in spans if s[1] == "turn"] == [
+        ("enter", "turn"),
+        ("exit", "turn"),
     ], spans
-    assert spans[0] == ("enter", "chat.translation"), spans
-    assert spans[-1] == ("exit", "chat.translation"), spans
+    assert spans[0] == ("enter", "turn"), spans
+    assert spans[-1] == ("exit", "turn"), spans
     assert len(spans) > 2, f"no child observation was nested under the root: {spans}"
 
 

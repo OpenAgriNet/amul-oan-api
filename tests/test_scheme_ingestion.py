@@ -600,6 +600,228 @@ def test_build_pdf_record_runs_ocr_when_prior_hash_missing(monkeypatch):
     assert ocr_calls == [pdf_bytes]
 
 
+# AMUL-116: numbers as OCR read them in prod Redis, and as each PDF's text layer has them.
+MADHUR_INSURER_OCR = "૯૦૮૯૧૯૭૩૬૬"
+MADHUR_INSURER = "૯૦૯૯૧૯૭૩૬૬"
+MADHUR_UNION_OCR_P4 = "૯૦૮૧૯૨૨૨૮૮"
+MADHUR_UNION_OCR_P5 = "૯૦૯૧૯૨૨૨૯૮"
+MADHUR_UNION = "૯૦૮૧૯૨૨૨૯૮"
+SABAR_TALOD_OCR = "૯૪૨૭૮૬૨૮૧૪"
+SABAR_TALOD = "૯૪૨૭૮૬૨૯૧૪"
+SABAR_PRANTIJ_OCR = "૯૪૨૮૪૫૭૮૬૭"
+SABAR_PRANTIJ = "૯૪૨૯૪૫૭૮૬૭"
+SABAR_OTHER_VETS = {"૯૪૨૮૫૧૩૫૨૪", "૯૪૨૮૫૧૩૫૨૭", "૯૪૨૮૫૧૩૫૪૪", "૯૪૨૮૫૧૩૫૬૨"}
+
+
+class _FakeTextPage:
+    def __init__(self, text: str) -> None:
+        self._text = text
+
+    def get_text(self) -> str:
+        return self._text
+
+
+class _FakeTextDoc:
+    def __init__(self, page_texts: list[str]) -> None:
+        self.page_texts = page_texts
+        self.page_count = len(page_texts)
+        self.closed = False
+
+    def load_page(self, index: int) -> _FakeTextPage:
+        return _FakeTextPage(self.page_texts[index])
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def test_pdf_text_layer_phone_numbers_reads_ten_digit_runs_only(monkeypatch):
+    fake_doc = _FakeTextDoc(
+        [
+            # The row number on the next line must not be joined to the phone number.
+            f"વીમા કંપની {MADHUR_INSURER}\n૨ સંઘ {MADHUR_UNION}",
+            "ટેગ ૧૦૦૨૩૪૫૬૭૮૯૦ પોલિસી ૪૫૬૭૮૯ ફોન ૯૪૨૮૫ ૧૩૫૨૭",
+        ]
+    )
+    monkeypatch.setattr(si, "_get_pymupdf_module", lambda: SimpleNamespace(open=lambda stream, filetype: fake_doc))
+
+    assert si._pdf_text_layer_phone_numbers(b"%PDF%") == {MADHUR_INSURER, MADHUR_UNION}
+    assert fake_doc.closed is True
+
+
+def test_pdf_text_layer_phone_numbers_empty_for_unreadable_pdf():
+    assert si._pdf_text_layer_phone_numbers(b"not a pdf") == set()
+
+
+def test_correct_ocr_phone_numbers_fixes_madhur_insurance_numbers():
+    ocr_text = (
+        f"વીમા કંપની {MADHUR_INSURER_OCR} સંઘ {MADHUR_UNION_OCR_P4}\n\n"
+        f"વીમા કંપની {MADHUR_INSURER} સંઘ {MADHUR_UNION_OCR_P5}"
+    )
+
+    text, corrections = si._correct_ocr_phone_numbers(ocr_text, {MADHUR_INSURER, MADHUR_UNION})
+
+    assert text == (
+        f"વીમા કંપની {MADHUR_INSURER} સંઘ {MADHUR_UNION}\n\n"
+        f"વીમા કંપની {MADHUR_INSURER} સંઘ {MADHUR_UNION}"
+    )
+    assert corrections == [
+        (MADHUR_INSURER_OCR, MADHUR_INSURER),
+        (MADHUR_UNION_OCR_P4, MADHUR_UNION),
+        (MADHUR_UNION_OCR_P5, MADHUR_UNION),
+    ]
+
+
+def test_correct_ocr_phone_numbers_fixes_sabar_vet_numbers():
+    text_layer = {SABAR_TALOD, SABAR_PRANTIJ, *SABAR_OTHER_VETS}
+    ocr_text = f"તલોદ {SABAR_TALOD_OCR}\nપ્રાંતિજ {SABAR_PRANTIJ_OCR}\n" + "\n".join(sorted(SABAR_OTHER_VETS))
+
+    text, corrections = si._correct_ocr_phone_numbers(ocr_text, text_layer)
+
+    assert text == f"તલોદ {SABAR_TALOD}\nપ્રાંતિજ {SABAR_PRANTIJ}\n" + "\n".join(sorted(SABAR_OTHER_VETS))
+    assert corrections == [(SABAR_TALOD_OCR, SABAR_TALOD), (SABAR_PRANTIJ_OCR, SABAR_PRANTIJ)]
+
+
+def test_correct_ocr_phone_numbers_leaves_ties_unchanged():
+    # One digit from both ...524 and ...527: no way to tell which one the PDF meant.
+    ocr_text = "ફોન ૯૪૨૮૫૧૩૫૨૬"
+
+    assert si._correct_ocr_phone_numbers(ocr_text, SABAR_OTHER_VETS) == (ocr_text, [])
+
+
+def test_correct_ocr_phone_numbers_leaves_distant_and_non_phone_numbers_unchanged():
+    ocr_text = (
+        "ફોન ૯૮૨૫૦૦૦૦૦૦ "  # 3+ digits from every text-layer number
+        f"ટેગ ૧૨{MADHUR_INSURER_OCR} "  # 12-digit tag number ending in a misread-looking run
+        "પોલિસી ૯૦૮૯૧૯ "  # 6 digits
+        "ASCII 9089197366"  # digits are compared as written, not converted
+    )
+
+    assert si._correct_ocr_phone_numbers(ocr_text, {MADHUR_INSURER, MADHUR_UNION}) == (ocr_text, [])
+
+
+def test_correct_ocr_phone_numbers_without_text_layer_changes_nothing():
+    ocr_text = f"વીમા કંપની {MADHUR_INSURER_OCR}"
+
+    assert si._correct_ocr_phone_numbers(ocr_text, set()) == (ocr_text, [])
+
+
+def test_build_pdf_record_repairs_phone_numbers_in_cached_ocr(monkeypatch):
+    pdf_bytes = b"madhur-insurance-pdf"
+    scheme_url = "http://www.madhurdairy.org/files/insurance.pdf"
+
+    async def fake_fetch_bytes(_client, _url):
+        return pdf_bytes
+
+    ocr_calls = []
+
+    async def fake_extract(_client, _pdf_bytes, *, ocr_stats=None):
+        ocr_calls.append(_pdf_bytes)
+        return "should-not-be-used"
+
+    text_layer_reads = []
+
+    def fake_text_layer(_pdf_bytes):
+        text_layer_reads.append(_pdf_bytes)
+        return {MADHUR_INSURER, MADHUR_UNION}
+
+    monkeypatch.setattr(si, "fetch_bytes", fake_fetch_bytes)
+    monkeypatch.setattr(si, "extract_text_from_pdf_bytes", fake_extract)
+    monkeypatch.setattr(si, "_pdf_text_layer_phone_numbers", fake_text_layer)
+
+    record = asyncio.run(
+        si._build_pdf_record(
+            client=SimpleNamespace(),
+            source=si.MADHUR_SOURCE,
+            scheme_title="CATTLE INSURANCE PARIPATRA",
+            scheme_url=scheme_url,
+            last_refreshed_at="2026-10-29T00:00:00Z",
+            prior_records_by_url={
+                scheme_url: {
+                    "content": f"વીમા કંપની {MADHUR_INSURER_OCR} સંઘ {MADHUR_UNION_OCR_P4}",
+                    "content_hash": si._hash_pdf_bytes(pdf_bytes),
+                    "content_type": "pdf",
+                    "ocr_complete": True,
+                    "ocr_total_pages": 6,
+                    "ocr_failed_pages": 0,
+                }
+            },
+        )
+    )
+
+    assert record is not None
+    assert record["content"] == f"વીમા કંપની {MADHUR_INSURER} સંઘ {MADHUR_UNION}"
+    assert record["content_hash"] == si._hash_pdf_bytes(pdf_bytes)
+    assert record["ocr_complete"] is True
+    assert ocr_calls == []
+    assert text_layer_reads == [pdf_bytes]
+
+
+def test_build_pdf_record_repairs_phone_numbers_in_fresh_ocr(monkeypatch):
+    pdf_bytes = b"sabar-hrc-pdf"
+
+    async def fake_fetch_bytes(_client, _url):
+        return pdf_bytes
+
+    async def fake_extract(_client, _pdf_bytes, *, ocr_stats=None):
+        _mark_complete_ocr(ocr_stats, total_pages=2)
+        return f"તલોદ {SABAR_TALOD_OCR}\nપ્રાંતિજ {SABAR_PRANTIJ_OCR}"
+
+    monkeypatch.setattr(si, "fetch_bytes", fake_fetch_bytes)
+    monkeypatch.setattr(si, "extract_text_from_pdf_bytes", fake_extract)
+    monkeypatch.setattr(
+        si, "_pdf_text_layer_phone_numbers", lambda _pdf_bytes: {SABAR_TALOD, SABAR_PRANTIJ, *SABAR_OTHER_VETS}
+    )
+
+    record = asyncio.run(
+        si._build_pdf_record(
+            client=SimpleNamespace(),
+            source=si.SABAR_SOURCE,
+            scheme_title="HRC PARIPATRA NO.21",
+            scheme_url="https://sabardairy.org/wp-content/uploads/2026/09/4-HRC-PARIPATRA-NO.21.pdf",
+            last_refreshed_at="2026-10-29T00:00:00Z",
+        )
+    )
+
+    assert record is not None
+    assert record["content"] == f"તલોદ {SABAR_TALOD}\nપ્રાંતિજ {SABAR_PRANTIJ}"
+    assert record["ocr_complete"] is True
+
+
+def test_build_pdf_record_keeps_cached_ocr_when_pdf_has_no_text_layer(monkeypatch):
+    pdf_bytes = b"scanned-pdf"
+    scheme_url = "https://example.com/scanned.pdf"
+    cached = f"ફોન {MADHUR_INSURER_OCR}"
+
+    async def fake_fetch_bytes(_client, _url):
+        return pdf_bytes
+
+    monkeypatch.setattr(si, "fetch_bytes", fake_fetch_bytes)
+    monkeypatch.setattr(si, "_pdf_text_layer_phone_numbers", lambda _pdf_bytes: set())
+
+    record = asyncio.run(
+        si._build_pdf_record(
+            client=SimpleNamespace(),
+            source=si.BANAS_SOURCE,
+            scheme_title="Scanned Scheme",
+            scheme_url=scheme_url,
+            last_refreshed_at="2026-10-29T00:00:00Z",
+            prior_records_by_url={
+                scheme_url: {
+                    "content": cached,
+                    "content_hash": si._hash_pdf_bytes(pdf_bytes),
+                    "content_type": "pdf",
+                    "ocr_complete": True,
+                    "ocr_total_pages": 1,
+                    "ocr_failed_pages": 0,
+                }
+            },
+        )
+    )
+
+    assert record is not None
+    assert record["content"] == cached
+
+
 def test_prior_pdf_records_by_url_keeps_pdfs_with_content():
     prior = si._prior_pdf_records_by_url(
         [

@@ -50,7 +50,7 @@
     ],
     "context": "dairy milk price",
     "type": "ask",
-    "rule": "When asked about milk price, do not give a specific union's rate directly. You MUST ask which dairy union/cooperative the farmer belongs to before answering. Ask: 'Which dairy union or cooperative are you asking about?'"
+    "rule": "When asked about milk price, do not give a specific union's rate directly. You MUST ask which dairy union/cooperative the farmer belongs to before answering. Ask: 'Which dairy union or cooperative are you asking about?' This applies only to milk. A mandi or APMC price of a crop or vegetable is not a milk price: answer it with get_vistaar_mandi_prices and do not ask about a union."
   },
   {
     "gu_terms": [

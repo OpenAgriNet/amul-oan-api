@@ -697,3 +697,41 @@ def test_a_voice_tool_call_wakes_the_nudge(monkeypatch):
 
     (emission,) = sent
     assert emission.text in lv._TOOL_NUDGE_MESSAGES["en"]
+
+
+def test_memory_episode_listing_uses_event_time_and_reads_selected_record(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    from app.services.memory_store import MemoryStore
+
+    farmer = "9876543210"
+    ref = "00000000-0000-0000-0000-000000000001"
+    latest = {"id": ref, "payload": {
+        "farmer_id": farmer, "record_kind": "episode", "headline": "A prior conversation",
+        "source_episode_number": 1, "source_surface": "chat",
+        "episode_ended_at": "2026-10-30T10:00:00Z", "source_ts": "2026-10-30T10:00:00Z",
+    }}
+    older = {"id": "older", "payload": {
+        **latest["payload"], "source_episode_number": 5, "source_ts": "2026-10-29T10:00:00Z",
+    }}
+    store = MemoryStore(None, farmer)
+    qdrant = AsyncMock(side_effect=[[], {"points": [latest, older]}, [latest]])
+    monkeypatch.setattr(store, "_qdrant", qdrant)
+
+    async def run():
+        listing = await store.list_entries(kind="episode", order="desc", limit=1)
+        assert listing["truncated"] and listing["next_cursor"] is None
+        entry, = listing["entries"]
+        assert entry["id"] == ref and entry["source_episode_number"] == 1
+        assert entry["record_kind"] == "episode"
+        read = await store.read(entry["id"])
+        assert read["chunks"] == [{"number": 1, "text": "A prior conversation"}]
+        assert {"is_empty": {"key": "record_kind"}} in store._filter(kind="matter")["must"][-1]["should"]
+
+    asyncio.run(run())
+    _, scroll = qdrant.await_args_list[1].args
+    assert scroll["order_by"] == {"key": "source_ts", "direction": "desc"}
+    assert {"key": "farmer_id", "match": {"value": farmer}} in scroll["filter"]["must"]
+    assert {"key": "record_kind", "match": {"value": "episode"}} in scroll["filter"]["must"]
+    assert {"is_empty": {"key": "superseded_at"}} in scroll["filter"]["must"]
+    assert qdrant.await_args_list[2].args[1]["ids"] == [ref]

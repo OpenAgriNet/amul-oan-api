@@ -28,7 +28,8 @@ from typing import Any, Optional
 
 from app.core.cache import cache, redis_client, build_cache_key
 from app.config import settings
-from app.observability import start_observation
+from app.observability import non_turn_root
+from app.services.telemetry_stamps import BACKGROUND_JOB, non_turn_v1_metadata
 from agents.tools.models.farmer_transport import AnimalRecord, FarmerDataEnvelope, FarmerRecord
 from agents.tools.models.union import is_ai_call_banned_union
 from agents.tools.beckn.amul import fetch_animal_profile, search_ai_technicians
@@ -135,6 +136,17 @@ def _animals_expired(envelope: FarmerDataEnvelope) -> bool:
     except ValueError:
         return True
     return datetime.now(timezone.utc) - fetched_at >= timedelta(seconds=FARMER_REFRESH_INTERVAL)
+
+
+def _animals_due(envelope: FarmerDataEnvelope) -> bool:
+    """True when voice is on, the farmer has tags and their animals are past the
+    interval. The record's own clock can be newer (a turn's refresh restarts it
+    and keeps the animals), so this is checked on its own."""
+    return (
+        settings.voice_route_enabled
+        and any(_record_tags(farmer) for farmer in envelope.farmers)
+        and _animals_expired(envelope)
+    )
 
 
 def _compute_backoff_seconds(attempt_count: int) -> int:
@@ -308,6 +320,12 @@ async def get_cached_farmer_data(phone: str) -> Optional[FarmerDataEnvelope]:
                 envelope.stale = True
                 envelope.staleReason = "missing_animals"
                 envelope.refreshAfter = datetime.now(timezone.utc).isoformat()
+            elif not envelope.stale and _animals_due(envelope):
+                # Re-queued on every read (within the backoff) until a worker
+                # refresh fetches them, so one failed refresh is not the last.
+                envelope.stale = True
+                envelope.staleReason = "animals_expired"
+                envelope.refreshAfter = datetime.now(timezone.utc).isoformat()
             return envelope
     except Exception as e:
         logger.warning(f"Failed to read farmer cache for phone hash {key[:8]}...: {e}")
@@ -374,7 +392,8 @@ async def refresh_farmer_data(phone: str, *, background: bool = False) -> Option
     has: chat's worker pops from the same queue, and its refresh must not wipe
     what voice fetched. ``background`` is the worker's refresh; with the voice
     route on it fetches new tags' animals, and all of them once the interval has
-    passed. A refresh on a turn leaves that to the worker.
+    passed. A refresh on a turn leaves that to the worker, and queues it when
+    the animals are missing or past the interval.
     """
     phone = _normalize_cache_phone(phone)
     lock_key = _refresh_lock_key(phone)
@@ -409,8 +428,12 @@ async def refresh_farmer_data(phone: str, *, background: bool = False) -> Option
                     await _fetch_animals(envelope, only=new_tags)
             # Queued once the lock is released (finally): a worker that took the
             # phone while this refresh held the lock would wait for it and keep
-            # its envelope, animals still missing.
-            enqueue_animals_after_unlock = _needs_animals(envelope)
+            # its envelope, animals still missing. A refresh on a turn also
+            # queues animals past the interval: it restarts the record's own
+            # clock, so nothing else would fetch them until that runs out.
+            enqueue_animals_after_unlock = _needs_animals(envelope) or (
+                not background and _animals_due(envelope)
+            )
             await set_cached_farmer_data(phone, envelope)
             if any(technician_lookup_failed(group) for group in envelope.aiTechnicians):
                 # The backoff stays, so the retry waits for it instead of
@@ -596,20 +619,40 @@ async def get_or_fetch_farmer_data(phone: str) -> Optional[FarmerDataEnvelope]:
     return await _normalize_for_consumer(phone, refreshed)
 
 
+# Cold fetches that outlived their turn's budget, held until they finish so the
+# event loop does not drop them.
+_cold_fetches: set[asyncio.Task] = set()
+
+
 async def refresh_farmer_data_bounded(
     phone: str, timeout: float = FARMER_COLD_FETCH_TIMEOUT
 ) -> Optional[FarmerDataEnvelope]:
     """Blocking refresh with a hard timeout, for a cold/never-cached miss.
 
-    On timeout we defer to the background worker rather than hanging the turn:
-    the in-flight refresh is cancelled (its NX lock is released in its finally),
-    the phone is queued, and the caller proceeds with no farmer data this turn.
+    On timeout the caller proceeds with no farmer data this turn, but the fetch
+    keeps running: it stores what it gets and releases its NX lock in its
+    finally, so the next turn reads the farmer from the cache. The phone is
+    still queued, and its retry wait keeps the next turn from starting a second
+    fetch meanwhile.
+
+    The fetch used to be cancelled here, leaving the farmer to the worker,
+    whose refresh fetches every animal before it writes the record (voice,
+    2026-10-18..26: p90 8s, p99 37s, max 340s). Beckn operations kept in prod
+    Redis on 2026-10-26 show farmer-profile callbacks at p50 1.0s and p99 6.0s,
+    so a fetch that ran out usually had its profile a second or two later, with
+    the technician search (booking domain, p90 1.3s) still to follow. On voice
+    over the same days, 72 of the 140 calls with an unresolved turn recovered
+    later in the call, a median 28s (p90 45s) after that turn; until then the
+    caller heard "I cannot fetch your details" on each booking request.
     """
+    fetch = asyncio.create_task(refresh_farmer_data(phone))
+    _cold_fetches.add(fetch)
+    fetch.add_done_callback(_cold_fetches.discard)
     try:
-        return await asyncio.wait_for(refresh_farmer_data(phone), timeout=timeout)
+        return await asyncio.wait_for(asyncio.shield(fetch), timeout=timeout)
     except asyncio.TimeoutError:
         logger.warning(
-            "Cold farmer fetch exceeded %.1fs for phone hash %s...; deferring to worker",
+            "Cold farmer fetch exceeded %.1fs for phone hash %s...; finishing it in the background",
             timeout,
             _cache_key(phone)[:8],
         )
@@ -631,13 +674,15 @@ async def drain_farmer_refresh_queue_once(batch: int = FARMER_REFRESH_QUEUE_BATC
     processed = 0
     for phone in members:
         try:
-            # Root span so the nested API-call observations have a parent and
-            # are queryable in Langfuse (background refreshes aren't tied to a
-            # voice session).
-            with start_observation(
-                "farmer_background_refresh",
-                input={"phone_hash": _cache_key(phone)[:12]},
-                metadata={"reason": "background_refresh"},
+            # Its own trace, so the nested API calls have a root. No turn caused it:
+            # chat and voice share the queue, so it has no session or pipeline.
+            with non_turn_root(
+                BACKGROUND_JOB,
+                non_turn_v1_metadata(
+                    BACKGROUND_JOB,
+                    job="farmer_background_refresh",
+                    farmer_id=normalize_phone_to_mobile(phone),
+                ),
             ):
                 await refresh_farmer_data(phone, background=True)
             processed += 1
@@ -673,6 +718,7 @@ async def _fetch_animals(envelope: FarmerDataEnvelope, only: Optional[list[str]]
         return AnimalRecord(
             tagNumber=tag,
             animalType=animal.animal_type,
+            animalName=animal.animal_name,
             breed=animal.breed,
             milkingStage=animal.milking_stage,
             pregnancyStage=animal.pregnancy_stage,

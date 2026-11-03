@@ -1,6 +1,6 @@
 """Inbound partner webhook endpoints."""
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 from uuid import UUID
 
@@ -9,9 +9,11 @@ from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from app.auth.webhook_token import require_webhook_token
+from app.config import settings
 from app.core.webhook_db import get_webhook_session, webhook_db_configured
 from app.models.heat_alert import HeatAlertWebhookRequest, HeatAlertWebhookResponse
 from app.models.webhook import HeatAlertWebhookEvent
+from app.services import heat_alert_call
 from app.services.whatsapp_heat_alert import (
     WhatsAppHeatAlertConfigurationError,
     WhatsAppHeatAlertDeliveryError,
@@ -89,6 +91,11 @@ async def receive_heat_alert(payload: HeatAlertWebhookRequest) -> HeatAlertWebho
         )
 
     received_at = datetime.now(timezone.utc)
+    call_due_at = (
+        received_at + timedelta(seconds=settings.heat_alert_call_delay_seconds)
+        if heat_alert_call.enabled()
+        else None
+    )
     payload_raw = payload.model_dump(by_alias=True, mode="json")
     partner_alert_epoch_s = _parse_epoch_seconds(payload.alert_time)
     ai_window_start_at = _parse_iso8601_utc(payload.ai_window_start_time)
@@ -107,6 +114,7 @@ async def receive_heat_alert(payload: HeatAlertWebhookRequest) -> HeatAlertWebho
         pashuaadhar_no=payload.pashuaadhar_no,
         farm_name=payload.farm_name,
         farm_id=payload.farm_id,
+        union_code=payload.union_code,
         society_code=payload.society_code,
         farmer_code=payload.farmer_code,
         farmer_contact=payload.farmer_contact,
@@ -122,6 +130,7 @@ async def receive_heat_alert(payload: HeatAlertWebhookRequest) -> HeatAlertWebho
         partner_timestamp_at=partner_timestamp_at,
         partner_alert_epoch_s=partner_alert_epoch_s,
         payload_raw=payload_raw,
+        call_due_at=call_due_at,
     )
 
     try:
@@ -174,6 +183,8 @@ async def receive_heat_alert(payload: HeatAlertWebhookRequest) -> HeatAlertWebho
                     )
                 record_id, stored_received_at = existing_row
             await session.commit()
+        if inserted_row is not None and call_due_at is not None:
+            heat_alert_call.schedule(record_id, call_due_at)
     except WhatsAppHeatAlertConfigurationError as exc:
         logger.error(
             "Heat alert WhatsApp is not configured alert_id=%s error=%s",

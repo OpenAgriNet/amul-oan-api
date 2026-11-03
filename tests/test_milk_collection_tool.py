@@ -92,3 +92,29 @@ async def test_all_beckn_failures_return_temporary_failure(monkeypatch):
         "Milk collection lookup failed.\n\n"
         "Unable to fetch milk collection details at the moment."
     )
+
+
+@pytest.mark.asyncio
+async def test_summary_states_totals_across_accounts(monkeypatch):
+    # The model used to sum slips itself and got the total wrong in 80% of live
+    # answers that stated one. The tool states it now.
+    second = _farmer().model_copy(update={"farmer_code": "000124"})
+
+    async def farmers(*args, **kwargs):
+        return [_farmer(), second]
+
+    async def fetch(account, **kwargs):
+        rows = {
+            "000123": [
+                {"date": "01-10-2026", "shift": "M", "qty": 5.2, "fat": 6.4, "snf": 9.0, "amount": 251.30},
+                {"date": "02-10-2026", "shift": "E", "qty": 4.8, "fat": 6.8, "snf": 9.1, "amount": 238.10},
+            ],
+            "000124": [{"date": "01-10-2026", "shift": "M", "qty": 3.0, "fat": 4.1, "snf": 8.5, "amount": 102.0}],
+        }[account.farmer_code]
+        return FarmerMilkCollectionResponseModel.model_validate({"result": "success", "milk": rows, "deduction": []})
+
+    monkeypatch.setattr(milk, "fetch_authenticated_farmers", farmers)
+    monkeypatch.setattr(milk, "fetch_milk_collection", fetch)
+    result = await milk.get_farmer_milk_collection_details(_ctx(), "2026-10-01", "2026-10-02")
+
+    assert "| 01-10-2026 to 02-10-2026 | 2 | 13.00 | 591.40 | 6.02 | 8.92 |" in result

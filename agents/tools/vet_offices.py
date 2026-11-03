@@ -27,6 +27,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from pydantic_ai import RunContext
 from rapidfuzz import fuzz, process
 
+from agents.tools.telemetry import report_tool
 from agents.deps import FarmerContext
 from helpers.utils import get_logger
 
@@ -332,6 +333,7 @@ async def find_nearby_vet_offices(
             when the profile is not enough to locate them.
     """
     if not _load_offices():
+        report_tool("unavailable", "the office directory did not load")
         return "The veterinary office directory is unavailable right now."
 
     village = getattr(ctx.deps, "farmer_village", None) or ""
@@ -344,6 +346,7 @@ async def find_nearby_vet_offices(
         # in English and the user is answering in Gujarati, which is a request
         # to transliterate, not a reason to give up on them.
         logger.info("Vet office lookup got a non-Latin place name: %r", spoken)
+        report_tool("error", "place name not in English letters")
         return (
             "That place name did not come through in English letters. Ask again "
             "and call this tool with the name spelled in English."
@@ -366,6 +369,7 @@ async def find_nearby_vet_offices(
             taluka,
         )
         known = f" They are in {district} district." if district else ""
+        report_tool("no_result", "could not place the user")
         return (
             "Could not place the user from their profile."
             + known
@@ -389,6 +393,7 @@ async def find_nearby_vet_offices(
         district,
     )
     if not candidates:
+        report_tool("no_result", "no office listed for the taluka")
         return (
             "No veterinary office is listed for that taluka. Ask the user for a "
             "nearby larger town or taluka name and try again."

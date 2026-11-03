@@ -140,7 +140,9 @@ def test_the_agent_runs_with_what_the_surface_built(monkeypatch):
     # The new messages are saved after the history the surface named, not the turn's.
     assert seen["history_writes"] == [("agent-input", ["saved-before", _NEW_MESSAGE])]
     assert observe.log[0] == "enter" and observe.log[-1] == "exit"
-    assert ("update", {"output": {"response": _trace_outputs(seen)[-1]}}) in observe.log
+    # The agent step's output is the agent's answer, which the surface writes (after_run);
+    # run_turn writes nothing on it, the translated answer least of all.
+    assert not [entry for entry in observe.log if entry[0] == "update"]
     assert _outcomes(seen) == ["success"]
 
 
@@ -369,15 +371,17 @@ def test_chat_answers_in_the_pretranslated_language_when_nothing_is_translated(m
     assert doctor.agent is chat_service.doctor_agent
 
 
-def test_a_rejected_query_is_declined_as_a_success(monkeypatch):
+def test_a_rejected_query_is_declined_as_moderation_rejected(monkeypatch):
     patch_turn(monkeypatch)
     _moderation(monkeypatch, category="unsafe", action="I cannot help with that.")
     monkeypatch.setattr(chat_service, "_localize_system_text", _as_is)
 
     declined = _chat_agent_input(_turn())
 
-    assert declined == ClassifierResult(canned_text="I cannot help with that.", label="moderation decline")
-    assert declined.outcome == "success" and declined.history_pair is None
+    assert declined == ClassifierResult(
+        canned_text="I cannot help with that.", label="moderation decline", outcome="moderation_rejected"
+    )
+    assert declined.history_pair is None
 
 
 def test_a_failed_moderation_gets_the_fail_closed_line_as_an_error(monkeypatch):

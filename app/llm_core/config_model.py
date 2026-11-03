@@ -269,8 +269,11 @@ class SurfaceSettings(BaseModel):
 class VoiceSettings(SurfaceSettings):
     """Voice's settings, with the knobs only voice reads."""
 
-    trace_user_id_mode: Optional[Literal["hash", "phone"]] = None  # VOICE_TRACE_USER_ID_MODE
-    trace_text_mode: Optional[Literal["none", "preview_hash", "full"]] = None  # VOICE_TRACE_TEXT_MODE
+    #: No longer read: a voice trace carries the caller's words and number as they are
+    #: (amul-telemetry turn.v1, decided 2026-10-20). Accepted so a config that still sets
+    #: them loads.
+    trace_user_id_mode: Optional[Literal["hash", "phone"]] = None
+    trace_text_mode: Optional[Literal["none", "preview_hash", "full"]] = None
     nudge_timeout_seconds: Optional[float] = Field(default=None, gt=0)  # NUDGE_TIMEOUT_SECONDS
     outbound_intro_enabled: Optional[bool] = None  # OUTBOUND_INTRO_ENABLED
     #: One of agents.voice.agent.VOICE_PROMPT_VARIANTS (VOICE_AGENT_PROMPT_VERSION).

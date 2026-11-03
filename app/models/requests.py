@@ -23,6 +23,11 @@ class ChatRequest(BaseChatRequest):
         None,
         description="Test-only persona override; honored only when CHAT_PERSONA_OVERRIDE_ENABLED=true",
     )
+    input_method: Optional[str] = Field(
+        None,
+        description="How the farmer entered the question: typed, speech_to_text, home_question, faq or "
+        "suggestion. Recorded on the turn's telemetry; omit when not known.",
+    )
 
 
 class VoiceRequest(BaseChatRequest):

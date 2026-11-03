@@ -15,6 +15,7 @@ from app.tasks.webhook_cleanup_worker import (
     start_webhook_cleanup_worker,
     stop_webhook_cleanup_worker,
 )
+from app.services import heat_alert_call, outbound_call
 
 # Configure observability (Langfuse + pydantic-ai instrumentation) before router
 # imports that pull in agents, tools, and voice/chat pipelines.
@@ -72,8 +73,10 @@ async def lifespan(app: FastAPI):
     await start_farmer_refresh_worker()
     await start_health_poller()
     await start_webhook_cleanup_worker()
+    await heat_alert_call.recover()
     yield
     # Shutdown
+    await outbound_call.cancel_scheduled()
     await stop_webhook_cleanup_worker()
     await stop_health_poller()
     await stop_farmer_refresh_worker()
@@ -102,6 +105,8 @@ app.add_middleware(
     allow_credentials=settings.allowed_credentials,
     allow_methods=settings.allowed_methods,
     allow_headers=settings.allowed_headers,
+    # The chat response's trace id, which a browser client may read only when exposed.
+    expose_headers=["X-Trace-Id"],
 )
 
 

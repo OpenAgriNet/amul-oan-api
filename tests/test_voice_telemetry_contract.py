@@ -1,40 +1,49 @@
-"""Voice turns served from here must match telemetry/contracts/voice.turn.v1.json.
+"""Voice turns served from here send turn.v1 as telemetry/contracts/turn.v1/voice.json says.
 
-The contract is voice-oan-api's (#308), copied unchanged: readers of voice.turn.v1
-must not be able to tell which service sent a turn, except by its ``service``
-stamp. A released contract never changes. Any change to what a turn sends goes
-out as a new schema version with its own contract file, in both repos.
+turn.v1 is the shape every pipeline sends (amul-telemetry telemetry/turn.v1.yaml); the
+contract is what voice's code sends of it, for amul-telemetry's contract check. The
+old voice.turn.v1 contract is released and never changes: traces in Langfuse follow it.
 
-The checks are voice-oan-api's, pointed at this repo's voice code (app/voice)
-and at what ``run_turn`` records for it.
+The checks run turns down every path voice has, through the real run_turn with
+voice's pieces (the stand-ins of tests/test_voice_telemetry.py) and through voice's
+modules on their own, and compare what Langfuse was handed with the contract.
 """
 
 import ast
+import asyncio
+import dataclasses
 import hashlib
-import inspect
 import json
 import re
-from contextlib import contextmanager
+import time
 from pathlib import Path
+from types import SimpleNamespace
 
-import langfuse
+import pytest
 
 from app.config import settings
-from app.services.telemetry_stamps import VOICE_TELEMETRY_SCHEMA_VERSION
-from app.voice.telemetry import _OUTCOMES
+from app.services import chat as chat_service
+from app.services import translation as tr
+from app.services.telemetry_stamps import TURN_ROOT, VOICE_TELEMETRY_SCHEMA_VERSION
+from app.voice import classifiers as vc
+from app.voice.liveness import VoiceLiveness
 from app.voice.moderation import ModerationVerdict
-from app.voice.trace import _VALID_TEXT_MODES, VoiceTrace
+from app.voice.outbound_consent import ConsentVerdict
+from tests.test_voice_pretranslation import _pretranslate
+from tests.test_voice_pretranslation import _turn as _gujarati_turn
+from tests.test_voice_sink import _English, _speak, _Translation
+from tests.test_voice_telemetry import _PRIOR, _run, _Sender, _taken_over, _turn, _turn_execution, call, lf, trace  # noqa: F401  (fixtures)
 
 REPO = Path(__file__).resolve().parents[1]
 CONTRACTS = REPO / "telemetry" / "contracts"
-CONTRACT = CONTRACTS / f"{VOICE_TELEMETRY_SCHEMA_VERSION}.json"
-CONTRACT_NAME = f"telemetry/contracts/{VOICE_TELEMETRY_SCHEMA_VERSION}.json"
+CONTRACT = CONTRACTS / VOICE_TELEMETRY_SCHEMA_VERSION / "voice.json"
+CONTRACT_NAME = f"telemetry/contracts/{VOICE_TELEMETRY_SCHEMA_VERSION}/voice.json"
 NEW_VERSION = (
-    f"{VOICE_TELEMETRY_SCHEMA_VERSION} can't change once released, so this needs a new schema version "
-    "in voice-oan-api and here: bump VOICE_TELEMETRY_SCHEMA_VERSION in app/services/telemetry_stamps.py, "
-    f"copy {CONTRACT_NAME} to the new version's file and make the change there, and add the new version "
-    f"to telemetry/mappings/voice.yaml in amul-telemetry (it can extend {VOICE_TELEMETRY_SCHEMA_VERSION})."
+    f"{VOICE_TELEMETRY_SCHEMA_VERSION} is the shape every pipeline sends (amul-telemetry telemetry/turn.v1.yaml). "
+    f"A key, step or outcome added or removed is a registry change there first; then change {CONTRACT_NAME} "
+    "and voice's code together."
 )
+STAMPS = {"amul.schema_version", "amul.service", "amul.release", "amul.kind"}
 
 # The same fingerprints as voice-oan-api's. Key order, spacing and the "note"
 # text don't count.
@@ -43,7 +52,6 @@ RELEASED_CONTRACTS = {
 }
 
 _GENERIC_NAMES = {"data", "id", "result", "score", "status", "time", "type", "value"}
-_GRANDFATHERED_NAMES = {"error.type"}
 _SNAKE_CASE = re.compile(r"[a-z][a-z0-9_]*")
 
 
@@ -56,6 +64,204 @@ def _fingerprint(path):
     contract = json.loads(path.read_text(encoding="utf-8"))
     contract.pop("note", None)
     return hashlib.sha256(json.dumps(contract, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+# ── every path a voice turn can take, and what each handed Langfuse ──────────
+
+
+@dataclasses.dataclass
+class _Sent:
+    """What one run handed Langfuse: the root's keys, each step, the trace fields."""
+
+    root_keys: set
+    opened: dict
+    closed: dict
+    io: dict
+    root_updates: list
+    steps: list
+    scores: list
+
+
+def _take(client):
+    sent = _Sent(
+        root_keys=set(client.root.kwargs["metadata"]) | set(client.closed),
+        opened=client.opened,
+        closed=client.closed,
+        io=dict(client.io),
+        root_updates=list(client.root.updates),
+        steps=[o for o in client.observations if o.kwargs["name"] != TURN_ROOT],
+        scores=list(client.scores),
+    )
+    client.observations.clear()
+    client.propagated.clear()
+    client.scores.clear()
+    client.io.clear()
+    client.traces.clear()
+    return sent
+
+
+def _every_turn(lf, call, monkeypatch):  # noqa: F811
+    """One run down each path, with the words and the caller's number sent, as voice sends them."""
+
+    async def _please_repeat(**_kw):
+        return "Please say that again."
+
+    monkeypatch.setattr(vc, "generate_stt_signal_response", _please_repeat)
+    runs = []
+    answered = _turn(history=_PRIOR)
+    _run(dataclasses.replace(answered, call=dataclasses.replace(answered.call, request_epoch=3)))
+    runs.append(_take(lf))
+    # A request another took the session over from, before its history write.
+    _run(_turn(history=_PRIOR), is_stale=_taken_over(monkeypatch, by="ef" * 16, owner=False))
+    runs.append(_take(lf))
+    for query in ("hello", "What is your name?", "hm", "No audio/User is speaking softly", "please remain on the line"):
+        _run(_turn(query))
+        runs.append(_take(lf))
+    call["moderation"] = ModerationVerdict(category="irrelevant", reason="off topic")
+    _run(_turn("Who won the match?", history=_PRIOR))
+    runs.append(_take(lf))
+    call["moderation"] = ModerationVerdict(category="in_scope", reason="ok")
+    call["consent"] = ConsentVerdict(intent="negative", reason="not now")
+    _run(_turn("No", history=_PRIOR, consent_turn=True))
+    runs.append(_take(lf))
+    call["consent"] = ConsentVerdict(intent="affirmative", reason="yes")
+    call["prefetched"] = "Total 40 litres."
+    _run(_turn("Yes", history=_PRIOR, consent_turn=True))
+    runs.append(_take(lf))
+    call["consent"] = None
+
+    async def _down(key, messages):
+        raise RuntimeError("redis down")
+
+    monkeypatch.setattr(chat_service, "update_message_history", _down)
+    with pytest.raises(RuntimeError):
+        _run(_turn(history=_PRIOR))
+    runs.append(_take(lf))
+    return runs
+
+
+def _every_module_step(trace, monkeypatch):  # noqa: F811
+    """The steps voice's modules write on their own: pre_translation with a fallback,
+    post_translation with the translation calls under it (stream_translation for a batch,
+    text_translation for a fixed line rendered for the caller), and a nudge that went out."""
+    _pretranslate(
+        monkeypatch, _gujarati_turn("ભેંસ"), replies=[RuntimeError("oss down"), "For a buffalo"], execution=_turn_execution()
+    )
+    _Translation(monkeypatch, replies=[["ગાયને પાણી આપો."]])
+    _speak(_English(["Give the cow water."]))
+    _translation_calls(trace, monkeypatch)
+    monkeypatch.setattr(settings, "enable_voice_nudges", True)
+    monkeypatch.setattr(settings, "nudge_timeout_seconds", 0)
+
+    async def _go():
+        liveness = VoiceLiveness(_turn(), started_at=time.monotonic(), send=_Sender(), is_stale=None)
+        await asyncio.sleep(0.05)
+        await liveness.stop()
+
+    asyncio.run(_go())
+    return list(trace.sent.observations)
+
+
+def _translation_calls(trace, monkeypatch):  # noqa: F811
+    """translation.py's calls as voice's sink and renderer make them, the network stubbed:
+    a batch streamed under the sink's post_translation span, a fixed line translated once
+    under the step that says it. Each call names the provider and tier that served."""
+    monkeypatch.setattr(tr, "_get_langfuse", lambda: trace.sent)
+
+    async def _stream(*_a, **_k):
+        yield "ગાયને પાણી આપો."
+
+    async def _unary(*_a, **_k):
+        return "નમસ્તે."
+
+    monkeypatch.setattr(tr, "_raw_translategemma_stream", _stream)
+    monkeypatch.setattr(tr, "_raw_translategemma_unary", _unary)
+    descriptor = SimpleNamespace(model_id="translategemma-27b-base")
+    served = SimpleNamespace(provider="translategemma", served_tier="translategemma:tg[0]")
+    span = trace.sent.step("post_translation")
+
+    async def _go():
+        args = ("Give the cow water.", "english", "gu", 0.0, 64)
+        [_ async for _ in tr._translategemma_stream(descriptor, "prompt", *args, served=served, parent=span)]
+        with trace.stage("greeting_fast_path"):
+            await tr._translategemma_unary(descriptor, "prompt", "Hello.", "english", "gu", 0.0, 64, served=served)
+
+    asyncio.run(_go())
+
+
+def _steps_sent(observations):
+    """Per step name: the types it was opened as, the keys of its output and metadata."""
+    steps = {}
+    for observation in observations:
+        sent = observation.sent
+        step = steps.setdefault(sent["name"], {"types": set(), "output": set(), "metadata_keys": set()})
+        step["types"].add(sent["as_type"].upper())
+        output = sent.get("output")
+        if isinstance(output, dict):
+            step["output"].update(output)
+        step["metadata_keys"].update(sent.get("metadata") or {})
+    return steps
+
+
+# ── the contract against what is sent ────────────────────────────────────────
+
+
+def test_contract_matches_the_stamped_schema_version_and_root():
+    contract = _contract()
+
+    assert contract["schema_version"] == VOICE_TELEMETRY_SCHEMA_VERSION == "turn.v1"
+    assert contract["root"] == TURN_ROOT == "turn"
+    assert contract["pipelines"] == ["telephony"]
+
+
+def test_the_root_sends_exactly_the_metadata_keys_the_contract_lists(lf, call, monkeypatch):  # noqa: F811
+    runs = _every_turn(lf, call, monkeypatch)
+    sent = set().union(*(run.root_keys for run in runs))
+    listed, timed = set(_contract()["metadata_keys"]), _timing_keys()
+
+    assert STAMPS <= sent
+    # Each mark and stage a turn reached has its time; which ones depends on the path.
+    assert sent - timed == listed - timed, f"the amul.* keys voice sends don't match the contract. {NEW_VERSION}"
+    assert sent & timed and sent & timed <= listed
+    for run in runs:
+        # Trace-level fields on the root alone: the environment for every span, the
+        # fields before any step, the end of the turn as the root closes.
+        assert set(run.opened) == {"environment", "session_id", "user_id", "metadata"}
+        assert run.closed["amul.outcome"] in _contract()["outcomes"]
+
+
+def test_the_steps_opened_match_the_contract(lf, call, trace, monkeypatch):  # noqa: F811
+    observations = [step for run in _every_turn(lf, call, monkeypatch) for step in run.steps]
+    observations += _every_module_step(trace, monkeypatch)
+    sent = _steps_sent(observations)
+    listed = _contract()["steps"]
+
+    assert set(sent) == set(listed), f"the steps voice opens don't match the contract. {NEW_VERSION}"
+    for name, step in sent.items():
+        assert step["types"] == {listed[name]["type"]}, f"step {name} is opened as {sorted(step['types'])}"
+        assert step["output"] == set(listed[name].get("output", ())), f"step {name}'s output fields. {NEW_VERSION}"
+        assert step["metadata_keys"] <= set(listed[name]["metadata_keys"]), f"step {name}'s metadata keys. {NEW_VERSION}"
+        assert all(key.startswith("amul.") for key in step["metadata_keys"]), name
+
+
+def test_the_trace_fields_sent_match_the_contract(lf, call, monkeypatch):  # noqa: F811
+    runs = _every_turn(lf, call, monkeypatch)
+    sent = set()
+    for run in runs:
+        sent |= {"session_id", "user_id"} & {key for key, value in run.opened.items() if value}
+        sent |= set(run.io)
+        sent |= {key for update in run.root_updates for key, value in update.items() if value}
+
+    assert sent == set(_contract()["trace_fields"]), f"the trace fields voice sends don't match the contract. {NEW_VERSION}"
+
+
+def test_every_turn_scores_its_outcome_once(lf, call, monkeypatch):  # noqa: F811
+    for run in _every_turn(lf, call, monkeypatch):
+        (score,) = run.scores
+        assert (score["name"], score["value"], score["data_type"]) == ("turn_outcome", run.closed["amul.outcome"], "CATEGORICAL")
+
+
+# ── what the code can send, read from it ──────────────────────────────────────
 
 
 def _voice_nodes():
@@ -76,177 +282,29 @@ def _run_turn_nodes():
     return _function_nodes(REPO / "app" / "services" / "chat.py", "run_turn")
 
 
-def _metadata_key(node):
-    """The key in `<x>.metadata["key"]`, or None."""
-    if (
-        isinstance(node, ast.Subscript)
-        and isinstance(node.value, ast.Attribute)
-        and node.value.attr == "metadata"
-        and isinstance(node.slice, ast.Constant)
-        and isinstance(node.slice.value, str)
-    ):
-        return node.slice.value
-    return None
+def _first_string_args(*methods):
+    return {
+        node.args[0].value
+        for node in _voice_nodes()
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr in methods
+        and node.args and isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, str)
+    }
 
 
-def _keys_written_in_voice():
-    keys = set()
-    for node in _voice_nodes():
-        if isinstance(node, ast.Assign):
-            keys.update(key for target in node.targets if (key := _metadata_key(target)))
-        elif isinstance(node, (ast.AnnAssign, ast.AugAssign)) and (key := _metadata_key(node.target)):
-            keys.add(key)
-        elif (
-            isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Attribute)
-            and node.func.attr == "setdefault"
-            and isinstance(node.func.value, ast.Attribute)
-            and node.func.value.attr == "metadata"
-            and node.args
-            and isinstance(node.args[0], ast.Constant)
-        ):
-            keys.add(node.args[0].value)
-    return keys
+def _timing_keys():
+    """The keys of what voice times: each mark (trace.mark("ttft_ms")) as amul.<mark>, and
+    each stage (trace.stage("agent"), attach_stage_timing("history_load")) as amul.<stage>_ms."""
+    marks = {f"amul.{mark}" for mark in _first_string_args("mark")}
+    stages = {f"amul.{stage}_ms" for stage in _first_string_args("stage", "attach_stage_timing")}
+    return marks | stages
 
 
-class _FakeLangfuse:
-    """Records what VoiceTrace hands to Langfuse for the root of one turn."""
+def test_every_mark_and_stage_voice_times_has_its_key_in_the_contract():
+    listed = {key for key in _contract()["metadata_keys"] if key.endswith("_ms")}
 
-    def __init__(self):
-        self.sent = {}
-
-    @contextmanager
-    def start_as_current_observation(self, **kwargs):
-        self.sent.setdefault("open", kwargs)
-        yield self
-
-    @contextmanager
-    def propagate_attributes(self, **kwargs):
-        self.sent["propagate"] = kwargs
-        yield
-
-    def update(self, **kwargs):
-        self.sent["update"] = kwargs
-
-    def end(self):
-        pass
-
-
-# A value for every argument a trace block is built from, so a turn can be sent
-# with every optional key in it.
-_ARGUMENTS = {
-    "text": "<redacted question>",
-    "provider": "<redacted-provider>",
-    "fallback_used": True,
-    "requested_tier": "oss",
-    "requested_provider": "<redacted-provider>",
-    "requested_model": "<redacted-model>",
-    "actual_tier": "managed",
-    "actual_provider": "<redacted-provider>",
-    "actual_model": "<redacted-model>",
-    "first_token_committed_tier": "managed",
-    "first_token_committed_provider": "<redacted-provider>",
-    "first_token_committed_model": "<redacted-model>",
-    "attempts": [{"tier": "oss", "status": "error"}, {"tier": "managed", "status": "ok"}],
-    "signed_in": True,
-    "output": "<redacted answer>",
-    "new_messages": [],
-    "source": "api",
-    "stale": False,
-    "unions": ["<redacted union>"],
-    "farmer_info_chars": 1,
-    "technician_info_chars": 1,
-    "category": "irrelevant",
-    "reason": "<redacted reason>",
-    "raw_output": "<redacted>",
-    "failed_open": True,
-    "failed_closed": True,
-}
-
-# What the turn with every optional key is built from.
-_BUILT_FROM = (ModerationVerdict, VoiceTrace.set_pretranslation, VoiceTrace.set_farmer_context, VoiceTrace.set_agent)
-
-
-def _every_argument(function):
-    """Every argument ``function`` takes, each with a value."""
-    names = [name for name in inspect.signature(function).parameters if name != "self"]
-    missing = [name for name in names if name not in _ARGUMENTS]
-    assert not missing, f"Give {missing} a value in _ARGUMENTS, so what they send is checked against the contract."
-    return {name: _ARGUMENTS[name] for name in names}
-
-
-def _send_a_turn(monkeypatch, *, every_optional=False, text_mode="preview_hash"):
-    """What VoiceTrace hands Langfuse for one turn, with the optional arguments
-    left out or with every one of them given."""
-    client = _FakeLangfuse()
-    monkeypatch.setattr(langfuse, "propagate_attributes", client.propagate_attributes)
-    monkeypatch.setattr(settings, "voice_trace_text_mode", text_mode)
-    trace = VoiceTrace(
-        session_id="session-redacted",
-        user_id="<redacted-user-id>",
-        source_lang="gu",
-        target_lang="gu",
-        query="<redacted question>",
-        enabled=False,
-    )
-    trace.enabled, trace.langfuse_client = True, client
-    with trace.request_context():
-        trace.set_route("agent")
-        if every_optional:
-            trace.set_moderation(ModerationVerdict(**_every_argument(ModerationVerdict)))
-            trace.set_pretranslation(**_every_argument(trace.set_pretranslation))
-            trace.set_farmer_context(**_every_argument(trace.set_farmer_context))
-            trace.set_agent(**_every_argument(trace.set_agent))
-        else:
-            trace.set_moderation(None)
-            trace.set_pretranslation(text="<redacted question>", provider="<redacted-provider>", fallback_used=False)
-            trace.set_farmer_context()
-            trace.set_agent(signed_in=True, output="<redacted answer>")
-        trace.record_emit("<redacted answer>")
-        trace.finish(error=RuntimeError("<redacted>"))
-    return client.sent
-
-
-def _every_turn(monkeypatch):
-    """A turn with the optionals left out, and one with all of them in each text mode."""
-    return [_send_a_turn(monkeypatch)] + [
-        _send_a_turn(monkeypatch, every_optional=True, text_mode=mode) for mode in sorted(_VALID_TEXT_MODES)
-    ]
-
-
-def _emitted_keys(monkeypatch):
-    sent = set().union(*(turn["update"]["metadata"] for turn in _every_turn(monkeypatch)))
-    return sent | _keys_written_in_voice()
-
-
-# Blocks keyed by name (a counter, a mark, a stage), which the contract doesn't list.
-_KEYED_BY_NAME = {"counters", "timings_ms", "stage_totals_ms"}
-
-
-def _block_keys_written_in_code():
-    """Keys of the blocks the code fills in itself: `.metadata["block"] = {...}`
-    and `.set_nudge(key=...)`."""
-    blocks = {}
-    for node in _voice_nodes():
-        if isinstance(node, ast.Assign) and isinstance(node.value, ast.Dict):
-            for target in node.targets:
-                if block := _metadata_key(target):
-                    blocks.setdefault(block, set()).update(
-                        key.value for key in node.value.keys if isinstance(key, ast.Constant)
-                    )
-        elif isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "set_nudge":
-            blocks.setdefault("nudge", set()).update(keyword.arg for keyword in node.keywords if keyword.arg)
-    return blocks
-
-
-def _block_keys_sent(monkeypatch):
-    """Every key each metadata block can be sent with, from every turn and the code."""
-    blocks = _block_keys_written_in_code()
-    for turn in _every_turn(monkeypatch):
-        for block, value in turn["update"]["metadata"].items():
-            if isinstance(value, dict) and block not in _KEYED_BY_NAME:
-                blocks.setdefault(block, set()).update(value)
-    return blocks
+    assert {"amul.ttft_ms", "amul.history_load_ms"} <= _timing_keys()
+    # Beside them, the turn's whole time, which no mark or stage is.
+    assert _timing_keys() | {"amul.total_ms"} == listed, f"a mark's or stage's key. {NEW_VERSION}"
 
 
 def _outcomes_in(nodes):
@@ -295,139 +353,31 @@ def _staleness_outcomes():
 
 def _outcomes_a_voice_turn_can_end_with():
     return (
-        _outcomes_in(_voice_nodes())
-        | _answer_outcomes_in(_voice_nodes())
-        | _staleness_outcomes()
-        | {_OUTCOMES.get(outcome, outcome) for outcome in _turn_outcomes_in_run_turn()}
+        _outcomes_in(_voice_nodes()) | _answer_outcomes_in(_voice_nodes()) | _staleness_outcomes() | _turn_outcomes_in_run_turn()
     )
 
 
 def _score_names_in(nodes):
-    """Names given to Langfuse scores, e.g. score_current_trace(name="pipeline_profile")."""
+    """Names given to Langfuse scores, e.g. score_current_trace(name="turn_outcome")."""
     return {
         keyword.value.value
         for node in nodes
         if isinstance(node, ast.Call)
         and isinstance(node.func, ast.Attribute)
-        and node.func.attr in {"score_current_trace", "score_current_span", "create_score"}
+        and node.func.attr in {"score_current_trace", "score_current_span", "score_trace", "create_score"}
         for keyword in node.keywords
         if keyword.arg == "name" and isinstance(keyword.value, ast.Constant) and isinstance(keyword.value.value, str)
     }
-
-
-# ``environment`` is where the trace lands, not a field of it (OpenAgriNet/amul-infra#107, step 7).
-_TRACE_PLUMBING = {"as_type", "end_on_exit", "name", "trace_name", "metadata", "environment"}
-
-
-def _trace_fields_sent(sent):
-    fields = {**sent["open"], **sent["propagate"], **sent["update"]}
-    return {name: value for name, value in fields.items() if name not in _TRACE_PLUMBING}
-
-
-def test_contract_matches_the_stamped_schema_version():
-    assert _contract()["schema_version"] == VOICE_TELEMETRY_SCHEMA_VERSION
-
-
-def test_released_contracts_never_change():
-    for version, fingerprint in RELEASED_CONTRACTS.items():
-        path = CONTRACTS / f"{version}.json"
-        assert path.exists(), f"{version} is released: keep telemetry/contracts/{version}.json, old traces follow it."
-        # Compared as a bool so a failure doesn't print the new fingerprint to paste in.
-        unchanged = _fingerprint(path) == fingerprint
-        assert unchanged, (
-            f"telemetry/contracts/{version}.json is released and can't change: traces already in Langfuse "
-            f"follow it. Undo the edit and put the change in a new version. {NEW_VERSION}"
-        )
-
-
-def test_names_are_specific_snake_case():
-    contract = _contract()
-    names = (
-        contract["trace_fields"]
-        + contract["metadata_keys"]
-        + contract["scores"]
-        + [f"{block}.{key}" for block, keys in contract["nested_keys"].items() for key in keys]
-    )
-    unclear = [
-        name
-        for name in names
-        if name not in _GRANDFATHERED_NAMES
-        and name != "amul.schema_version"
-        and (
-            not all(_SNAKE_CASE.fullmatch(part) for part in name.split("."))
-            or name.split(".")[-1] in _GENERIC_NAMES
-        )
-    ]
-
-    assert not unclear, f"Unclear names {unclear}."
-
-
-def test_no_contract_key_was_renamed_or_removed(monkeypatch):
-    missing = set(_contract()["metadata_keys"]) - _emitted_keys(monkeypatch)
-
-    assert not missing, f"Voice traces no longer send {sorted(missing)}. {NEW_VERSION}"
-
-
-def test_new_keys_are_listed_in_the_contract(monkeypatch):
-    extra = _emitted_keys(monkeypatch) - set(_contract()["metadata_keys"])
-
-    assert not extra, f"New metadata keys {sorted(extra)}. {NEW_VERSION}"
-
-
-def test_turns_are_still_sent_on_the_contract_root(monkeypatch):
-    sent = _send_a_turn(monkeypatch)
-    names = {sent["open"]["name"], sent["propagate"]["trace_name"]}
-
-    assert names == {_contract()["root"]}, f"Voice turns are now sent as {sorted(names)}. {NEW_VERSION}"
-
-
-def test_no_trace_field_was_dropped(monkeypatch):
-    fields = _trace_fields_sent(_send_a_turn(monkeypatch))
-    missing = [field for field in _contract()["trace_fields"] if not fields.get(field)]
-
-    assert not missing, f"Voice traces no longer send the trace fields {missing}. {NEW_VERSION}"
-
-
-def test_no_new_trace_field(monkeypatch):
-    extra = set(_trace_fields_sent(_send_a_turn(monkeypatch))) - set(_contract()["trace_fields"])
-
-    assert not extra, f"Voice traces now send the trace fields {sorted(extra)}. {NEW_VERSION}"
-
-
-def test_no_key_inside_a_block_was_renamed_or_removed(monkeypatch):
-    sent = _block_keys_sent(monkeypatch)
-    changed = {
-        block: sorted(missing)
-        for block, keys in _contract()["nested_keys"].items()
-        if (missing := set(keys) - sent.get(block, set()))
-    }
-
-    assert not changed, f"Voice traces no longer send these keys inside metadata blocks: {changed}. {NEW_VERSION}"
-
-
-def test_no_new_key_inside_a_block(monkeypatch):
-    listed = _contract()["nested_keys"]
-    added = {
-        block: sorted(extra)
-        for block, keys in _block_keys_sent(monkeypatch).items()
-        if (extra := keys - set(listed.get(block, ())))
-    }
-
-    assert not added, f"New keys inside metadata blocks: {added}. {NEW_VERSION}"
-
-
-def test_every_argument_a_block_is_built_from_is_sent():
-    """A key sent only when its argument is given is still checked: the turn with
-    every optional key passes every argument there is."""
-    for function in _BUILT_FROM:
-        _every_argument(function)
 
 
 def test_scores_match_the_contract():
     listed = set(_contract()["scores"])
     found = _score_names_in(_voice_nodes())
 
-    assert found == listed, f"Voice sends the scores {sorted(found)}, the contract lists {sorted(listed)}. {NEW_VERSION}"
+    assert found == listed == {"turn_outcome"}, (
+        f"Voice sends the scores {sorted(found)}, the contract lists {sorted(listed)}. turn.v1 records the outcome as "
+        "amul.outcome and as the turn_outcome score; pipeline_profile and served_tier are metadata, not scores."
+    )
 
 
 def test_run_turn_sends_no_score_of_its_own():
@@ -449,8 +399,8 @@ def test_outcomes_match_the_contract():
     found = _outcomes_a_voice_turn_can_end_with()
 
     assert found <= listed, (
-        f"New outcomes {sorted(found - listed)}. {NEW_VERSION} Also give each one a bucket in "
-        "voice_outcome_vocabulary in telemetry/eras.yaml in amul-telemetry, or the adapters count it as unclassified."
+        f"New outcomes {sorted(found - listed)}. {NEW_VERSION} An outcome is declared in turn.v1.yaml with its class, "
+        "or the readers count it as unclassified."
     )
     assert listed <= found, f"Outcomes no longer emitted: {sorted(listed - found)}. {NEW_VERSION}"
 
@@ -466,3 +416,34 @@ ClassifierResult(canned_text="Goodbye.", label="hold_message", outcome="outbound
 
     assert _outcomes_in(nodes) == {"stale_request", "hold_message", "error"}
     assert _answer_outcomes_in(nodes) == {"outbound_declined"}
+
+
+# ── the contract file itself ──────────────────────────────────────────────────
+
+
+def test_released_contracts_never_change():
+    for version, fingerprint in RELEASED_CONTRACTS.items():
+        path = CONTRACTS / f"{version}.json"
+        assert path.exists(), f"{version} is released: keep telemetry/contracts/{version}.json, old traces follow it."
+        # Compared as a bool so a failure doesn't print the new fingerprint to paste in.
+        unchanged = _fingerprint(path) == fingerprint
+        assert unchanged, (
+            f"telemetry/contracts/{version}.json is released and can't change: traces already in Langfuse "
+            "follow it. Undo the edit and put the change in a new version."
+        )
+
+
+def test_names_are_specific_snake_case():
+    contract = _contract()
+    names = [
+        *(key.removeprefix("amul.") for key in contract["metadata_keys"]),
+        *contract["trace_fields"],
+        *contract["steps"],
+        *(key.removeprefix("amul.") for step in contract["steps"].values() for key in step["metadata_keys"]),
+        *(field for step in contract["steps"].values() for field in step.get("output", ())),
+        *contract["scores"],
+        *contract["outcomes"],
+    ]
+    unclear = [name for name in names if not _SNAKE_CASE.fullmatch(name) or name in _GENERIC_NAMES]
+
+    assert not unclear, f"Unclear names {unclear}."

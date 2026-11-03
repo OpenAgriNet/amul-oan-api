@@ -150,7 +150,7 @@ async def _relevant_entries(store: MemoryStore, farmer_id: str, query: str) -> l
         headline = (hit.get("headline") or "").strip()
         if not headline:
             continue
-        bits = [f"[memory_ref: {hit['id']}] {headline}"]
+        bits = [f"[memory_ref: {hit['id']}; {hit.get('record_kind', 'matter')}] {headline}"]
         status = hit.get("status")
         if status and status != "n/a":
             bits.append(f"[status: {status}]")
@@ -158,7 +158,7 @@ async def _relevant_entries(store: MemoryStore, farmer_id: str, query: str) -> l
         # nothing on dates by design. That puts the judgement here, in the model's
         # hands, where it can be reasoned about and said out loud, instead of in a
         # filter that silently removes things nobody can then reason about.
-        bits.append(f"[last mentioned: {hit.get('source_ts') or 'date not recorded'}]")
+        bits.append(f"[last mentioned: {hit.get('episode_ended_at') or hit.get('source_ts') or 'date not recorded'}]")
         if hit.get("first_source_ts") and hit["first_source_ts"] != hit.get("source_ts"):
             bits.append(f"[first mentioned: {hit['first_source_ts']}]")
         if hit.get("expires_at"):

@@ -18,6 +18,10 @@ class AnimalRecord(BaseModel):
 
     tagNumber: Optional[str] = None
     animalType: Optional[str] = None
+    # The farmer's own name for the animal, as the cattle API returns it (lowercased);
+    # few farmers set one. A record cached before this gets it when its animals are next
+    # fetched in full (the refresh interval).
+    animalName: Optional[str] = None
     breed: Optional[str] = None
     milkingStage: Optional[str] = None
     pregnancyStage: Optional[str] = None

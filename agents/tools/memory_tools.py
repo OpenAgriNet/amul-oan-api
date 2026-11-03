@@ -6,6 +6,7 @@ from functools import wraps
 import os
 import re
 import uuid
+from typing import Literal
 
 import httpx
 from pydantic_ai import RunContext
@@ -109,7 +110,8 @@ def _format(rows, *, passages=False, prefix="", footer=""):
         ref = f"\n- [memory_ref: {row.get('id', 'unknown')}]"
         if passages and row.get("chunk_number"):
             ref += f" [chunk {row['chunk_number']}]"
-        facts = f" [state: {row.get('status', 'n/a')}; last mentioned: {row.get('source_ts') or 'date not recorded'}]"
+        kind = row.get("record_kind", "matter")
+        facts = f" [{kind}; state: {row.get('status', 'n/a')}; last mentioned: {row.get('episode_ended_at') or row.get('source_ts') or 'date not recorded'}]"
         if row.get("first_source_ts") and row.get("first_source_ts") != row.get("source_ts"):
             facts += f" [first: {row['first_source_ts']}]"
         if row.get("expires_at"):
@@ -134,7 +136,7 @@ async def search_memories(
 
     Args:
         query: What to find in the remembered detail.
-        memory_ref: Optional episode reference to search within; omit to search this farmer's episodes.
+        memory_ref: Optional memory reference to search within; omit to search this farmer's episodes and matters.
     """
     if _budget(ctx) < 512:
         return BUDGET_REACHED
@@ -155,7 +157,7 @@ async def search_memories(
         return _finish(ctx, CONTEXT + "No search matches returned. Try different wording if useful.")
     footer = "\nPartial search results; broaden or retry if needed." if body.get("partial") else ""
     if any(row.get("chunk_indexed") is False for row in rows):
-        footer += "\nSome old episodes lack a chunk index; direct reading is still available."
+        footer += "\nSome old records lack a chunk index; direct reading is still available."
     return _finish(ctx, _format(rows, passages=True,
                                prefix="Likely passages, not an exhaustive list.", footer=footer))
 
@@ -164,8 +166,11 @@ async def search_memories(
 async def list_memories(
     ctx: RunContext[FarmerContext], state: str | None = None,
     filters: dict[str, FilterValue] | None = None, cursor: str | None = None,
+    kind: Literal["episode", "matter"] | None = None,
+    order: Literal["newest", "oldest"] | None = None,
+    limit: int | None = None,
 ) -> str:
-    """List recorded episodes by optional state and metadata, with pagination.
+    """List recorded conversation episodes or remembered matters.
 
     Call this for requests to list or count remembered matters. Automatic search
     matches are only a sample and cannot answer such requests completely.
@@ -173,7 +178,10 @@ async def list_memories(
     Args:
         state: Optional open, pending, resolved, n/a, or unresolved (open OR pending). Omit for all states.
         filters: Optional farmer-specific metadata matches (AND); untagged memories may be missed.
-        cursor: Next-page reference from a previous listing with the same filters.
+        cursor: Next page from the same filters. Available only without order.
+        kind: Episode for conversation summaries, matter for facts and ongoing matters.
+        order: Newest or oldest by recorded event time. Returns one bounded page of dated records.
+        limit: Optional result count within the program limit. Use 1 to find the last episode.
     """
     if _budget(ctx) < 512:
         return BUDGET_REACHED
@@ -184,14 +192,19 @@ async def list_memories(
         statuses = [state]
     elif state not in (None, ""):
         return "Unknown state. Use open, pending, resolved, n/a, unresolved, or omit it."
-    body, error = await _request(ctx, "list_entries", status=statuses, filters=filters,
-                                 cursor=cursor, limit=LIST_LIMIT)
+    if order and cursor:
+        return "Omit the cursor when listing by event time."
+    body, error = await _request(
+        ctx, "list_entries", status=statuses, filters=filters, kind=kind,
+        order={"newest": "desc", "oldest": "asc"}.get(order),
+        cursor=cursor, limit=LIST_LIMIT if limit is None else min(LIST_LIMIT, max(1, limit)),
+    )
     if error:
         return error
     rows = _rows(body, "entries")
     if rows is None:
         return UNAVAILABLE
-    scope = f"Recorded state: {state or 'all'}; matching the requested detail filters.\n"
+    scope = f"Kind: {kind or 'all'}; recorded state: {state or 'all'}; matching the requested detail filters.\n"
     if not rows:
         return _finish(ctx, CONTEXT + scope + "No matching entries returned. Missing tags can affect this result.")
     footer = ""
@@ -205,7 +218,11 @@ async def list_memories(
 def _render_read(body):
     entry = body["entry"]
     output = CONTEXT + f"Selected memory_ref: {entry['id']}. State: {entry.get('status', 'n/a')}.\n"
-    if entry.get("source_ts"):
+    if kind == "episode" and entry.get("episode_ended_at"):
+        output += f"Conversation ended: {entry['episode_ended_at']} ({entry.get('source_surface', 'unknown')}).\n"
+        if entry.get("episode_part_number") != entry.get("episode_part_count"):
+            output += "This episode summary may be incomplete.\n"
+    elif entry.get("source_ts"):
         output += f"Last mentioned: {entry['source_ts']}.\n"
     if entry.get("expires_at"):
         output += f"End date: {entry['expires_at']}; not proof of resolution.\n"
@@ -226,7 +243,7 @@ async def read_memory(
     ctx: RunContext[FarmerContext], memory_ref: str, chunk_ids: list[int] | None = None,
     include_history: bool = False,
 ) -> str:
-    """Open complete chunks from an episode. The program handles page sizes.
+    """Open complete chunks from a memory record. The program handles page sizes.
 
     Args:
         memory_ref: Episode reference from Level 2 or a result. Never invent one.

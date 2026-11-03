@@ -145,4 +145,5 @@ async def create_ai_call(
         },
         tool_call_id=getattr(ctx, "tool_call_id", None),
         guard=True,
+        heat_alert_event_id=getattr(ctx.deps, "heat_alert_event_id", None),
     )

@@ -67,8 +67,28 @@ GU_PREFERRED_TRANSLATION_RULES = [
     "Prefer 'બાવલું' over 'પાહો' for udder context.",
     "Prefer 'ધાર' over 'ટીપાં' for milk streams.",
     "Use 'ગાભણ' for pregnant livestock context.",
+    "For a camel, goat or sheep, name the species with the young-animal word: a camel's young is 'ઊંટનું બચ્ચું', a goat's young 'બકરીનું બચ્ચું', a sheep's young 'ઘેટાનું બચ્ચું'; a she-camel is 'ઊંટડી'. A cow's calf is 'વાછરડું' ('વાછરડી' female, 'વાછરડો' male) and a buffalo's calf is 'પાડું' ('પાડી' female, 'પાડો' male); never use these for a camel, goat or sheep.",
     "Do not output editorial markers like 'red colour' or formatting instructions.",
 ]
+
+# Chat translates an answer a few sentences at a time, so a chunk like "Keep the
+# calf warm." has no species in it and its calf came out as a cow's calf. When the
+# farmer named one of these (app/services/chat.py `named_species`), every chunk's
+# instruction says whose young the bare words mean. No species, no line.
+SPECIES_CONTEXT_YOUNG = {
+    "camel": ("camel calf", "'calf', 'calves', 'young one' or 'newborn'"),
+    "goat": ("goat kid", "'kid', 'kids', 'young one' or 'newborn'"),
+    "sheep": ("lamb", "'young one' or 'newborn'"),
+}
+
+
+def species_context_rule(species: str) -> str:
+    young, bare = SPECIES_CONTEXT_YOUNG[species]
+    return (
+        f"This text is part of an answer about the farmer's {species}. Every bare {bare} in it is a {young}: "
+        f"translate it as the {species}'s young, never with a cow's or buffalo's calf word."
+    )
+
 
 # Voice channel (§14): richer, telephony-tuned rules — gender-neutral addressing
 # for a live phone call, etc. Applied only when translation_channel("voice") is
@@ -82,6 +102,7 @@ VOICE_GU_PREFERRED_TRANSLATION_RULES = [
     "Prefer 'બાવલું' over 'પાહો' for udder context.",
     "Prefer 'ધાર' over 'ટીપાં' for milk streams.",
     "Use 'ગાભણ' for pregnant livestock context.",
+    "For a camel, goat or sheep, name the species with the young-animal word: a camel's young is 'ઊંટનું બચ્ચું', a goat's young 'બકરીનું બચ્ચું', a sheep's young 'ઘેટાનું બચ્ચું'; a she-camel is 'ઊંટડી'. A cow's calf is 'વાછરડું' ('વાછરડી' female, 'વાછરડો' male) and a buffalo's calf is 'પાડું' ('પાડી' female, 'પાડો' male); never use these for a camel, goat or sheep.",
     "Use 'ફેટ' for fat/milk-fat (not 'ચરબી').",
     "Use 'એસ.એન.એફ.' for SNF (not 'ઘન પદાર્થો').",
     "Use 'બેક્ટેરિયા' for bacteria (not 'જંતુઓ').",
@@ -568,6 +589,7 @@ def _build_translation_instruction(
     target_lang: str,
     mini_glossary: Optional[str] = None,
     max_output_chars: Optional[int] = None,
+    species: Optional[str] = None,
 ) -> str:
     """Build the translation INSTRUCTION text (glossary Rules + GU style rules +
     length rule + channel-aware rules) — the same wording used for BOTH tiers:
@@ -602,6 +624,8 @@ def _build_translation_instruction(
                 rules.append(f"Rule: '{en_term.strip()}' must be translated as '{target_term.strip()}'.")
         if rules:
             instruction += "\n\n**Terminology Rules (mandatory):**\n" + "\n".join(rules) + "\n"
+    if species in SPECIES_CONTEXT_YOUNG:
+        instruction += "\n\n**Conversation Context (mandatory):**\n" + species_context_rule(species) + "\n"
     if target_code == "gu":
         _gu_rules = (
             VOICE_GU_PREFERRED_TRANSLATION_RULES if _is_voice_channel()
@@ -823,6 +847,62 @@ def _format_translation_prompt(
     )
 
 
+def _served_by(target) -> dict[str, str]:
+    """A translation call's metadata in turn.v1: the provider that served it
+    (``amul.served_provider``) and, for an llm_core target, the tier as ``route[index]``
+    (``amul.served_tier``, as every model step names its own). The model is the
+    generation's own, and the stage is the step's name. Takes a target or a provider name."""
+    provider = getattr(target, "provider", target)
+    if not provider:
+        return {}
+    served = {"amul.served_provider": str(provider)}
+    tier = getattr(target, "served_tier", None)
+    if tier:
+        served["amul.served_tier"] = tier
+    return served
+
+
+@contextmanager
+def _call_observation(parent, *, name, as_type="generation", **fields):
+    """The Langfuse observation of one translation call, ended when the call ends and
+    marked level ERROR with the reason when the call raised: a child of ``parent`` (the
+    turn's post_translation span) when the caller hands one, else of the current span,
+    as a translation outside a turn's answer (a system message, the health canary)
+    opens it; None without Langfuse. The step names are constants at the call sites:
+    tests/test_chat_telemetry_schema_stamps.py reads them."""
+    if parent is not None:
+        observation = parent.start_observation(name=name, as_type=as_type, **fields)
+        try:
+            with _erroring(observation):
+                yield observation
+        finally:
+            try:
+                observation.end()
+            except Exception:  # pragma: no cover - tracing must never break the call
+                pass
+        return
+    langfuse = _get_langfuse()
+    if not langfuse:
+        yield None
+        return
+    with langfuse.start_as_current_observation(name=name, as_type=as_type, **fields) as observation:
+        with _erroring(observation):
+            yield observation
+
+
+@contextmanager
+def _erroring(observation):
+    """Marks ``observation`` level ERROR with the reason when the call under it raised."""
+    try:
+        yield
+    except BaseException as exc:
+        try:
+            observation.update(level="ERROR", status_message=(str(exc) or type(exc).__name__)[:300])
+        except Exception:  # pragma: no cover - tracing must never break the call
+            pass
+        raise
+
+
 def _get_langfuse():
     if not get_langfuse_client:
         return None
@@ -873,7 +953,7 @@ def _voice_gu_en_index():
     return EN_INDEX
 
 
-def _prepare_translation_inputs(text, source_lang, target_lang, max_output_chars):
+def _prepare_translation_inputs(text, source_lang, target_lang, max_output_chars, species=None):
     """Mini-glossary fetch + build the translation instruction ONCE (shared by both
     tiers) + the Gemma-wrapped TranslateGemma prompt. Verbatim to the prior inline
     logic (mini glossary for gu/hi/bn/mr/pa at threshold 0.90 / max 40)."""
@@ -890,33 +970,26 @@ def _prepare_translation_inputs(text, source_lang, target_lang, max_output_chars
             logger.info(f"Translation prompt: injected mini glossary ({len(mini_glossary.splitlines())} terms)")
     instruction = _build_translation_instruction(
         text, source_lang, target_lang,
-        mini_glossary=mini_glossary, max_output_chars=max_output_chars,
+        mini_glossary=mini_glossary, max_output_chars=max_output_chars, species=species,
     )
     tg_prompt = _wrap_translategemma_prompt(instruction)
     return instruction, tg_prompt
 
 
-async def _translategemma_stream(descriptor, prompt, source_lang, target_lang, text, temperature, max_tokens):
+async def _translategemma_stream(
+    descriptor, prompt, source_lang, target_lang, text, temperature, max_tokens, *, served=None, parent=None
+):
     """Stream TranslateGemma chunks. Langfuse wraps the call when it is available."""
-    langfuse = _get_langfuse()
-    observation = (
-        langfuse.start_as_current_observation(
-            name="stream_translation",
-            as_type="generation",
-            input={
-                "source_lang": source_lang,
-                "target_lang": target_lang,
-                "text": text,
-            },
-            model=descriptor.model_id,
-            metadata={
-                "translation_provider": "translategemma",
-                "model_size": "27b-base",
-                "stream": "true",
-                "pipeline_stage": "stream_translation",
-            },
-        )
-        if langfuse else nullcontext()
+    observation = _call_observation(
+        parent,
+        name="stream_translation",
+        input={
+            "source_lang": source_lang,
+            "target_lang": target_lang,
+            "text": text,
+        },
+        model=descriptor.model_id,
+        metadata=_served_by(served or "translategemma"),
     )
     translated_parts: list[str] = []
     with observation as span:
@@ -1016,31 +1089,22 @@ async def _raw_llm_translation_stream(
 
 async def _llm_translation_stream(
     client, model_name, instruction, source_lang, target_lang, text, temperature,
-    max_tokens, *, provider="openai", grammar=None,
+    max_tokens, *, provider="openai", grammar=None, served=None, parent=None,
 ):
     """Translate through a provider-native LLM client, preserving transforms.
 
     A grammar-constrained stream that ends with no text raises; when nothing was yielded
     the chain falls back to the next tier instead of serving an empty translation."""
-    langfuse = _get_langfuse()
-    observation = (
-        langfuse.start_as_current_observation(
-            name="stream_translation",
-            as_type="generation",
-            input={
-                "source_lang": source_lang,
-                "target_lang": target_lang,
-                "text": text,
-            },
-            model=model_name,
-            metadata={
-                "translation_provider": provider,
-                "stream": "true",
-                "pipeline_stage": "stream_translation",
-                "script_only": str(grammar is not None).lower(),
-            },
-        )
-        if langfuse else nullcontext()
+    observation = _call_observation(
+        parent,
+        name="stream_translation",
+        input={
+            "source_lang": source_lang,
+            "target_lang": target_lang,
+            "text": text,
+        },
+        model=model_name,
+        metadata=_served_by(served or provider),
     )
     translated_parts: list[str] = []
     with observation as span:
@@ -1060,26 +1124,20 @@ async def _llm_translation_stream(
             raise ValueError(f"{provider} script-only translation returned empty output")
 
 
-async def _translategemma_unary(descriptor, prompt, source_lang, target_lang, text, temperature, max_tokens):
+async def _translategemma_unary(
+    descriptor, prompt, source_lang, target_lang, text, temperature, max_tokens, *, served=None, parent=None
+):
     """Translate once via TranslateGemma. Langfuse wraps the call when available."""
-    langfuse = _get_langfuse()
-    observation = (
-        langfuse.start_as_current_observation(
-            name="text_translation",
-            as_type="generation",
-            input={
-                "source_lang": source_lang,
-                "target_lang": target_lang,
-                "text": text,
-            },
-            model=descriptor.model_id,
-            metadata={
-                "translation_provider": "translategemma",
-                "model_size": "27b-base",
-                "pipeline_stage": "text_translation",
-            },
-        )
-        if langfuse else nullcontext()
+    observation = _call_observation(
+        parent,
+        name="text_translation",
+        input={
+            "source_lang": source_lang,
+            "target_lang": target_lang,
+            "text": text,
+        },
+        model=descriptor.model_id,
+        metadata=_served_by(served or "translategemma"),
     )
     with observation as span:
         translated_text = await _raw_translategemma_unary(
@@ -1150,26 +1208,19 @@ async def _raw_llm_translation_unary(
 
 async def _llm_translation_unary(
     client, model_name, instruction, source_lang, target_lang, text, temperature,
-    max_tokens, *, provider="openai", grammar=None,
+    max_tokens, *, provider="openai", grammar=None, served=None, parent=None,
 ):
     """Translate once through a provider-native LLM client."""
-    langfuse = _get_langfuse()
-    observation = (
-        langfuse.start_as_current_observation(
-            name="text_translation",
-            as_type="generation",
-            input={
-                "source_lang": source_lang,
-                "target_lang": target_lang,
-                "text": text,
-            },
-            model=model_name,
-            metadata={
-                "translation_provider": provider,
-                "pipeline_stage": "text_translation",
-            },
-        )
-        if langfuse else nullcontext()
+    observation = _call_observation(
+        parent,
+        name="text_translation",
+        input={
+            "source_lang": source_lang,
+            "target_lang": target_lang,
+            "text": text,
+        },
+        model=model_name,
+        metadata=_served_by(served or provider),
     )
     with observation as span:
         translated_text = await _raw_llm_translation_unary(
@@ -1196,6 +1247,7 @@ async def translate_text(
     max_tokens: int = 2048,
     max_output_chars: Optional[int] = None,
     execution: Optional["llm_core.ExecutionContext"] = None,
+    parent=None,
 ) -> str:
     """Translate text via the post-translation tier chain.
 
@@ -1228,13 +1280,14 @@ async def translate_text(
     async def _run(tier):
         if tier.provider == "translategemma":
             return await _translategemma_unary(
-                tier.handle, tg_prompt, source_lang, target_lang, text, temperature, max_tokens
+                tier.handle, tg_prompt, source_lang, target_lang, text, temperature, max_tokens,
+                served=tier, parent=parent,
             )
         req = _script_only_request(tier, instruction, text, target_lang, max_tokens)
         return await _llm_translation_unary(
             tier.handle, tier.model_name, req.prompt,
             source_lang, target_lang, text, temperature, req.max_tokens,
-            provider=tier.provider, grammar=req.grammar,
+            provider=tier.provider, grammar=req.grammar, served=tier, parent=parent,
         )
 
     execution = execution or await llm_core.context("-")
@@ -1353,7 +1406,7 @@ async def pretranslate_with_tier(
     langfuse = _get_langfuse()
     observation = (
         langfuse.start_as_current_observation(
-            name="query_pretranslation",
+            name="pre_translation",
             as_type="generation",
             input={
                 "source_lang": source_lang,
@@ -1361,10 +1414,7 @@ async def pretranslate_with_tier(
                 "text": text,
             },
             model=tier.model_name,
-            metadata={
-                "translation_provider": tier.provider,
-                "pipeline_stage": "query_pretranslation",
-            },
+            metadata=_served_by(tier),
         )
         if langfuse
         else nullcontext()
@@ -1388,9 +1438,13 @@ async def translate_text_stream_fast(
     max_tokens: int = 2048,
     max_output_chars: Optional[int] = None,
     execution: Optional["llm_core.ExecutionContext"] = None,
+    parent=None,
+    species: Optional[str] = None,
 ):
     """Stream translated text token by token (no artificial delay) via the
     post-translation tier chain [TranslateGemma(LB), managed-LLM overflow].
+    ``species`` (camel, goat or sheep) adds :func:`species_context_rule` to the
+    instruction text; nothing else about the request changes.
 
     First-token-commit semantics: if TranslateGemma fails BEFORE the first chunk on a
     fallbackable reason, the managed-LLM overflow tier transparently serves; a failure
@@ -1415,20 +1469,21 @@ async def translate_text_stream_fast(
     _prot = _protected_output_triggers(text, target_lang)
 
     instruction, tg_prompt = _prepare_translation_inputs(
-        text, source_lang, target_lang, max_output_chars
+        text, source_lang, target_lang, max_output_chars, species=species
     )
     logger.info(f"Fast streaming translation {source_lang} -> {target_lang} via post-translation chain")
 
     def _make_stream(tier):
         if tier.provider == "translategemma":
             return _translategemma_stream(
-                tier.handle, tg_prompt, source_lang, target_lang, text, temperature, max_tokens
+                tier.handle, tg_prompt, source_lang, target_lang, text, temperature, max_tokens,
+                served=tier, parent=parent,
             )
         req = _script_only_request(tier, instruction, text, target_lang, max_tokens)
         return _llm_translation_stream(
             tier.handle, tier.model_name, req.prompt,
             source_lang, target_lang, text, temperature, req.max_tokens,
-            provider=tier.provider, grammar=req.grammar,
+            provider=tier.provider, grammar=req.grammar, served=tier, parent=parent,
         )
 
     try:

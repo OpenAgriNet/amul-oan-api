@@ -13,6 +13,7 @@ from typing import Optional
 from pydantic_ai import RunContext
 from pydantic_ai.tools import ToolDefinition
 
+from agents.tools.telemetry import report_tool
 from agents.deps import FarmerContext
 from agents.tools import loan_eligibility as le
 from agents.tools.farmer_envelope import collect_farmer_accounts
@@ -59,6 +60,14 @@ def _message_for(result: "le.LoanResult") -> str:
             f"regularly. Ask whether they would like to avail "
             f"this loan. If the farmer agrees, call check_loan_eligibility again with confirmed=true. "
             f"If the farmer declines, do not call again — close the conversation politely."
+        )
+    if result.outcome == le.ELIGIBLE and result.reshared:
+        return (
+            f"ALREADY APPROVED. This farmer's micro loan is already approved — do NOT offer the "
+            f"loan again, do NOT ask whether they want it, and do NOT call check_loan_eligibility again. "
+            f"Tell the farmer: their loan is already approved, their loan code is {result.code}, and they "
+            f"should visit their Kheda District Central Co-Operative Bank Limited branch with two "
+            f"documents: their Aadhaar card and proof of society membership."
         )
     if result.outcome == le.ELIGIBLE:
         return (
@@ -147,4 +156,8 @@ async def check_loan_eligibility(ctx: RunContext[FarmerContext], confirmed: bool
     )
     logger.info("check_loan_eligibility outcome=%s phone=%s code=%s sms=%s",
                 result.outcome, result.phone, result.code, result.sms_status)
+    if result.outcome in (le.DISABLED, le.ERROR):
+        report_tool("unavailable", f"loan eligibility service: {result.outcome}")
+    elif result.outcome == le.NO_PHONE:
+        report_tool("error", "no registered phone on the session")
     return _message_for(result)

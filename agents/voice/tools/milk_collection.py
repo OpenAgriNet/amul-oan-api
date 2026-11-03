@@ -6,6 +6,7 @@ from pydantic_ai import RunContext
 
 from agents.deps import FarmerAccount, FarmerContext
 from agents.tools.beckn.amul import AuthenticatedFarmerAccount, fetch_milk_collection
+from agents.tools.milk_collection import _display_date, milk_totals
 from app.voice.models.milk_collection import FarmerMilkCollectionRequestModel
 from helpers.utils import get_logger
 
@@ -208,6 +209,7 @@ async def fetch_milk_summary_for_accounts(
     sections: list[str] = []
     any_success = False
     total_milk = 0
+    all_milk = []
 
     for account in accounts:
         result = await _fetch_one_account(account, fromdate, todate, session_id, tool_call_id)
@@ -220,6 +222,7 @@ async def fetch_milk_summary_for_accounts(
 
         any_success = True
         total_milk += len(result.milk)
+        all_milk.extend(result.milk)
         summary = _format_milk_collection_summary(result)
         label = _account_label(account, multi)
         sections.append(f"{label}\n{summary}" if label else summary)
@@ -228,6 +231,15 @@ async def fetch_milk_summary_for_accounts(
         return "Milk collection lookup failed. Unable to fetch details at the moment."
 
     body = "\n\n".join(sections)
+    if all_milk:
+        days, litres, amount, fat, snf = milk_totals(all_milk)
+        body = (
+            f"Summary for {_display_date(fromdate)} to {_display_date(todate)}"
+            f"{', all accounts' if multi else ''}: {days} days with milk, "
+            f"total {_num(round(litres, 2))} liters, total amount {_num(round(amount, 2))} rupees, "
+            f"average fat {_num(None if fat is None else round(fat, 2))}, "
+            f"SNF {_num(None if snf is None else round(snf, 2))}.\n\n{body}"
+        )
     logger.info(
         "Milk collection aggregate: accounts=%s any_success=%s total_milk_records=%s",
         len(accounts), any_success, total_milk,

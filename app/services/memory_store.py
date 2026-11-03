@@ -21,6 +21,10 @@ READ_CHUNKS = min(10, max(1, int(os.getenv("MEMORY_READ_LIMIT", "3"))))
 INTERNAL_TYPES = {"settings", "profile_record", "key_doc", "memory_chunk"}
 VISIBLE_FIELDS = ("headline", "status", "source_ts", "first_source_ts", "expires_at",
                   "times_raised", "contents", "previous_version")
+EPISODE_FIELDS = (
+    "source_surface", "source_episode_number", "episode_revision", "episode_part_number",
+    "episode_part_count", "episode_started_at", "episode_ended_at",
+)
 
 
 def validate_config():
@@ -69,6 +73,9 @@ def layout(payload):
 def shape(point):
     payload = point["payload"]
     row = {"id": point["id"], **{k: payload[k] for k in VISIBLE_FIELDS if k in payload}}
+    row["record_kind"] = payload.get("record_kind", "matter")
+    if row["record_kind"] == "episode":
+        row.update({key: payload[key] for key in EPISODE_FIELDS if key in payload})
     row["chunk_count"] = len(layout(payload)[1])
     row["chunk_indexed"] = bool(payload.get("chunk_count"))
     row["visible_metadata"] = {k: v for k, v in (payload.get("metadata") or {}).items() if not hidden_key(k)}
@@ -102,17 +109,24 @@ class MemoryStore:
                 payload = points[0]["payload"]
                 self._enabled = (payload.get("farmer_id") == self.farmer_id
                                  and payload.get("type") == "settings"
-                                 and payload.get("memory_enabled", True) is True)
+                                 and payload.get("memory_enabled") is True)
         return self._enabled
 
     async def _allowed(self):
         if not await self.enabled():
             raise PermissionError("Memory is disabled for this farmer")
 
-    def _filter(self, *, status=None, filters=None, current=True, chunks=False):
+    def _filter(self, *, status=None, filters=None, current=True, chunks=False, kind=None):
         must = [{"key": "farmer_id", "match": {"value": self.farmer_id}}]
         if current:
             must.append({"is_empty": {"key": "superseded_at"}})
+        if kind == "episode":
+            must.append({"key": "record_kind", "match": {"value": "episode"}})
+        elif kind == "matter":
+            must.append({"should": [
+                {"key": "record_kind", "match": {"value": "matter"}},
+                {"is_empty": {"key": "record_kind"}},
+            ]})
         if status:
             must.append({"key": "status", "match": {"any": status}})
         for key, value in (filters or {}).items():
@@ -223,9 +237,25 @@ class MemoryStore:
             offset += len(points)
         return {"hits": hits, "partial": not exhausted and len(hits) < limit}
 
-    async def list_entries(self, *, status=None, filters=None, cursor=None, limit=8):
+    async def list_entries(self, *, status=None, filters=None, kind=None, order=None, cursor=None, limit=8):
         await self._allowed()
-        body = {"filter": self._filter(status=status, filters=filters), "limit": limit, "with_payload": True}
+        body = {
+            "filter": self._filter(status=status, filters=filters, kind=kind),
+            "limit": limit,
+            "with_payload": True,
+        }
+        if order:
+            if cursor:
+                raise ValueError("Chronological listings do not use point cursors")
+            # The writer indexes source_ts and sets it to the episode end time.
+            body["order_by"] = {"key": "source_ts", "direction": order}
+            body["limit"] = limit + 1
+            points = (await self._qdrant("/scroll", body))["points"]
+            return {
+                "entries": [shape(p) for p in points[:limit] if self._owned_episode(p, current=True)],
+                "next_cursor": None,
+                "truncated": len(points) > limit,
+            }
         if cursor:
             body["offset"] = str(uuid.UUID(cursor))
         result = await self._qdrant("/scroll", body)

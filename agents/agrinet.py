@@ -73,6 +73,6 @@ def get_agrinet_instructions(ctx: RunContext):
     # agent always runs on the English-only prompt; the response is translated
     # into the target language downstream (app.services.chat).
     instructions = get_prompt("agrinet_system_translation_pipeline.md", context=context)
-    if ctx.deps.memory_context:
+    if ctx.deps.memory_read_allowed:
         instructions += "\n\n" + MEMORY_INSTRUCTIONS
     return instructions

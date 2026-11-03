@@ -5,8 +5,9 @@ import json
 import httpx
 
 from agents.tools.models.bonus import FarmerBonusAmountRecordModel, FarmerBonusAmountRequestModel
+from agents.tools.telemetry import reason
 from app.config import settings
-from app.observability import start_observation
+from app.observability import record_api_result, start_observation
 from helpers.utils import get_logger
 
 logger = get_logger(__name__)
@@ -24,17 +25,25 @@ async def get_farmer_bonus_amount_api(
             input=request.to_query_params(),
             metadata={"provider": "amulpashudhan", "url": api_url},
         ) as observation:
-            async with httpx.AsyncClient(
-                timeout=settings.farmer_backend_http_timeout_seconds
-            ) as client:
-                response = await client.get(
-                    api_url,
-                    params=request.to_query_params(),
-                    headers={"Authorization": f"Bearer {token}"},
-                )
-                response.raise_for_status()
-                if observation is not None:
-                    observation.update(output={"status_code": response.status_code})
+            try:
+                async with httpx.AsyncClient(
+                    timeout=settings.farmer_backend_http_timeout_seconds
+                ) as client:
+                    response = await client.get(
+                        api_url,
+                        params=request.to_query_params(),
+                        headers={"Authorization": f"Bearer {token}"},
+                    )
+            except Exception as exc:
+                record_api_result(observation, ok=False, reason=reason(exc))
+                raise
+            record_api_result(
+                observation,
+                ok=response.is_success,
+                status_code=response.status_code,
+                reason=f"HTTP {response.status_code}",
+            )
+            response.raise_for_status()
         payload = response.json()
         if not isinstance(payload, list):
             raise ValueError("bonus provider response is not a list")

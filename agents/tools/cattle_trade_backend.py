@@ -6,8 +6,9 @@ from decimal import Decimal
 import httpx
 
 from agents.tools.models.cattle_trade import CattleTradeRatesModel
+from agents.tools.telemetry import reason
 from app.config import settings
-from app.observability import start_observation
+from app.observability import record_api_result, start_observation
 from helpers.utils import get_logger
 
 logger = get_logger(__name__)
@@ -22,19 +23,27 @@ async def get_cattle_trade_rates_api(token: str) -> CattleTradeRatesModel | None
             input={},
             metadata={"provider": "amulpashudhan", "url": api_url},
         ) as observation:
-            async with httpx.AsyncClient(
-                timeout=settings.farmer_backend_http_timeout_seconds
-            ) as client:
-                response = await client.get(
-                    api_url,
-                    headers={
-                        "accept": "application/json",
-                        "Authorization": f"Bearer {token}",
-                    },
-                )
-                response.raise_for_status()
-                if observation is not None:
-                    observation.update(output={"status_code": response.status_code})
+            try:
+                async with httpx.AsyncClient(
+                    timeout=settings.farmer_backend_http_timeout_seconds
+                ) as client:
+                    response = await client.get(
+                        api_url,
+                        headers={
+                            "accept": "application/json",
+                            "Authorization": f"Bearer {token}",
+                        },
+                    )
+            except Exception as exc:
+                record_api_result(observation, ok=False, reason=reason(exc))
+                raise
+            record_api_result(
+                observation,
+                ok=response.is_success,
+                status_code=response.status_code,
+                reason=f"HTTP {response.status_code}",
+            )
+            response.raise_for_status()
 
         payload = json.loads(response.text, parse_float=Decimal)
         if not isinstance(payload, dict):

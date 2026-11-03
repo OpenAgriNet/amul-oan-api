@@ -67,6 +67,9 @@ TelemetryTarget = Annotated[
 class TelemetrySdkEvent(BaseModel):
     qid: str | None = None
     sid: str
+    #: The turn the event is about: the chat response's X-Trace-Id, sent back with the
+    #: feedback so its rating lands on the turn.
+    trace_id: str | None = None
     channel: str | None = None
     target: TelemetryTarget
 
@@ -102,6 +105,7 @@ class CanonicalTelemetryEvent(BaseModel):
     schema_version: str = "v1"
     session_id: str | None = None
     question_id: str | None = None
+    trace_id: str | None = None
     user_id: str | None = None
     pipeline: Literal["default", "oss_translate"] | None = None
     ts: int | None = None

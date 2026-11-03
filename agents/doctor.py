@@ -3,7 +3,8 @@ from pydantic_ai.settings import ModelSettings
 
 from agents.agrinet import _agrinet_max_output_tokens
 from agents.deps import FarmerContext
-from agents.tools.search import search_documents
+from agents.tools.doctor_search import doctor_search_documents
+from agents.tools.telemetry import reporting
 from helpers.utils import get_prompt, get_today_date_str
 from app.config import get_config_value, settings
 
@@ -27,7 +28,8 @@ def _doctor_request_limit() -> int:
 # booking, financial, milk-collection, or network tools.
 DOCTOR_TOOLS = [
     Tool(
-        search_documents,
+        reporting(doctor_search_documents),
+        name="search_documents",
         takes_ctx=False,
         docstring_format="auto",
         require_parameter_descriptions=True,

@@ -32,7 +32,7 @@ from app.services import voice as voice_service
 from app.tasks import health_poller
 from app.tasks import suggestions
 from app.turn.types import AgentInput, ClassifierResult, Pretranslated, Surface, SurfaceProfile, Turn
-from app.voice import classifiers, liveness, moderation, trace
+from app.voice import classifiers, liveness, moderation
 from app.voice.telemetry import VoiceTelemetry
 from tests.test_chat_turn_contract import _Run
 from tests.test_config_source import FakeRedis
@@ -277,29 +277,33 @@ def test_each_surfaces_traces_land_in_its_own_langfuse_environment(boot, isolate
 
     monkeypatch.setattr(settings, "langfuse_tracing_environment", "chat-production")
     # Without the pipeline files, every root asks for the process's, as the client has it today.
-    assert _roots() == ["chat-production"] * 3
+    # Chat's root asks twice: once for every span of the turn, once for its own trace-level fields.
+    # Voice's asks a third time when it closes, for the outcome.
+    assert _roots() == ["chat-production"] * 6
     boot()
-    assert _roots() == ["chat-development", "voice-development", "chat-development"]
+    assert _roots() == ["chat-development"] * 2 + ["voice-development"] * 3 + ["chat-development"]
 
 
 def test_voice_knobs_come_from_voices_settings_else_env(monkeypatch):
-    for name, value in (("voice_trace_user_id_mode", "hash"), ("voice_trace_text_mode", "none"),
-                        ("openai_pretranslation_timeout_seconds", 10.0), ("outbound_intro_enabled", False)):
+    for name, value in (("openai_pretranslation_timeout_seconds", 10.0), ("outbound_intro_enabled", False)):
         monkeypatch.setattr(settings, name, value)
     knobs = lambda: (  # noqa: E731
-        trace._langfuse_user_id("9876543210", "hashed"),
-        "text" in trace.sanitize_text("words"),
         moderation.pretranslation_timeout_s(),
         asyncio.run(voice_service._is_outbound_consent_turn("call-1", "outbound", [])),
     )
     monkeypatch.setattr(voice_service._outbound, "get_stage", lambda _sid: asyncio.sleep(0, None))
-    assert knobs() == ("hashed", False, 10.0, False)
+    assert knobs() == (10.0, False)
 
     monkeypatch.setattr(runtime, "SETTINGS", {"voice": VoiceSettings(
-        trace_user_id_mode="phone", trace_text_mode="full", pretranslation_timeout_seconds=21.0,
-        outbound_intro_enabled=True,
+        pretranslation_timeout_seconds=21.0, outbound_intro_enabled=True,
     )})
-    assert knobs() == ("9876543210", True, 21.0, True)
+    assert knobs() == (21.0, True)
+
+
+def test_a_config_that_still_sets_the_old_voice_text_modes_loads():
+    """The trace sends the words and the number as they are; an older config naming the
+    modes it no longer reads still loads."""
+    VoiceSettings(trace_user_id_mode="hash", trace_text_mode="none")
 
 
 def test_voice_runs_the_prompt_version_its_settings_name(world, monkeypatch):  # noqa: F811
