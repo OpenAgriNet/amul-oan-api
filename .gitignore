@@ -190,6 +190,7 @@ cython_debug/
 # Local
 /scripts/*
 !/scripts/validate_district_coords.py
+!/scripts/label_test_cases.py
 /exploration/*
 /evals/*
 
