@@ -4,15 +4,16 @@ Mounted only when TEST_CASES_ROUTE_ENABLED is on (main.py). One case per request
 the screen's bulk upload sends one request per case. The body is checked against
 the v1 contract (app/models/test_cases.py) and stored exactly as it came, under an
 id made from the body. Labelling (#488) reads the stored submissions. Turn text
-never goes to the logs. GET /options/ gives the screen its dropdown lists.
+never goes to the logs. GET /options/ gives the screen its dropdown lists, and
+GET / and GET /coverage/ show what was already sent (#517).
 """
 import hashlib
 import json
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Annotated, Any, Optional
 
-from fastapi import APIRouter, Depends, Request, status
+from fastapi import APIRouter, Depends, Query, Request, status
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
@@ -21,8 +22,10 @@ from starlette.requests import ClientDisconnect
 from app.auth.jwt_auth import get_chat_user
 from app.config import settings
 from app.models.case_options import CASE_OPTIONS, CaseOptions
+from app.models.test_case_views import CaseCoverage, CaseList, CaseView
 from app.models.test_cases import CASE_SOURCES, CaseSubmission, SubmitTestCaseResponse
 from app.services.test_case_store import CaseStore, get_case_store
+from app.services.test_case_views import CaseFilter, coverage, to_view
 from helpers.utils import get_logger
 
 logger = get_logger(__name__)
@@ -148,3 +151,73 @@ async def submit_test_case(
 async def case_options(_user: dict = Depends(get_chat_user)) -> CaseOptions:
     """The screen's dropdowns: testers, case types and tags."""
     return CASE_OPTIONS
+
+
+def _read_views(store: CaseStore) -> list[CaseView]:
+    return [view for view in map(to_view, store.list_cases()) if view is not None]
+
+
+async def _stored_views(store: Optional[CaseStore], route: str) -> list[CaseView] | JSONResponse:
+    if store is None:
+        logger.warning("%s rejected=no_store", route)
+        return _error(status.HTTP_503_SERVICE_UNAVAILABLE, "Test case store is not configured")
+    try:
+        return await run_in_threadpool(_read_views, store)
+    except Exception as exc:
+        logger.error("%s store_failed error=%s", route, type(exc).__name__)
+        return _error(status.HTTP_503_SERVICE_UNAVAILABLE, "Test case store is unavailable")
+
+
+_Id = Annotated[Optional[str], Query(max_length=64)]
+# Up to 64 ids per list, the most a filter on the screen can pick.
+_Ids = Annotated[list[str], Query(max_length=64)]
+
+
+@router.get("/", response_model=CaseList, response_model_exclude_none=True)
+async def list_test_cases(
+    tag: _Ids = [],
+    case_type: _Ids = [],
+    source: _Id = None,
+    persona: _Id = None,
+    language: _Id = None,
+    submitted_by: _Id = None,
+    q: Annotated[Optional[str], Query(max_length=200)] = None,
+    page: Annotated[int, Query(ge=1, le=10_000)] = 1,
+    limit: Annotated[int, Query(ge=1, le=100)] = 20,
+    _user: dict = Depends(get_chat_user),
+    store: Optional[CaseStore] = Depends(get_case_store),
+):
+    """The cases already sent, newest first, with phone and Aadhaar numbers masked.
+
+    ``tag`` and ``case_type`` can repeat; a case matches when it has any of them.
+    ``q`` searches the description and the turns. 503 when there is no store or it
+    can't be read.
+    """
+    views = await _stored_views(store, "list_test_cases")
+    if isinstance(views, JSONResponse):
+        return views
+    wanted = CaseFilter(
+        tags=frozenset(tag),
+        case_types=frozenset(case_type),
+        source=source,
+        persona=persona,
+        language=language,
+        submitted_by=submitted_by,
+        text=(q or "").strip() or None,
+    )
+    matched = [view for view in views if wanted.matches(view)]
+    start = (page - 1) * limit
+    logger.info("list_test_cases stored=%s matched=%s page=%s", len(views), len(matched), page)
+    return CaseList(items=matched[start : start + limit], total=len(matched), page=page, limit=limit)
+
+
+@router.get("/coverage/", response_model=CaseCoverage)
+async def case_coverage(
+    _user: dict = Depends(get_chat_user),
+    store: Optional[CaseStore] = Depends(get_case_store),
+):
+    """How many cases each tag and case type has, zeros included."""
+    views = await _stored_views(store, "case_coverage")
+    if isinstance(views, JSONResponse):
+        return views
+    return coverage(views)

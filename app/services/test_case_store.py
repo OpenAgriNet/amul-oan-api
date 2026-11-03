@@ -5,8 +5,12 @@ Where raw submissions live is still open (#487), so the route only sees the
 submissions, named by ``TEST_CASES_RAW_DATASET``. It writes through the backend's
 own Langfuse client, which masks nothing, and nothing reads this dataset as a test
 set: the labeller (#488) and ingestion (#516) turn submissions into test cases.
+The review list (#517) reads it back; archived items are left out, so archiving an
+item in Langfuse takes it off the list.
 """
 import threading
+import time
+from dataclasses import dataclass
 from typing import Any, Optional, Protocol
 
 from app.config import settings
@@ -21,9 +25,26 @@ RAW_DATASET_DESCRIPTION = (
 )
 
 
+# The review list reads the whole dataset; this keeps a page of filter clicks from
+# reading it again each time. A save in this process starts the next read fresh.
+LIST_CACHE_SECONDS = 30
+_PAGE_SIZE = 100
+
+
+@dataclass(frozen=True)
+class StoredCase:
+    id: str
+    received_at: str
+    raw: dict[str, Any]
+
+
 class CaseStore(Protocol):
     def save(self, *, case_id: str, raw: dict[str, Any], received_at: str) -> None:
         """Keep one submission. Raises when it could not be kept."""
+
+    def list_cases(self) -> list[StoredCase]:
+        """Every submission that isn't archived, newest first. Raises when the
+        store can't be read."""
 
 
 class LangfuseCaseStore:
@@ -36,6 +57,11 @@ class LangfuseCaseStore:
         self._dataset_name = dataset_name
         self._dataset_ready = False
         self._lock = threading.Lock()
+        self._list_lock = threading.Lock()
+        # Saves so far. A list read while a save lands is kept under the older count,
+        # so the next read sees the change and reads again.
+        self._saves = 0
+        self._listed: Optional[tuple[float, int, list[StoredCase]]] = None
 
     def _ensure_dataset(self) -> None:
         # Creating a dataset upserts on its name, so this is safe on every boot.
@@ -60,6 +86,37 @@ class LangfuseCaseStore:
             # next save instead of failing until a restart.
             self._dataset_ready = False
             raise
+        self._saves += 1
+
+    def list_cases(self) -> list[StoredCase]:
+        with self._list_lock:
+            listed, saves = self._listed, self._saves
+            if listed is not None and listed[1] == saves and time.monotonic() - listed[0] < LIST_CACHE_SECONDS:
+                return listed[2]
+            try:
+                items = self._client.get_dataset(self._dataset_name, fetch_items_page_size=_PAGE_SIZE).items
+            except Exception as exc:
+                # No case was ever sent, so there is no dataset yet.
+                if getattr(exc, "status_code", None) != 404:
+                    raise
+                items = []
+            cases = [
+                StoredCase(id=item.id, received_at=_received_at(item), raw=item.input)
+                for item in items
+                if item.status != "ARCHIVED" and isinstance(item.input, dict)
+            ]
+            cases.sort(key=lambda case: case.received_at, reverse=True)
+            self._listed = (time.monotonic(), saves, cases)
+            return cases
+
+
+def _received_at(item: Any) -> str:
+    metadata = item.metadata if isinstance(item.metadata, dict) else {}
+    received_at = metadata.get("received_at")
+    if isinstance(received_at, str) and received_at:
+        return received_at
+    created_at = getattr(item, "created_at", None)
+    return created_at.isoformat() if created_at is not None else ""
 
 
 _store: Optional[LangfuseCaseStore] = None

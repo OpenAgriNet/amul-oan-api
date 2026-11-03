@@ -606,11 +606,19 @@ def test_there_is_a_store_only_with_a_dataset_name_and_langfuse(monkeypatch):
 
 def test_the_route_is_registered_only_when_switched_on():
     def _paths(enabled):
-        script = "import main; print(sorted(r.path for r in main.app.routes if 'test-case' in r.path))"
+        script = (
+            "import main; print(sorted((r.path, ','.join(sorted(r.methods)))"
+            " for r in main.app.routes if 'test-case' in r.path))"
+        )
         env = {**os.environ, "OPENAI_API_KEY": "test-key", "TEST_CASES_ROUTE_ENABLED": enabled}
         out = subprocess.run([sys.executable, "-c", script], cwd=REPO, env=env, capture_output=True, text=True)
         assert out.returncode == 0, out.stderr[-2000:]
         return out.stdout.strip().splitlines()[-1]
 
     assert _paths("false") == "[]"
-    assert _paths("true") == "['/api/test-cases/', '/api/test-cases/options/']"
+    assert _paths("true") == str([
+        ("/api/test-cases/", "GET"),
+        ("/api/test-cases/", "POST"),
+        ("/api/test-cases/coverage/", "GET"),
+        ("/api/test-cases/options/", "GET"),
+    ])
