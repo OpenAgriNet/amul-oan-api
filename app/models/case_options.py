@@ -64,20 +64,28 @@ TAGS = [
     HintOption(id="ait_booking", label="AIT booking", hint="Booking an artificial insemination technician, and its status."),
     HintOption(id="milk_collection", label="Milk collection", hint="Farmer's milk pouring records, fat/SNF, quantities."),
     HintOption(id="milk_earnings", label="Milk earnings & bonus", hint="Payments, earnings, bonus calculation."),
-    HintOption(id="union_schemes", label="Union schemes", hint="Schemes of the milk union (e.g. a specific district union)."),
-    HintOption(id="government_schemes", label="Government schemes", hint="State and central government schemes and subsidies."),
+    HintOption(id="union_schemes", label="Union schemes", hint="Schemes of the milk union (e.g. a specific district union) and their helpline numbers."),
+    HintOption(id="government_schemes", label="Government schemes", hint="State and central government schemes and subsidies, and their helpline numbers."),
     HintOption(id="animal_nutrition", label="Feed & nutrition", hint="Cattle feed, fodder, mineral mixture."),
     HintOption(id="weather", label="Weather", hint="Forecasts and weather-based advice."),
     HintOption(id="market_prices", label="Market prices (APMC)", hint="Mandi / APMC prices for crops."),
     HintOption(id="crop_advisory", label="Crop advisory", hint="Farming, crops, soil, pests."),
     HintOption(id="farmer_profile", label="Farmer profile & sign-in", hint="Farmer ID, society, account details."),
     # On the feature list (#486) but not on the screen before.
-    HintOption(id="animal_records", label="Animal records", hint="The farmer's animals and their health and visit records."),
+    HintOption(id="animal_records", label="Animal records", hint="The farmer's animals and their health and visit records, CVCC history included."),
     HintOption(id="cattle_trade", label="Cattle trade", hint="Cattle rates, buying and selling animals."),
     HintOption(id="soil_health_card", label="Soil health card", hint="The farmer's soil health card and what it says."),
     HintOption(id="loan", label="Micro-loan", hint="Micro-loan eligibility and loan codes."),
     HintOption(id="vet_office", label="Nearest vet office", hint="Finding the nearest government veterinary office."),
     HintOption(id="pm_kisan", label="PM-KISAN status", hint="The farmer's PM-KISAN registration and installment status."),
+    # Categories #486 added after Kanav's review.
+    HintOption(id="follow_up", label="Follow-up question", hint="A question that depends on what was said earlier in the chat."),
+    HintOption(id="suggestions", label="Suggested questions", hint="The follow-up questions the bot suggests after an answer."),
+    HintOption(
+        id="safety",
+        label="Safety",
+        hint="Moderation declines, abuse, prompt injection, personal data in a question, vet drug and dose rules.",
+    ),
     HintOption(id="general", label="General / other", hint="Greetings, small talk, out-of-scope questions."),
 ]
 

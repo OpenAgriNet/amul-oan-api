@@ -180,6 +180,15 @@ def test_a_chat_case_is_stored_exactly_as_sent(store):
         _manual(test_account="f1"),
         _chat(submitted_by="9876543210"),
         _bulk(test_account="f1"),
+        _chat(turns=[
+            {"role": "user", "content": "Hi"},
+            {"role": "user", "content": "Are you there?"},
+            {"role": "assistant", "content": "Yes"},
+        ]),
+        _chat(turns=[*_turns(1), {"role": "user", "content": "And the dose?"}]),
+        _manual(turns=[*_turns(1), {"role": "assistant", "content": "Anything else?"}]),
+        _bulk(turns=[*_turns(1), {"role": "assistant", "content": "Anything else?"}]),
+        _bulk(turns=[{"role": "user", "content": "Hi"}, *_turns(1)]),
     ],
     ids=[
         "no turns",
@@ -226,6 +235,11 @@ def test_a_chat_case_is_stored_exactly_as_sent(store):
         "test_account on a manual case",
         "submitted_by that is a phone number",
         "test_account on a bulk case",
+        "two farmer questions in a row in a chat",
+        "a chat that ends on a farmer question",
+        "two bot answers in a row in a manual case",
+        "two bot answers in a row in a bulk case",
+        "two farmer questions in a row in a bulk case",
     ],
 )
 def test_a_body_outside_the_contract_is_a_422(store, body):
@@ -240,8 +254,8 @@ def test_a_body_outside_the_contract_is_a_422(store, body):
     [
         _chat(turns=[
             {"role": "user", "content": "Hi"},
-            {"role": "user", "content": "Are you there?"},
-            {"role": "assistant", "content": "Yes"},
+            {"role": "assistant", "content": "Hello"},
+            {"role": "assistant", "content": "How can I help?"},
         ]),
         _chat(turns=_turns(MAX_USER_TURNS)),
         _chat(case_types=[], tags=[]),
@@ -255,7 +269,7 @@ def test_a_body_outside_the_contract_is_a_422(store, body):
         _chat(description="Buffalo 🐃 fever 🤒!!"),
     ],
     ids=[
-        "same role twice",
+        "two bot messages for one question in a chat",
         "exactly the cap",
         "no types or tags",
         "ids from a newer list",
@@ -303,6 +317,32 @@ def test_case_level_rules_point_at_their_field(store, body, loc):
     response = _post(_client(store), body)
 
     assert [error["loc"] for error in response.json()["errors"]] == [loc]
+
+
+@pytest.mark.parametrize(
+    "body, msg",
+    [
+        (
+            _chat(turns=[*_turns(1), {"role": "user", "content": "A"}, {"role": "user", "content": "B"}, *_turns(1)]),
+            "Turns 3 and 4 are both farmer questions: each question needs its bot answer right after it",
+        ),
+        (
+            _manual(turns=[*_turns(1), {"role": "assistant", "content": "Anything else?"}]),
+            "Turns 2 and 3 are both bot answers: each answer goes right after its own question",
+        ),
+        (
+            _chat(turns=[*_turns(2), {"role": "user", "content": "And the dose?"}]),
+            "The conversation has to end with a bot answer",
+        ),
+    ],
+    ids=["two questions", "two answers", "ends on a question"],
+)
+def test_a_broken_pair_says_which_turns_to_fix(store, body, msg):
+    response = _post(_client(store), body)
+
+    assert response.status_code == 422
+    assert response.json()["errors"] == [{"loc": ["turns"], "msg": msg}]
+    assert store.saved == []
 
 
 def test_a_body_of_unknown_keys_gets_a_small_422(store):

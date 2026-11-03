@@ -1,15 +1,17 @@
 """Contract for the dev-only test case intake (POST /api/test-cases/), v1.
 
 One test case per request from the amul-ui test case screen: a chat, a case typed
-in the Write tab, or one case of a bulk upload. The turn rules are the screen's
-own (``validateDraft`` in src/lib/test-cases/draft.ts), with the cap at 20 farmer
-questions. A field outside this contract is a 422, so a typo can't sit in the raw
-store unread: a new field goes into the backend first.
+in the Write tab, or one case of a bulk upload. The turn rules follow the screen's
+(``validateDraft`` in src/lib/test-cases/draft.ts), with the cap at 20 farmer
+questions, and a case is question and answer pairs: two questions in a row, or two
+answers to one question, make a test nobody can score. A field outside this
+contract is a 422, so a typo can't sit in the raw store unread: a new field goes
+into the backend first.
 
 Case types and tags are hints, not labels. Any id in the right format passes,
 since the lists are still being reviewed (#486).
 """
-from typing import Annotated, Literal, Optional, Union
+from typing import Annotated, ClassVar, Literal, Optional, Union
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationInfo, field_validator, model_validator
 
@@ -99,6 +101,10 @@ class BulkInfo(_Strict):
 
 
 class _Case(_Strict):
+    # Turns typed in the Write tab or a sheet go question, answer, question, answer.
+    # A chat keeps what the bot sent, and the bot can send two messages for one question.
+    answers_in_a_row: ClassVar[bool] = False
+
     schema_version: Literal[1]
     submitted_by: _Alias
     persona: ChatPersona
@@ -150,10 +156,26 @@ class _Case(_Strict):
             raise ValueError("The conversation has to start with a farmer question")
         if questions > MAX_USER_TURNS:
             raise ValueError(f"Keep it to {MAX_USER_TURNS} questions or fewer")
+        # Numbered from 1, the way the screen numbers the turns it sends.
+        for number, (before, after) in enumerate(zip(turns, turns[1:]), start=1):
+            if before.role == after.role == "user":
+                raise ValueError(
+                    f"Turns {number} and {number + 1} are both farmer questions: "
+                    "each question needs its bot answer right after it"
+                )
+            if before.role == after.role == "assistant" and not cls.answers_in_a_row:
+                raise ValueError(
+                    f"Turns {number} and {number + 1} are both bot answers: "
+                    "each answer goes right after its own question"
+                )
+        if turns[-1].role != "assistant":
+            raise ValueError("The conversation has to end with a bot answer")
         return turns
 
 
 class ChatCase(_Case):
+    answers_in_a_row: ClassVar[bool] = True
+
     source: Literal["chat"]
     turns: list[ChatTurn] = Field(fail_fast=True)
     chat: ChatInfo
