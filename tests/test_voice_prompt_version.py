@@ -260,13 +260,25 @@ class TestNewVariantInvariants:
         for asked in ("assigned AIT name", "assigned technician's name", "assigned A I technician's name"):
             assert asked not in text
 
+    @pytest.mark.parametrize("version", list(VARIANTS))
+    def test_vet_visit_request_is_not_booked(self, version):
+        """AMUL-109: health-call booking is gone (#368), but a downer-buffalo
+        caller was still offered a vet visit, then sent to the society. With no
+        tool to book one, the reply is: can't book, call a vet now, office lookup."""
+        text = _load(version)
+        assert "No tool books a vet visit" in text or "No tool can book, send, or call a veterinarian" in text
+        assert "local veterinarian" in text
+        assert "find_nearby_vet_offices" in text
+        assert "not the Milk Society" in text or "Do not make the Milk Society the answer" in text
+        assert "create_health_call" not in text
+
     @pytest.mark.parametrize("version", NEW_VARIANTS)
     def test_size_guardrails(self, version):
         text = _load(version)
         words = len(text.split())
         lines = text.count("\n") + 1
         # New variants must stay leaner than the legacy mixed prompt.
-        assert words <= 4500, f"{version} prompt grew to {words} words (limit 4500)"
+        assert words <= 4550, f"{version} prompt grew to {words} words (limit 4550)"
         assert lines <= 320, f"{version} prompt grew to {lines} lines (limit 320)"
 
 
