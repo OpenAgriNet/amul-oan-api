@@ -1,10 +1,11 @@
 """Label a test case with Gemma 4 through LiteLLM (#488).
 
-One label per case: the feature it tests (one id from the screen's tag list), a few
-short sub-tags, the use case and the edge case in a few words, and what the bot
-should do, in eval set v0's ``expected_action`` terms. Text is masked
+Two labels per case, both broad so it's obvious where a case goes: its group (ai,
+vet-health, milk, scheme, bonus or other), and what the bot should do, in eval set
+v0's ``expected_action`` terms with its refer_vet and urgent_vet as one, vet.
+Subgroups wait until a group has about 15 questions. Text is masked
 (app/services/personal_data.py) before it goes into the prompt. A reply that isn't
-JSON, or names a feature or answer type outside the lists, is an error, not a label.
+JSON, or names a group or answer type outside the lists, is an error, not a label.
 
 The model is reached the way the judge in oan-evaluation reaches it
 (evaluation/amul/judge.py): ``SCENARIO_GEMMA_BASE_URL``, ``LITELLM_API_KEY`` and
@@ -20,12 +21,40 @@ from typing import Callable, Optional
 import httpx
 from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
 
-from app.models.case_options import CASE_OPTIONS
 from app.services.personal_data import mask_personal_data
 
-FEATURES = {option.id: option for option in CASE_OPTIONS.tags}
-# Eval set v0's expected_action values (oan-evaluation, inference/amul_eval_set_v0_metadata.json).
-ANSWER_TYPES = ("answer", "book", "refer_vet", "urgent_vet", "say_unavailable", "out_of_scope")
+# other holds the rest until it has enough questions to be split.
+GROUPS = {
+    "ai": "anything about artificial insemination (AI): booking an AI call, the technicians, semen, when to inseminate, past AI records",
+    "vet-health": (
+        "animal health, disease and treatment, heat and pregnancy, feed and fodder, how to raise milk yield or fat, "
+        "the farmer's animals and their records, vet visits and the nearest vet office"
+    ),
+    "milk": (
+        "milk pouring records (what was poured, its fat and SNF, and how that changed), the milk price, "
+        "payments and deductions, and the SMS after pouring"
+    ),
+    "bonus": "bonus and bhav fer (the price difference)",
+    "scheme": "union and government schemes, subsidies, insurance, loans and PM-KISAN, and their helplines",
+    "other": (
+        "anything else, like weather, mandi prices, the soil health card, cattle trade (animal rates, buying and selling), "
+        "greetings or off-topic questions"
+    ),
+}
+# Eval set v0's expected_action values (oan-evaluation, inference/amul_eval_set_v0_metadata.json),
+# with refer_vet and urgent_vet as one, vet: how urgent doesn't matter for curation.
+ANSWER_TYPES = {
+    "answer": "it answers",
+    "book": "it books an AI call",
+    "vet": (
+        "the main advice is to get a vet to see the animal, as for fever, bloat, swelling, a retained placenta "
+        "or repeat breeding, with or without the bot's own advice. Care, feed and dose questions are answer, "
+        'and so is "see a vet if it gets worse"'
+    ),
+    "say_unavailable": "it says it can't do this here, or has no data for it",
+    "out_of_scope": "it declines a question it shouldn't answer, like an off-topic one or one about another farmer's data",
+}
+V0_VET_ACTIONS = ("refer_vet", "urgent_vet")
 _ASK = re.compile(r"^ask:[a-z_]{1,30}$")
 DEFAULT_MODEL = "gemma-4-31b-it"
 
@@ -46,92 +75,68 @@ class Case:
     case_id: str
     turns: tuple[Turn, ...]
     description: str = ""
-    # What the set already says about the case (its category, tools, expected action).
+    # What the set already says about the case (its category, tools, the tester's tags),
+    # never its expected action.
     hints: dict[str, str] = field(default_factory=dict)
 
 
 class Label(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
-    feature: str
-    sub_tags: list[str]
-    use_case: str
-    edge_case: str
+    group: str
     answer_type: str
 
-    # Small slips in an otherwise good reply are not errors: null for "nothing",
-    # "Answer" or " ait_booking ". A feature or answer type off the lists still is.
-    @field_validator("sub_tags", mode="before")
-    @classmethod
-    def _no_tags(cls, value):
-        return [] if value is None else value
-
-    @field_validator("edge_case", mode="before")
-    @classmethod
-    def _no_edge_case(cls, value):
-        return "" if value is None else value
-
-    @field_validator("feature", "answer_type", mode="before")
+    # Small slips in an otherwise good reply are not errors: "Answer", " AI ", "vet_health"
+    # or "out-of-scope". A group or answer type off the lists still is.
+    @field_validator("group", "answer_type", mode="before")
     @classmethod
     def _tidy_id(cls, value):
         return value.strip().lower() if isinstance(value, str) else value
 
-    @field_validator("feature")
+    @field_validator("group")
     @classmethod
-    def _known_feature(cls, value: str) -> str:
-        if value not in FEATURES:
-            raise ValueError(f"{value!r} is not on the feature list")
-        return value
-
-    @field_validator("sub_tags")
-    @classmethod
-    def _short_tags(cls, value: list[str]) -> list[str]:
-        if len(value) > 5 or any(not tag.strip() or len(tag) > 40 for tag in value):
-            raise ValueError("up to 5 sub-tags of 1 to 40 characters")
-        return value
-
-    @field_validator("use_case")
-    @classmethod
-    def _use_case(cls, value: str) -> str:
-        if not value.strip() or len(value) > 80:
-            raise ValueError("the use case takes 1 to 80 characters")
-        return value
-
-    @field_validator("edge_case")
-    @classmethod
-    def _edge_case(cls, value: str) -> str:
-        if len(value) > 80:
-            raise ValueError("the edge case takes up to 80 characters")
-        return value
+    def _known_group(cls, value: str) -> str:
+        group = value.replace("_", "-")
+        if group not in GROUPS:
+            raise ValueError(f"{value!r} is not a group")
+        return group
 
     @field_validator("answer_type")
     @classmethod
     def _answer_type(cls, value: str) -> str:
-        if value not in ANSWER_TYPES and not _ASK.match(value):
+        answer_type = value.replace("-", "_")
+        if answer_type not in ANSWER_TYPES and not _ASK.match(answer_type):
             raise ValueError(f"{value!r} is not an answer type")
-        return value
+        return answer_type
 
 
 _INSTRUCTIONS = """You label one test case of Amul's chatbot for dairy farmers in Gujarat.
 Reply with one JSON object and nothing else:
-{{"feature": "...", "sub_tags": ["..."], "use_case": "...", "edge_case": "...", "answer_type": "..."}}
+{{"group": "...", "answer_type": "..."}}
 
-feature: the one feature the case tests, as an id from this list:
-{features}
+group: the one group the case is about:
+{groups}
+A chat that moves from one group to another goes in the group of the farmer's last message.
 
-sub_tags: up to 5 short tags a person can read, like "swollen leg" or "AI booking negative case".
-use_case: what the farmer wants, in a few words.
-edge_case: what makes the case unusual, like "out of scope", "Gujarati typed in English letters", "a tool error" or "missing data", or "" when nothing does.
-answer_type: what the bot should do: {answer_types}, or ask:<what it should ask for>, like ask:species.
+answer_type: what the bot should do after the farmer's last message:
+{answer_types}
+- ask:<what it should ask for>: it asks the farmer for something first, like ask:species.
+
+The only thing the bot can book is an AI call. For that it needs the animal (cow or buffalo) and the technician: it asks for whichever the farmer hasn't given, ask:species first, then ask:technician, and books once it has both. For an AI call it never asks for a date, a time or an animal number. If the case shows booking isn't open to the farmer (the union doesn't allow it, there's no technician, or no farmer profile), it's say_unavailable.
+The bot can't book a vet or doctor visit for an animal, or a health call: a request for one is vet-health, and the answer_type is vet.
+If the hints say persona: doctor, the user is a vet, not a farmer. That bot only answers from its documents: it books nothing and doesn't tell them to see a vet.
 
 Personal data in the text is masked: ******1234 is a phone or Aadhaar number, [code] is an OTP or a farmer code.
 The hints come from the set the case is in and may be wrong or out of date.
 """
 
 
+def _options(options: dict[str, str]) -> str:
+    return "\n".join(f"- {key}: {meaning}" for key, meaning in options.items())
+
+
 def build_prompt(case: Case) -> str:
-    features = "\n".join(f"- {option.id}: {option.label}. {option.hint}" for option in FEATURES.values())
-    parts = [_INSTRUCTIONS.format(features=features, answer_types=", ".join(ANSWER_TYPES))]
+    parts = [_INSTRUCTIONS.format(groups=_options(GROUPS), answer_types=_options(ANSWER_TYPES))]
     if case.hints:
         parts.append("Hints: " + "; ".join(f"{key}: {value}" for key, value in case.hints.items() if value))
     if case.description:

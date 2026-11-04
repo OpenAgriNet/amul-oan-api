@@ -1,6 +1,6 @@
 """The test case labeller (#488) and its dry-run script.
 
-The model is a fake: a reply that isn't JSON, or a feature or answer type off the
+The model is a fake: a reply that isn't JSON, or a group or answer type off the
 lists, must come out as an error, not a label. Personal data is masked before the
 prompt. The script reads the seed export, eval set v0 and raw submissions into one
 case per session and writes a CSV. No network.
@@ -30,13 +30,7 @@ _spec = importlib.util.spec_from_file_location("label_test_cases", REPO / "scrip
 script = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(script)
 
-GOOD = {
-    "feature": "ait_booking",
-    "sub_tags": ["cow", "home visit"],
-    "use_case": "book an AI technician",
-    "edge_case": "",
-    "answer_type": "ask:technician",
-}
+GOOD = {"group": "ai", "answer_type": "ask:technician"}
 
 
 # --- masking ---------------------------------------------------------------------
@@ -74,15 +68,16 @@ def test_dates_amounts_cycles_and_ordinary_words_stay(text):
 
 def test_a_good_reply_is_a_label():
     assert parse_label(json.dumps(GOOD)).model_dump() == GOOD
-    assert parse_label("```json\n" + json.dumps(GOOD) + "\n```").feature == "ait_booking"
-    assert parse_label("Here is the label: " + json.dumps(GOOD) + " Hope it helps.").feature == "ait_booking"
+    assert parse_label("```json\n" + json.dumps(GOOD) + "\n```").group == "ai"
+    assert parse_label("Here is the label: " + json.dumps(GOOD) + " Hope it helps.").group == "ai"
 
 
 def test_small_slips_in_a_good_reply_are_not_errors():
-    label = parse_label(json.dumps({**GOOD, "feature": " AIT_Booking ", "answer_type": "ASK:Species", "edge_case": None, "sub_tags": None}))
+    label = parse_label(json.dumps({"group": " Vet_Health ", "answer_type": "ASK:Species"}))
 
-    assert (label.feature, label.answer_type, label.edge_case, label.sub_tags) == ("ait_booking", "ask:species", "", [])
+    assert (label.group, label.answer_type) == ("vet-health", "ask:species")
     assert parse_label(json.dumps({**GOOD, "answer_type": "Answer"})).answer_type == "answer"
+    assert parse_label(json.dumps({**GOOD, "answer_type": "Out-Of-Scope"})).answer_type == "out_of_scope"
 
 
 @pytest.mark.parametrize(
@@ -90,17 +85,15 @@ def test_small_slips_in_a_good_reply_are_not_errors():
     [
         ("not json", "the reply is not JSON"),
         ("[1, 2]", "reply: Input should be"),
-        (json.dumps({**GOOD, "feature": "health_call"}), "feature: 'health_call' is not on the feature list"),
+        (json.dumps({**GOOD, "group": "ait_booking"}), "group: 'ait_booking' is not a group"),
         (json.dumps({**GOOD, "answer_type": "maybe"}), "answer_type: 'maybe' is not an answer type"),
+        (json.dumps({**GOOD, "answer_type": "refer_vet"}), "answer_type: 'refer_vet' is not an answer type"),
         (json.dumps({**GOOD, "answer_type": "ask:"}), "answer_type: 'ask:' is not an answer type"),
-        (json.dumps({**GOOD, "sub_tags": ["a", "b", "c", "d", "e", "f"]}), "sub_tags: up to 5 sub-tags"),
-        (json.dumps({**GOOD, "sub_tags": "cow"}), "sub_tags: Input should be a valid list"),
-        (json.dumps({**GOOD, "use_case": ""}), "use_case: the use case takes 1 to 80 characters"),
-        (json.dumps({**GOOD, "confidence": 0.9}), "confidence: Extra inputs are not permitted"),
-        (json.dumps({key: value for key, value in GOOD.items() if key != "edge_case"}), "edge_case: Field required"),
+        (json.dumps({**GOOD, "sub_tags": ["cow"]}), "sub_tags: Extra inputs are not permitted"),
+        (json.dumps({"group": "ai"}), "answer_type: Field required"),
     ],
-    ids=["not json", "not an object", "feature off the list", "unknown answer type", "empty ask",
-         "too many sub-tags", "sub-tags not a list", "empty use case", "extra key", "missing key"],
+    ids=["not json", "not an object", "group off the list", "unknown answer type", "refer_vet is vet now",
+         "empty ask", "extra key", "missing key"],
 )
 def test_a_bad_reply_is_an_error_not_a_label(reply, error):
     with pytest.raises(LabelError) as caught:
@@ -108,14 +101,14 @@ def test_a_bad_reply_is_an_error_not_a_label(reply, error):
     assert str(caught.value).startswith(error)
 
 
-def test_every_v0_answer_type_and_feature_id_passes():
-    for answer_type in ["answer", "book", "refer_vet", "urgent_vet", "say_unavailable", "out_of_scope", "ask:species"]:
+def test_every_group_and_answer_type_passes():
+    for answer_type in ["answer", "book", "vet", "say_unavailable", "out_of_scope", "ask:species"]:
         assert parse_label(json.dumps({**GOOD, "answer_type": answer_type})).answer_type == answer_type
-    for feature in ["veterinary_advisory", "safety", "follow_up", "general"]:
-        assert parse_label(json.dumps({**GOOD, "feature": feature})).feature == feature
+    for group in ["ai", "vet-health", "milk", "scheme", "bonus", "other"]:
+        assert parse_label(json.dumps({**GOOD, "group": group})).group == group
 
 
-def test_the_prompt_masks_personal_data_and_lists_the_features():
+def test_the_prompt_masks_personal_data_and_lists_the_groups_and_answer_types():
     case = Case(
         "amul-test-case-submissions",
         "c1",
@@ -131,9 +124,12 @@ def test_the_prompt_masks_personal_data_and_lists_the_features():
     assert "What the tester says the case checks: Farmer on ******3210 asks to book." in prompt
     assert "Bot: Thanks." in prompt
     assert "Hints: tester_tags: ait_booking" in prompt and "other_topic" not in prompt
-    assert "- ait_booking: AIT booking. Booking an artificial insemination technician" in prompt
-    assert "- safety: Safety." in prompt
-    assert "ask:<what it should ask for>" in prompt
+    assert "- ai: anything about artificial insemination (AI)" in prompt
+    assert "- vet-health: animal health" in prompt and "- other: anything else" in prompt
+    assert "- vet: the main advice is to get a vet" in prompt and "refer_vet" not in prompt
+    assert "- ask:<what it should ask for>" in prompt
+    assert "after the farmer's last message" in prompt and "ask:species first, then ask:technician" in prompt
+    assert "If the hints say persona: doctor, the user is a vet" in prompt
 
 
 def test_label_case_sends_the_prompt_and_parses_the_reply():
@@ -142,7 +138,7 @@ def test_label_case_sends_the_prompt_and_parses_the_reply():
 
     label = label_case(case, lambda prompt: seen.append(prompt) or json.dumps(GOOD))
 
-    assert label.feature == "ait_booking" and seen == [build_prompt(case)]
+    assert label.group == "ai" and seen == [build_prompt(case)]
 
 
 # --- LiteLLM ---------------------------------------------------------------------
@@ -259,18 +255,24 @@ def test_v0_becomes_cases_with_its_expected_action_kept_out_of_the_prompt(tmp_pa
          "question_english", "expected_tools", "must_not_call", "expected_behaviour"],
         ["ai-1", "ai-1-2", "2", "ai_booking", "F1", "gu_script", "પહેલા.", "The first one.", "create_ai_call", "", "Books."],
         ["ai-1", "ai-1-1", "1", "ai_booking", "F1", "gu_script", "બીજદાન કરવું છે", "I want AI.", "", "create_ai_call", "Asks."],
+        ["adv-1", "adv-1-1", "1", "vet_advice", "F1", "gu_script", "પેટ ફૂલી ગયું છે", "The belly is swollen.", "search_documents", "", "Vet now."],
     ]
     csv_path, meta_path = tmp_path / "v0.csv", tmp_path / "meta.json"
     with csv_path.open("w", encoding="utf-8", newline="") as handle:
         csv.writer(handle).writerows(rows)
-    meta_path.write_text(json.dumps({"_meta": {}, "ai-1-1": {"expected_action": "ask:technician"}, "ai-1-2": {"expected_action": "book"}}))
+    meta_path.write_text(json.dumps({
+        "_meta": {},
+        "ai-1-1": {"expected_action": "ask:technician", "acceptable_actions": ["ask:technician", "ask:species"]},
+        "ai-1-2": {"expected_action": "book"},
+        "adv-1-1": {"expected_action": "urgent_vet"},
+    }))
 
     cases, actions = script.load_v0(csv_path, meta_path)
 
     assert [turn.text for turn in cases[0].turns] == ["બીજદાન કરવું છે (English: I want AI.)", "પહેલા. (English: The first one.)"]
     assert cases[0].hints == {"category": "ai_booking", "expected_tools": "create_ai_call", "must_not_call": "create_ai_call"}
-    assert actions == {"ai-1": "ask:technician | book"}
-    assert "ask:technician | book" not in build_prompt(cases[0])
+    assert actions == {"ai-1": "ask:technician (or ask:species) | book", "adv-1": "vet"}
+    assert actions["ai-1"] not in build_prompt(cases[0])
 
 
 def test_submissions_keep_both_roles_and_the_bots_first_answer(tmp_path):
@@ -311,8 +313,8 @@ def test_the_table_has_a_row_per_case_with_errors_in_their_own_column(tmp_path):
     written = list(csv.DictReader(out.open(encoding="utf-8-sig")))
     assert list(written[0].keys()) == script.COLUMNS
     assert written[0]["turns"] == "Farmer: Call me on ******3210"
-    assert (written[0]["feature"], written[0]["sub_tags"], written[0]["set_expected_action"]) == ("ait_booking", "cow, home visit", "ask:technician")
-    assert (written[1]["feature"], written[1]["error"], written[1]["set_expected_action"]) == ("", "the reply is not JSON", "")
+    assert (written[0]["group"], written[0]["answer_type"], written[0]["set_expected_action"]) == ("ai", "ask:technician", "ask:technician")
+    assert (written[1]["group"], written[1]["error"], written[1]["set_expected_action"]) == ("", "the reply is not JSON", "")
 
 
 def test_a_failed_call_is_an_error_row_and_the_run_goes_on():

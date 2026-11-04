@@ -13,8 +13,9 @@ Langfuse nothing and needs no Langfuse access.
 (GET /api/public/dataset-items, the {"data": [...]} body); archived items are left
 out. --v0 is oan-evaluation's inference/amul_eval_set_v0.csv (branch
 amul-eval-set-v0-metadata). Its expected_action goes in the table, not the prompt,
-so the label's answer_type can be checked against it. --limit labels only the first
-N cases, for a quick look before a full run.
+so the label's answer_type can be checked against it: refer_vet and urgent_vet show
+as vet, and any other answer v0 accepts follows in brackets. --limit labels only the
+first N cases, for a quick look before a full run.
 """
 import argparse
 import csv
@@ -29,12 +30,9 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from app.services.personal_data import mask_personal_data  # noqa: E402
-from app.services.test_case_labeller import Case, LabelError, LiteLLM, Turn, label_case  # noqa: E402
+from app.services.test_case_labeller import V0_VET_ACTIONS, Case, LabelError, LiteLLM, Turn, label_case  # noqa: E402
 
-COLUMNS = [
-    "set", "case_id", "turns", "set_hints", "set_expected_action",
-    "feature", "sub_tags", "use_case", "edge_case", "answer_type", "error",
-]
+COLUMNS = ["set", "case_id", "turns", "set_hints", "set_expected_action", "group", "answer_type", "error"]
 
 
 def _question(gujarati: str, english: str) -> str:
@@ -75,6 +73,17 @@ def load_seed(path: Path) -> list[Case]:
     return cases
 
 
+def _v0_action(meta: dict) -> str:
+    """A v0 turn's expected action in the labeller's terms (refer_vet and urgent_vet are
+    vet), with any other answer v0 accepts, like "ask:technician (or ask:species)"."""
+    names = []
+    for action in [meta.get("expected_action")] + list(meta.get("acceptable_actions") or []):
+        action = "vet" if action in V0_VET_ACTIONS else str(action or "")
+        if action and action not in names:
+            names.append(action)
+    return " ".join([names[0]] + [f"(or {name})" for name in names[1:]]) if names else ""
+
+
 def load_v0(path: Path, meta_path: Path | None = None) -> tuple[list[Case], dict[str, str]]:
     """Eval set v0: one row per farmer question. Returns the cases and each case's
     expected_action, turn by turn, for the table."""
@@ -93,9 +102,7 @@ def load_v0(path: Path, meta_path: Path | None = None) -> tuple[list[Case], dict
         }
         turns = tuple(Turn("user", _question(row["question_gujarati"], row["question_english"])) for row in rows)
         cases.append(Case("eval-set-v0", session_id, turns, hints=hints))
-        actions[session_id] = " | ".join(
-            str((meta.get(row["question_id"]) or {}).get("expected_action") or "") for row in rows
-        )
+        actions[session_id] = " | ".join(_v0_action(meta.get(row["question_id"]) or {}) for row in rows)
     return cases, actions
 
 
@@ -142,7 +149,6 @@ def label_rows(cases: list[Case], complete: Callable[[str], str], actions: dict[
             row["error"] = str(exc) if isinstance(exc, LabelError) else f"{type(exc).__name__}: {exc}"[:200]
         else:
             row.update(label.model_dump())
-            row["sub_tags"] = ", ".join(label.sub_tags)
         rows.append(row)
     print(file=sys.stderr)
     return rows
