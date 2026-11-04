@@ -429,12 +429,13 @@ def _listing_line(listing: CattleListingModel) -> str:
         f"₹{_number(listing.cattle_price)}",
         _age(listing.age),
         f"lactation {listing.lactation}" if listing.lactation else "lactation not given",
-        {"milking": "milking", "dry": "dry"}.get(milking or "", "milking status not given"),
+        {"milking": "giving milk", "dry": "not giving milk"}.get(milking or "", "milking status not given"),
         {"pregnant": "pregnant", "nonpregnant": "not pregnant"}.get(pregnancy or "", "pregnancy not given"),
     ]
     if listing.milk_per_day:
         parts.append(f"{_number(listing.milk_per_day)} litres milk a day")
-    return f"No. {listing.number}: " + ", ".join(parts) + "."
+    # "Number", not "No.": the translator splits sentences at "No." and loses the number.
+    return f"Number {listing.number}: " + ", ".join(parts) + "."
 
 
 def _counts(values) -> str:
@@ -463,7 +464,7 @@ def _breakdown(listings: list[CattleListingModel]) -> list[str]:
     if milk:
         lines.append(f"- milk a day: up to {_number(max(milk))} litres ({len(milk)} give milk now)")
     for label, field, aliases, names in (
-        ("milking", "milking_status", _MILKING, {"milking": "milking", "dry": "dry"}),
+        ("milking", "milking_status", _MILKING, {"milking": "giving milk", "dry": "not giving milk"}),
         ("pregnancy", "pregnancy_status", _PREGNANCY, {"pregnant": "pregnant", "nonpregnant": "not pregnant"}),
     ):
         values = [names.get(_status(getattr(listing, field), aliases) or "", "not given") for listing in listings]
@@ -503,7 +504,7 @@ def _picked(snapshot: CattleListingsSnapshotModel, number: int, as_of: str) -> s
     if listing is None:
         report_tool("no_result", "listing number not in the current listings")
         return (
-            f"Listing No. {number} is not among the current verified listings (it may have been "
+            f"Listing number {number} is not among the current verified listings (it may have been "
             "sold or removed, or the number is wrong). Tell the farmer and offer to search again. "
             "Never give another listing's seller instead."
         )
@@ -717,7 +718,7 @@ async def get_verified_cattle_listings(
             "listings."
         )
     lines.append(
-        "Answer with the count and these numbered listings, keeping each listing's No. as shown. "
+        "Answer with the count and these listings, keeping each listing's number as shown. "
         "If there are many, offer two or three filters from the breakdown. Tell the farmer to "
         "pick a listing number for its details and the seller's contact. Seller contact is "
         "given only for a picked listing."
