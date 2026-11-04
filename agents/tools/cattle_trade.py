@@ -434,6 +434,10 @@ def _listing_line(listing: CattleListingModel) -> str:
     ]
     if listing.milk_per_day:
         parts.append(f"{_number(listing.milk_per_day)} litres milk a day")
+    parts.append(
+        f"seller {listing.farmer_name or 'name not given'}, "
+        f"mobile {listing.farmer_mobile_number or 'not given'}"
+    )
     # "Number", not "No.": the translator splits sentences at "No." and loses the number.
     return f"Number {listing.number}: " + ", ".join(parts) + "."
 
@@ -508,13 +512,10 @@ def _picked(snapshot: CattleListingsSnapshotModel, number: int, as_of: str) -> s
             "sold or removed, or the number is wrong). Tell the farmer and offer to search again. "
             "Never give another listing's seller instead."
         )
-    # Seller name and mobile leave the tool only here, for a listing the farmer picked.
     return "\n".join(
         [
             f"Verified listing picked by the farmer ({as_of}):",
             _listing_line(listing),
-            f"Seller: {listing.farmer_name or 'name not given'}, mobile "
-            f"{listing.farmer_mobile_number or 'not given'}.",
             "Give the farmer these details and the seller's name and mobile exactly as shown, "
             "without assuming the seller's gender, and suggest seeing the animal before paying.",
         ]
@@ -534,13 +535,13 @@ async def get_verified_cattle_listings(
     listing_number: int | None = None,
 ) -> str:
     """
-    Find verified cows and buffaloes for sale on Amul Pashudhan, or open one listing with its seller contact.
+    Find verified cows and buffaloes for sale on Amul Pashudhan, each with its seller's name and mobile.
 
     Use it when the farmer wants to buy an animal or asks which animals are available or for
     sale. Use get_cattle_trade_prices for average price questions. With no place, the search
     covers the signed-in farmer's district and counts the matches elsewhere. Every listing
-    has a fixed number; when the farmer picks one, call with only listing_number to get its
-    details and the seller's name and mobile.
+    has a fixed number and its seller's name and mobile; when the farmer asks about one
+    listing, call with only listing_number.
 
     Args:
         species: "cow" or "buffalo"; leave empty (or "cattle"/"animal") for both.
@@ -551,10 +552,10 @@ async def get_verified_cattle_listings(
         min_milk_per_day: Lowest milk per day in litres.
         milking_status: "milking" or "dry".
         pregnancy_status: "pregnant" or "not pregnant".
-        listing_number: The listing number the farmer picked; returns that listing with seller contact (other filters are ignored).
+        listing_number: The listing number the farmer picked; returns only that listing (other filters are ignored).
 
     Returns:
-        A count and summary of the matches with numbered listings, one picked listing with seller contact, or a reason nothing matched.
+        A count and summary of the matches with numbered listings and seller contacts, one picked listing, or a reason nothing matched.
     """
     snapshot = await get_snapshot()
     if snapshot is None:
@@ -718,9 +719,8 @@ async def get_verified_cattle_listings(
             "listings."
         )
     lines.append(
-        "Answer with the count and these listings, keeping each listing's number as shown. "
-        "If there are many, offer two or three filters from the breakdown. Tell the farmer to "
-        "pick a listing number for its details and the seller's contact. Seller contact is "
-        "given only for a picked listing."
+        "Answer with the count and these listings, keeping each listing's number and its "
+        "seller's name and mobile exactly as shown, without assuming the seller's gender. "
+        "If there are many, offer two or three filters from the breakdown."
     )
     return "\n".join(lines) + stale

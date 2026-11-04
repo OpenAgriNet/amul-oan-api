@@ -65,10 +65,14 @@ def test_no_place_defaults_to_the_farmers_district_and_counts_elsewhere(monkeypa
     assert "Matches (not pregnant): 1." in answer and "2 more match elsewhere." in answer
 
 
-def test_listings_hide_the_seller_until_one_is_picked_by_number(monkeypatch):
+def test_listings_show_each_seller_and_a_picked_number_shows_only_its_own(monkeypatch):
     answer, snapshot = _ask(monkeypatch, breed="Kankrej")
-    assert "900000000" not in answer
     numbers = {listing.farmer_mobile_number: listing.number for listing in snapshot.listings}
+    for line in answer.splitlines():
+        if line.startswith("Number "):
+            number = int(line.split(":")[0].split()[1])
+            mobile = next(m for m, n in numbers.items() if n == number)
+            assert f"mobile {mobile}" in line
     picked, _ = _ask(monkeypatch, listing_number=numbers["9000000004"])
     assert "mobile 9000000004" in picked and "9000000003" not in picked
 
