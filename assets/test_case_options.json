@@ -1,0 +1,53 @@
+{
+  "testers": [
+    {"id": "suraj", "label": "Suraj"},
+    {"id": "kanav", "label": "Kanav"},
+    {"id": "yash", "label": "Yash"},
+    {"id": "aayush", "label": "Aayush"},
+    {"id": "vishal", "label": "Vishal"}
+  ],
+  "case_types": [
+    {"id": "new_flow", "label": "New flow", "hint": "Something the bot was never tested on: a new feature or a new kind of question."},
+    {"id": "edge_case", "label": "Edge case", "hint": "A known flow that breaks in an unusual situation (missing data, odd wording, mixed language)."},
+    {"id": "wrong_answer", "label": "Wrong answer", "hint": "The bot answered wrongly, or said something it must never say (e.g. a medicine that is unsafe in this situation). Fix the answer above, or explain in the description what is wrong."},
+    {"id": "good_answer", "label": "Good answer to keep", "hint": "The bot got it right and must keep getting it right."}
+  ],
+  "tags": [
+    {"id": "veterinary_advisory", "label": "Veterinary advisory", "hint": "Animal health, disease, treatment, heat, pregnancy."},
+    {"id": "ait_booking", "label": "AIT booking", "hint": "Booking an artificial insemination technician, and its status."},
+    {"id": "milk_collection", "label": "Milk collection", "hint": "Farmer's milk pouring records, fat/SNF, quantities."},
+    {"id": "milk_earnings", "label": "Milk earnings & bonus", "hint": "Payments, earnings, bonus calculation."},
+    {"id": "union_schemes", "label": "Union schemes", "hint": "Schemes of the milk union (e.g. a specific district union) and their helpline numbers."},
+    {"id": "government_schemes", "label": "Government schemes", "hint": "State and central government schemes and subsidies, and their helpline numbers."},
+    {"id": "animal_nutrition", "label": "Feed & nutrition", "hint": "Cattle feed, fodder, mineral mixture."},
+    {"id": "weather", "label": "Weather", "hint": "Forecasts and weather-based advice."},
+    {"id": "market_prices", "label": "Market prices (APMC)", "hint": "Mandi / APMC prices for crops."},
+    {"id": "crop_advisory", "label": "Crop advisory", "hint": "Farming, crops, soil, pests."},
+    {"id": "farmer_profile", "label": "Farmer profile & sign-in", "hint": "Farmer ID, society, account details."},
+    {"id": "animal_records", "label": "Animal records", "hint": "The farmer's animals and their health and visit records, CVCC history included."},
+    {"id": "cattle_trade", "label": "Cattle trade", "hint": "Cattle rates, buying and selling animals."},
+    {"id": "soil_health_card", "label": "Soil health card", "hint": "The farmer's soil health card and what it says."},
+    {"id": "loan", "label": "Micro-loan", "hint": "Micro-loan eligibility and loan codes."},
+    {"id": "vet_office", "label": "Nearest vet office", "hint": "Finding the nearest government veterinary office."},
+    {"id": "pm_kisan", "label": "PM-KISAN status", "hint": "The farmer's PM-KISAN registration and installment status."},
+    {"id": "follow_up", "label": "Follow-up question", "hint": "A question that depends on what was said earlier in the chat."},
+    {"id": "suggestions", "label": "Suggested questions", "hint": "The follow-up questions the bot suggests after an answer."},
+    {"id": "safety", "label": "Safety", "hint": "Moderation declines, abuse, prompt injection, personal data in a question, vet drug and dose rules."},
+    {"id": "general", "label": "General / other", "hint": "Greetings, small talk, out-of-scope questions."}
+  ],
+  "groups": [
+    {"id": "ai", "label": "AI", "hint": "anything about artificial insemination (AI): booking an AI call, the technicians, semen, when to inseminate, past AI records"},
+    {"id": "vet-health", "label": "Vet & health", "hint": "animal health, disease and treatment, heat and pregnancy, feed and fodder, how to raise milk yield or fat, the farmer's animals and their records, vet visits and the nearest vet office"},
+    {"id": "milk", "label": "Milk", "hint": "milk pouring records (what was poured, its fat and SNF, and how that changed), the milk price, payments and deductions, and the SMS after pouring"},
+    {"id": "bonus", "label": "Bonus", "hint": "bonus and bhav fer (the price difference)"},
+    {"id": "scheme", "label": "Schemes", "hint": "union and government schemes, subsidies, insurance, loans and PM-KISAN, and their helplines"},
+    {"id": "other", "label": "Other", "hint": "anything else, like weather, mandi prices, the soil health card, cattle trade (animal rates, buying and selling), greetings or off-topic questions"}
+  ],
+  "answer_types": [
+    {"id": "answer", "label": "Answers", "hint": "it answers"},
+    {"id": "book", "label": "Books an AI call", "hint": "it books an AI call"},
+    {"id": "vet", "label": "Sends to a vet", "hint": "the main advice is to get a vet to see the animal, as for fever, bloat, swelling, a retained placenta or repeat breeding, with or without the bot's own advice. Care, feed and dose questions are answer, and so is \"see a vet if it gets worse\""},
+    {"id": "say_unavailable", "label": "Says it can't", "hint": "it says it can't do this here, or has no data for it"},
+    {"id": "out_of_scope", "label": "Declines", "hint": "it declines a question it shouldn't answer, like an off-topic one or one about another farmer's data"}
+  ]
+}
