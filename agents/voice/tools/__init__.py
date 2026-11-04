@@ -21,6 +21,12 @@ from agents.tools.cattle_trade import (
     get_cattle_trade_prices,
     get_verified_cattle_listings,
 )
+from agents.tools.memory_tools import (
+    list_memories,
+    prepare_memory_tool,
+    read_memory,
+    search_memories,
+)
 from agents.tools.vistaar import get_vistaar_mandi_prices
 
 
@@ -109,6 +115,28 @@ BASE_TOOLS = [
 ]
 
 SIGNED_IN_FARMER_TOOLS = [
+    Tool(
+        _with_nudge_signal(search_memories),
+        takes_ctx=True,
+        docstring_format='auto',
+        require_parameter_descriptions=True,
+        prepare=prepare_memory_tool,
+    ),
+    Tool(
+        _with_nudge_signal(list_memories),
+        takes_ctx=True,
+        docstring_format='auto',
+        require_parameter_descriptions=True,
+        prepare=prepare_memory_tool,
+    ),
+    Tool(
+        _with_nudge_signal(read_memory),
+        takes_ctx=True,
+        docstring_format='auto',
+        require_parameter_descriptions=True,
+        prepare=prepare_memory_tool,
+    ),
+
     # # Get Farmer Profile (disabled — redundant with _build_compact_farmer_summary
     # # context; the brittle farmers[0]-only read returned "not available" when
     # # the cached record was missing fields, while context already had them).
