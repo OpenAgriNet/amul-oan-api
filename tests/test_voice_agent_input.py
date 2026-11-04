@@ -724,6 +724,10 @@ def test_memory_store_reads_through_memory_api(monkeypatch):
             return httpx.Response(200, json={"entry": {"id": ref, "source_ts": "2026-10-30T10:00:00Z"},
                                              "current": True, "chunks": [{"number": 1, "text": "Fever"}],
                                              "continuation": None})
+        if path.endswith("/entries"):
+            return httpx.Response(200, json={"entries": [
+                {"id": "a", "source_ts": "2026-10-01T00:00:00Z"}, {"id": "undated"},
+                {"id": "b", "source_ts": "2026-10-30T00:00:00Z"}], "truncated": False, "next_cursor": None})
         return httpx.Response(404)
 
     async def run():
@@ -734,9 +738,14 @@ def test_memory_store_reads_through_memory_api(monkeypatch):
             assert hits["hits"][0]["id"] == ref
             read = await store.read(ref, chunk_ids=[1])
             assert "Chunk 1:\nFever" in _render_read(read)
+            newest = await store.list_entries(order="desc", limit=2)
+            assert [e["id"] for e in newest["entries"]] == ["b", "a"] and newest["truncated"]
+            oldest = await store.list_entries(order="asc", limit=3)
+            assert [e["id"] for e in oldest["entries"]] == ["a", "b", "undated"]
 
     asyncio.run(run())
-    assert [r.url.path for r in seen] == [
+    assert [r.url.path for r in seen][:3] == [
         f"/memory/{farmer}/profile", f"/memory/{farmer}/search_expanded", f"/memory/{farmer}/entries/{ref}/read"]
+    assert dict(seen[3].url.params) == {"limit": "100"}
     assert json.loads(seen[1].content) == {"query": "fever", "limit": 3, "memory_ref": ref}
     assert json.loads(seen[2].content) == {"whole_chunks": True, "chunk_ids": [1]}

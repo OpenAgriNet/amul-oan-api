@@ -51,19 +51,24 @@ class MemoryStore:
         path = "/search" if using == "headline" else "/search_expanded"
         return await self._call("POST", path, body=body)
 
-    async def list_entries(self, *, status=None, filters=None, kind=None, order=None, cursor=None, limit=8):
-        params = {"limit": limit}
+    async def list_entries(self, *, status=None, filters=None, order=None, cursor=None, limit=8):
+        # The API has no ordering, so for newest/oldest take its widest page and sort
+        # by event time here (undated records last).
+        params = {"limit": 100 if order else limit}
         if status:
             params["status"] = list(status)
         if filters:
             params["filters"] = json.dumps(filters)
         if cursor:
             params["cursor"] = str(uuid.UUID(cursor))
-        if kind:
-            params["kind"] = kind
-        if order:
-            params["order"] = order
-        return await self._call("GET", "/entries", params=params)
+        body = await self._call("GET", "/entries", params=params)
+        if order and isinstance(body.get("entries"), list):
+            dated = sorted((e for e in body["entries"] if e.get("source_ts")),
+                           key=lambda e: str(e["source_ts"]), reverse=order == "desc")
+            rows = dated + [e for e in body["entries"] if not e.get("source_ts")]
+            body.update(entries=rows[:limit], next_cursor=None,
+                        truncated=bool(body.get("truncated")) or len(rows) > limit)
+        return body
 
     async def read(self, memory_ref, chunk_ids=None):
         body = {"whole_chunks": True}

@@ -166,11 +166,10 @@ async def search_memories(
 async def list_memories(
     ctx: RunContext[FarmerContext], state: str | None = None,
     filters: dict[str, FilterValue] | None = None, cursor: str | None = None,
-    kind: Literal["episode", "matter"] | None = None,
     order: Literal["newest", "oldest"] | None = None,
     limit: int | None = None,
 ) -> str:
-    """List recorded conversation episodes or remembered matters.
+    """List remembered matters.
 
     Call this for requests to list or count remembered matters. Automatic search
     matches are only a sample and cannot answer such requests completely.
@@ -179,9 +178,8 @@ async def list_memories(
         state: Optional open, pending, resolved, n/a, or unresolved (open OR pending). Omit for all states.
         filters: Optional farmer-specific metadata matches (AND); untagged memories may be missed.
         cursor: Next page from the same filters. Available only without order.
-        kind: Episode for conversation summaries, matter for facts and ongoing matters.
         order: Newest or oldest by recorded event time. Returns one bounded page of dated records.
-        limit: Optional result count within the program limit. Use 1 to find the last episode.
+        limit: Optional result count within the program limit. Use 1 with order=newest for the latest record.
     """
     if _budget(ctx) < 512:
         return BUDGET_REACHED
@@ -195,7 +193,7 @@ async def list_memories(
     if order and cursor:
         return "Omit the cursor when listing by event time."
     body, error = await _request(
-        ctx, "list_entries", status=statuses, filters=filters, kind=kind,
+        ctx, "list_entries", status=statuses, filters=filters,
         order={"newest": "desc", "oldest": "asc"}.get(order),
         cursor=cursor, limit=LIST_LIMIT if limit is None else min(LIST_LIMIT, max(1, limit)),
     )
@@ -204,7 +202,7 @@ async def list_memories(
     rows = _rows(body, "entries")
     if rows is None:
         return UNAVAILABLE
-    scope = f"Kind: {kind or 'all'}; recorded state: {state or 'all'}; matching the requested detail filters.\n"
+    scope = f"Recorded state: {state or 'all'}; matching the requested detail filters.\n"
     if not rows:
         return _finish(ctx, CONTEXT + scope + "No matching entries returned. Missing tags can affect this result.")
     footer = ""
