@@ -21,8 +21,10 @@ active cache-invalidation on registration (registration flow busts the phone's
 cache key), which is cross-service and out of scope for the merge.
 """
 import asyncio
+import contextvars
 import hashlib
 import json
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
@@ -58,6 +60,16 @@ FARMER_REFRESH_QUEUE_KEY = build_cache_key("pending", namespace=FARMER_REFRESH_Q
 # Cap on concurrent per-animal fetches in one refresh, so a large herd (or a
 # multi-record phone) can't fan out into hundreds of simultaneous calls.
 FARMER_ANIMAL_FETCH_CONCURRENCY = 8
+# Each animal a refresh fetches, as it lands, so a tool can say how much of the
+# herd is in while the refresh still runs (read_animal_refresh). A Redis hash:
+# _PROGRESS_META holds the tag count and start time, every other field a tag.
+FARMER_ANIMAL_PROGRESS_NAMESPACE = "farmer-animals-progress"
+_PROGRESS_META = "_meta"
+_PROGRESS_NO_RECORD = "none"
+_PROGRESS_FAILED = "failed"
+# A refresh the farmer asked for (an animal's details just changed) skips the
+# animal-profile response cache, but not for animals fetched less than this ago.
+FARMER_ANIMAL_FORCE_MIN_AGE_SECONDS = 60
 
 
 def _normalize_cache_phone(phone: str) -> str:
@@ -83,6 +95,10 @@ def _refresh_lock_key(phone: str) -> str:
 
 def _refresh_attempt_key(phone: str) -> str:
     return build_cache_key(_cache_key(phone), namespace=FARMER_REFRESH_ATTEMPT_NAMESPACE)
+
+
+def _animal_progress_key(phone: str) -> str:
+    return build_cache_key(_cache_key(phone), namespace=FARMER_ANIMAL_PROGRESS_NAMESPACE)
 
 
 def _is_authoritative_envelope(envelope: Optional[FarmerDataEnvelope]) -> bool:
@@ -126,16 +142,27 @@ def _carry_over_animals(envelope: FarmerDataEnvelope, previous: Optional[FarmerD
     return new_tags
 
 
-def _animals_expired(envelope: FarmerDataEnvelope) -> bool:
-    """True when the animals were never fetched, or longer ago than a found
-    record's refresh interval."""
-    if not envelope.animalsFetchedAt:
-        return True
+def animals_age_seconds(envelope: Optional[FarmerDataEnvelope]) -> Optional[float]:
+    """Seconds since every animal was last fetched; None when never (or unreadable)."""
+    if envelope is None or not envelope.animalsFetchedAt:
+        return None
     try:
         fetched_at = datetime.fromisoformat(envelope.animalsFetchedAt.replace("Z", "+00:00"))
     except ValueError:
-        return True
-    return datetime.now(timezone.utc) - fetched_at >= timedelta(seconds=FARMER_REFRESH_INTERVAL)
+        return None
+    return (datetime.now(timezone.utc) - fetched_at.astimezone(timezone.utc)).total_seconds()
+
+
+def _animals_expired(envelope: FarmerDataEnvelope) -> bool:
+    """True when the animals were never fetched, or longer ago than a found
+    record's refresh interval."""
+    age = animals_age_seconds(envelope)
+    return age is None or age >= FARMER_REFRESH_INTERVAL
+
+
+def animals_expired(envelope: FarmerDataEnvelope) -> bool:
+    """Public form of the animals' refresh-interval check, for the herd tool."""
+    return _animals_expired(envelope)
 
 
 def _animals_due(envelope: FarmerDataEnvelope) -> bool:
@@ -423,9 +450,9 @@ async def refresh_farmer_data(phone: str, *, background: bool = False) -> Option
             new_tags = _carry_over_animals(envelope, await get_cached_farmer_data(phone))
             if background and settings.voice_route_enabled:
                 if _animals_expired(envelope):
-                    await _fetch_animals(envelope)
+                    await _fetch_animals(envelope, phone=phone)
                 elif new_tags:
-                    await _fetch_animals(envelope, only=new_tags)
+                    await _fetch_animals(envelope, only=new_tags, phone=phone)
             # Queued once the lock is released (finally): a worker that took the
             # phone while this refresh held the lock would wait for it and keep
             # its envelope, animals still missing. A refresh on a turn also
@@ -481,6 +508,7 @@ async def refresh_farmer_data(phone: str, *, background: bool = False) -> Option
         return None
     finally:
         if acquired:
+            await _clear_animal_progress(phone)
             try:
                 await redis_client.delete(lock_key)
             except Exception:
@@ -691,12 +719,49 @@ async def drain_farmer_refresh_queue_once(batch: int = FARMER_REFRESH_QUEUE_BATC
     return processed
 
 
-async def _fetch_animals(envelope: FarmerDataEnvelope, only: Optional[list[str]] = None) -> None:
+# A fetch that failed (as opposed to one that found no record): keeps the cached animal.
+_FAILED_FETCH = object()
+
+
+async def _start_animal_progress(phone: str, total: int) -> None:
+    key = _animal_progress_key(phone)
+    meta = json.dumps({"total": total, "startedAt": datetime.now(timezone.utc).isoformat()})
+    try:
+        await redis_client.delete(key)
+        await redis_client.hset(key, _PROGRESS_META, meta)
+        await redis_client.expire(key, FARMER_REFRESH_LOCK_TTL)
+    except Exception as e:
+        logger.warning("Failed to start animal refresh progress: %s", e)
+
+
+async def _record_animal_progress(phone: str, tag: str, value: str) -> None:
+    try:
+        await redis_client.hset(_animal_progress_key(phone), tag, value)
+    except Exception as e:
+        logger.debug("Failed to record animal refresh progress: %s", e)
+
+
+async def _clear_animal_progress(phone: str) -> None:
+    try:
+        await redis_client.delete(_animal_progress_key(phone))
+    except Exception:
+        pass
+
+
+async def _fetch_animals(
+    envelope: FarmerDataEnvelope,
+    only: Optional[list[str]] = None,
+    *,
+    phone: Optional[str] = None,
+    force_refresh: bool = False,
+) -> None:
     """Fetch per-animal records, one Beckn animal-profile call per tag, at most
     FARMER_ANIMAL_FETCH_CONCURRENCY at a time. With ``only``, just those tags,
     added to the ones carried over; otherwise every tag, and the fetch time is
     stamped. Best-effort: a tag that comes back empty is left out, and one whose
-    fetch fails keeps what was cached for it."""
+    fetch fails keeps what was cached for it. With ``phone``, each animal is
+    published as it lands (read_animal_refresh); ``force_refresh`` skips the
+    animal-profile response cache."""
     jobs = [
         (farmer, tag)
         for farmer in envelope.farmers
@@ -705,14 +770,31 @@ async def _fetch_animals(envelope: FarmerDataEnvelope, only: Optional[list[str]]
     ]
     cached = {animal.tagNumber: animal for farmer in envelope.farmers for animal in farmer.animals}
     semaphore = asyncio.Semaphore(FARMER_ANIMAL_FETCH_CONCURRENCY)
+    if phone:
+        await _start_animal_progress(phone, len(jobs))
 
     async def _fetch(farmer: FarmerRecord, tag: str) -> Optional[AnimalRecord]:
+        record = await _fetch_one(farmer, tag)
+        if phone:
+            if record is _FAILED_FETCH:
+                value = _PROGRESS_FAILED
+            elif record is None:
+                value = _PROGRESS_NO_RECORD
+            else:
+                value = record.model_dump_json()
+            await _record_animal_progress(phone, tag, value)
+        return cached.get(tag) if record is _FAILED_FETCH else record
+
+    async def _fetch_one(farmer: FarmerRecord, tag: str):
         async with semaphore:
             try:
-                animal = await fetch_animal_profile(tag, union_code=farmer.model_dump().get("unionCode"))
+                kwargs = {"force_refresh": True} if force_refresh else {}
+                animal = await fetch_animal_profile(
+                    tag, union_code=farmer.model_dump().get("unionCode"), **kwargs
+                )
             except Exception as e:
                 logger.warning("Animal profile fetch failed: %s", e)
-                return cached.get(tag)
+                return _FAILED_FETCH
         if animal is None:
             return None
         return AnimalRecord(
@@ -738,6 +820,119 @@ async def _fetch_animals(envelope: FarmerDataEnvelope, only: Optional[list[str]]
         farmer.animals = fetched if only is None else farmer.animals + fetched
     if only is None:
         envelope.animalsFetchedAt = datetime.now(timezone.utc).isoformat()
+
+
+@dataclass
+class AnimalRefresh:
+    """A refresh holding this farmer's lock, as the herd tool reads it mid-flight.
+
+    ``total`` is None while the refresh is still on the farmer record and has not
+    started on the animals. ``fetched`` maps each tag fetched so far to its record,
+    or None when the tag has no record upstream; ``failed`` tags keep what was cached.
+    """
+
+    started_at: Optional[str] = None
+    total: Optional[int] = None
+    fetched: dict[str, Optional[AnimalRecord]] = field(default_factory=dict)
+    failed: int = 0
+
+
+async def read_animal_refresh(phone: str) -> Optional[AnimalRefresh]:
+    """The refresh now holding this farmer's lock and what it has fetched so far,
+    or None when no refresh holds it (the cached record is then the whole answer)."""
+    phone = _normalize_cache_phone(phone)
+    try:
+        if not await redis_client.exists(_refresh_lock_key(phone)):
+            return None
+        raw = await redis_client.hgetall(_animal_progress_key(phone)) or {}
+    except Exception as e:
+        logger.warning("Failed to read animal refresh progress: %s", e)
+        return None
+    if _PROGRESS_META not in raw:
+        return AnimalRefresh()
+    try:
+        meta = json.loads(raw[_PROGRESS_META])
+    except ValueError:
+        return AnimalRefresh()
+    progress = AnimalRefresh(started_at=meta.get("startedAt"), total=int(meta.get("total") or 0))
+    for tag, value in raw.items():
+        if tag == _PROGRESS_META:
+            continue
+        if value == _PROGRESS_FAILED:
+            progress.failed += 1
+        elif value == _PROGRESS_NO_RECORD:
+            progress.fetched[tag] = None
+        else:
+            try:
+                progress.fetched[tag] = AnimalRecord.model_validate_json(value)
+            except ValueError:
+                progress.failed += 1
+    return progress
+
+
+# Refreshes a tool started, held until they finish so the event loop does not drop them.
+_animal_refreshes: set[asyncio.Task] = set()
+
+
+async def start_animal_refresh(phone: str, *, force: bool = False) -> bool:
+    """Fetch every animal of this farmer now, in this process, for a tool that is
+    waiting on them: the worker polls its queue every few seconds and fetches the
+    farmer record first. Runs under the farmer's refresh lock and publishes each
+    animal as it lands (read_animal_refresh). ``force`` skips the animal-profile
+    response cache, for an animal whose details the farmer just changed.
+
+    Returns False when another refresh holds the lock: read its progress instead.
+    """
+    phone = _normalize_cache_phone(phone)
+    lock_key = _refresh_lock_key(phone)
+    try:
+        acquired = await redis_client.set(lock_key, "1", ex=FARMER_REFRESH_LOCK_TTL, nx=True)
+    except Exception as e:
+        logger.warning("Failed to take the farmer refresh lock for an animal refresh: %s", e)
+        return False
+    if not acquired:
+        return False
+    # Its own trace, as the worker's refresh has: it outlives the tool call and the
+    # turn. An empty context, so its root is not opened under the turn's span
+    # (asyncio.create_task(context=...) needs Python 3.11).
+    task = contextvars.Context().run(
+        asyncio.get_running_loop().create_task, _refresh_animals_holding_lock(phone, lock_key, force)
+    )
+    _animal_refreshes.add(task)
+    task.add_done_callback(_animal_refreshes.discard)
+    return True
+
+
+async def _refresh_animals_holding_lock(phone: str, lock_key: str, force: bool) -> None:
+    try:
+        with non_turn_root(
+            BACKGROUND_JOB,
+            non_turn_v1_metadata(
+                BACKGROUND_JOB,
+                job="farmer_background_refresh",
+                farmer_id=normalize_phone_to_mobile(phone),
+            ),
+        ):
+            key = _cache_key(phone)
+            raw = await cache.get(key, namespace=FARMER_CACHE_NAMESPACE)
+            if not raw or not isinstance(raw, dict):
+                return
+            envelope = FarmerDataEnvelope.model_validate(raw)
+            if envelope.lookupStatus != "found" or not envelope.farmers:
+                return
+            await _fetch_animals(envelope, phone=phone, force_refresh=force)
+            # The record's own retention runs on: only the animals are new.
+            remaining = await redis_client.ttl(build_cache_key(key, namespace=FARMER_CACHE_NAMESPACE))
+            if remaining and remaining > 0:
+                await cache.set(key, envelope.model_dump(), ttl=remaining, namespace=FARMER_CACHE_NAMESPACE)
+    except Exception as e:
+        logger.warning("Animal refresh failed for phone hash %s...: %s", _phone_log_hash(phone), e)
+    finally:
+        await _clear_animal_progress(phone)
+        try:
+            await redis_client.delete(lock_key)
+        except Exception:
+            pass
 
 
 async def _fetch_ai_technicians(records: list[FarmerRecord]) -> list[dict]:
