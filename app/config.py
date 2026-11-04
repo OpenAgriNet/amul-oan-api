@@ -387,6 +387,9 @@ class Settings(BaseSettings):
     # Serves voice at /voice/ from this repo (app/routers/voice.py). Off until the
     # cutover: voice-oan-api serves the calls until then.
     voice_route_enabled: bool = _get_bool_env("VOICE_ROUTE_ENABLED", default=False)
+    # Refuse a voice request whose token's phone (or sub) is not the user_id caller.
+    # Off: such requests are served and logged (app/routers/voice.py).
+    voice_require_caller_match: bool = _get_bool_env("VOICE_REQUIRE_CALLER_MATCH", default=False)
     # Voice's trace (app/voice/trace.py). Same names and defaults as voice-oan-api.
     enable_voice_tracing: bool = _get_bool_env("ENABLE_VOICE_TRACING", default=True)
     voice_trace_log_summary: bool = _get_bool_env("VOICE_TRACE_LOG_SUMMARY", default=True)
