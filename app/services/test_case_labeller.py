@@ -57,10 +57,18 @@ ANSWER_TYPES = {
 V0_VET_ACTIONS = ("refer_vet", "urgent_vet")
 _ASK = re.compile(r"^ask:[a-z_]{1,30}$")
 DEFAULT_MODEL = "gemma-4-31b-it"
+# Characters of each text that go into the prompt, after masking: plenty to label a
+# case, and a 512 KB body can't make a 512 KB prompt.
+MAX_PROMPT_TEXT = 4000
 
 
 class LabelError(Exception):
-    """The model's reply is not a usable label."""
+    """The model's reply is not a usable label. ``code`` says why in one word that is
+    safe to log, since the message can quote the reply and the reply can quote turns."""
+
+    def __init__(self, message: str, code: str = "other") -> None:
+        super().__init__(message)
+        self.code = code
 
 
 @dataclass(frozen=True)
@@ -138,15 +146,55 @@ def _options(options: dict[str, str]) -> str:
 
 def build_prompt(case: Case) -> str:
     parts = [_INSTRUCTIONS.format(groups=_options(GROUPS), answer_types=_options(ANSWER_TYPES))]
-    if case.hints:
-        parts.append("Hints: " + "; ".join(f"{key}: {value}" for key, value in case.hints.items() if value))
+    hints = "; ".join(f"{key}: {value}" for key, value in case.hints.items() if value)
+    if hints:
+        parts.append("Hints: " + hints)
     if case.description:
-        parts.append("What the tester says the case checks: " + mask_personal_data(case.description))
-    conversation = "\n".join(
-        f"{'Farmer' if turn.role == 'user' else 'Bot'}: {mask_personal_data(turn.text)}" for turn in case.turns
-    )
+        parts.append("What the tester says the case checks: " + _masked(case.description))
+    conversation = "\n".join(f"{'Farmer' if turn.role == 'user' else 'Bot'}: {_masked(turn.text)}" for turn in case.turns)
     parts.append("Conversation:\n" + conversation)
     return "\n\n".join(parts)
+
+
+def _masked(text: str) -> str:
+    return mask_personal_data(text)[:MAX_PROMPT_TEXT]
+
+
+def _text(body: dict, key: str) -> str:
+    value = body.get(key)
+    return value if isinstance(value, str) else ""
+
+
+def _strings(body: dict, key: str) -> list[str]:
+    value = body.get(key)
+    return [item for item in value if isinstance(item, str)] if isinstance(value, list) else []
+
+
+def case_from_submission(case_id: str, body: dict) -> Case:
+    """A body the test case screen sent (POST /api/test-cases/) as a case to label.
+
+    Both roles go in, and a turn the tester corrected keeps what it said before the
+    edit. The tester's tags and case types are hints. The raw store keeps older shapes
+    too, so a field of the wrong type is left out.
+    """
+    turns = []
+    for turn in body.get("turns") if isinstance(body.get("turns"), list) else []:
+        if not isinstance(turn, dict) or turn.get("role") not in ("user", "assistant"):
+            continue
+        content, original = turn.get("content"), turn.get("original_content")
+        text = content if isinstance(content, str) else ""
+        if isinstance(original, str) and original:
+            first = "the farmer first wrote" if turn["role"] == "user" else "the bot first said"
+            text += f" [the tester corrected this; {first}: {original}]"
+        turns.append(Turn(turn["role"], text))
+    hints = {
+        "tester_tags": ", ".join(_strings(body, "tags")),
+        "tester_case_types": ", ".join(_strings(body, "case_types")),
+        "other_topic": _masked(_text(body, "other_topic")),
+        "persona": _text(body, "persona"),
+        "language": _text(body, "language"),
+    }
+    return Case("amul-test-case-submissions", case_id, tuple(turns), _text(body, "description"), hints)
 
 
 def _json_object(content: str):
@@ -165,13 +213,18 @@ def parse_label(content: str) -> Label:
     try:
         data = _json_object(content.strip())
     except (ValueError, TypeError) as exc:
-        raise LabelError("the reply is not JSON") from exc
+        raise LabelError("the reply is not JSON", "not_json") from exc
     try:
         return Label.model_validate(data)
     except ValidationError as exc:
         first = exc.errors(include_url=False)[0]
         where = ".".join(map(str, first["loc"])) or "reply"
-        raise LabelError(f"{where}: {first['msg'].removeprefix('Value error, ')}") from exc
+        field = str(first["loc"][0]) if first["loc"] else ""
+        if field in ("group", "answer_type"):
+            code = field
+        else:
+            code = "extra_key" if first["type"] == "extra_forbidden" else "not_a_label"
+        raise LabelError(f"{where}: {first['msg'].removeprefix('Value error, ')}", code) from exc
 
 
 class LiteLLM:
@@ -181,7 +234,7 @@ class LiteLLM:
         base = os.environ.get("SCENARIO_GEMMA_BASE_URL")
         key = os.environ.get("LITELLM_API_KEY")
         if not (base and key):
-            raise LabelError("SCENARIO_GEMMA_BASE_URL and LITELLM_API_KEY are required")
+            raise LabelError("SCENARIO_GEMMA_BASE_URL and LITELLM_API_KEY are required", "not_configured")
         self.url = base.rstrip("/") + "/chat/completions"
         self.model = (os.environ.get("SCENARIO_GEMMA_MODEL") or DEFAULT_MODEL).removeprefix("openai/")
         self._key = key
@@ -197,7 +250,7 @@ class LiteLLM:
         response.raise_for_status()
         content = response.json()["choices"][0]["message"]["content"]
         if not isinstance(content, str):
-            raise LabelError("the reply has no text")
+            raise LabelError("the reply has no text", "no_text")
         return content
 
 

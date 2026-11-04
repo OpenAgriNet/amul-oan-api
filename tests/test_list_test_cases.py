@@ -2,8 +2,9 @@
 
 The list reads the raw store back: newest first, archived items left out, old
 shapes read leniently, phone and Aadhaar numbers masked, filters and pages applied,
-and nothing of the turns in the logs. The store is a fake here; the Langfuse store
-is checked against a fake client. No network.
+the labeller's group and answer type shown, cases with no label handed to the
+labeller, and nothing of the turns in the logs. The store and the labeller are
+fakes here; the Langfuse store is checked against a fake client. No network.
 """
 import copy
 import logging
@@ -23,6 +24,8 @@ from app.models.case_options import CASE_OPTIONS
 from app.routers import test_cases
 from app.services import test_case_store
 from app.services.personal_data import mask_numbers
+from app.services.test_case_labeller import GROUPS
+from app.services.test_case_labelling import get_case_labeller
 from app.services.test_case_store import LangfuseCaseStore, StoredCase, get_case_store
 
 BASE = {
@@ -58,12 +61,22 @@ class _FakeStore:
         return sorted(self.cases, key=lambda case: case.received_at, reverse=True)
 
 
-def _client(store, *, signed_in=True):
+class _FakeLabeller:
+    def __init__(self):
+        self.queued = []
+
+    def enqueue(self, store, case):
+        self.queued.append(case.id)
+        return True
+
+
+def _client(store, *, signed_in=True, labeller=None):
     app = FastAPI()
     app.include_router(test_cases.router, prefix=settings.api_prefix)
     if signed_in:
         app.dependency_overrides[get_chat_user] = lambda: {"sub": "anon-test"}
     app.dependency_overrides[get_case_store] = lambda: store
+    app.dependency_overrides[get_case_labeller] = lambda: labeller
     return TestClient(app)
 
 
@@ -284,7 +297,73 @@ def test_a_listed_page_logs_no_turn_or_search_text(caplog):
     assert "swollen" not in _app_log(caplog)
 
 
+# --- labels --------------------------------------------------------------------
+
+LABELS = {"c1": {"group": "vet-health", "answer_type": "vet"}, "c2": {"group": "milk", "answer_type": "answer"}}
+LABELLED = [StoredCase(id=case.id, received_at=case.received_at, raw=case.raw, label=LABELS.get(case.id)) for case in CASES]
+
+
+def test_a_labelled_case_shows_its_group_and_answer_type():
+    items = {item["id"]: item for item in _client(_FakeStore(LABELLED)).get("/api/test-cases/").json()["items"]}
+
+    assert (items["c1"]["group"], items["c1"]["answer_type"]) == ("vet-health", "vet")
+    assert (items["c2"]["group"], items["c2"]["answer_type"]) == ("milk", "answer")
+    assert "group" not in items["c3"] and "answer_type" not in items["c3"]
+
+
+@pytest.mark.parametrize(
+    "query, ids",
+    [
+        ("group=milk", ["c2"]),
+        ("group=milk&group=vet-health", ["c2", "c1"]),
+        ("answer_type=vet", ["c1"]),
+        ("group=milk&answer_type=vet", []),
+        ("group=ai", []),
+    ],
+)
+def test_group_and_answer_type_filter_the_list(query, ids):
+    body = _client(_FakeStore(LABELLED)).get(f"/api/test-cases/?{query}").json()
+
+    assert [item["id"] for item in body["items"]] == ids and body["total"] == len(ids)
+
+
+@pytest.mark.parametrize("path", ["/api/test-cases/", "/api/test-cases/coverage/"])
+def test_cases_with_no_label_are_handed_to_the_labeller(path):
+    labeller = _FakeLabeller()
+    no_turns = StoredCase(id="empty", received_at="2026-11-03T11:00:00+00:00", raw={"turns": []})
+
+    _client(_FakeStore([*LABELLED, no_turns]), labeller=labeller).get(path)
+
+    assert labeller.queued == ["c3"]
+
+
+def test_a_labeller_that_breaks_never_breaks_the_list_or_coverage(caplog):
+    class _Broken:
+        def enqueue(self, store, case):
+            raise RuntimeError("can't start new thread")
+
+    client = _client(_FakeStore(LABELLED), labeller=_Broken())
+
+    with caplog.at_level(logging.WARNING):
+        assert client.get("/api/test-cases/").status_code == 200
+        assert client.get("/api/test-cases/coverage/").status_code == 200
+
+    assert "test_case_label not_queued id=c3 error=RuntimeError" in caplog.text
+
+
 # --- coverage ------------------------------------------------------------------
+
+
+def test_coverage_counts_cases_per_group_and_the_ones_not_labelled_yet():
+    old = StoredCase(id="c4", received_at="2026-11-03T12:00:00+00:00", raw=BASE, label={"group": "old-group"})
+
+    body = _client(_FakeStore([*LABELLED, old])).get("/api/test-cases/coverage/").json()
+
+    assert [group["id"] for group in body["groups"]] == [*GROUPS, "old-group"]
+    counts = {group["id"]: group["count"] for group in body["groups"]}
+    assert (counts["vet-health"], counts["milk"], counts["ai"], counts["old-group"]) == (1, 1, 0, 1)
+    assert body["unlabelled"] == 1
+
 
 
 def test_coverage_counts_every_tag_and_case_type_with_zeros_and_older_ids():
@@ -331,6 +410,13 @@ class _FakeLangfuse:
         self.items = list(items)
         self.error = error
         self.reads = 0
+        self.api = SimpleNamespace(dataset_items=SimpleNamespace(get=self._get_item))
+
+    def _get_item(self, item_id):
+        for item in self.items:
+            if item.id == item_id:
+                return item
+        raise _NotFound()
 
     def get_dataset(self, name, *, fetch_items_page_size):
         self.reads += 1
@@ -382,6 +468,88 @@ def test_the_langfuse_store_reads_once_per_window_and_again_after_a_save(monkeyp
     now[0] += test_case_store.LIST_CACHE_SECONDS
     store.list_cases()
     assert client.reads == 3
+
+
+def test_the_langfuse_store_keeps_a_label_with_the_case_and_reads_it_back():
+    class _Recording(_FakeLangfuse):
+        def create_dataset_item(self, **kwargs):
+            # The upsert: same id, the body as it came, the metadata now with the label.
+            self.items = [SimpleNamespace(**{**vars(item), "metadata": kwargs["metadata"]}) if item.id == kwargs["id"] else item for item in self.items]
+            self.written = kwargs
+
+    raw = {"turns": [{"role": "user", "content": "Hi"}]}
+    client = _Recording([_item("a", "2026-11-01T10:00:00+00:00", raw=raw)])
+    store = LangfuseCaseStore(client, "amul-test-case-submissions")
+    case = store.list_cases()[0]
+    assert case.label is None
+
+    store.save_label(case, {"group": "ai", "answer_type": "book"})
+
+    assert client.written == {
+        "dataset_name": "amul-test-case-submissions",
+        "id": "a",
+        "input": raw,
+        "metadata": {"received_at": "2026-11-01T10:00:00+00:00", "label": {"group": "ai", "answer_type": "book"}},
+        "status": "ACTIVE",
+    }
+    assert store.list_cases()[0].label == {"group": "ai", "answer_type": "book"}
+
+
+@pytest.mark.parametrize("label", ["ai", {}, {"answer_type": "vet"}, {"group": 3}, {"group": ""}])
+def test_a_label_with_no_group_is_no_label(label):
+    item = _item("a", "2026-11-01T10:00:00+00:00")
+    item.metadata["label"] = label
+
+    assert LangfuseCaseStore(_FakeLangfuse([item]), "x").list_cases()[0].label is None
+
+
+class _Upserting(_FakeLangfuse):
+    """Langfuse's upsert: same id, the item takes what is sent (status kept if none)."""
+
+    def __init__(self, items=()):
+        super().__init__(items)
+        self.writes = []
+
+    def create_dataset_item(self, **kwargs):
+        self.writes.append(kwargs)
+        old = next((item for item in self.items if item.id == kwargs["id"]), None)
+        new = SimpleNamespace(
+            id=kwargs["id"],
+            status=kwargs.get("status") or (old.status if old else "ACTIVE"),
+            input=kwargs["input"],
+            metadata=kwargs["metadata"],
+            created_at=None,
+        )
+        self.items = [item for item in self.items if item.id != kwargs["id"]] + [new]
+
+
+def test_a_case_sent_again_keeps_its_label():
+    raw = {"turns": [{"role": "user", "content": "Hi"}]}
+    client = _Upserting([_item("a", "2026-11-01T10:00:00+00:00", raw=raw)])
+    store = LangfuseCaseStore(client, "amul-test-case-submissions")
+    store.save_label(store.list_cases()[0], {"group": "ai", "answer_type": "book"})
+
+    store.save(case_id="a", raw=raw, received_at="2026-11-02T10:00:00+00:00")
+
+    case = store.list_cases()[0]
+    assert (case.received_at, case.label) == ("2026-11-02T10:00:00+00:00", {"group": "ai", "answer_type": "book"})
+
+
+def test_a_label_save_writes_what_is_stored_now_and_skips_gone_or_archived_cases():
+    raw = {"turns": [{"role": "user", "content": "Hi"}]}
+    client = _Upserting([_item("a", "2026-11-01T10:00:00+00:00", raw=raw)])
+    store = LangfuseCaseStore(client, "amul-test-case-submissions")
+    queued = store.list_cases()[0]
+    store.save(case_id="a", raw=raw, received_at="2026-11-02T10:00:00+00:00")  # sent again while it waited
+
+    assert store.save_label(queued, {"group": "ai"}) is True
+    assert client.items[0].metadata == {"received_at": "2026-11-02T10:00:00+00:00", "label": {"group": "ai"}}
+
+    client.items[0].status = "ARCHIVED"
+    assert store.save_label(queued, {"group": "milk"}) is False
+    client.items = []
+    assert store.save_label(queued, {"group": "milk"}) is False
+    assert len(client.writes) == 2
 
 
 def test_a_save_that_lands_during_a_read_is_not_hidden_by_the_cache(monkeypatch):

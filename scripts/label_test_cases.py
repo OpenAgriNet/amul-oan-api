@@ -30,7 +30,15 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from app.services.personal_data import mask_personal_data  # noqa: E402
-from app.services.test_case_labeller import V0_VET_ACTIONS, Case, LabelError, LiteLLM, Turn, label_case  # noqa: E402
+from app.services.test_case_labeller import (  # noqa: E402
+    V0_VET_ACTIONS,
+    Case,
+    LabelError,
+    LiteLLM,
+    Turn,
+    case_from_submission,
+    label_case,
+)
 
 COLUMNS = ["set", "case_id", "turns", "set_hints", "set_expected_action", "group", "answer_type", "error"]
 
@@ -110,26 +118,7 @@ def load_v0(path: Path, meta_path: Path | None = None) -> tuple[list[Case], dict
 
 def load_submissions(path: Path) -> list[Case]:
     """amul-test-case-submissions: one v1 body per item (POST /api/test-cases/)."""
-    cases = []
-    for item in _active(path):
-        body = item["input"]
-        turns = []
-        for turn in body.get("turns") or []:
-            if not isinstance(turn, dict) or turn.get("role") not in ("user", "assistant"):
-                continue
-            text = str(turn.get("content") or "")
-            if turn.get("original_content"):
-                text += f" [the tester corrected this; the bot first said: {turn['original_content']}]"
-            turns.append(Turn(turn["role"], text))
-        hints = {
-            "tester_tags": ", ".join(body.get("tags") or []),
-            "tester_case_types": ", ".join(body.get("case_types") or []),
-            "other_topic": str(body.get("other_topic") or ""),
-            "persona": str(body.get("persona") or ""),
-            "language": str(body.get("language") or ""),
-        }
-        cases.append(Case("amul-test-case-submissions", item["id"], tuple(turns), str(body.get("description") or ""), hints))
-    return cases
+    return [case_from_submission(item["id"], item["input"]) for item in _active(path)]
 
 
 def label_rows(cases: list[Case], complete: Callable[[str], str], actions: dict[str, str]) -> list[dict]:

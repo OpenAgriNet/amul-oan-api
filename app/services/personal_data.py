@@ -30,11 +30,13 @@ _GROUP_SPLIT = re.compile(r"[ -]")
 MASK = "******"
 
 # The word that names the code, then optional fillers ("is", ":", "no."), then the
-# code itself: letters, digits, "/" and "-", with at least one digit.
+# code itself: letters, digits, "/" and "-", with at least one digit. Both parts can
+# take "-", so both are bounded: unbounded, a long run of dashes made a match take
+# seconds, and it holds the GIL while it runs.
 _CODE = re.compile(
     r"(?i)((?:\b(?:otp\b|code\b|(?:farmer|member)\s+(?:id\b|number\b|no\b\.?))|કોડ|ઓટીપી|સભાસદ\s+નંબર)"
-    r"(?:\s*(?:is|no\.?|number|[:#=-]))*\s*)"
-    r"((?:[A-Za-z/-]|\d)*\d(?:[A-Za-z/-]|\d)*)"
+    r"(?:\s*(?:is|no\.?|number|[:#=-])){0,3}\s*)"
+    r"((?:[A-Za-z/-]|\d){0,32}\d(?:[A-Za-z/-]|\d){0,32})"
 )
 CODE_MASK = "[code]"
 

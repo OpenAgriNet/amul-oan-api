@@ -8,6 +8,7 @@ case per session and writes a CSV. No network.
 import csv
 import importlib.util
 import json
+import time
 from pathlib import Path
 
 import httpx
@@ -63,6 +64,13 @@ def test_dates_amounts_cycles_and_ordinary_words_stay(text):
     assert mask_codes(text) == text
 
 
+@pytest.mark.parametrize("text", ["code " + "-" * 50_000, "otp" + " is" * 20_000, "farmer id " + "a-" * 30_000 + "1"])
+def test_a_long_odd_run_after_a_code_word_is_masked_fast(text):
+    started = time.perf_counter()
+    mask_personal_data(text)
+    assert time.perf_counter() - started < 0.5
+
+
 # --- labels ----------------------------------------------------------------------
 
 
@@ -81,24 +89,24 @@ def test_small_slips_in_a_good_reply_are_not_errors():
 
 
 @pytest.mark.parametrize(
-    "reply, error",
+    "reply, error, code",
     [
-        ("not json", "the reply is not JSON"),
-        ("[1, 2]", "reply: Input should be"),
-        (json.dumps({**GOOD, "group": "ait_booking"}), "group: 'ait_booking' is not a group"),
-        (json.dumps({**GOOD, "answer_type": "maybe"}), "answer_type: 'maybe' is not an answer type"),
-        (json.dumps({**GOOD, "answer_type": "refer_vet"}), "answer_type: 'refer_vet' is not an answer type"),
-        (json.dumps({**GOOD, "answer_type": "ask:"}), "answer_type: 'ask:' is not an answer type"),
-        (json.dumps({**GOOD, "sub_tags": ["cow"]}), "sub_tags: Extra inputs are not permitted"),
-        (json.dumps({"group": "ai"}), "answer_type: Field required"),
+        ("not json", "the reply is not JSON", "not_json"),
+        ("[1, 2]", "reply: Input should be", "not_a_label"),
+        (json.dumps({**GOOD, "group": "ait_booking"}), "group: 'ait_booking' is not a group", "group"),
+        (json.dumps({**GOOD, "answer_type": "maybe"}), "answer_type: 'maybe' is not an answer type", "answer_type"),
+        (json.dumps({**GOOD, "answer_type": "refer_vet"}), "answer_type: 'refer_vet' is not an answer type", "answer_type"),
+        (json.dumps({**GOOD, "answer_type": "ask:"}), "answer_type: 'ask:' is not an answer type", "answer_type"),
+        (json.dumps({**GOOD, "sub_tags": ["cow"]}), "sub_tags: Extra inputs are not permitted", "extra_key"),
+        (json.dumps({"group": "ai"}), "answer_type: Field required", "answer_type"),
     ],
     ids=["not json", "not an object", "group off the list", "unknown answer type", "refer_vet is vet now",
          "empty ask", "extra key", "missing key"],
 )
-def test_a_bad_reply_is_an_error_not_a_label(reply, error):
+def test_a_bad_reply_is_an_error_not_a_label(reply, error, code):
     with pytest.raises(LabelError) as caught:
         parse_label(reply)
-    assert str(caught.value).startswith(error)
+    assert str(caught.value).startswith(error) and caught.value.code == code
 
 
 def test_every_group_and_answer_type_passes():
@@ -132,6 +140,28 @@ def test_the_prompt_masks_personal_data_and_lists_the_groups_and_answer_types():
     assert "If the hints say persona: doctor, the user is a vet" in prompt
     assert "a thank you or ok at the end doesn't count" in prompt and "picks one of the technicians" in prompt
     assert "even if it asks about other things too" in prompt and "ask:clarify" in prompt
+
+
+def test_each_text_in_the_prompt_is_masked_then_cut_short():
+    long_turn = "9876543210 " + "x" * 10_000
+    case = Case("s", "c", (Turn("user", long_turn),), description="d" * 10_000)
+
+    prompt = build_prompt(case)
+
+    assert "Farmer: ******3210 " in prompt and "9876543210" not in prompt
+    assert "x" * 4_000 not in prompt and "d" * 4_001 not in prompt and "d" * 4_000 in prompt
+
+
+def test_a_corrected_turn_says_who_wrote_it_first():
+    case = script.case_from_submission("c1", {"turns": [
+        {"role": "user", "content": "My bufallo is pregnant", "original_content": "my bufalo pregnent"},
+        {"role": "assistant", "content": "Call your vet.", "original_content": "Give painkillers."},
+    ]})
+
+    assert [turn.text for turn in case.turns] == [
+        "My bufallo is pregnant [the tester corrected this; the farmer first wrote: my bufalo pregnent]",
+        "Call your vet. [the tester corrected this; the bot first said: Give painkillers.]",
+    ]
 
 
 def test_label_case_sends_the_prompt_and_parses_the_reply():

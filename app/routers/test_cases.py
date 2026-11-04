@@ -3,9 +3,10 @@
 Mounted only when TEST_CASES_ROUTE_ENABLED is on (main.py). One case per request:
 the screen's bulk upload sends one request per case. The body is checked against
 the v1 contract (app/models/test_cases.py) and stored exactly as it came, under an
-id made from the body. Labelling (#488) reads the stored submissions. Turn text
-never goes to the logs. GET /options/ gives the screen its dropdown lists, and
-GET / and GET /coverage/ show what was already sent (#517).
+id made from the body. When the labeller is set up, each stored case is labelled in
+the background (#488, app/services/test_case_labelling.py). Turn text never goes to
+the logs. GET /options/ gives the screen its dropdown lists, and GET / and
+GET /coverage/ show what was already sent with its label (#517).
 """
 import hashlib
 import json
@@ -24,7 +25,8 @@ from app.config import settings
 from app.models.case_options import CASE_OPTIONS, CaseOptions
 from app.models.test_case_views import CaseCoverage, CaseList, CaseView
 from app.models.test_cases import CASE_SOURCES, CaseSubmission, SubmitTestCaseResponse
-from app.services.test_case_store import CaseStore, get_case_store
+from app.services.test_case_labelling import CaseLabeller, get_case_labeller
+from app.services.test_case_store import CaseStore, StoredCase, get_case_store
 from app.services.test_case_views import CaseFilter, coverage, to_view
 from helpers.utils import get_logger
 
@@ -76,6 +78,7 @@ async def submit_test_case(
     request: Request,
     _user: dict = Depends(get_chat_user),
     store: Optional[CaseStore] = Depends(get_case_store),
+    labeller: Optional[CaseLabeller] = Depends(get_case_labeller),
 ):
     """Check one test case against the v1 contract and keep it as sent.
 
@@ -144,6 +147,8 @@ async def submit_test_case(
         return _error(status.HTTP_503_SERVICE_UNAVAILABLE, "Test case store is unavailable")
 
     logger.info("submit_test_case stored id=%s source=%s turns=%s", case_id, case.source, len(case.turns))
+    if labeller is not None:
+        _label_later(labeller, store, StoredCase(id=case_id, received_at=received_at, raw=payload))
     return SubmitTestCaseResponse(id=case_id)
 
 
@@ -153,16 +158,35 @@ async def case_options(_user: dict = Depends(get_chat_user)) -> CaseOptions:
     return CASE_OPTIONS
 
 
-def _read_views(store: CaseStore) -> list[CaseView]:
-    return [view for view in map(to_view, store.list_cases()) if view is not None]
+def _label_later(labeller: CaseLabeller, store: CaseStore, case: StoredCase) -> None:
+    """Hand a case to the labeller. Labelling is extra: it never fails a route."""
+    try:
+        labeller.enqueue(store, case)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("test_case_label not_queued id=%s error=%s", case.id, type(exc).__name__)
 
 
-async def _stored_views(store: Optional[CaseStore], route: str) -> list[CaseView] | JSONResponse:
+def _read_views(store: CaseStore, labeller: Optional[CaseLabeller]) -> list[CaseView]:
+    views = []
+    for case in store.list_cases():
+        view = to_view(case)
+        if view is None:
+            continue
+        views.append(view)
+        if labeller is not None and case.label is None:
+            # Cases sent before labelling was on, or whose labelling failed.
+            _label_later(labeller, store, case)
+    return views
+
+
+async def _stored_views(
+    store: Optional[CaseStore], labeller: Optional[CaseLabeller], route: str
+) -> list[CaseView] | JSONResponse:
     if store is None:
         logger.warning("%s rejected=no_store", route)
         return _error(status.HTTP_503_SERVICE_UNAVAILABLE, "Test case store is not configured")
     try:
-        return await run_in_threadpool(_read_views, store)
+        return await run_in_threadpool(_read_views, store, labeller)
     except Exception as exc:
         logger.error("%s store_failed error=%s", route, type(exc).__name__)
         return _error(status.HTTP_503_SERVICE_UNAVAILABLE, "Test case store is unavailable")
@@ -177,6 +201,8 @@ _Ids = Annotated[list[str], Query(max_length=64)]
 async def list_test_cases(
     tag: _Ids = [],
     case_type: _Ids = [],
+    group: _Ids = [],
+    answer_type: _Ids = [],
     source: _Id = None,
     persona: _Id = None,
     language: _Id = None,
@@ -186,19 +212,23 @@ async def list_test_cases(
     limit: Annotated[int, Query(ge=1, le=100)] = 20,
     _user: dict = Depends(get_chat_user),
     store: Optional[CaseStore] = Depends(get_case_store),
+    labeller: Optional[CaseLabeller] = Depends(get_case_labeller),
 ):
     """The cases already sent, newest first, with phone and Aadhaar numbers masked.
 
-    ``tag`` and ``case_type`` can repeat; a case matches when it has any of them.
-    ``q`` searches the description and the turns. 503 when there is no store or it
-    can't be read.
+    ``tag``, ``case_type``, ``group`` and ``answer_type`` can repeat; a case matches
+    when it has any of them. ``group`` and ``answer_type`` are the labeller's, so a
+    case it hasn't labelled yet matches neither. ``q`` searches the description and
+    the turns. 503 when there is no store or it can't be read.
     """
-    views = await _stored_views(store, "list_test_cases")
+    views = await _stored_views(store, labeller, "list_test_cases")
     if isinstance(views, JSONResponse):
         return views
     wanted = CaseFilter(
         tags=frozenset(tag),
         case_types=frozenset(case_type),
+        groups=frozenset(group),
+        answer_types=frozenset(answer_type),
         source=source,
         persona=persona,
         language=language,
@@ -215,9 +245,10 @@ async def list_test_cases(
 async def case_coverage(
     _user: dict = Depends(get_chat_user),
     store: Optional[CaseStore] = Depends(get_case_store),
+    labeller: Optional[CaseLabeller] = Depends(get_case_labeller),
 ):
-    """How many cases each tag and case type has, zeros included."""
-    views = await _stored_views(store, "case_coverage")
+    """How many cases each tag, case type and labeller group has, zeros included."""
+    views = await _stored_views(store, labeller, "case_coverage")
     if isinstance(views, JSONResponse):
         return views
     return coverage(views)

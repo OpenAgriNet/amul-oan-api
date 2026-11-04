@@ -14,6 +14,7 @@ import subprocess
 import sys
 import uuid
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi import FastAPI
@@ -27,6 +28,7 @@ from app.models.case_options import CASE_OPTIONS
 from app.models.test_cases import MAX_USER_TURNS
 from app.routers import test_cases
 from app.services import test_case_store
+from app.services.test_case_labelling import get_case_labeller
 from app.services.test_case_store import LangfuseCaseStore, get_case_store
 
 REPO = Path(__file__).resolve().parents[1]
@@ -103,12 +105,22 @@ def store():
     return _FakeStore()
 
 
-def _client(store, *, signed_in=True):
+class _FakeLabeller:
+    def __init__(self):
+        self.queued = []
+
+    def enqueue(self, store, case):
+        self.queued.append(case)
+        return True
+
+
+def _client(store, *, signed_in=True, labeller=None):
     app = FastAPI()
     app.include_router(test_cases.router, prefix=settings.api_prefix)
     if signed_in:
         app.dependency_overrides[get_chat_user] = lambda: {"sub": "anon-test"}
     app.dependency_overrides[get_case_store] = lambda: store
+    app.dependency_overrides[get_case_labeller] = lambda: labeller
     return TestClient(app)
 
 
@@ -355,6 +367,35 @@ def test_a_body_of_unknown_keys_gets_a_small_422(store):
     assert len(response.content) < 4096
 
 
+def test_a_stored_case_is_handed_to_the_labeller(store):
+    labeller = _FakeLabeller()
+
+    response = _post(_client(store, labeller=labeller), CHAT_CASE)
+
+    assert response.status_code == 202
+    (queued,) = labeller.queued
+    assert (queued.id, queued.raw, queued.label) == (response.json()["id"], CHAT_CASE, None)
+    assert queued.received_at == store.saved[0]["received_at"]
+
+
+def test_a_labeller_that_breaks_never_fails_the_submit(store):
+    class _Broken:
+        def enqueue(self, store, case):
+            raise RuntimeError("can't start new thread")
+
+    response = _post(_client(store, labeller=_Broken()), CHAT_CASE)
+
+    assert response.status_code == 202 and len(store.saved) == 1
+
+
+def test_a_case_that_was_not_stored_is_not_labelled():
+    labeller = _FakeLabeller()
+
+    assert _post(_client(_FakeStore(fail=True), labeller=labeller), CHAT_CASE).status_code == 503
+    assert _post(_client(_FakeStore(), labeller=labeller), {"source": "chat"}).status_code == 422
+    assert labeller.queued == []
+
+
 def test_the_same_case_sent_again_gets_the_same_id(store):
     client = _client(store)
 
@@ -537,10 +578,21 @@ def test_every_id_in_the_lists_passes_the_contract(store):
 # ── the Langfuse store ──────────────────────────────────────────────────────
 
 
+class _NotFound(Exception):
+    status_code = 404
+
+
 class _FakeLangfuse:
-    def __init__(self):
+    def __init__(self, stored=None):
         self.datasets = []
         self.items = []
+        self.stored = stored or {}  # what api.dataset_items.get finds, by id
+        self.api = SimpleNamespace(dataset_items=SimpleNamespace(get=self._get_item))
+
+    def _get_item(self, item_id):
+        if item_id in self.stored:
+            return self.stored[item_id]
+        raise _NotFound()
 
     def create_dataset(self, *, name, description=None):
         self.datasets.append(name)
@@ -561,6 +613,25 @@ def test_the_langfuse_store_makes_the_dataset_once_and_keeps_the_body_as_input()
         {"dataset_name": "amul-test-case-submissions", "id": "id-1", "input": {"a": 1}, "metadata": {"received_at": "t1"}},
         {"dataset_name": "amul-test-case-submissions", "id": "id-2", "input": {"b": 2}, "metadata": {"received_at": "t2"}},
     ]
+
+
+def test_the_langfuse_store_keeps_the_label_of_a_case_sent_again():
+    label = {"group": "ai", "answer_type": "book"}
+    client = _FakeLangfuse({"id-1": SimpleNamespace(id="id-1", status="ACTIVE", input={"a": 1}, metadata={"received_at": "t1", "label": label})})
+
+    LangfuseCaseStore(client, "amul-test-case-submissions").save(case_id="id-1", raw={"a": 1}, received_at="t2")
+
+    assert client.items[0]["metadata"] == {"received_at": "t2", "label": label}
+
+
+def test_a_store_that_cant_be_read_before_a_save_is_a_503(caplog):
+    class _Down(_FakeLangfuse):
+        def _get_item(self, item_id):
+            raise RuntimeError("langfuse is down")
+
+    store = LangfuseCaseStore(_Down(), "amul-test-case-submissions")
+
+    assert _post(_client(store), CHAT_CASE).status_code == 503
 
 
 class _LangfuseLike(_FakeLangfuse):
