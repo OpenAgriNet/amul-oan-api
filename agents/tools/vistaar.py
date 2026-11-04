@@ -608,8 +608,7 @@ async def get_vistaar_scheme_info(scheme_code: SchemeCode) -> str:
     """Get information about a CENTRAL / national government agriculture scheme
     (e.g. Kisan Credit Card, PM-KISAN, crop insurance, Soil Health Card) from
     Bharat Vistaar. Use this for ANY central government scheme a farmer asks
-    about. For the farmer's Amul dairy-union welfare schemes, use
-    get_union_scheme_data instead.
+    about. It does not cover the farmer's Amul dairy-union welfare schemes.
 
     Args:
         scheme_code: which central scheme to look up. Pick the closest match:
