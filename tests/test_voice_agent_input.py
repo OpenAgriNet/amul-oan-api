@@ -699,41 +699,44 @@ def test_a_voice_tool_call_wakes_the_nudge(monkeypatch):
     assert emission.text in lv._TOOL_NUDGE_MESSAGES["en"]
 
 
-def test_memory_episode_listing_uses_event_time_and_reads_selected_record(monkeypatch):
-    from unittest.mock import AsyncMock
+def test_memory_store_reads_through_memory_api(monkeypatch):
+    import json
 
+    import httpx
+
+    import app.services.memory_store as memory_store
     from agents.tools.memory_tools import _render_read
-    from app.services.memory_store import MemoryStore
 
-    farmer = "9876543210"
-    ref = "00000000-0000-0000-0000-000000000001"
-    latest = {"id": ref, "payload": {
-        "farmer_id": farmer, "record_kind": "episode", "headline": "A prior conversation",
-        "source_episode_number": 1, "source_surface": "chat",
-        "episode_ended_at": "2026-10-30T10:00:00Z", "source_ts": "2026-10-30T10:00:00Z",
-    }}
-    older = {"id": "older", "payload": {
-        **latest["payload"], "source_episode_number": 5, "source_ts": "2026-10-29T10:00:00Z",
-    }}
-    store = MemoryStore(None, farmer)
-    qdrant = AsyncMock(side_effect=[[], {"points": [latest, older]}, [latest]])
-    monkeypatch.setattr(store, "_qdrant", qdrant)
+    monkeypatch.setattr(memory_store, "MEMORY_API_URL", "http://memory.test")
+    monkeypatch.setattr(memory_store, "MEMORY_INTERNAL_TOKEN", "t" * 32)
+    farmer, ref = "9876543210", "00000000-0000-0000-0000-000000000001"
+    seen = []
+
+    def handler(request):
+        seen.append(request)
+        assert request.headers["Authorization"] == "Bearer " + "t" * 32
+        path = request.url.path
+        if path.endswith("/profile"):
+            return httpx.Response(200, json={"profile": {"herd_size": "4 cows"}})
+        if path.endswith("/search_expanded"):
+            return httpx.Response(200, json={"hits": [{"id": ref, "headline": "Fever", "passage": "p"}], "partial": False})
+        if path.endswith("/read"):
+            return httpx.Response(200, json={"entry": {"id": ref, "source_ts": "2026-10-30T10:00:00Z"},
+                                             "current": True, "chunks": [{"number": 1, "text": "Fever"}],
+                                             "continuation": None})
+        return httpx.Response(404)
 
     async def run():
-        listing = await store.list_entries(kind="episode", order="desc", limit=1)
-        assert listing["truncated"] and listing["next_cursor"] is None
-        entry, = listing["entries"]
-        assert entry["id"] == ref and entry["source_episode_number"] == 1
-        assert entry["record_kind"] == "episode"
-        read = await store.read(entry["id"])
-        assert read["chunks"] == [{"number": 1, "text": "A prior conversation"}]
-        assert "Conversation ended: 2026-10-30T10:00:00Z (chat)" in _render_read(read)
-        assert {"is_empty": {"key": "record_kind"}} in store._filter(kind="matter")["must"][-1]["should"]
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            store = memory_store.MemoryStore(client, farmer)
+            assert (await store.profile())["profile"] == {"herd_size": "4 cows"}
+            hits = await store.search("fever", using="expanded", limit=3, memory_ref=ref)
+            assert hits["hits"][0]["id"] == ref
+            read = await store.read(ref, chunk_ids=[1])
+            assert "Chunk 1:\nFever" in _render_read(read)
 
     asyncio.run(run())
-    _, scroll = qdrant.await_args_list[1].args
-    assert scroll["order_by"] == {"key": "source_ts", "direction": "desc"}
-    assert {"key": "farmer_id", "match": {"value": farmer}} in scroll["filter"]["must"]
-    assert {"key": "record_kind", "match": {"value": "episode"}} in scroll["filter"]["must"]
-    assert {"is_empty": {"key": "superseded_at"}} in scroll["filter"]["must"]
-    assert qdrant.await_args_list[2].args[1]["ids"] == [ref]
+    assert [r.url.path for r in seen] == [
+        f"/memory/{farmer}/profile", f"/memory/{farmer}/search_expanded", f"/memory/{farmer}/entries/{ref}/read"]
+    assert json.loads(seen[1].content) == {"query": "fever", "limit": 3, "memory_ref": ref}
+    assert json.loads(seen[2].content) == {"whole_chunks": True, "chunk_ids": [1]}

@@ -1,10 +1,10 @@
 """Read-only farmer conversational memory.
 
-Reads a farmer's accumulated memory directly from Qdrant and turns it into a
+Reads a farmer's accumulated memory from the memory service and turns it into a
 short, bounded context block for the prompt. Deliberately narrow:
 
 - The global MEMORY_ENABLED switch defaults off. Once on, per-farmer settings
-  default on for now; an explicit Qdrant off flag suppresses reply use. The
+  default on for now; the service's off flag suppresses reply use. The
   background writer never changes those settings.
 - **Read-only, and never on the critical path for long.** One quick lookup with a
   hard timeout; on any error or timeout it returns nothing rather than delaying or
@@ -28,7 +28,7 @@ from app.services.memory_store import MemoryStore, validate_config
 
 logger = get_logger(__name__)
 
-# The reader checks the farmer's separate settings point in Qdrant before reads.
+# The memory service checks the farmer's setting before every read.
 # The background writer and model cannot change that setting.
 MEMORY_ENABLED = os.getenv("MEMORY_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
 if MEMORY_ENABLED:
@@ -56,7 +56,7 @@ async def fetch_memory_context(
     so a memory problem cannot fail the turn; waiting is bounded by the deadline.
     """
     # The caller must first establish a trusted surface identity. Whether memory
-    # is on for this farmer is then decided by the Qdrant settings tombstone.
+    # is on for this farmer is then decided by the memory service setting.
     if not MEMORY_ENABLED or not allowed or not re.fullmatch(r"\d{10}", farmer_id or ""):
         return ""
 
