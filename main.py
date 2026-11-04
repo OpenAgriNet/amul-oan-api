@@ -144,7 +144,6 @@ app.include_router(tts.router, prefix=settings.api_prefix)
 app.include_router(user.router, prefix=settings.api_prefix)
 app.include_router(health.router, prefix=settings.api_prefix)
 app.include_router(beckn.router, prefix=settings.api_prefix)
-# Which screens the UI shows (GET /api/ui-flags/). No auth: nothing secret in it.
 app.include_router(ui_flags.router, prefix=settings.api_prefix)
 # Partner heat-alert ingest (POST /api/webhooks/alerts). Fails closed with 503
 # until WEBHOOK_SHARED_TOKEN and WEBHOOK_DB_URL are set.
@@ -160,7 +159,6 @@ if settings.voice_route_enabled:
     app.include_router(voice.router, prefix=settings.api_prefix)
 
 if settings.test_cases_route_enabled:
-    # Dev only: the test case API for the amul-ui test case screen (#487).
     from app.routers import test_cases
 
     app.include_router(test_cases.router, prefix=settings.api_prefix)

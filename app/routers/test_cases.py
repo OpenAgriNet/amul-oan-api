@@ -1,14 +1,13 @@
 """Dev-only test case API for the amul-ui test case screen (#487, #517, #488).
 
 Mounted only when TEST_CASES_ROUTE_ENABLED is on (main.py). POST / keeps one case as
-sent. GET /options/ gives the screen its lists. GET / lists the cases as Langfuse keeps
-them, with phone and Aadhaar numbers cut. Both queue cases with no label for the
-labeller. Turn text never goes to the logs.
+sent and labels a new one in the background. GET /options/ gives the screen its lists.
+GET / lists the cases as Langfuse keeps them, with phone and Aadhaar numbers cut. Turn
+text never goes to the logs.
 """
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, Request
-from fastapi.concurrency import run_in_threadpool
+from fastapi import APIRouter, BackgroundTasks, Depends, Request
 from fastapi.responses import JSONResponse
 
 from app.auth.jwt_auth import get_chat_user
@@ -25,7 +24,7 @@ def _error(status_code: int, detail: str) -> JSONResponse:
 
 
 @router.post("/", status_code=202)
-async def submit_test_case(request: Request):
+async def submit_test_case(request: Request, background: BackgroundTasks):
     """Keep one case as sent. 400 not a JSON object, 422 no turns, 503 no store."""
     try:
         body = await request.json()
@@ -43,18 +42,20 @@ async def submit_test_case(request: Request):
         item_id = cases.case_id(body)
     except (ValueError, RecursionError):  # NaN, Infinity or a lone surrogate
         return _error(400, "Invalid JSON payload")
+    metadata = {"received_at": datetime.now(timezone.utc).isoformat()}
     try:
         # The id comes from the body, so a case sent again is stored already: it keeps its
         # label, time and status.
-        if await run_in_threadpool(cases.get_item, store[0], item_id) is None:
-            metadata = {"received_at": datetime.now(timezone.utc).isoformat()}
-            await run_in_threadpool(cases.save_case, *store, item_id, input=body, metadata=metadata)
+        new = await cases.get_item(store[0], item_id) is None
+        if new:
+            await cases.save_case(*store, item_id, input=body, metadata=metadata)
     except Exception as exc:
         logger.error("submit_test_case store_failed id=%s error=%s", item_id, type(exc).__name__)
         return _error(503, "Test case store is unavailable")
     source = body.get("source") if body.get("source") in ("chat", "manual", "bulk") else "other"
-    logger.info("submit_test_case stored id=%s source=%s turns=%s", item_id, source, len(turns))
-    cases.label_later(*store, item_id)
+    logger.info("submit_test_case stored id=%s new=%s source=%s turns=%s", item_id, new, source, len(turns))
+    if new and cases.labeller_on():
+        background.add_task(cases.label_case, *store, item_id, body, metadata)
     return {"id": item_id, "status": "received"}
 
 
@@ -73,19 +74,10 @@ async def list_test_cases():
     if store is None:
         return _error(503, "Test case store is not configured")
     try:
-        items = await run_in_threadpool(cases.list_items, *store)
+        items = await cases.list_items(*store)
     except Exception as exc:
         logger.error("list_test_cases store_failed error=%s", type(exc).__name__)
         return _error(503, "Test case store is unavailable")
-    for item in items:
-        if cases.label_of(item) is None:  # sent while the labeller was off, or its labelling failed
-            cases.label_later(*store, item.id)
-
-    def shown() -> list:
-        return [
-            {"id": item.id, "input": cases.mask(item.input), "metadata": cases.mask(item.metadata)} for item in items
-        ]
-
-    # Masking a big dataset takes a while, so it runs off the event loop. JSONResponse uses
-    # the C encoder, so a deeply nested case can't break the list.
-    return JSONResponse({"items": await run_in_threadpool(shown)})
+    shown = [{"id": item.id, "input": cases.mask(item.input), "metadata": cases.mask(item.metadata)} for item in items]
+    # JSONResponse uses the C encoder, so a deeply nested case can't break the list.
+    return JSONResponse({"items": shown})

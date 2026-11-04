@@ -5,19 +5,15 @@ as the screen sent it, ``metadata.received_at`` is when it came in (Langfuse mov
 ``createdAt`` on every write), and ``metadata.label`` is its label once the labeller has
 run. Archiving an item in Langfuse takes it off the list.
 
-The labeller gives each case a group and an answer type with Gemma 4 through
+The labeller gives each new case a group and an answer type with Gemma 4 through
 LiteLLM, reached the way oan-evaluation's judge reaches it: SCENARIO_GEMMA_BASE_URL,
-LITELLM_API_KEY and SCENARIO_GEMMA_MODEL. It is off while the first two are unset,
-and labels one case at a time on its own thread. Testers, case types, tags, groups and
-answer types are in assets/test_case_options.json.
+LITELLM_API_KEY and SCENARIO_GEMMA_MODEL. It is off while the first two are unset.
+Testers, case types, tags, groups and answer types are in assets/test_case_options.json.
 """
 import hashlib
 import json
 import os
-import queue
 import re
-import threading
-import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -41,9 +37,6 @@ _ID_NAMESPACE = uuid.uuid5(uuid.NAMESPACE_URL, "amul-oan-api/test-cases")
 _LONG_NUMBER = re.compile(r"(?<!\d)\+?(?:\d{7,}|(?=(?:\d[ -]?){9,12}\d(?!\d))\d{2,6}(?:[ -]\d{2,6}){1,3})(?!\d)")
 # Trace and session ids: 32 hex characters, or a UUID. Masking leaves them as they are.
 _ID = re.compile(r"[0-9a-f]{32}|[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}")
-_RETRY_SECONDS = 600
-_waiting: queue.SimpleQueue = queue.SimpleQueue()  # (client, dataset name, case id) for the labeller
-_tried: dict[str, float] = {}  # case id -> when its last try ended (inf while queued), in this process
 _dataset_ready = False
 
 _PROMPT = """You label one test case of Amul's chatbot for dairy farmers in Gujarat.
@@ -85,26 +78,26 @@ def case_id(body: dict) -> str:
     return str(uuid.uuid5(_ID_NAMESPACE, f"{(settings.test_cases_raw_dataset or '').strip()}:{digest}"))
 
 
-def get_item(client: Any, item_id: str) -> Any:
+async def get_item(client: Any, item_id: str) -> Any:
     """The item as stored now, or None when there is none."""
     try:
-        return client.api.dataset_items.get(item_id)
+        return await client.async_api.dataset_items.get(item_id)
     except Exception as exc:
         if getattr(exc, "status_code", None) == 404:
             return None
         raise
 
 
-def save_case(client: Any, name: str, item_id: str, **fields: Any) -> None:
+async def save_case(client: Any, name: str, item_id: str, **fields: Any) -> None:
     """Write one item. A new id makes a new item; on an existing one, Langfuse keeps every
     field that isn't sent (input, metadata, status, expected output)."""
     global _dataset_ready
     try:
         if not _dataset_ready:
             # Creating a dataset upserts on its name.
-            client.create_dataset(name=name, description="Test cases from the dev test case screen, as sent.")
+            await client.async_api.datasets.create(name=name, description="Test cases from the dev test case screen.")
             _dataset_ready = True
-        client.api.dataset_items.create(dataset_name=name, id=item_id, **fields)
+        await client.async_api.dataset_items.create(dataset_name=name, id=item_id, **fields)
     except Exception:
         _dataset_ready = False  # the dataset may have been deleted in Langfuse
         raise
@@ -116,12 +109,18 @@ def received_at(item: Any) -> str:
     return value if isinstance(value, str) else (item.created_at.isoformat() if item.created_at else "")
 
 
-def list_items(client: Any, name: str) -> list:
+async def list_items(client: Any, name: str) -> list:
     """Every item that isn't archived, newest first."""
+    # One snapshot: Langfuse pages by version time, so a write between two pages would
+    # show a case twice and leave another out.
+    version, page, items = datetime.now(timezone.utc), 1, []
     try:
-        # One snapshot: Langfuse pages by version time, so a write between two pages
-        # would show a case twice and leave another out.
-        items = client.get_dataset(name, fetch_items_page_size=100, version=datetime.now(timezone.utc)).items
+        while True:
+            batch = await client.async_api.dataset_items.list(dataset_name=name, version=version, page=page, limit=100)
+            items += batch.data
+            if page >= batch.meta.total_pages:
+                break
+            page += 1
     except Exception as exc:
         if getattr(exc, "status_code", None) == 404:  # nothing was sent yet
             return []
@@ -144,26 +143,11 @@ def mask(value: Any) -> Any:
         elif isinstance(node, (list, dict)):
             parent[key] = node = node.copy()
             todo.extend((node, k) for k in (range(len(node)) if isinstance(node, list) else node))
-        elif not isinstance(node, (int, float, bool, type(None))):
-            # The SDK turns an attached file into an object: keep its reference text.
-            parent[key] = getattr(node, "reference_string", None) or str(node)
     return top[0]
 
 
-def label_of(item: Any) -> Optional[dict]:
-    label = item.metadata.get("label") if isinstance(item.metadata, dict) else None
-    return label if isinstance(label, dict) and label.get("group") else None
-
-
-def label_later(client: Any, name: str, item_id: str) -> None:
-    """Queue a case for the labeller. Does nothing while the labeller is off, while the case
-    is queued, or for 10 minutes after its last try."""
-    if not (os.environ.get("SCENARIO_GEMMA_BASE_URL") and os.environ.get("LITELLM_API_KEY")):
-        return
-    if time.monotonic() - _tried.get(item_id, float("-inf")) < _RETRY_SECONDS:
-        return
-    _tried[item_id] = float("inf")
-    _waiting.put((client, name, item_id))
+def labeller_on() -> bool:
+    return bool(os.environ.get("SCENARIO_GEMMA_BASE_URL") and os.environ.get("LITELLM_API_KEY"))
 
 
 def _text(value: Any) -> str:
@@ -217,61 +201,30 @@ def _model() -> str:
     return (os.environ.get("SCENARIO_GEMMA_MODEL") or "gemma-4-31b-it").removeprefix("openai/")
 
 
-def _complete(prompt: str) -> Any:
+async def _complete(prompt: str) -> Any:
     url = os.environ["SCENARIO_GEMMA_BASE_URL"].rstrip("/") + "/chat/completions"
     body = {"model": _model(), "temperature": 0, "messages": [{"role": "user", "content": prompt}]}
     headers = {"Authorization": f"Bearer {os.environ['LITELLM_API_KEY']}"}
-    with httpx.Client(timeout=120) as http:
-        reply = http.post(url, json={**body, "response_format": {"type": "json_object"}}, headers=headers)
+    async with httpx.AsyncClient(timeout=120) as http:
+        reply = await http.post(url, json={**body, "response_format": {"type": "json_object"}}, headers=headers)
         if reply.status_code == 400:  # the proxy may refuse JSON mode
-            reply = http.post(url, json=body, headers=headers)
+            reply = await http.post(url, json=body, headers=headers)
         reply.raise_for_status()
         return reply.json()["choices"][0]["message"]["content"]
 
 
-def _unlabelled(item: Any) -> bool:
-    """Still on the list, no label yet, and metadata the label can go next to."""
-    return (
-        item is not None
-        and item.status != "ARCHIVED"
-        and isinstance(item.input, dict)
-        and (item.metadata is None or isinstance(item.metadata, dict))
-        and label_of(item) is None
-    )
-
-
-def label_case(client: Any, name: str, item_id: str) -> None:
-    """Label one case and keep the label with it. Never raises: labelling is extra."""
+async def label_case(client: Any, name: str, item_id: str, body: dict, metadata: dict) -> None:
+    """Label one new case and keep the label with it. Never raises: labelling is extra."""
     try:
-        item = get_item(client, item_id)
-        if not _unlabelled(item):  # labelled, archived or deleted while it waited
-            return
-        label = parse_label(_complete(build_prompt(item.input)))
+        label = parse_label(await _complete(build_prompt(body)))
         if label is None:
             logger.warning("test_case_label failed id=%s reason=bad_reply", item_id)
             return
-        item = get_item(client, item_id)  # read it again: the model takes a while
-        if not _unlabelled(item):
-            logger.info("test_case_label skipped id=%s reason=changed_while_labelling", item_id)
-            return
         label.update(model=_model(), labelled_at=datetime.now(timezone.utc).isoformat())
-        metadata = item.metadata if isinstance(item.metadata, dict) else {}
-        # Only metadata is sent, so the rest stays as it is. received_at goes with it because
-        # the write moves createdAt.
-        save_case(client, name, item_id, metadata={**metadata, "received_at": received_at(item), "label": label})
+        # Only metadata is sent, so Langfuse keeps the input, status and expected output.
+        await save_case(client, name, item_id, metadata={**metadata, "label": label})
         logger.info(
             "test_case_label saved id=%s group=%s answer_type=%s", item_id, label["group"], label["answer_type"]
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning("test_case_label failed id=%s error=%s", item_id, type(exc).__name__)
-    finally:
-        _tried[item_id] = time.monotonic()
-
-
-def _label_forever() -> None:
-    while True:
-        label_case(*_waiting.get())
-
-
-# One daemon thread labels one case at a time, off the app's threadpool, and never holds up a shutdown.
-threading.Thread(target=_label_forever, name="test-case-labeller", daemon=True).start()
