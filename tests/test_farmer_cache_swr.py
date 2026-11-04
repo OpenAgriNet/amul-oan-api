@@ -221,24 +221,37 @@ def test_refresh_lock_busy_awaits_inflight_value():
     assert result is sentinel
 
 
-def test_bounded_timeout_releases_lock_on_cancel():
-    """When the bounded fetch times out and cancels the in-flight refresh, the
-    NX lock is released in refresh_farmer_data's finally."""
+def test_bounded_timeout_lets_the_fetch_finish():
+    """A fetch that outlives the turn's budget is not cancelled: it stores the
+    record and then releases the NX lock, so the next turn reads the farmer from
+    the cache instead of waiting on the worker."""
     fake_redis = AsyncMock()
     fake_redis.set = AsyncMock(return_value=True)   # lock acquired
     fake_redis.delete = AsyncMock()
 
     async def _slow(_phone):
-        await asyncio.sleep(5)
-        return None, FarmerFetchOutcome.ERROR
+        await asyncio.sleep(0.1)
+        records = [{"farmerCode": "5058", "societyCode": "00002", "unionCode": "159"}]
+        return records, FarmerFetchOutcome.FOUND
+
+    async def _turn_then_wait():
+        result = await fc.refresh_farmer_data_bounded("111", timeout=0.05)
+        await asyncio.sleep(0.3)
+        return result
 
     with patch.object(fc, "redis_client", fake_redis), \
          patch.object(fc, "fetch_farmer_info_with_outcome", new=_slow), \
-         patch.object(fc, "enqueue_farmer_refresh", new=AsyncMock()), \
-         patch.object(fc, "_record_refresh_failure", new=AsyncMock()):
-        result = asyncio.run(fc.refresh_farmer_data_bounded("111", timeout=0.05))
+         patch.object(fc, "_fetch_ai_technicians", new=AsyncMock(return_value=[])), \
+         patch.object(fc, "get_cached_farmer_data", new=AsyncMock(return_value=None)), \
+         patch.object(fc, "set_cached_farmer_data", new=AsyncMock()) as stored, \
+         patch.object(fc, "_clear_refresh_attempt_state", new=AsyncMock()), \
+         patch.object(fc, "enqueue_farmer_refresh", new=AsyncMock()) as enqueue:
+        result = asyncio.run(_turn_then_wait())
     assert result is None
-    fake_redis.delete.assert_awaited()  # lock released on cancellation
+    enqueue.assert_awaited_once_with("111")
+    stored.assert_awaited_once()
+    assert stored.await_args.args[1].lookupStatus == "found"
+    fake_redis.delete.assert_awaited()  # lock released once the fetch finished
 
 
 def test_lock_busy_never_clears_reenqueues_not_stale():

@@ -123,6 +123,62 @@ class TestEvaluateAndIssue:
         assert res.reshared is True
         assert res.code == "999999"
 
+    def test_existing_code_is_reshared_without_confirmation(self, monkeypatch):
+        # AMUL-41: a farmer who already holds an active code is not offered the loan
+        # again — the first (unconfirmed) call re-shares that code. No eligibility
+        # re-check, no new code, and no SMS while the resend flag is off.
+        session = _FakeSession()
+        _wire(monkeypatch, session, allow_multiple=False, sms=True)
+
+        async def _existing(session, phone):
+            return SimpleNamespace(code="999999", loan_amount=8000, farmer_name="Ramesh",
+                                   sms_status="sent", issued_at="x", expires_at=None)
+
+        async def _must_not_run(*a, **k):
+            raise AssertionError("no eligibility check, new code or SMS for an existing code")
+
+        monkeypatch.setattr(le, "_active_code_for_phone", _existing)
+        for name in ("_eligibility_row_for_phone", "_compute_last_month_milk",
+                     "_generate_unique_code", "send_loan_approval_sms"):
+            monkeypatch.setattr(le, name, _must_not_run)
+        res = _run(confirm=False)
+        assert res.outcome == le.ELIGIBLE and res.reshared is True
+        assert res.code == "999999" and res.loan_amount == 8000.0 and res.sms_status == "sent"
+        assert not session.committed and session.added == []
+
+    def test_unconfirmed_reshare_resends_the_sms_when_the_flag_is_on(self, monkeypatch):
+        session = _FakeSession()
+        _wire(monkeypatch, session, allow_multiple=False, resend=True, sms=True)
+        record = SimpleNamespace(code="999999", loan_amount=5000, farmer_name="Ramesh", sms_status="sent",
+                                 sms_message_id="m1", sms_error=None, issued_at="x", expires_at=None)
+
+        async def _existing(session, phone):
+            return record
+
+        sent = []
+
+        async def _send(mobile, name, amount, code):
+            sent.append(code)
+            return SimpleNamespace(status="sent", message_id="m2", error=None)
+
+        monkeypatch.setattr(le, "_active_code_for_phone", _existing)
+        monkeypatch.setattr(le, "send_loan_approval_sms", _send)
+        res = _run(confirm=False)
+        assert res.reshared is True and sent == ["999999"] and session.committed
+
+    def test_allow_multiple_still_offers_before_issuing(self, monkeypatch):
+        # With several codes allowed an active code is never consulted, so the first
+        # call is still an OFFER.
+        _wire(monkeypatch, _FakeSession(), allow_multiple=True)
+
+        async def _must_not_run(*a, **k):
+            raise AssertionError("active codes are not consulted when several are allowed")
+
+        monkeypatch.setattr(le, "_active_code_for_phone", _must_not_run)
+        monkeypatch.setattr(le, "_eligibility_row_for_phone", _row)
+        monkeypatch.setattr(le, "_compute_last_month_milk", _milk(5200.0))
+        assert _run(confirm=False).outcome == le.ELIGIBLE_OFFER
+
     def test_allow_multiple_mints_new_code(self, monkeypatch):
         # With multiple codes allowed, an existing code is ignored and a new one issued.
         _wire(monkeypatch, _FakeSession(), allow_multiple=True)
@@ -250,6 +306,15 @@ class TestMessageMapping:
         # assertion and has been red ever since.
         assert "777888" in msg and "5,000" in msg and "APPROVED" in msg
 
+    def test_reshared_code_reads_already_approved_with_branch_and_documents(self):
+        # AMUL-41: a re-shared code is "already approved", never a fresh offer.
+        r = le.LoanResult(outcome=le.ELIGIBLE, code="123456", loan_amount=5000, reshared=True)
+        msg = loan_tool._message_for(r)
+        assert msg.startswith("ALREADY APPROVED") and "123456" in msg
+        assert "Kheda District Central Co-Operative Bank Limited branch" in msg
+        assert "Aadhaar card" in msg and "society membership" in msg
+        assert "OFFER" not in msg
+
     def test_failure_messages_direct_to_bank(self):
         for oc in (le.NOT_IN_BANK_LIST, le.MILK_BELOW_THRESHOLD):
             msg = loan_tool._message_for(le.LoanResult(outcome=oc, milk_threshold=3000))
@@ -347,6 +412,19 @@ class TestPerPhoneLock:
         session = _FakeSession()
         self._eligible(monkeypatch, session)
         assert _run(confirm=False).outcome == le.ELIGIBLE_OFFER
+        assert session.locked == []
+
+    def test_an_unconfirmed_reshare_takes_no_lock(self, monkeypatch):
+        # Re-sharing mints nothing, so only a confirmation needs the phone's lock.
+        session = _FakeSession()
+        _wire(monkeypatch, session)
+
+        async def _existing(session, phone):
+            return SimpleNamespace(code="999999", loan_amount=5000, farmer_name="Ramesh",
+                                   sms_status="sent", issued_at="x", expires_at=None)
+
+        monkeypatch.setattr(le, "_active_code_for_phone", _existing)
+        assert _run(confirm=False).reshared is True
         assert session.locked == []
 
     def test_no_lock_when_several_codes_are_allowed(self, monkeypatch):

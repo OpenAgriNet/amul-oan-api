@@ -661,8 +661,8 @@
   },
   {
     "en": "CALF SCOUR",
-    "gu": "બચ્ચામાં જાડા",
-    "transliteration": "baccha ma jada"
+    "gu": "બચ્ચામાં ઝાડા",
+    "transliteration": "baccha ma jhada"
   },
   {
     "en": "Calf Starter",
@@ -2033,6 +2033,36 @@
     "en": "Kharai Camel",
     "gu": "ખારાઈ ઊંટ",
     "transliteration": "kharai oot"
+  },
+  {
+    "en": "Camel",
+    "gu": "ઊંટ",
+    "transliteration": "unt"
+  },
+  {
+    "en": "She-camel",
+    "gu": "ઊંટડી",
+    "transliteration": "untdi"
+  },
+  {
+    "en": "Camel calf",
+    "gu": "ઊંટનું બચ્ચું",
+    "transliteration": "untnu bachchu"
+  },
+  {
+    "en": "Goat kid",
+    "gu": "બકરીનું બચ્ચું",
+    "transliteration": "bakrinu bachchu"
+  },
+  {
+    "en": "Lamb",
+    "gu": "ઘેટાનું બચ્ચું",
+    "transliteration": "ghetanu bachchu"
+  },
+  {
+    "en": "Buffalo calf",
+    "gu": "પાડું",
+    "transliteration": "padu"
   },
   {
     "en": "KINKEDSCRVIX",

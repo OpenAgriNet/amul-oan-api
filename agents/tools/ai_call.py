@@ -26,9 +26,14 @@ AI_CALL_CACHE_NAMESPACE = "ai_call_booked"
 
 # Shared by both booking routes (direct PashuGPT and Beckn network) so the two
 # cannot drift into telling the farmer different things.
-ALREADY_BOOKED_MESSAGE = (
-    "This session already has an active artificial insemination booking. "
-    "Please try again later or contact your society for assistance."
+ALREADY_BOOKED_MESSAGE = "Artificial insemination call is already booked. Ticket: {ticket}."
+# A request for another animal (the other species, or another of the caller's
+# farmer records) after the session's booking: nothing new is booked, so it must
+# not be told the earlier ticket as if it were its own.
+ALREADY_BOOKED_OTHER_ANIMAL_MESSAGE = (
+    "No new booking was made: only one artificial insemination booking can be made "
+    "per session. This session's booking is for the {booked_species} (ticket {ticket}); "
+    "for any other animal, please try again later or contact your society."
 )
 # A second booking while the session's earlier one is still in flight, or was
 # neither confirmed nor refused: that one may have booked the visit.
@@ -178,12 +183,14 @@ def _is_refused(exc: BaseException) -> bool:
     return isinstance(exc, httpx.HTTPStatusError) and 400 <= exc.response.status_code < 500
 
 
-async def _already_booked_message(session_id: str) -> str:
+async def _already_booked_message(session_id: str, species_value: str, account: str) -> str:
     """What a second booking in the session is told.
 
     Only a confirmed booking leaves its ticket on the reservation. Without one,
     the earlier booking is still in flight or was never confirmed, and may or may
-    not have booked the visit, so the farmer is not told it is active.
+    not have booked the visit, so the farmer is not told it is active. A repeat
+    for the same farmer record and species gets that booking's ticket back; a
+    request for another animal is told nothing new was booked.
     """
     try:
         marker = await cache.get(session_id, namespace=AI_CALL_CACHE_NAMESPACE)
@@ -191,12 +198,24 @@ async def _already_booked_message(session_id: str) -> str:
         logger.warning("Failed to read AI call reservation: %s", e)
         marker = None
     if isinstance(marker, dict) and marker.get("ticket"):
-        return ALREADY_BOOKED_MESSAGE
+        booked_species = marker.get("species")
+        booked_account = marker.get("account")
+        if (booked_species and booked_species != species_value) or (
+            booked_account and booked_account != account
+        ):
+            return ALREADY_BOOKED_OTHER_ANIMAL_MESSAGE.format(
+                booked_species=booked_species, ticket=marker["ticket"]
+            )
+        return ALREADY_BOOKED_MESSAGE.format(ticket=marker["ticket"])
     return ALREADY_REQUESTED_MESSAGE
 
 
 async def _mark_session_booked(
-    session_id: str | None, ticket: str | None, species_value: str, guard: bool | None = None
+    session_id: str | None,
+    ticket: str | None,
+    species_value: str,
+    account: str,
+    guard: bool | None = None,
 ) -> None:
     """Mark this session as booked so a re-run (or retry) does not double-book."""
     if guard is None:
@@ -205,7 +224,7 @@ async def _mark_session_booked(
         try:
             await cache.set(
                 session_id,
-                {"ticket": ticket, "species": species_value},
+                {"ticket": ticket, "species": species_value, "account": account},
                 ttl=settings.ai_call_cooldown_ttl_seconds,
                 namespace=AI_CALL_CACHE_NAMESPACE,
             )
@@ -431,10 +450,13 @@ async def _book_via_network(
         society_code,
     )
 
+    # What a repeat in this session is matched against.
+    account = f"{union_code}/{society_code}/{farmer_code}"
+
     # Atomic reservation immediately before the irreversible write.
     _allowed, _owned = await _reserve_booking_slot(session_id, guard)
     if not _allowed:
-        return await _already_booked_message(session_id)
+        return await _already_booked_message(session_id, species.value, account)
 
     # The booking as an API step (turn.v1's "<api name>" SPAN): ok out, level ERROR
     # with the reason when the visit was not booked.
@@ -524,7 +546,7 @@ async def _book_via_network(
             return told
 
         # Mark this session as booked so a re-run (or retry) does not double-book.
-        await _mark_session_booked(session_id, result.ticket, species.value, guard)
+        await _mark_session_booked(session_id, result.ticket, species.value, account, guard)
         if heat_alert_event_id:
             from app.services.heat_alert_call import mark_booked
 

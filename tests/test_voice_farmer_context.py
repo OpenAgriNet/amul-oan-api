@@ -160,3 +160,24 @@ def test_scheme_context_unions_follow_cache_sources():
 
     assert voice.SUPPORTED_SCHEME_CONTEXT_UNIONS == SUPPORTED_SCHEME_UNIONS
     assert UnionName.SABAR.value in voice.SUPPORTED_SCHEME_CONTEXT_UNIONS
+
+
+def test_herd_counts_cover_every_record_on_the_mobile():
+    """A mobile with several accounts: the tags and per-animal records cover all
+    of them, so the counts must too (they were the first record's only)."""
+    envelope = FarmerDataEnvelope.from_records(
+        [
+            {"farmerName": "A", "totalAnimals": 2, "cow": 0, "buffalo": 2, "totalMilkingAnimals": 1,
+             "tagNo": "100000000001,100000000002"},
+            {"farmerName": "B", "cow": 1, "buffalo": 0, "tagNo": "100000000003"},
+            {"farmerName": "A", "totalAnimals": 3, "cow": 2, "buffalo": 1, "totalMilkingAnimals": 1,
+             "tagNo": "100000000004,100000000005,100000000006"},
+        ],
+        source="api",
+        lookup_status="found",
+    )
+    summary = voice._build_compact_farmer_summary(envelope)
+    assert "- Total animals: 6" in summary
+    assert "- Cows: 3" in summary
+    assert "- Buffaloes: 3" in summary
+    assert "- Milking animals: 2" in summary

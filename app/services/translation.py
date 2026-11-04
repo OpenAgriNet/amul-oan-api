@@ -67,8 +67,28 @@ GU_PREFERRED_TRANSLATION_RULES = [
     "Prefer 'બાવલું' over 'પાહો' for udder context.",
     "Prefer 'ધાર' over 'ટીપાં' for milk streams.",
     "Use 'ગાભણ' for pregnant livestock context.",
+    "For a camel, goat or sheep, name the species with the young-animal word: a camel's young is 'ઊંટનું બચ્ચું', a goat's young 'બકરીનું બચ્ચું', a sheep's young 'ઘેટાનું બચ્ચું'; a she-camel is 'ઊંટડી'. A cow's calf is 'વાછરડું' ('વાછરડી' female, 'વાછરડો' male) and a buffalo's calf is 'પાડું' ('પાડી' female, 'પાડો' male); never use these for a camel, goat or sheep.",
     "Do not output editorial markers like 'red colour' or formatting instructions.",
 ]
+
+# Chat translates an answer a few sentences at a time, so a chunk like "Keep the
+# calf warm." has no species in it and its calf came out as a cow's calf. When the
+# farmer named one of these (app/services/chat.py `named_species`), every chunk's
+# instruction says whose young the bare words mean. No species, no line.
+SPECIES_CONTEXT_YOUNG = {
+    "camel": ("camel calf", "'calf', 'calves', 'young one' or 'newborn'"),
+    "goat": ("goat kid", "'kid', 'kids', 'young one' or 'newborn'"),
+    "sheep": ("lamb", "'young one' or 'newborn'"),
+}
+
+
+def species_context_rule(species: str) -> str:
+    young, bare = SPECIES_CONTEXT_YOUNG[species]
+    return (
+        f"This text is part of an answer about the farmer's {species}. Every bare {bare} in it is a {young}: "
+        f"translate it as the {species}'s young, never with a cow's or buffalo's calf word."
+    )
+
 
 # Voice channel (§14): richer, telephony-tuned rules — gender-neutral addressing
 # for a live phone call, etc. Applied only when translation_channel("voice") is
@@ -82,6 +102,7 @@ VOICE_GU_PREFERRED_TRANSLATION_RULES = [
     "Prefer 'બાવલું' over 'પાહો' for udder context.",
     "Prefer 'ધાર' over 'ટીપાં' for milk streams.",
     "Use 'ગાભણ' for pregnant livestock context.",
+    "For a camel, goat or sheep, name the species with the young-animal word: a camel's young is 'ઊંટનું બચ્ચું', a goat's young 'બકરીનું બચ્ચું', a sheep's young 'ઘેટાનું બચ્ચું'; a she-camel is 'ઊંટડી'. A cow's calf is 'વાછરડું' ('વાછરડી' female, 'વાછરડો' male) and a buffalo's calf is 'પાડું' ('પાડી' female, 'પાડો' male); never use these for a camel, goat or sheep.",
     "Use 'ફેટ' for fat/milk-fat (not 'ચરબી').",
     "Use 'એસ.એન.એફ.' for SNF (not 'ઘન પદાર્થો').",
     "Use 'બેક્ટેરિયા' for bacteria (not 'જંતુઓ').",
@@ -568,6 +589,7 @@ def _build_translation_instruction(
     target_lang: str,
     mini_glossary: Optional[str] = None,
     max_output_chars: Optional[int] = None,
+    species: Optional[str] = None,
 ) -> str:
     """Build the translation INSTRUCTION text (glossary Rules + GU style rules +
     length rule + channel-aware rules) — the same wording used for BOTH tiers:
@@ -602,6 +624,8 @@ def _build_translation_instruction(
                 rules.append(f"Rule: '{en_term.strip()}' must be translated as '{target_term.strip()}'.")
         if rules:
             instruction += "\n\n**Terminology Rules (mandatory):**\n" + "\n".join(rules) + "\n"
+    if species in SPECIES_CONTEXT_YOUNG:
+        instruction += "\n\n**Conversation Context (mandatory):**\n" + species_context_rule(species) + "\n"
     if target_code == "gu":
         _gu_rules = (
             VOICE_GU_PREFERRED_TRANSLATION_RULES if _is_voice_channel()
@@ -929,7 +953,7 @@ def _voice_gu_en_index():
     return EN_INDEX
 
 
-def _prepare_translation_inputs(text, source_lang, target_lang, max_output_chars):
+def _prepare_translation_inputs(text, source_lang, target_lang, max_output_chars, species=None):
     """Mini-glossary fetch + build the translation instruction ONCE (shared by both
     tiers) + the Gemma-wrapped TranslateGemma prompt. Verbatim to the prior inline
     logic (mini glossary for gu/hi/bn/mr/pa at threshold 0.90 / max 40)."""
@@ -946,7 +970,7 @@ def _prepare_translation_inputs(text, source_lang, target_lang, max_output_chars
             logger.info(f"Translation prompt: injected mini glossary ({len(mini_glossary.splitlines())} terms)")
     instruction = _build_translation_instruction(
         text, source_lang, target_lang,
-        mini_glossary=mini_glossary, max_output_chars=max_output_chars,
+        mini_glossary=mini_glossary, max_output_chars=max_output_chars, species=species,
     )
     tg_prompt = _wrap_translategemma_prompt(instruction)
     return instruction, tg_prompt
@@ -1415,9 +1439,12 @@ async def translate_text_stream_fast(
     max_output_chars: Optional[int] = None,
     execution: Optional["llm_core.ExecutionContext"] = None,
     parent=None,
+    species: Optional[str] = None,
 ):
     """Stream translated text token by token (no artificial delay) via the
     post-translation tier chain [TranslateGemma(LB), managed-LLM overflow].
+    ``species`` (camel, goat or sheep) adds :func:`species_context_rule` to the
+    instruction text; nothing else about the request changes.
 
     First-token-commit semantics: if TranslateGemma fails BEFORE the first chunk on a
     fallbackable reason, the managed-LLM overflow tier transparently serves; a failure
@@ -1442,7 +1469,7 @@ async def translate_text_stream_fast(
     _prot = _protected_output_triggers(text, target_lang)
 
     instruction, tg_prompt = _prepare_translation_inputs(
-        text, source_lang, target_lang, max_output_chars
+        text, source_lang, target_lang, max_output_chars, species=species
     )
     logger.info(f"Fast streaming translation {source_lang} -> {target_lang} via post-translation chain")
 
