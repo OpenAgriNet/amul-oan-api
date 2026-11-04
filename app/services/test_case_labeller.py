@@ -120,10 +120,11 @@ A chat that moves from one group to another goes in the group of the farmer's la
 
 answer_type: what the bot should do after the farmer's last message:
 {answer_types}
-- ask:<what it should ask for>: it asks the farmer for something first, like ask:species.
+- ask:<what it should ask for>: it asks the farmer for something first, like ask:species, or ask:clarify when it can't tell what the farmer means.
 
-The only thing the bot can book is an AI call. For that it needs the animal (cow or buffalo) and the technician: it asks for whichever the farmer hasn't given, ask:species first, then ask:technician, and books once it has both. For an AI call it never asks for a date, a time or an animal number. If the case shows booking isn't open to the farmer (the union doesn't allow it, there's no technician, or no farmer profile), it's say_unavailable.
-The bot can't book a vet or doctor visit for an animal, or a health call: a request for one is vet-health, and the answer_type is vet.
+The farmer's last message is the last one that asks or tells the bot something: a thank you or ok at the end doesn't count.
+The only thing the bot can book is an AI call. For that it needs the animal (cow or buffalo) and the technician: it asks for whichever the farmer hasn't given, ask:species first, then ask:technician, and books once it has both. In an AI booking chat, a reply like "the first one" or "the second one" picks one of the technicians the bot listed. For an AI call it never asks for a date, a time or an animal number. If the case shows booking isn't open to the farmer (the union doesn't allow it, there's no technician, or no farmer profile), it's say_unavailable.
+The bot can't book a vet or doctor visit for an animal, or a health call. A case that asks for one is vet-health with the answer_type vet, even if it asks about other things too.
 If the hints say persona: doctor, the user is a vet, not a farmer. That bot only answers from its documents: it books nothing and doesn't tell them to see a vet.
 
 Personal data in the text is masked: ******1234 is a phone or Aadhaar number, [code] is an OTP or a farmer code.

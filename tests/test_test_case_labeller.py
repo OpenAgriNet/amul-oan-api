@@ -130,6 +130,8 @@ def test_the_prompt_masks_personal_data_and_lists_the_groups_and_answer_types():
     assert "- ask:<what it should ask for>" in prompt
     assert "after the farmer's last message" in prompt and "ask:species first, then ask:technician" in prompt
     assert "If the hints say persona: doctor, the user is a vet" in prompt
+    assert "a thank you or ok at the end doesn't count" in prompt and "picks one of the technicians" in prompt
+    assert "even if it asks about other things too" in prompt and "ask:clarify" in prompt
 
 
 def test_label_case_sends_the_prompt_and_parses_the_reply():
@@ -270,7 +272,7 @@ def test_v0_becomes_cases_with_its_expected_action_kept_out_of_the_prompt(tmp_pa
     cases, actions = script.load_v0(csv_path, meta_path)
 
     assert [turn.text for turn in cases[0].turns] == ["બીજદાન કરવું છે (English: I want AI.)", "પહેલા. (English: The first one.)"]
-    assert cases[0].hints == {"category": "ai_booking", "expected_tools": "create_ai_call", "must_not_call": "create_ai_call"}
+    assert cases[0].hints == {"category": "ai_booking", "expected_tools": "create_ai_call", "must_not_call": ""}
     assert actions == {"ai-1": "ask:technician (or ask:species) | book", "adv-1": "vet"}
     assert actions["ai-1"] not in build_prompt(cases[0])
 

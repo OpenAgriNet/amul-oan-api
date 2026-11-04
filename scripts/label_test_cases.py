@@ -95,10 +95,12 @@ def load_v0(path: Path, meta_path: Path | None = None) -> tuple[list[Case], dict
     cases, actions = [], {}
     for session_id, rows in sessions.items():
         rows.sort(key=lambda row: int(row["turn"]) if row["turn"].isdigit() else 0)
+        expected = {row["expected_tools"] for row in rows} - {""}
         hints = {
             "category": ", ".join(sorted({row["category"] for row in rows} - {""})),
-            "expected_tools": ", ".join(sorted({row["expected_tools"] for row in rows} - {""})),
-            "must_not_call": ", ".join(sorted({row["must_not_call"] for row in rows} - {""})),
+            "expected_tools": ", ".join(sorted(expected)),
+            # A tool a later turn calls is not one the whole case must never call.
+            "must_not_call": ", ".join(sorted({row["must_not_call"] for row in rows} - {""} - expected)),
         }
         turns = tuple(Turn("user", _question(row["question_gujarati"], row["question_english"])) for row in rows)
         cases.append(Case("eval-set-v0", session_id, turns, hints=hints))
