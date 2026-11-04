@@ -5,7 +5,7 @@ from decimal import Decimal
 from typing import TypeVar
 
 import httpx
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from agents.tools.models.cattle_trade import (
     CattleTradeRatesModel,
@@ -21,7 +21,11 @@ ModelT = TypeVar("ModelT", bound=BaseModel)
 
 
 async def _get_provider_model(
-    token: str, endpoint: str, observation_name: str, model: type[ModelT]
+    token: str,
+    endpoint: str,
+    observation_name: str,
+    model: type[ModelT],
+    timeout: float | None = None,
 ) -> ModelT | None:
     api_url = f"{settings.amulpashudhan_base_url}/{endpoint}"
     try:
@@ -32,7 +36,7 @@ async def _get_provider_model(
         ) as observation:
             try:
                 async with httpx.AsyncClient(
-                    timeout=settings.farmer_backend_http_timeout_seconds
+                    timeout=timeout or settings.farmer_backend_http_timeout_seconds
                 ) as client:
                     response = await client.get(
                         api_url,
@@ -63,6 +67,16 @@ async def _get_provider_model(
             exc.response.status_code,
             exc_info=True,
         )
+    except ValidationError as exc:
+        # The error text echoes input values (seller names and mobiles in the
+        # listings feed), so log only where validation failed.
+        locations = sorted({".".join(str(part) for part in error["loc"]) for error in exc.errors()})
+        logger.error(
+            "%s response failed validation (%d errors at %s)",
+            observation_name,
+            exc.error_count(),
+            ", ".join(locations[:5]),
+        )
     except (json.JSONDecodeError, ValueError):
         logger.error("%s returned an invalid response", observation_name, exc_info=True)
     except Exception:
@@ -84,4 +98,5 @@ async def get_verified_animal_details_api(token: str) -> VerifiedAnimalDetailsMo
         "GetVerifiedAnimalDetails",
         "get_verified_animal_details_api",
         VerifiedAnimalDetailsModel,
+        timeout=settings.cattle_listings_fetch_timeout_seconds,
     )

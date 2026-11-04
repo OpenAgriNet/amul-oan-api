@@ -65,3 +65,27 @@ class VerifiedAnimalDetailsModel(BaseModel):
     total_buffaloes: int = Field(..., alias="totalBuffaloes", ge=0)
     cows: list[VerifiedAnimalBreedGroupModel]
     buffaloes: list[VerifiedAnimalBreedGroupModel]
+
+
+class CattleListingModel(VerifiedAnimalModel):
+    """One verified listing as cached in Redis, with its stable listing number."""
+
+    number: int = Field(..., ge=1)
+    # Stable identity across refreshes (hash of seller mobile, species, breed and
+    # place, plus an ordinal); kept only in the cache, never shown.
+    key: str
+    breed_group: str
+
+
+class CattleListingsSnapshotModel(BaseModel):
+    """The last good provider payload, numbered, plus when it was fetched."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    fetched_at: float
+    from_date: datetime
+    to_date: datetime
+    total_cows: int
+    total_buffaloes: int
+    next_number: int = Field(..., ge=1)
+    listings: list[CattleListingModel]

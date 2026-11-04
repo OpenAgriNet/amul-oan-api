@@ -181,7 +181,7 @@ When the caller asks to book artificial insemination, beech daan, beej daan, or 
 
 # Tool: `get_verified_cattle_listings`
 
-Call for current availability, animals to buy, listing details, filters or seller contact. Say the total, speak at most three numbered matches, then ask the caller to narrow the filters or select a listing number. Keep contact hidden by default. After an explicit contact request, repeat the same filters from the displayed list, call with `include_contact=True` and the selected `listing_number`, then speak the returned seller name and mobile digit by digit without assuming gender.
+Call for current availability, animals to buy, listing details, filters or seller contact. Say the count, speak at most three listings with their numbers, then offer filters from the breakdown or ask the caller to pick a number. When the caller picks one, call with only that `listing_number` and speak its details and the seller name and mobile, the mobile digit by digit, without assuming gender. Never give seller contact otherwise.
 
 # Tool: `get_union_scheme_data`
 

@@ -1,22 +1,25 @@
 """Tool for Amul Pashudhan's average cattle rates by species and breed."""
 
+import math
 import re
+from collections import Counter
+from datetime import datetime, timedelta, timezone
 from decimal import ROUND_HALF_UP, Decimal
 
 from pydantic_ai import RunContext
 from rapidfuzz import fuzz
 
 from agents.deps import FarmerContext
+from agents.tools.cattle_listings_cache import get_snapshot, snapshot_age_seconds
+from agents.tools.districts import _TOWN_ALIASES, DISTRICTS, normalize_place, resolve_place
 from agents.tools.telemetry import report_tool
-from agents.tools.cattle_trade_backend import (
-    get_cattle_trade_rates_api,
-    get_verified_animal_details_api,
-)
+from agents.tools.cattle_trade_backend import get_cattle_trade_rates_api
 from agents.tools.models.cattle_trade import (
+    CattleListingModel,
+    CattleListingsSnapshotModel,
     CattleTradeRatesModel,
-    VerifiedAnimalDetailsModel,
 )
-from app.config import get_config_value
+from app.config import get_config_value, settings
 from helpers.utils import get_logger
 
 logger = get_logger(__name__)
@@ -54,16 +57,6 @@ _SPECIES_WORDS = {
 _ANY_SPECIES_WORDS = {"cattle", "animal", "animals", "livestock", "pashu", "dhor", "all", "both"}
 # Words a breed name may carry that are not part of the breed itself.
 _NOISE_WORDS = {"breed", "jaat", "jat", "olad", "nasl", "female"}
-_DISTRICT_GROUPS = {
-    "banaskantha": {"banaskantha", "vavtharad"},
-}
-_STATUS_ALIASES = {
-    "notpregnant": "nonpregnant",
-    "notpregnancy": "nonpregnant",
-    "nonpregnant": "nonpregnant",
-    "inmilk": "milking",
-    "notmilking": "dry",
-}
 
 
 def _words(value: str) -> list[str]:
@@ -240,49 +233,165 @@ async def get_cattle_trade_prices(
     return "\n".join([*_full_listing(rates, breeds), _CAVEAT])
 
 
-def _text_key(value: str | None) -> str:
-    return "".join(char for char in (value or "").casefold() if char.isalnum())
+# ── Verified cattle listings ─────────────────────────────────────────────────
+# Listings come from the Redis snapshot (agents/tools/cattle_listings_cache.py).
+# Every listing carries a stable number: it keeps pointing at the same animal
+# across refreshes and filters, so "number 12" on the next turn is the same animal.
+
+_LIST_CAP = 10
+_IST = timezone(timedelta(hours=5, minutes=30))
+_UNAVAILABLE = (
+    "Current verified-animal listings are unavailable right now. Say so and ask the "
+    "farmer to try again later. Do not invent listings."
+)
+# Vav-Tharad was carved out of Banaskantha; farmer records and farmers still say
+# Banaskantha for it, so a Banaskantha search covers both.
+_DISTRICT_GROUPS = {"banaskantha": {"banaskantha", "vavtharad"}}
+# Coordinates for districts the static table does not have (Tharad town).
+_EXTRA_COORDS = {"vavtharad": (24.387, 71.625)}
+_DISTRICT_DISPLAY = {"vavtharad": "Vav-Tharad"}
+_PLACE_SUFFIXES = ("village", "gaam", "gam", "city", "town")
+_MILKING = {
+    "milking": "milking", "inmilk": "milking", "lactating": "milking", "yes": "milking",
+    "dry": "dry", "notmilking": "dry", "nonmilking": "dry", "no": "dry",
+}
+_PREGNANCY = {
+    "pregnant": "pregnant", "yes": "pregnant", "ingestation": "pregnant",
+    "nonpregnant": "nonpregnant", "notpregnant": "nonpregnant", "notpregnancy": "nonpregnant",
+    "open": "nonpregnant", "empty": "nonpregnant", "no": "nonpregnant",
+}
 
 
-def _status_key(value: str | None) -> str:
-    key = _text_key(value)
-    return _STATUS_ALIASES.get(key, key)
+def _status(value: str | None, aliases: dict[str, str]) -> str | None:
+    key = _match_key(value or "")
+    return aliases.get(key) if key else None
 
 
-def _matching_location_keys(
-    requested: str, actual_values: list[str | None], *, district: bool = False
-) -> set[str]:
-    requested_key = _text_key(requested)
-    actual_keys = {_text_key(value) for value in actual_values if _text_key(value)}
-    if not requested_key:
-        return actual_keys
+def _place_key(value: str | None) -> str:
+    key = normalize_place(value)
+    for suffix in _PLACE_SUFFIXES:
+        if key.endswith(suffix) and len(key) > len(suffix):
+            key = key[: -len(suffix)]
+    return key
 
-    if district and requested_key in _DISTRICT_GROUPS:
-        return actual_keys & _DISTRICT_GROUPS[requested_key]
-    if requested_key in actual_keys:
-        return {requested_key}
 
-    contained = {
-        key for key in actual_keys if requested_key in key or key in requested_key
-    }
-    if len(contained) == 1:
-        return contained
+def _district_key(value: str | None) -> str:
+    """A district name as one key: "KHEDA"/"Kheda" agree, aliases and towns resolve."""
+    key = _place_key(value)
+    location = resolve_place(key)
+    return location.key if location else key
 
-    ranked = sorted(
-        ((fuzz.WRatio(requested_key, key), key) for key in actual_keys),
-        reverse=True,
-    )
+
+def _district_name(listing: CattleListingModel) -> str:
+    key = _district_key(listing.district_name)
+    if key in _DISTRICT_DISPLAY:
+        return _DISTRICT_DISPLAY[key]
+    return DISTRICTS[key].display if key in DISTRICTS else (listing.district_name or "district not given")
+
+
+def _coords(district_key: str) -> tuple[float, float] | None:
+    if district_key in DISTRICTS:
+        primary = DISTRICTS[district_key].primary
+        return primary.lat, primary.lon
+    return _EXTRA_COORDS.get(district_key)
+
+
+def _km(a: tuple[float, float], b: tuple[float, float]) -> float:
+    lat1, lon1, lat2, lon2 = map(math.radians, (*a, *b))
+    h = math.sin((lat2 - lat1) / 2) ** 2 + math.cos(lat1) * math.cos(lat2) * math.sin((lon2 - lon1) / 2) ** 2
+    return 6371 * 2 * math.asin(math.sqrt(h))
+
+
+def _fuzzy(requested: str, keys: set[str]) -> set[str]:
+    """Contained or near-identical spellings ("Banaskanta", "Mota Mesara" for "Mesara")."""
+    if requested in keys:
+        return {requested}
+    if len(requested) >= 3:
+        contained = {key for key in keys if requested in key or (len(key) >= 3 and key in requested)}
+        if contained:
+            return contained
+    ranked = sorted(((fuzz.WRatio(requested, key), key) for key in keys), reverse=True)
     if not ranked or ranked[0][0] < 85:
         return set()
-    if len(ranked) > 1 and ranked[0][0] - ranked[1][0] < 10:
+    if len(ranked) > 1 and ranked[0][0] - ranked[1][0] < 5:
         return set()
     return {ranked[0][1]}
 
 
-def _breed_matches(actual: str, requested: str) -> bool:
-    actual_breed = _Breed(actual, Decimal(0))
+def _expand(district_keys: set[str]) -> set[str]:
+    expanded = set(district_keys)
+    for key in district_keys:
+        expanded |= _DISTRICT_GROUPS.get(key, set())
+    return expanded
+
+
+def _place_filter(requested: str, listings: list[CattleListingModel], *, village_first: bool):
+    """(listings, label) at a district or village, matched leniently; None when the place is unknown.
+
+    An exact district comes first for a district request and a village first for a
+    village request; then a near spelling of a district ("Vav" is Vav-Tharad), then
+    a town that belongs to a district (Palanpur is Banaskantha).
+    """
+    key = _place_key(requested)
+    if not key:
+        return None
+    district_keys = {_district_key(listing.district_name) for listing in listings} - {""}
+    village_keys = {_place_key(listing.village_name) for listing in listings} - {""}
+    resolved = resolve_place(key)
+
+    def by_district(keys: set[str]):
+        keys = _expand(keys)
+        found = [listing for listing in listings if _district_key(listing.district_name) in keys]
+        names = sorted(
+            {_DISTRICT_DISPLAY.get(key) or (DISTRICTS[key].display if key in DISTRICTS else key) for key in keys}
+        )
+        if not found:
+            names = [requested.strip()]
+        return found, " and ".join(names) + (" districts" if len(names) > 1 else " district")
+
+    def by_village(keys: set[str]):
+        found = [listing for listing in listings if _place_key(listing.village_name) in keys]
+        return found, " and ".join(sorted({listing.village_name for listing in found})) + " village"
+
+    exact_district = None
+    if key not in _TOWN_ALIASES:
+        if resolved is not None:
+            exact_district = {resolved.key}
+        elif key in district_keys:
+            exact_district = {key}
+    village = _fuzzy(key, village_keys)
+    steps = [
+        ("district", exact_district),
+        ("village", village or None),
+    ]
+    if village_first:
+        steps.reverse()
+    steps += [
+        ("district", _fuzzy(key, district_keys) or None),
+        ("district", {resolved.key} if resolved is not None else None),
+    ]
+    for kind, keys in steps:
+        if keys:
+            return by_district(keys) if kind == "district" else by_village(keys)
+    return None
+
+
+def _breed_name(listing: CattleListingModel) -> str:
+    breed = listing.breed or listing.breed_group
+    if _match_key(breed) in _PLACEHOLDER_BREED_KEYS:
+        return "breed not given"
+    known = _KNOWN_BREEDS.get(_match_key(breed))
+    return known[0] if known else breed
+
+
+def _species(listing: CattleListingModel) -> str:
+    return _species_of(listing.cattle_type) or listing.cattle_type.casefold()
+
+
+def _breed_matches(listing: CattleListingModel, requested: str) -> bool:
+    breed = _Breed(listing.breed or listing.breed_group, Decimal(0))
     key = _breed_key(requested) or _match_key(requested)
-    return key in actual_breed.keys
+    return bool(key) and key in breed.keys
 
 
 def _number(value: Decimal) -> str:
@@ -291,123 +400,124 @@ def _number(value: Decimal) -> str:
     return format(value, "f").rstrip("0").rstrip(".")
 
 
-def _listed_price(value: Decimal) -> str:
-    if value == value.to_integral_value():
-        return f"₹{int(value)}"
-    return f"₹{value:.2f}".rstrip("0").rstrip(".")
-
-
 def _age(value: str | None) -> str:
-    if not value:
-        return "age not provided"
-    match = re.fullmatch(r"(\d+)\.(\d+)", value.strip())
+    """Provider ages are "years.months": "1.3" is 1 year 3 months, not 1.3 years."""
+    match = re.fullmatch(r"(\d+)\.(\d+)", (value or "").strip())
     if not match:
-        return f"age {value}"
+        return f"age {value}" if value else "age not given"
     years, months = (int(part) for part in match.groups())
     parts = []
     if years:
         parts.append(f"{years} {'year' if years == 1 else 'years'}")
     if months:
         parts.append(f"{months} {'month' if months == 1 else 'months'}")
-    return "age " + (" ".join(parts) or "0 months")
+    return (" ".join(parts) or "under 1 month") + " old"
 
 
-def _date(value) -> str:
+def _date(value: datetime) -> str:
     return f"{value.day} {value.strftime('%B %Y')}"
 
 
-def _verified_animals(details: VerifiedAnimalDetailsModel):
-    for groups in (details.cows, details.buffaloes):
-        for group in groups:
-            for animal in group.animals:
-                breed = animal.breed or group.breed_name
-                yield animal, breed
-
-
-def _filter_animals(
-    details: VerifiedAnimalDetailsModel,
-    species: str | None,
-    breed: str | None,
-    district: str | None,
-    village: str | None,
-    max_price: float | None,
-    min_milk_per_day: float | None,
-    milking_status: str | None,
-    pregnancy_status: str | None,
-):
-    requested_species = _species_of(species or "")
-    if species and not requested_species and _match_key(species) not in _ANY_SPECIES_WORDS:
-        return []
-    maximum = Decimal(str(max_price)) if max_price is not None else None
-    minimum_milk = Decimal(str(min_milk_per_day)) if min_milk_per_day is not None else None
-    animals = list(_verified_animals(details))
-    district_keys = (
-        _matching_location_keys(
-            district,
-            [animal.district_name for animal, _ in animals],
-            district=True,
-        )
-        if district
-        else None
-    )
-    village_keys = (
-        _matching_location_keys(
-            village,
-            [animal.village_name for animal, _ in animals],
-        )
-        if village
-        else None
-    )
-    matches = []
-    for animal, animal_breed in animals:
-        if requested_species and _species_of(animal.cattle_type) != requested_species:
-            continue
-        if breed and not _breed_matches(animal_breed, breed):
-            continue
-        if district_keys is not None and _text_key(animal.district_name) not in district_keys:
-            continue
-        if village_keys is not None and _text_key(animal.village_name) not in village_keys:
-            continue
-        if maximum is not None and animal.cattle_price > maximum:
-            continue
-        if minimum_milk is not None and animal.milk_per_day < minimum_milk:
-            continue
-        if milking_status and _status_key(animal.milking_status) != _status_key(milking_status):
-            continue
-        if pregnancy_status and _status_key(animal.pregnancy_status) != _status_key(
-            pregnancy_status
-        ):
-            continue
-        matches.append((animal, animal_breed))
-    return matches
-
-
-def _animal_line(index, animal, breed: str, include_contact: bool) -> str:
-    species = _species_of(animal.cattle_type) or animal.cattle_type.casefold()
-    breed_label = (
-        "breed not provided" if _match_key(breed) in _PLACEHOLDER_BREED_KEYS else breed
-    )
-    location = ", ".join(
-        value for value in (animal.village_name, animal.district_name) if value
-    ) or "location not provided"
+def _listing_line(listing: CattleListingModel) -> str:
+    place = ", ".join(value for value in (listing.village_name, _district_name(listing)) if value)
+    milking = _status(listing.milking_status, _MILKING)
+    pregnancy = _status(listing.pregnancy_status, _PREGNANCY)
+    breed = _breed_name(listing)
     parts = [
-        f"{breed_label} {species}",
-        location,
-        _listed_price(animal.cattle_price),
-        _age(animal.age),
-        f"lactation {animal.lactation or 'not applicable'}",
-        animal.milking_status or "milking status not provided",
-        animal.pregnancy_status or "pregnancy status not provided",
-        (
-            f"milk per day {_number(animal.milk_per_day)}"
-            if animal.milk_per_day
-            else "milk per day not applicable"
-        ),
+        f"{_species(listing)}, breed not given" if breed == "breed not given" else f"{breed} {_species(listing)}",
+        place,
+        f"₹{_number(listing.cattle_price)}",
+        _age(listing.age),
+        f"lactation {listing.lactation}" if listing.lactation else "lactation not given",
+        {"milking": "milking", "dry": "dry"}.get(milking or "", "milking status not given"),
+        {"pregnant": "pregnant", "nonpregnant": "not pregnant"}.get(pregnancy or "", "pregnancy not given"),
     ]
-    if include_contact:
-        parts.append(f"seller {animal.farmer_name or 'name not provided'}")
-        parts.append(f"mobile {animal.farmer_mobile_number or 'not provided'}")
-    return f"{index}. " + " — ".join(parts) + "."
+    if listing.milk_per_day:
+        parts.append(f"{_number(listing.milk_per_day)} litres milk a day")
+    return f"No. {listing.number}: " + ", ".join(parts) + "."
+
+
+def _counts(values) -> str:
+    return ", ".join(f"{name} {count}" for name, count in Counter(values).most_common())
+
+
+def _breakdown(listings: list[CattleListingModel]) -> list[str]:
+    """What the matches look like, per filter the farmer could narrow by."""
+    lines = []
+    species = Counter(_species(listing) for listing in listings)
+    if len(species) > 1:
+        lines.append(f"- species: {_counts(_species(listing) for listing in listings)}")
+    breeds = [_breed_name(listing) for listing in listings]
+    if len(set(breeds)) > 1:
+        lines.append(f"- breed: {_counts(breeds)}")
+    districts = [_district_name(listing) for listing in listings]
+    if len(set(districts)) > 1:
+        lines.append(f"- district: {_counts(districts)}")
+    villages = [listing.village_name for listing in listings if listing.village_name]
+    if 1 < len(set(villages)) <= 12:
+        lines.append(f"- village: {_counts(villages)}")
+    prices = [listing.cattle_price for listing in listings]
+    if min(prices) != max(prices):
+        lines.append(f"- price: ₹{_number(min(prices))} to ₹{_number(max(prices))}")
+    milk = [listing.milk_per_day for listing in listings if listing.milk_per_day]
+    if milk:
+        lines.append(f"- milk a day: up to {_number(max(milk))} litres ({len(milk)} give milk now)")
+    for label, field, aliases, names in (
+        ("milking", "milking_status", _MILKING, {"milking": "milking", "dry": "dry"}),
+        ("pregnancy", "pregnancy_status", _PREGNANCY, {"pregnant": "pregnant", "nonpregnant": "not pregnant"}),
+    ):
+        values = [names.get(_status(getattr(listing, field), aliases) or "", "not given") for listing in listings]
+        if len(set(values)) > 1:
+            lines.append(f"- {label}: {_counts(values)}")
+    return lines
+
+
+def _nearest(place_key: str, listings: list[CattleListingModel], exclude: set[str]) -> str:
+    """Districts that do have matching animals, nearest first when the place has coordinates."""
+    by_district = Counter(
+        _district_key(listing.district_name)
+        for listing in listings
+        if _district_key(listing.district_name) not in exclude
+    )
+    if not by_district:
+        return ""
+    names = {_district_key(listing.district_name): _district_name(listing) for listing in listings}
+    origin = _coords(place_key)
+    if origin:
+        ranked = sorted(
+            by_district,
+            key=lambda key: _km(origin, _coords(key)) if _coords(key) else float("inf"),
+        )
+        parts = [
+            f"{names[key]} {by_district[key]}"
+            + (f" (about {round(_km(origin, _coords(key)) / 10) * 10} km)" if _coords(key) else "")
+            for key in ranked[:4]
+        ]
+        return "Nearest districts with matching animals: " + ", ".join(parts) + "."
+    parts = [f"{names[key]} {count}" for key, count in by_district.most_common(5)]
+    return "Districts with matching animals: " + ", ".join(parts) + "."
+
+
+def _picked(snapshot: CattleListingsSnapshotModel, number: int, as_of: str) -> str:
+    listing = next((item for item in snapshot.listings if item.number == number), None)
+    if listing is None:
+        report_tool("no_result", "listing number not in the current listings")
+        return (
+            f"Listing No. {number} is not among the current verified listings (it may have been "
+            "sold or removed, or the number is wrong). Tell the farmer and offer to search again. "
+            "Never give another listing's seller instead."
+        )
+    # Seller name and mobile leave the tool only here, for a listing the farmer picked.
+    return "\n".join(
+        [
+            f"Verified listing picked by the farmer ({as_of}):",
+            _listing_line(listing),
+            f"Seller: {listing.farmer_name or 'name not given'}, mobile "
+            f"{listing.farmer_mobile_number or 'not given'}.",
+            "Give the farmer these details and the seller's name and mobile exactly as shown, "
+            "without assuming the seller's gender, and suggest seeing the animal before paying.",
+        ]
+    )
 
 
 async def get_verified_cattle_listings(
@@ -420,167 +530,196 @@ async def get_verified_cattle_listings(
     min_milk_per_day: float | None = None,
     milking_status: str | None = None,
     pregnancy_status: str | None = None,
-    include_contact: bool = False,
     listing_number: int | None = None,
 ) -> str:
     """
-    Get every verified cow or buffalo currently listed for sale by Amul Pashudhan.
+    Find verified cows and buffaloes for sale on Amul Pashudhan, or open one listing with its seller contact.
 
-    Use this tool when a farmer asks which animals are available, listed or for sale,
-    asks for individual animal details, or explicitly asks for a listed animal's seller
-    contact. Use the cattle-price tool instead for average price questions. Return every
-    matching listing; do not rank or truncate the provider results. Set include_contact
-    only after the farmer explicitly asks for seller contact. Repeat the same filters from
-    the most recently shown list and pass the listing number the farmer selected from it.
+    Use it when the farmer wants to buy an animal or asks which animals are available or for
+    sale. Use get_cattle_trade_prices for average price questions. With no place, the search
+    covers the signed-in farmer's district and counts the matches elsewhere. Every listing
+    has a fixed number; when the farmer picks one, call with only listing_number to get its
+    details and the seller's name and mobile.
 
     Args:
-        species: Optional "cow" or "buffalo" filter.
-        breed: Optional breed filter, including common spellings such as Gir or Mehsani.
-        district: Optional district-name filter; common spelling variants are matched.
-        village: Optional village-name filter; common spelling variants are matched.
-        max_price: Optional maximum listed price in rupees.
-        min_milk_per_day: Optional minimum provider-reported milk-per-day value.
-        milking_status: Optional exact status such as "Milking" or "Dry".
-        pregnancy_status: Optional exact status such as "Pregnant" or "Non Pregnant".
-        include_contact: Whether to include seller name and mobile after an explicit request.
-        listing_number: Number from the most recently shown list using the same filters; required for contact.
+        species: "cow" or "buffalo"; leave empty (or "cattle"/"animal") for both.
+        breed: Breed in English as the farmer said it, e.g. "Gir", "Mehsani", "Jersey cross".
+        district: District, or a town the farmer names (spelling variants are matched; Banaskantha includes Vav-Tharad).
+        village: Village name; spelling variants are matched.
+        max_price: Highest listed price in rupees the farmer will pay.
+        min_milk_per_day: Lowest milk per day in litres.
+        milking_status: "milking" or "dry".
+        pregnancy_status: "pregnant" or "not pregnant".
+        listing_number: The listing number the farmer picked; returns that listing with seller contact (other filters are ignored).
 
     Returns:
-        Every matching verified listing, a no-result message, or an unavailable message.
+        A count and summary of the matches with numbered listings, one picked listing with seller contact, or a reason nothing matched.
     """
-    token = get_config_value("PASHUGPT_TOKEN")
-    if not token:
-        report_tool("unavailable", "PASHUGPT_TOKEN is not set")
-        return "Current verified-animal listings are unavailable right now. Please try again later."
-
-    details = await get_verified_animal_details_api(token)
-    if details is None or details.from_date.year == 1 or details.to_date.year == 1:
-        report_tool("unavailable", "Amul Pashudhan verified-animal request failed")
-        return "Current verified-animal listings are unavailable right now. Please try again later."
-
-    requested_district = (district or "").strip()
-    requested_village = (village or "").strip()
-    default_district = None
-    if not requested_district and not requested_village:
-        default_district = ctx.deps.get_farmer_district()
-    effective_district = requested_district or default_district
-
-    has_filters = any(
-        value is not None and value != ""
-        for value in (
-            species,
-            breed,
-            requested_district,
-            requested_village,
-            max_price,
-            min_milk_per_day,
-            milking_status,
-            pregnancy_status,
+    snapshot = await get_snapshot()
+    if snapshot is None:
+        report_tool("unavailable", "verified cattle listings unavailable")
+        return _UNAVAILABLE
+    fetched = datetime.fromtimestamp(snapshot.fetched_at, _IST)
+    as_of = f"Amul Pashudhan data as of {fetched.strftime('%d %B %H:%M')} IST"
+    age_hours = snapshot_age_seconds(snapshot) / 3600
+    stale = ""
+    if age_hours > 2 * settings.cattle_listings_refresh_seconds / 3600:
+        stale = (
+            f" Amul Pashudhan could not be reached for an update: these listings are about "
+            f"{round(age_hours)} hours old, so tell the farmer some may have been sold."
         )
+    if listing_number is not None:
+        return _picked(snapshot, listing_number, as_of) + stale
+
+    listings = snapshot.listings
+    window = (
+        f"verified listings from {_date(snapshot.from_date)} to {_date(snapshot.to_date)}, {as_of}"
     )
-    all_location_matches = _filter_animals(
-        details,
-        species,
-        breed,
-        None,
-        None,
-        max_price,
-        min_milk_per_day,
-        milking_status,
-        pregnancy_status,
+    if not listings:
+        report_tool("no_result", "no verified cattle listed")
+        return f"No cows or buffaloes are listed for sale on Amul Pashudhan right now ({window})." + stale
+
+    asked: list[str] = []
+    checks = []
+    requested_species = _species_of(species or "") or _species_of(breed or "")
+    if (species or "").strip() and not requested_species and _match_key(species) not in _ANY_SPECIES_WORDS:
+        report_tool("no_result", "only cows and buffaloes are listed")
+        return (
+            "Amul Pashudhan lists only cows and buffaloes for sale. Say only that, without "
+            "naming other animals."
+        )
+    if requested_species:
+        asked.append(requested_species)
+        checks.append(("species", lambda item: _species(item) == requested_species))
+    if (breed or "").strip() and not _species_of(breed):
+        if not any(_breed_matches(item, breed) for item in listings):
+            report_tool("no_result", "breed not listed")
+            names = _counts(_breed_name(item) for item in listings)
+            return (
+                f'No "{breed}" animals are listed right now ({window}). Breeds listed now: {names}. '
+                "Tell the farmer and offer these instead; do not present another breed as this one."
+                + stale
+            )
+        asked.append(f"breed {breed}")
+        checks.append(("breed", lambda item: _breed_matches(item, breed)))
+    if max_price is not None:
+        maximum = Decimal(str(max_price))
+        asked.append(f"up to ₹{_number(maximum)}")
+        checks.append(("max price", lambda item: item.cattle_price <= maximum))
+    if min_milk_per_day is not None:
+        minimum = Decimal(str(min_milk_per_day))
+        asked.append(f"at least {_number(minimum)} litres a day")
+        checks.append(("milk per day", lambda item: item.milk_per_day >= minimum))
+    milking = _status(milking_status, _MILKING)
+    if milking:
+        asked.append(milking)
+        checks.append(("milking status", lambda item: _status(item.milking_status, _MILKING) == milking))
+    pregnancy = _status(pregnancy_status, _PREGNANCY)
+    if pregnancy:
+        asked.append("pregnant" if pregnancy == "pregnant" else "not pregnant")
+        checks.append(("pregnancy", lambda item: _status(item.pregnancy_status, _PREGNANCY) == pregnancy))
+
+    def passing(items, skip=None):
+        return [item for item in items if all(check(item) for name, check in checks if name != skip)]
+
+    pool = passing(listings)
+
+    place_text = (district or "").strip() or (village or "").strip()
+    default_place = None if place_text else ctx.deps.get_farmer_district()
+    place_key = _district_key(place_text or default_place)
+    lines = []
+    if place_text:
+        at_place = _place_filter(place_text, listings, village_first=not (district or "").strip())
+        if at_place is None:
+            report_tool("no_result", "place has no verified listings")
+            nearest = _nearest(place_key, pool, set())
+            return (
+                f'No verified animals are listed in "{place_text}" ({window}). {nearest} '
+                "Tell the farmer honestly and offer these places."
+                + stale
+            ).replace("  ", " ")
+        at_place, place_label = at_place
+        asked.append(f"in {place_label}")
+        place_ids = {item.number for item in at_place}
+        matches = [item for item in pool if item.number in place_ids]
+        elsewhere = len(pool) - len(matches)
+    elif default_place:
+        at_place = (_place_filter(default_place, listings, village_first=False) or ([], ""))[0]
+        place_ids = {item.number for item in at_place}
+        local = [item for item in pool if item.number in place_ids]
+        elsewhere = len(pool) - len(local)
+        district_label = default_place.title() + (
+            " (includes Vav-Tharad)" if place_key == "banaskantha" else ""
+        )
+        if local:
+            matches = local
+            lines.append(f"Searched the farmer's district, {district_label}.")
+        else:
+            matches = sorted(
+                pool,
+                key=lambda item: _km(_coords(place_key), _coords(_district_key(item.district_name)))
+                if _coords(place_key) and _coords(_district_key(item.district_name))
+                else float("inf"),
+            )
+            lines.append(
+                f"No matching animals in the farmer's district, {district_label}; these are "
+                "from other districts, nearest first."
+            )
+            elsewhere = 0
+    else:
+        matches = pool
+        elsewhere = 0
+
+    description = ", ".join(asked) if asked else "any cow or buffalo"
+    header = (
+        f"Verified animals for sale on Amul Pashudhan ({window}). In all: {len(listings)} "
+        f"({_counts(_species(item) for item in listings)})."
     )
-    matches = _filter_animals(
-        details,
-        species,
-        breed,
-        effective_district,
-        requested_village,
-        max_price,
-        min_milk_per_day,
-        milking_status,
-        pregnancy_status,
-    )
-    elsewhere_count = (
-        len(all_location_matches) - len(matches) if default_district else 0
-    )
-    window = f"{_date(details.from_date)} to {_date(details.to_date)}"
     if not matches:
         report_tool("no_result", "no verified cattle listings matched")
-        if default_district and elsewhere_count:
-            return (
-                f"No verified animals match in the farmer's district, {default_district}, "
-                f"for {window}. {elsewhere_count} matching "
-                f"{'animal is' if elsewhere_count == 1 else 'animals are'} available elsewhere. "
-                "Ask for another district or village to see them."
+        relaxed = []
+        for name, _ in checks:
+            count = len(
+                [
+                    item for item in passing(listings, skip=name)
+                    if not place_text or item.number in place_ids
+                ]
             )
-        if not has_filters:
-            return (
-                f"No verified cows or buffaloes are currently listed for the provider's "
-                f"{window} window."
-            )
-        return (
-            f"No verified animals match the request for the provider's {window} window. "
-            "Try another breed, location or filter."
-        )
+            if count:
+                relaxed.append(f"without the {name} filter: {count}")
+        lines = [header, f"No verified animals match ({description})."]
+        if relaxed:
+            lines.append("Matches if one filter is dropped: " + "; ".join(relaxed) + ".")
+        if place_text:
+            nearest = _nearest(place_key, pool, {_district_key(item.district_name) for item in at_place})
+            if nearest:
+                lines.append(nearest)
+        lines.append("Tell the farmer honestly and offer these options. Do not invent listings.")
+        return "\n".join(lines) + stale
 
-    if listing_number is not None and not 1 <= listing_number <= len(matches):
-        report_tool("no_result", "invalid verified cattle listing number")
-        return (
-            f"Listing number {listing_number} is not in the current filtered list. "
-            f"Ask the farmer to choose a number from 1 to {len(matches)}."
-        )
-
-    if include_contact and listing_number is None:
-        contact_instruction = (
-            "Seller contact requires a listing number. Ask the farmer to choose one "
-            "of the numbered listings."
-        )
-    else:
-        contact_instruction = None
-
-    if listing_number is not None:
-        animal, animal_breed = matches[listing_number - 1]
-        # Product decision: seller PII is intentionally returned to chat and voice.
-        # Tool/turn telemetry redaction is a separate, explicitly deferred follow-up.
-        return "\n".join(
-            [
-                f"Selected verified listing {listing_number} for {window}.",
-                _animal_line(
-                    listing_number,
-                    animal,
-                    animal_breed,
-                    include_contact,
-                ),
-            ]
-        )
-
-    if default_district:
-        noun = "animal" if len(matches) == 1 else "animals"
-        header = (
-            f"Found {len(matches)} verified {noun} in the farmer's district, "
-            f"{default_district}, for {window}."
-        )
-        if elsewhere_count:
-            header += (
-                f" {elsewhere_count} matching "
-                f"{'animal is' if elsewhere_count == 1 else 'animals are'} available elsewhere."
-            )
-    elif not has_filters:
-        header = (
-            f"Found {len(matches)} verified animals for the provider window {window}: "
-            f"{details.total_cows} cows and {details.total_buffaloes} buffaloes."
-        )
-    else:
-        noun = "animal" if len(matches) == 1 else "animals"
-        header = f"Found {len(matches)} verified {noun} matching the request for {window}."
-
-    lines = [header]
-    lines.extend(
-        _animal_line(index, animal, animal_breed, False)
-        for index, (animal, animal_breed) in enumerate(matches, 1)
+    lines = [header, *lines, f"Matches ({description}): {len(matches)}."]
+    if elsewhere:
+        lines.append(f"{elsewhere} more match elsewhere.")
+    if len(matches) > 3:
+        lines.append("Breakdown of the matches (use it to offer filters):")
+        lines.extend(_breakdown(matches))
+    shown = matches[:_LIST_CAP]
+    lines.append(
+        f"Listings{' (first ' + str(len(shown)) + ')' if len(shown) < len(matches) else ''}:"
     )
-    if contact_instruction:
-        lines.append(contact_instruction)
-    else:
-        lines.append("Seller contact is available on request for a specific animal.")
-    return "\n".join(lines)
+    lines.extend(_listing_line(item) for item in shown)
+    if len(shown) < len(matches):
+        lines.append(f"{len(matches) - len(shown)} more not shown; narrowing the filters shows them.")
+    if not asked:
+        lines.append(
+            "The farmer has not narrowed the search yet: lead with the count and where the "
+            "animals are, offer two or three filters from the breakdown, and show at most three "
+            "listings."
+        )
+    lines.append(
+        "Answer with the count and these numbered listings, keeping each listing's No. as shown. "
+        "If there are many, offer two or three filters from the breakdown. Tell the farmer to "
+        "pick a listing number for its details and the seller's contact. Seller contact is "
+        "given only for a picked listing."
+    )
+    return "\n".join(lines) + stale
