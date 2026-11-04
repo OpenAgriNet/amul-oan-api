@@ -11,6 +11,7 @@ from agents.tools.beckn.operations import (
     OperationState,
     validate_beckn_startup_configuration,
 )
+from app.config import settings
 
 
 class MemoryRedis:
@@ -112,6 +113,20 @@ async def test_callback_before_ack_remains_terminal_and_duplicates_are_idempoten
     assert operation is not None
     assert operation.state is OperationState.SUCCEEDED
     assert operation.callback["message"]["order"]["id"] == "T-1"
+
+
+@pytest.mark.asyncio
+async def test_a_callback_that_reaches_dev_reaches_a_preview_with_its_own_prefix(monkeypatch):
+    redis = MemoryRedis()
+    dev = BecknOperationStore(redis, ttl_seconds=3600)
+    monkeypatch.setattr(settings, "beckn_redis_key_prefix", settings.redis_key_prefix)
+    monkeypatch.setattr(settings, "redis_key_prefix", "preview-pr-1-")
+    preview = BecknOperationStore(redis, ttl_seconds=3600)
+    created = await _create(preview)
+
+    assert (await dev.record_callback(_callback())).accepted
+    operation = await preview.get(created.operation.transaction_id, created.operation.message_id)
+    assert operation is not None and operation.callback["message"]["order"]["id"] == "T-1"
 
 
 @pytest.mark.asyncio

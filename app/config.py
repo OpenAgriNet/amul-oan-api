@@ -273,6 +273,8 @@ class Settings(BaseSettings):
     redis_db: int = 0
     redis_password: Optional[str] = None
     redis_key_prefix: str = "sva-cache-"
+    # A preview backend sets dev's REDIS_KEY_PREFIX here, so the Beckn callbacks dev receives reach it.
+    beckn_redis_key_prefix: str = ""
     redis_socket_connect_timeout: int = 10
     redis_socket_timeout: int = 10
     redis_max_connections: int = 100

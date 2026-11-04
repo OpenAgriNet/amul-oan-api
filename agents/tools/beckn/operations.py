@@ -118,7 +118,7 @@ class BecknOperationStore:
     def __init__(self, redis: Any = redis_client, *, ttl_seconds: Optional[int] = None):
         self._redis = redis
         self._ttl = ttl_seconds or settings.beckn_operation_ttl_seconds
-        self._prefix = f"{settings.redis_key_prefix}beckn-op"
+        self._prefix = f"{settings.beckn_redis_key_prefix or settings.redis_key_prefix}beckn-op"
 
     def _key(self, transaction_id: str, message_id: str) -> str:
         return f"{self._prefix}:{transaction_id}:{message_id}"
