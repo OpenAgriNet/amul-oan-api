@@ -39,6 +39,18 @@ _WRONG_INTENT_HINTS = [
     "tracking numbers",
     "track number",
 ]
+# "desi cow" is a breed, so "desi" only counts next to a remedy word.
+_HOME_REMEDY_RE = re.compile(
+    r"\b(?:home|homemade|household|traditional|herbal|desi|gharelu)\s+(?:remed|treatment|medicine|cure)",
+    re.IGNORECASE,
+)
+
+
+def _expand_home_remedy_query(query: str) -> str:
+    """Home-remedy wording also searches "ethnoveterinary", the term the glossary pins ઘરેલુ ઉપચાર to."""
+    if "ethnoveterinary" in query.lower() or not _HOME_REMEDY_RE.search(query):
+        return query
+    return f"{query} ethnoveterinary"
 
 
 def _validate_search_query(query: str) -> str:
@@ -331,7 +343,7 @@ async def search_documents(
     """
     try:
         del ctx
-        query = _validate_search_query(query)
+        query = _expand_home_remedy_query(_validate_search_query(query))
         backend = os.getenv("VET_SEARCH_BACKEND", "marqo").strip().lower()
         if backend == "beckn":
             # The provider owns backend selection, ranking and chunk diversity.

@@ -24,6 +24,11 @@ _REFUSAL_OR_META_PATTERNS = (
     "based on the provided documents",
 )
 _WRONG_INTENT_HINTS = ("hf receipts", "tracking numbers", "track number")
+# "desi cow" is a breed, so "desi" only counts next to a remedy word.
+_HOME_REMEDY_RE = re.compile(
+    r"\b(?:home|homemade|household|traditional|herbal|desi|gharelu)\s+(?:remed|treatment|medicine|cure)",
+    re.IGNORECASE,
+)
 
 
 def _validate_search_query(query: str) -> str:
@@ -80,6 +85,9 @@ def _expand_veterinary_synonyms(query: str) -> str:
                 for term in ("oral rehydration", "electrolytes", "dehydration")
                 if term not in lowered
             )
+    # The glossary pins ઘરેલુ ઉપચાર (home remedy) to "ethnoveterinary".
+    if "ethnoveterinary" not in lowered and _HOME_REMEDY_RE.search(normalized):
+        additions.append("ethnoveterinary")
     return " ".join([normalized, *additions]).strip()
 
 
