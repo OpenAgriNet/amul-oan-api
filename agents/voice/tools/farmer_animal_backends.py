@@ -20,8 +20,6 @@ from helpers.utils import get_logger
 
 _logger = get_logger(__name__)
 
-BASE_AMULPASHUDHAN = "https://api.amulpashudhan.com/configman/v1/PashuGPT"
-
 
 def _safe_response_summary(body: str) -> dict:
     """PII-safe shape of a response: record count + which keys are present/null,
@@ -122,7 +120,7 @@ async def get_farmer_bonus_amount_api(
     unsupported-union / HTTP/parse/validation failure so callers can fan out
     across accounts.
     """
-    api_url = f"{BASE_AMULPASHUDHAN}/GetFarmerBonusAmount"
+    api_url = f"{settings.amulpashudhan_base_url}/GetFarmerBonusAmount"
 
     try:
         with start_observation(
