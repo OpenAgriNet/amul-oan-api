@@ -272,6 +272,7 @@ def _apply_exact_glossary_transliteration_replacements(source_text: str, transla
 # ગેસ is a real veterinary term (bloat), so the species corruption table below
 # is the one thing that stays conditional — applied on a turn that did not ask
 # the species, it would turn "my cow has gas" into "cow".
+_BOOKING_QUESTION_RE = re.compile(r"insemination|confirm", re.IGNORECASE)
 _SPECIES_QUESTION_RE = re.compile(r"cow\s+or\s+(a\s+)?buffalo|buffalo\s+or\s+(a\s+)?cow", re.IGNORECASE)
 
 
@@ -339,11 +340,36 @@ def _conversation_context(conversation: Optional[Sequence[tuple[str, str]]]) -> 
     return block
 
 
+def _heat_alert_context(script: str, conversation: Optional[Sequence[tuple[str, str]]]) -> str:
+    """The reply a heat-alert call's booking turns on: the first one, to the script
+    Sarlaben speaks outside our history, and the yes/no on the booking after it.
+    The species and technician answers keep the rules they already have: this text
+    in front of them turned the ASR's કાય માટે (for cow) into "For what?"."""
+    last = next((text for speaker, text in reversed(conversation or []) if speaker == "Assistant"), None)
+    if last is not None and not _BOOKING_QUESTION_RE.search(last):
+        return ""
+    block = ""
+    if last is None:
+        block += (
+            "\nThis is Sarlaben's outbound heat-alert call: Sarlaben rang the farmer and opened with "
+            f"«{script}»\nThe message is the farmer's answer to that offer to register an artificial "
+            "insemination ticket.\n"
+        )
+    block += (
+        "\nOn this call a short reply to the booking question is an answer, not noise: હા, હ, હં, હા જી, "
+        "જી, ઓકે, બરાબર, કરો, કરી દો -> 'Yes.'; ના, નહી, નથી, ના ના -> 'No.'. A greeting stays a greeting.\n"
+    )
+    if last is not None and "confirm" in last.lower():
+        block += "The last assistant turn read a booking back: translate an agreement as 'Yes, confirm the booking.'.\n"
+    return block
+
+
 def _build_openai_pretranslation_messages(
     source_name: str,
     source_code: str,
     text: str,
     conversation: Optional[Sequence[tuple[str, str]]] = None,
+    call_context: str = "",
 ) -> list[dict[str, str]]:
     # -- Domain context ------------------------------------------------
     domain_preamble = (
@@ -360,7 +386,7 @@ def _build_openai_pretranslation_messages(
         "- Do not infer animal species. If cow/buffalo/sheep/goat is unclear, write 'unclear animal' or keep the uncertain token.\n"
     )
 
-    domain_preamble += _conversation_context(conversation)
+    domain_preamble += _conversation_context(conversation) + call_context
 
     # -- Ambiguity hints from ambiguity_terms.json ---------------------
     # include_ask=False so "ask" type entries (clarifying-question rules
@@ -405,6 +431,7 @@ async def _create_pretranslation_response(
     text: str,
     max_tokens: int,
     conversation: Optional[Sequence[tuple[str, str]]] = None,
+    call_context: str = "",
 ):
     """Single OpenAI-compatible pretranslation call, parametrized by (client, model).
 
@@ -414,7 +441,7 @@ async def _create_pretranslation_response(
         client.chat.completions.create(
             model=model,
             messages=_build_openai_pretranslation_messages(
-                source_name, source_code, text, conversation
+                source_name, source_code, text, conversation, call_context
             ),
             max_completion_tokens=max_tokens,
             response_format={"type": "json_object"},
@@ -452,6 +479,7 @@ async def _translate_to_english_pretranslation(
     extra_metadata: Optional[dict] = None,
     max_tokens: int = 1024,
     conversation: Optional[Sequence[tuple[str, str]]] = None,
+    call_context: str = "",
 ) -> str:
     """Single parametrized pretranslation body — the collapse of the former
     ``translate_to_english_with_gpt5_mini`` / ``translate_to_english_with_oss_vllm``
@@ -481,6 +509,7 @@ async def _translate_to_english_pretranslation(
                 text=text,
                 max_tokens=max_tokens,
                 conversation=conversation,
+                call_context=call_context,
             )
             translated_text = _extract_translation_from_response(response)
             if not translated_text:
@@ -514,6 +543,7 @@ async def _translate_to_english_pretranslation(
                 text=text,
                 max_tokens=max_tokens,
                 conversation=conversation,
+                call_context=call_context,
             )
             translated_text = _extract_translation_from_response(response)
             if not translated_text:
@@ -545,6 +575,7 @@ async def _pretranslate_on(
     source_lang: str,
     conversation: Sequence[tuple[str, str]],
     pipeline_profile: str,
+    call_context: str = "",
 ) -> str:
     """One attempt on the tier ``llm_core`` chose: voice's OSS or managed call,
     by the tier's kind."""
@@ -558,6 +589,7 @@ async def _pretranslate_on(
             translation_provider_label="vllm",
             extra_metadata={"pipeline_profile": pipeline_profile or "oss"},
             conversation=conversation,
+            call_context=call_context,
         )
     return await _translate_to_english_pretranslation(
         text,
@@ -567,6 +599,7 @@ async def _pretranslate_on(
         label="OpenAI",
         translation_provider_label=target.provider,
         conversation=conversation,
+        call_context=call_context,
     )
 
 
@@ -602,6 +635,12 @@ async def _voice_pretranslation(
         )
         # Recent understood conversation — see _pretranslation_context.
         _pretranslation_conversation = _pretranslation_context(list(turn.history))
+        _heat_alert = turn.call.heat_alert if turn.call is not None else None
+        _call_context = (
+            _heat_alert_context(_heat_alert.script, _pretranslation_conversation)
+            if _heat_alert and _heat_alert.script
+            else ""
+        )
 
         async def _run_pretranslation_attempt(a):
             nonlocal _pretranslation_actual_tier, _pretranslation_actual_provider, _pretranslation_actual_model
@@ -619,6 +658,7 @@ async def _voice_pretranslation(
                     source_lang=requested_source_lang,
                     conversation=_pretranslation_conversation,
                     pipeline_profile=execution.profile_name,
+                    call_context=_call_context,
                 )
             except Exception as _attempt_exc:
                 attempt_info["status"] = "error"

@@ -534,6 +534,15 @@ def test_an_answer_that_closes_the_call_is_followed_by_the_goodbye(world):
     assert built.closing_line([ModelResponse(parts=[TextPart(content="conversation_closing")])]) is None
 
 
+def test_a_heat_alert_call_ends_only_once_its_booking_is_confirmed(world):
+    built, _ = _agent_input(_turn())
+
+    assert built.closing_line([]) is None
+    built.deps.heat_alert_booked = True
+    assert built.closing_line([]) == " બુકિંગ થઈ ગયું છે, હવે હું કોલ પૂરો કરું છું. સમય આપવા બદલ આભાર. Goodbye."
+    assert built.closing_line(_closing("conversation_closing")).count("Goodbye.") == 1
+
+
 # ── through run_turn ────────────────────────────────────────────────────────
 
 
