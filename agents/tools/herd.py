@@ -16,6 +16,7 @@ import asyncio
 import difflib
 import json
 import re
+import unicodedata
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -29,6 +30,7 @@ from agents.tools.farmer_cache import (
     _record_tags,
     animals_age_seconds,
     animals_expired,
+    get_farmer_data_cached_only,
     get_or_fetch_farmer_data,
     read_animal_refresh,
     start_animal_refresh,
@@ -40,12 +42,18 @@ from helpers.utils import get_logger
 logger = get_logger(__name__)
 
 # How long one call waits for a running refresh before answering with what has
-# landed. A voice turn is waiting on it; the agent can call again.
+# landed. A voice turn is waiting on it.
 WAIT_SECONDS = 2.0
 POLL_SECONDS = 0.25
 MAX_MATCHES = 8
+MAX_NAMED = 20
 
 _NEGATION = re.compile(r"^(non|not|no)\b")
+_DIGIT_WORDS = {
+    "zero": "0", "oh": "0", "one": "1", "two": "2", "three": "3", "four": "4",
+    "five": "5", "six": "6", "seven": "7", "eight": "8", "nine": "9",
+}
+_REPEAT_WORDS = {"double": 2, "triple": 3}
 
 
 def _norm(value: Any) -> str:
@@ -63,6 +71,8 @@ def _value_matches(want: str, have: Any) -> bool:
         return True
     if bool(_NEGATION.match(want)) != bool(_NEGATION.match(have)):
         return False
+    # "not pregnant" and "non pregnant" say the same thing.
+    want, have = _NEGATION.sub("not", want), _NEGATION.sub("not", have)
     have_words = set(have.split())
 
     def _has(word: str) -> bool:
@@ -73,6 +83,27 @@ def _value_matches(want: str, have: Any) -> bool:
         )
 
     return all(_has(word) for word in want.split())
+
+
+def _tag_digits(value: Any) -> str:
+    """The digits of a tag_last_digits value, however the model wrote them: "1234",
+    "one two three four" (voice's own tags read that way), "double one", or another
+    script's digits ("૧૨૩૪"). Empty when there are none."""
+    out, repeat = [], 1
+    for token in re.findall(r"\w+", str(value or "").casefold()):
+        if token in _REPEAT_WORDS:
+            repeat = _REPEAT_WORDS[token]
+            continue
+        if token in _DIGIT_WORDS:
+            digits = _DIGIT_WORDS[token]
+        else:
+            digits = "".join(
+                str(unicodedata.decimal(ch)) for ch in token if unicodedata.decimal(ch, None) is not None
+            )
+        if digits:
+            out.append(digits[0] * (repeat - 1) + digits)
+        repeat = 1
+    return "".join(out)
 
 
 def _name_matches(want: str, have: Optional[str]) -> bool:
@@ -157,9 +188,11 @@ def _seconds_since(iso: Optional[str]) -> Optional[float]:
     return (datetime.now(timezone.utc) - then.astimezone(timezone.utc)).total_seconds()
 
 
-def _refresh_line(refresh: Optional[AnimalRefresh], refreshed: bool) -> str:
+def _refresh_line(refresh: Optional[AnimalRefresh], refreshed: bool, expired: bool) -> str:
     if refresh is None:
-        return "finished just now" if refreshed else "none running"
+        if not refreshed:
+            return "none running"
+        return "finished, but the animal records were not updated" if expired else "finished just now"
     if refresh.total is None:
         return "running: updating the farmer record, animals not fetched yet"
     started = _seconds_since(refresh.started_at)
@@ -176,7 +209,7 @@ def _matching(records: list[AnimalRecord], filters: dict) -> list[AnimalRecord]:
     for animal in records:
         if filters.get("name") and not _name_matches(filters["name"], animal.animalName):
             continue
-        digits = re.sub(r"\D", "", str(filters.get("tag_last_digits") or ""))
+        digits = filters.get("tag_last_digits")
         if digits and not (animal.tagNumber or "").endswith(digits):
             continue
         if filters.get("animal_type") and not _value_matches(filters["animal_type"], animal.animalType):
@@ -197,14 +230,23 @@ def _note(
     matches: list[AnimalRecord],
     tags: list[str],
     records: dict[str, AnimalRecord],
+    failed: list[str],
     named: int,
     expired: bool,
     refresh: Optional[AnimalRefresh],
+    unreadable_digits: bool,
 ) -> str:
     """What the agent may conclude, said plainly, so it never turns missing or old
     data into "you have no such animal"."""
     if not tags:
+        if refresh is not None:
+            return "The farmer record is being refreshed and has no animal tags yet. Ask again shortly."
         return "This farmer has no animal tags registered with Amul."
+    if unreadable_digits:
+        return (
+            "tag_last_digits had no digits in it, so it was not used. Pass the digits the farmer "
+            "said, e.g. \"1234\"."
+        )
     if not _filters_given(filters):
         return (
             "Pass name, tag_last_digits, animal_type, breed, milking_stage or "
@@ -214,11 +256,20 @@ def _note(
         if refresh is not None:
             return "Matches found so far; the refresh is still fetching the rest of the herd."
         return "Matching records below."
+    digits = filters.get("tag_last_digits")
+    if digits:
+        unloaded = [tag for tag in tags if tag.endswith(digits) and (tag not in records or tag in failed)]
+        if unloaded:
+            return (
+                "A tag ending in these digits is registered to this farmer, but its animal record "
+                "is not loaded (the Amul data has none, or it could not be fetched). Do not say the "
+                "animal is not registered; say its details are not available right now."
+            )
     if refresh is not None:
         return (
             "No match yet, but the refresh is still fetching this farmer's animals. Do not say "
-            "the animal is not registered. Call find_animals again with the same filters, or ask "
-            "the farmer for the last four digits of the animal's tag."
+            "the animal is not registered. Tell the farmer the records are still loading and ask "
+            "for the last four digits of the animal's tag; a later call will see the finished refresh."
         )
     if expired:
         return (
@@ -227,12 +278,17 @@ def _note(
             "four digits of its tag."
         )
     missing = len([tag for tag in tags if tag not in records])
-    caveat = (
-        f" {missing} of {len(tags)} tags have no animal record in the Amul data, and the animal "
-        "may be one of those."
-        if missing
-        else ""
-    )
+    caveat = ""
+    if missing:
+        caveat += (
+            f" {missing} of {len(tags)} tags have no animal record in the Amul data, and the animal "
+            "may be one of those."
+        )
+    if failed:
+        caveat += (
+            f" {len(failed)} of {len(tags)} tags could not be fetched in the last refresh, so their "
+            "details may be old or missing."
+        )
     if filters.get("name"):
         if named == 0:
             return (
@@ -245,12 +301,15 @@ def _note(
             f"named_animals (check for another spelling or script).{caveat} Most animals have no "
             "name, so ask for the last four digits of the tag, or the type, breed or stage."
         )
-    if missing:
+    if missing or failed:
         return (
             f"No match among the records.{caveat} Do not say the animal is not registered; ask "
             "the farmer for the last four digits of its tag."
         )
-    return "No animal matches these filters in the farmer's current Amul records."
+    return (
+        "No animal matches these filters in the farmer's current Amul records. A tag added to "
+        "Amul in the last day may not be on the farmer's tag list yet."
+    )
 
 
 async def _find(
@@ -263,33 +322,41 @@ async def _find(
     mobile = (getattr(ctx.deps, "mobile", None) or "").strip()
     if not mobile:
         return "The farmer's animal records are not available in this session."
-    envelope = await get_or_fetch_farmer_data(mobile)
+    # Voice is on a live call and its turn already loaded the record: never block on
+    # upstream for it. Chat builds its context elsewhere and may need the fetch.
+    envelope = await (get_farmer_data_cached_only if spoken else get_or_fetch_farmer_data)(mobile)
     if envelope is None or envelope.lookupStatus != "found" or not envelope.farmers:
         return "The farmer's animal records are not available right now."
+
+    filters = dict(filters)
+    raw_digits = filters.get("tag_last_digits")
+    filters["tag_last_digits"] = _tag_digits(raw_digits) or None
+    unreadable_digits = raw_digits not in (None, "") and not filters["tag_last_digits"]
 
     has_tags = any(_record_tags(farmer) for farmer in envelope.farmers)
     age = animals_age_seconds(envelope)
     force = refresh and (age is None or age >= FARMER_ANIMAL_FORCE_MIN_AGE_SECONDS)
 
     # Join a refresh that is running, or start one when the records are past
-    # their interval or the farmer says something changed; then wait a little for
-    # it, answering as soon as it finishes or a requested animal shows up.
+    # their interval or the farmer says something changed (after the one it
+    # joined, which did not skip the profile cache); then wait a little for it,
+    # answering as soon as it finishes or a requested animal shows up.
     loop = asyncio.get_running_loop()
     deadline = loop.time() + WAIT_SECONDS
-    may_start, refreshed, started_now = has_tags, False, False
+    tried_start, refreshed, started_now = False, False, False
     while True:
         progress = await read_animal_refresh(mobile)
         if progress is None:
             if refreshed:
-                envelope = await get_or_fetch_farmer_data(mobile) or envelope
-            if may_start and (force or animals_expired(envelope)):
-                may_start = False
+                envelope = await get_farmer_data_cached_only(mobile) or envelope
+            if has_tags and not tried_start and (force or animals_expired(envelope)) and loop.time() < deadline:
+                tried_start = True
+                # False when another refresh took the lock first: the next read joins it.
                 started_now = await start_animal_refresh(mobile, force=force)
                 refreshed = refreshed or started_now
-                if started_now:
-                    continue
+                continue
             break
-        may_start, refreshed = False, True
+        refreshed = True
         if _filters_given(filters):
             _, records = _merged_animals(envelope, progress)
             if _matching(list(records.values()), filters):
@@ -299,6 +366,8 @@ async def _find(
         await asyncio.sleep(POLL_SECONDS)
 
     tags, records = _merged_animals(envelope, progress)
+    fetched_now = set(progress.fetched) if progress is not None else set()
+    failed = [tag for tag in envelope.animalsFailedTags if tag in tags and tag not in fetched_now]
     animals = [records[tag] for tag in tags if tag in records]
     named = [animal for animal in animals if animal.animalName]
     matches = _matching(animals, filters) if _filters_given(filters) else []
@@ -310,15 +379,16 @@ async def _find(
             "tags": len(tags),
             "records_loaded": len(animals),
             "tags_without_record": len([tag for tag in tags if tag not in records]),
+            "tags_failed_last_refresh": len(failed),
             "records_age_hours": round(age / 3600, 1) if age is not None else None,
-            "records_current": bool(tags) and progress is None and not expired,
+            "records_current": bool(tags) and progress is None and not expired and not failed,
             "names_set": len(named),
-            "refresh": _refresh_line(progress, refreshed),
+            "refresh": _refresh_line(progress, refreshed, expired),
         },
         "counts": _counts(animals),
         "named_animals": [
             {"tag": _tag_label(animal.tagNumber or "", spoken), "name": animal.animalName, "type": animal.animalType}
-            for animal in named
+            for animal in named[:MAX_NAMED]
         ],
     }
     if _filters_given(filters):
@@ -329,13 +399,15 @@ async def _find(
         matches=matches,
         tags=tags,
         records=records,
+        failed=failed,
         named=len(named),
         expired=expired,
         refresh=progress,
+        unreadable_digits=unreadable_digits,
     )
     logger.info(
-        "find_animals tags=%s loaded=%s named=%s matches=%s refresh=%s started=%s",
-        len(tags), len(animals), len(named), len(matches), progress is not None, started_now,
+        "find_animals tags=%s loaded=%s failed=%s named=%s matches=%s refresh=%s started=%s",
+        len(tags), len(animals), len(failed), len(named), len(matches), progress is not None, started_now,
     )
     return json.dumps(result, ensure_ascii=False, default=str)
 
@@ -362,16 +434,17 @@ async def find_animals(
     current and complete.
 
     It refreshes the records itself when they are old. If a refresh is still running
-    and nothing matched yet, call it again with the same filters.
+    and nothing matched yet, say the records are still loading and ask for the last
+    four digits of the tag instead of calling it again in the same reply.
 
     Args:
         name: The name the farmer calls the animal, as they said it (e.g. "Lakshmi").
-        tag_last_digits: The last digits of the animal's tag number, digits only (e.g. "1234").
+        tag_last_digits: The last digits of the animal's tag number (e.g. "1234").
         animal_type: cow or buffalo.
         breed: Breed in English (e.g. "gir", "murrah", "jersey", "hf cb").
         milking_stage: e.g. "milking" or "dry".
         pregnancy_stage: e.g. "pregnant" or "non pregnant".
-        refresh: True when the farmer says an animal's details changed recently (a new name, a new tag) or that the records are wrong: fetches every animal again now.
+        refresh: True when the farmer says an animal's details changed recently (a new name, a new stage) or that the records are wrong: fetches every animal on the farmer's tag list again now. A tag added to Amul in the last day may not be on that list yet.
     """
     return await _find(
         ctx,
