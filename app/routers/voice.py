@@ -3,9 +3,11 @@ amul-dev ``3b19835``). Registered only when ``VOICE_ROUTE_ENABLED`` is on."""
 import time
 import uuid
 
-from fastapi import APIRouter, BackgroundTasks, Depends, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, status
 
+from agents.tools.farmer import normalize_phone_to_mobile
 from app.auth.jwt_auth import get_current_user
+from app.config import settings
 from app.models.requests import VoiceRequest
 from app.routers.chat import ClosingStreamingResponse
 from app.services.voice import stream_voice_message
@@ -16,6 +18,26 @@ from helpers.utils import get_logger
 logger = get_logger(__name__)
 
 router = APIRouter(prefix="/voice", tags=["voice"])
+
+
+def _require_token_for_caller(user_info: dict, user_id: str, call_type: str | None) -> None:
+    """Refuse a token that cannot vouch for the ``user_id`` caller: an anonymous
+    token never does. A token whose phone is not ``user_id``'s is refused with
+    VOICE_REQUIRE_CALLER_MATCH on, and only logged with it off."""
+    sub = str(user_info.get("sub") or "")
+    if user_info.get("anonymous") is True or sub.startswith("anon-"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Token not accepted for voice")
+    caller = normalize_phone_to_mobile(user_id)
+    if not caller or normalize_phone_to_mobile(str(user_info.get("phone") or sub)) == caller:
+        return
+    if settings.voice_require_caller_match:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Token does not match the caller")
+    # No phone in the log: only that this request would be refused once enforced.
+    logger.warning(
+        "Voice caller does not match the token (not enforced) - iss: %s, call_type: %s",
+        user_info.get("iss"),
+        call_type,
+    )
 
 
 @router.get("/")
@@ -30,6 +52,7 @@ async def voice_endpoint(
     Requires JWT authentication (Authorization: Bearer <token>).
     session_id is used for message history and Langfuse Sessions: same ID groups all agent runs for one conversation.
     """
+    _require_token_for_caller(user_info, request.user_id, request.call_type)
     started_at = time.perf_counter()
     session_id = request.session_id or str(uuid.uuid4())
     # No caller phone or words in the log: only whether there is a caller, and the query's length.

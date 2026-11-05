@@ -55,6 +55,15 @@ _OWNER = SessionRequestOwner(
 )
 
 
+@pytest.fixture(autouse=True)
+def no_heat_alert(monkeypatch):
+    """No call here is one of our heat-alert calls (that lookup reads Redis)."""
+    async def _none(*_a):
+        return None
+
+    monkeypatch.setattr(voice_service.heat_alert_call, "context_for_call", _none)
+
+
 @pytest.fixture
 def world(monkeypatch):
     """Stand-ins for Redis, the checks, the agent and the provider."""
@@ -140,6 +149,46 @@ def test_the_route_logs_no_caller_phone_words_or_ownership_token(world, caplog):
     assert "query_chars: 16" in logged
     for private in ("9990001112", "My cow has fever", "token-1"):
         assert private not in logged
+
+
+def test_only_a_token_for_the_caller_is_served(world, monkeypatch):
+    """An anonymous token is refused; the provider's token for the user_id
+    caller is served. Real tokens, verified by the real dependency."""
+    import jwt
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+
+    from app.auth import jwt_auth
+    from app.routers.auth import create_anonymous_jwt_token
+
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    pem = key.private_bytes(
+        serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()
+    ).decode()
+    monkeypatch.setattr(settings, "jwt_private_key", pem)
+    monkeypatch.setattr(jwt_auth, "public_key", key.public_key())
+    app = FastAPI()
+    app.include_router(voice_router.router)
+    client = TestClient(app)
+
+    def ask(token):
+        params = {"session_id": "call-1", "process_id": "proc-1", "query": "My cow has fever",
+                  "source_lang": "en", "target_lang": "en", "user_id": "9990001112"}
+        return client.get("/voice/", params=params, headers={"Authorization": f"Bearer {token}"})
+
+    def provider_token(phone):
+        # The claims the telephony provider's tokens carry on prod.
+        now = int(time.time())
+        claims = {"sub": phone, "iss": "voice-provider", "iat": now, "exp": now + 3600}
+        return jwt.encode(claims, pem, algorithm="RS256")
+
+    assert ask(create_anonymous_jwt_token()).status_code == 403
+    assert ask(provider_token("+91-9990001112")).status_code == 200
+    # Another phone's token is served until VOICE_REQUIRE_CALLER_MATCH is on.
+    assert ask(provider_token("+91-9990003334")).status_code == 200
+    monkeypatch.setattr(settings, "voice_require_caller_match", True)
+    assert ask(provider_token("+91-9990003334")).status_code == 403
+    assert ask(provider_token("+91-9990001112")).status_code == 200
 
 
 def test_a_consent_turn_logs_no_caller_phone_or_words(monkeypatch, caplog):

@@ -7,6 +7,10 @@ from app.tasks.telemetry_queue import start_telemetry_worker, stop_telemetry_wor
 # Imported before the routers so the cold import order matches the cycle-safety
 # regression test (worker module is side-effect-free; see farmer_refresh_worker).
 from app.tasks.farmer_refresh_worker import start_farmer_refresh_worker, stop_farmer_refresh_worker
+from app.tasks.cattle_listings_refresher import (
+    start_cattle_listings_refresher,
+    stop_cattle_listings_refresher,
+)
 # P2 health poller: active LB /health probe feeding the per-endpoint breaker.
 # start_/stop_ are no-ops unless HEALTH_POLLER_ENABLED (flag-off boot is untouched).
 from app.tasks.health_poller import start_health_poller, stop_health_poller
@@ -71,6 +75,7 @@ async def lifespan(app: FastAPI):
     await start_telemetry_worker()
     await start_scheme_scheduler()
     await start_farmer_refresh_worker()
+    await start_cattle_listings_refresher()
     await start_health_poller()
     await start_webhook_cleanup_worker()
     await heat_alert_call.recover()
@@ -79,6 +84,7 @@ async def lifespan(app: FastAPI):
     await outbound_call.cancel_scheduled()
     await stop_webhook_cleanup_worker()
     await stop_health_poller()
+    await stop_cattle_listings_refresher()
     await stop_farmer_refresh_worker()
     await stop_scheme_scheduler()
     await stop_telemetry_worker()

@@ -387,6 +387,9 @@ class Settings(BaseSettings):
     # Serves voice at /voice/ from this repo (app/routers/voice.py). Off until the
     # cutover: voice-oan-api serves the calls until then.
     voice_route_enabled: bool = _get_bool_env("VOICE_ROUTE_ENABLED", default=False)
+    # Refuse a voice request whose token's phone (or sub) is not the user_id caller.
+    # Off: such requests are served and logged (app/routers/voice.py).
+    voice_require_caller_match: bool = _get_bool_env("VOICE_REQUIRE_CALLER_MATCH", default=False)
     # Voice's trace (app/voice/trace.py). Same names and defaults as voice-oan-api.
     enable_voice_tracing: bool = _get_bool_env("ENABLE_VOICE_TRACING", default=True)
     voice_trace_log_summary: bool = _get_bool_env("VOICE_TRACE_LOG_SUMMARY", default=True)
@@ -809,6 +812,14 @@ class Settings(BaseSettings):
         validation_alias="AMULPASHUDHAN_BASE_URL",
     )
     farmer_backend_http_timeout_seconds: float = Field(default=30.0, validation_alias="FARMER_BACKEND_HTTP_TIMEOUT_SECONDS")
+    # Verified cattle listings (GetVerifiedAnimalDetails), kept in Redis: a request
+    # refetches data older than refresh_seconds; the background refresher refetches
+    # hourly only while a request came in within idle_seconds; a failed fetch keeps
+    # serving the last good copy until max_stale_seconds (its Redis TTL).
+    cattle_listings_refresh_seconds: int = Field(default=60 * 60, validation_alias="CATTLE_LISTINGS_REFRESH_SECONDS")
+    cattle_listings_idle_seconds: int = Field(default=5 * 60 * 60, validation_alias="CATTLE_LISTINGS_IDLE_SECONDS")
+    cattle_listings_max_stale_seconds: int = Field(default=24 * 60 * 60, validation_alias="CATTLE_LISTINGS_MAX_STALE_SECONDS")
+    cattle_listings_fetch_timeout_seconds: float = Field(default=10.0, validation_alias="CATTLE_LISTINGS_FETCH_TIMEOUT_SECONDS")
     # Farmer cache SWR worker tunables (tool-adjacent path used by loan checks).
     farmer_refresh_lock_ttl_seconds: int = Field(default=60 * 5, validation_alias="FARMER_REFRESH_LOCK_TTL_SECONDS")
     farmer_cold_fetch_timeout_seconds: float = Field(default=4.0, validation_alias="FARMER_COLD_FETCH_TIMEOUT_SECONDS")
