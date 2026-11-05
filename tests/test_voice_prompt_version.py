@@ -278,8 +278,10 @@ class TestNewVariantInvariants:
         text = _load(version)
         words = len(text.split())
         lines = text.count("\n") + 1
-        # New variants must stay leaner than the legacy mixed prompt.
-        assert words <= 4550, f"{version} prompt grew to {words} words (limit 4550)"
+        # New variants must stay leaner than the legacy mixed prompt (~9500 words).
+        # 4700 leaves room for the queued voice fixes (AMUL-75/88/101) on top of
+        # AMUL-81/109; raise it again only with a trim.
+        assert words <= 4700, f"{version} prompt grew to {words} words (limit 4700)"
         assert lines <= 320, f"{version} prompt grew to {lines} lines (limit 320)"
 
 
