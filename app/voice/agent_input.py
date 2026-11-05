@@ -177,6 +177,13 @@ def _build_runtime_context_request(deps: FarmerContext) -> ModelRequest:
     return ModelRequest(parts=[UserPromptPart(content="\n".join(context_lines))])
 
 
+# Said after the agent's ticket line, once the booking is confirmed.
+_BOOKED_CALL_CLOSING = {
+    "gu": "બુકિંગ થઈ ગયું છે, હવે હું કોલ પૂરો કરું છું. સમય આપવા બદલ આભાર.",
+    "en": "The booking is done, so I am ending the call now. Thank you for your time.",
+}
+
+
 def _heat_alert_hint(call) -> str:
     """This turn is the farmer's answer to Sarlaben's heat-alert call."""
     account = (
@@ -200,6 +207,12 @@ def _heat_alert_hint(call) -> str:
         f"- If they agree: run the AI booking flow for {account}. {species}\n"
         "- If they decline or are unsure: thank them briefly, say they can book later through the "
         "WhatsApp link or by calling, and end the call.\n"
+        "- Once the booking flow has started, each reply answers your last question. Never go back a "
+        "step: do not ask again for a species or a technician they have already given.\n"
+        "- When you have read the booking back and they agree, a bare yes included, call create_ai_call "
+        "in this same turn.\n"
+        "- When create_ai_call confirms the ticket, say only the ticket number. Ask nothing and offer "
+        "nothing: the call is closed for you after that line.\n"
         "- Do not ask what they are calling about and do not offer milk details."
     )
 
@@ -255,9 +268,16 @@ def _conversation_closing(new_messages) -> bool:
     )
 
 
-def _goodbye_after_closing(target_lang: str, session_id: str, process_id: Optional[str], new_messages) -> Optional[str]:
+def _goodbye_after_closing(
+    target_lang: str, session_id: str, process_id: Optional[str], deps: FarmerContext, new_messages
+) -> Optional[str]:
     """The termination token, so the telephony provider disconnects the call,
-    when the agent said the conversation is closing."""
+    when the agent said the conversation is closing, or a heat-alert call has
+    its booking confirmed: that call has nothing left to do."""
+    if deps.heat_alert_booked:
+        logger.info("Closing heat-alert call after its booking; session_id=%s process_id=%s", session_id, process_id)
+        line = _BOOKED_CALL_CLOSING.get(target_lang, _BOOKED_CALL_CLOSING["en"])
+        return f" {line} " + TELEPHONY_TERMINATE_CALL_TOKEN.get(target_lang, TELEPHONY_TERMINATE_CALL_TOKEN["en"])
     if not _conversation_closing(new_messages):
         return None
     logger.info(
@@ -653,7 +673,7 @@ async def _voice_agent_input(
         history=history,
         observe=run.observe,
         usage_limits=usage_limits,
-        closing_line=partial(_goodbye_after_closing, requested_target_lang, session_id, process_id),
+        closing_line=partial(_goodbye_after_closing, requested_target_lang, session_id, process_id, deps),
         after_run=run.after_run,
     )
 
