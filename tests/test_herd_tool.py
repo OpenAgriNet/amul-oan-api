@@ -33,6 +33,7 @@ TAGS = ["102030401111", "102030402222", "102030403333"]
 class _Redis:
     def __init__(self):
         self.kv, self.sets, self.hashes, self.ttls = {}, {}, {}, {}
+        self.expired = []
 
     async def set(self, key, value, ex=None, nx=False):
         if nx and key in self.kv:
@@ -54,6 +55,7 @@ class _Redis:
         return self.ttls.get(key, 3600)
 
     async def expire(self, key, seconds):
+        self.expired.append(key)
         return True
 
     async def hset(self, key, field, value):
@@ -92,6 +94,7 @@ class _Beckn:
         self.pregnancy = {TAGS[0]: "non pregnant", TAGS[1]: "pregnant", TAGS[2]: "non pregnant"}
         self.calls = []
         self.gates = {}
+        self.failing = set()
 
     async def farmer(self, phone):
         record = FarmerRecord.model_validate({
@@ -107,6 +110,8 @@ class _Beckn:
         self.calls.append((tag, kwargs.get("force_refresh", False)))
         if tag in self.gates:
             await self.gates[tag].wait()
+        if tag in self.failing:
+            raise RuntimeError("callback is still pending")
         return AnimalModel.model_validate({
             "tagNumber": tag,
             "animalType": self.types[tag],
@@ -264,15 +269,23 @@ def test_filters_keep_their_sense_and_plurals(herd_env):
                 animal["pregnancyStage"] = stage
 
     pregnant = json.loads(asyncio.run(herd.find_animals(_ctx(), pregnancy_stage="pregnant")))
+    not_pregnant = json.loads(asyncio.run(herd.find_animals(_ctx(), pregnancy_stage="not pregnant")))
     buffaloes = json.loads(asyncio.run(herd.find_animals(_ctx(), animal_type="buffaloes")))
 
     assert [m["tag"] for m in pregnant["matches"]] == [TAGS[1]]
+    assert [m["tag"] for m in not_pregnant["matches"]] == [TAGS[0], TAGS[2]]
     assert [m["tag"] for m in buffaloes["matches"]] == [TAGS[1], TAGS[2]]
 
 
-def test_voice_gets_spoken_tags(herd_env):
+def test_voice_gets_spoken_tags(herd_env, monkeypatch):
+    """Voice reads the cached record only: a live call never waits on upstream."""
     redis, _, _ = herd_env
     _store(redis, animals_age_hours=1, names=True)
+
+    async def no_fetch(phone):
+        raise AssertionError("voice must not fetch the farmer record")
+
+    monkeypatch.setattr(herd, "get_or_fetch_farmer_data", no_fetch)
 
     out = json.loads(asyncio.run(herd.find_animals_spoken(_ctx(), tag_last_digits="1111")))
 
@@ -324,3 +337,111 @@ def test_voice_context_says_how_much_of_the_herd_it_has_and_how_old(herd_env):
         "interval, names set on 0." in lines
     )
     assert any("call find_animals" in line for line in lines)
+
+
+def test_failed_fetches_do_not_read_as_current_records(herd_env):
+    """A refresh whose profile call failed keeps the old record for that tag: the
+    stamp says "just now", but the tool and the voice context say one tag could not
+    be fetched, so neither reads the herd as current."""
+    redis, _, beckn = herd_env
+    _store(redis, animals_age_hours=29)
+    beckn.failing = {TAGS[0]}
+
+    async def run():
+        await herd.find_animals(_ctx(), name="lakshmi")
+        await asyncio.gather(*fc._animal_refreshes)
+        await fc.refresh_farmer_data(PHONE)  # a turn's record refresh carries them over
+        return json.loads(await herd.find_animals(_ctx(), name="lakshmi"))
+
+    out = asyncio.run(run())
+    envelope = FarmerDataEnvelope.model_validate(
+        redis.kv[build_cache_key(fc._cache_key(PHONE), fc.FARMER_CACHE_NAMESPACE)]
+    )
+    lines: list[str] = []
+    _append_animal_records(lines, envelope)
+
+    assert envelope.animalsFailedTags == [TAGS[0]]
+    assert out["herd"]["records_age_hours"] == 0.0
+    assert out["herd"]["tags_failed_last_refresh"] == 1
+    assert out["herd"]["records_current"] is False
+    assert "1 of 3 tags could not be fetched" in out["note"]
+    assert "does not mean the animal is not registered" in out["note"]
+    assert any("1 could not be fetched in the last refresh" in line for line in lines)
+
+
+def test_tag_digits_in_words_or_another_script(herd_env):
+    """Voice names tags as words ("one one one one"), and the model passes them that
+    way; a value with no digits says so instead of being dropped silently."""
+    redis, _, _ = herd_env
+    _store(redis, animals_age_hours=1)
+
+    for value in ("one one one one", "zero double one double one", "\u0ae7\u0ae7\u0ae7\u0ae7", "1111"):
+        out = json.loads(asyncio.run(herd.find_animals_spoken(_ctx(), tag_last_digits=value)))
+        assert [m["tag"] for m in out["matches"]] == ["one one one one"], value
+
+    none = json.loads(asyncio.run(herd.find_animals(_ctx(), tag_last_digits="the black cow")))
+    assert "matches" not in none
+    assert none["note"].startswith("tag_last_digits had no digits")
+
+
+def test_a_registered_tag_without_a_record_is_not_called_missing(herd_env):
+    redis, _, _ = herd_env
+    _store(redis, animals_age_hours=1)
+    raw = redis.kv[build_cache_key(fc._cache_key(PHONE), fc.FARMER_CACHE_NAMESPACE)]
+    raw["farmers"][0]["animals"] = raw["farmers"][0]["animals"][:2]
+
+    out = json.loads(asyncio.run(herd.find_animals(_ctx(), tag_last_digits="3333")))
+
+    assert out["matches"] == []
+    assert "registered to this farmer" in out["note"]
+    assert "Do not say the animal is not registered" in out["note"]
+
+
+def test_refresh_on_request_after_a_running_refresh_still_skips_the_cache(herd_env):
+    """The worker's refresh is running when the farmer says a name changed: the tool
+    waits for it, then fetches again itself without the profile cache."""
+    redis, _, beckn = herd_env
+    _store(redis, animals_age_hours=1)
+
+    async def run():
+        await redis.set(fc._refresh_lock_key(PHONE), "1", nx=True)
+        await fc._start_animal_progress(PHONE, 3)
+
+        async def worker_finishes():
+            await asyncio.sleep(0.05)
+            await fc._clear_animal_progress(PHONE)
+            await redis.delete(fc._refresh_lock_key(PHONE))
+
+        finish = asyncio.create_task(worker_finishes())
+        await herd.find_animals(_ctx(), name="lakshmi", refresh=True)
+        await finish
+        await asyncio.gather(*fc._animal_refreshes)
+
+    asyncio.run(run())
+
+    assert sorted(beckn.calls) == sorted((tag, True) for tag in TAGS)
+
+
+def test_an_animal_refresh_keeps_its_lock_alive_and_releases_only_its_own(herd_env):
+    """Each animal that lands pushes the lock's expiry out; if the lock still lapsed
+    and another refresh took it, finishing does not delete that refresh's lock."""
+    redis, _, beckn = herd_env
+    _store(redis, animals_age_hours=29)
+    lock = fc._refresh_lock_key(PHONE)
+
+    async def run():
+        beckn.gates = {TAGS[2]: asyncio.Event()}
+        assert await fc.start_animal_refresh(PHONE) is True
+        for _ in range(100):
+            progress = await fc.read_animal_refresh(PHONE)
+            if progress is not None and len(progress.fetched) == 2:
+                break
+            await asyncio.sleep(0.01)
+        redis.kv[lock] = "another-refresh"
+        beckn.gates[TAGS[2]].set()
+        await asyncio.gather(*fc._animal_refreshes)
+
+    asyncio.run(run())
+
+    assert redis.expired.count(lock) >= 2
+    assert redis.kv[lock] == "another-refresh"

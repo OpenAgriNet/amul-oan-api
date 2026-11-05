@@ -24,6 +24,7 @@ import asyncio
 import contextvars
 import hashlib
 import json
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
@@ -134,11 +135,14 @@ def _carry_over_animals(envelope: FarmerDataEnvelope, previous: Optional[FarmerD
     known_tags = {tag for farmer in previous.farmers for tag in _record_tags(farmer)}
     cached = {animal.tagNumber: animal for farmer in previous.farmers for animal in farmer.animals}
     new_tags = []
+    current_tags = set()
     for farmer in envelope.farmers:
         tags = _record_tags(farmer)
         farmer.animals = [cached[tag] for tag in tags if tag in cached]
         new_tags += [tag for tag in tags if tag not in known_tags]
+        current_tags.update(tags)
     envelope.animalsFetchedAt = previous.animalsFetchedAt
+    envelope.animalsFailedTags = [tag for tag in previous.animalsFailedTags if tag in current_tags]
     return new_tags
 
 
@@ -735,8 +739,14 @@ async def _start_animal_progress(phone: str, total: int) -> None:
 
 
 async def _record_animal_progress(phone: str, tag: str, value: str) -> None:
+    """Publish one animal, and push the lock's and the progress's expiry out: a big
+    herd behind a slow upstream can outlast one lock TTL while still landing animals,
+    and a lock that lapsed mid-fetch would let a second full refresh start."""
+    key = _animal_progress_key(phone)
     try:
-        await redis_client.hset(_animal_progress_key(phone), tag, value)
+        await redis_client.hset(key, tag, value)
+        await redis_client.expire(key, FARMER_REFRESH_LOCK_TTL)
+        await redis_client.expire(_refresh_lock_key(phone), FARMER_REFRESH_LOCK_TTL)
     except Exception as e:
         logger.debug("Failed to record animal refresh progress: %s", e)
 
@@ -759,7 +769,8 @@ async def _fetch_animals(
     FARMER_ANIMAL_FETCH_CONCURRENCY at a time. With ``only``, just those tags,
     added to the ones carried over; otherwise every tag, and the fetch time is
     stamped. Best-effort: a tag that comes back empty is left out, and one whose
-    fetch fails keeps what was cached for it. With ``phone``, each animal is
+    fetch fails keeps what was cached for it and is listed in animalsFailedTags
+    (the stamp alone would read as every record current). With ``phone``, each animal is
     published as it lands (read_animal_refresh); ``force_refresh`` skips the
     animal-profile response cache."""
     jobs = [
@@ -770,11 +781,14 @@ async def _fetch_animals(
     ]
     cached = {animal.tagNumber: animal for farmer in envelope.farmers for animal in farmer.animals}
     semaphore = asyncio.Semaphore(FARMER_ANIMAL_FETCH_CONCURRENCY)
+    failed: set[str] = set()
     if phone:
         await _start_animal_progress(phone, len(jobs))
 
     async def _fetch(farmer: FarmerRecord, tag: str) -> Optional[AnimalRecord]:
         record = await _fetch_one(farmer, tag)
+        if record is _FAILED_FETCH:
+            failed.add(tag)
         if phone:
             if record is _FAILED_FETCH:
                 value = _PROGRESS_FAILED
@@ -820,6 +834,9 @@ async def _fetch_animals(
         farmer.animals = fetched if only is None else farmer.animals + fetched
     if only is None:
         envelope.animalsFetchedAt = datetime.now(timezone.utc).isoformat()
+        envelope.animalsFailedTags = sorted(failed)
+    else:
+        envelope.animalsFailedTags = sorted((set(envelope.animalsFailedTags) - set(only)) | failed)
 
 
 @dataclass
@@ -885,8 +902,9 @@ async def start_animal_refresh(phone: str, *, force: bool = False) -> bool:
     """
     phone = _normalize_cache_phone(phone)
     lock_key = _refresh_lock_key(phone)
+    token = uuid.uuid4().hex
     try:
-        acquired = await redis_client.set(lock_key, "1", ex=FARMER_REFRESH_LOCK_TTL, nx=True)
+        acquired = await redis_client.set(lock_key, token, ex=FARMER_REFRESH_LOCK_TTL, nx=True)
     except Exception as e:
         logger.warning("Failed to take the farmer refresh lock for an animal refresh: %s", e)
         return False
@@ -896,14 +914,14 @@ async def start_animal_refresh(phone: str, *, force: bool = False) -> bool:
     # turn. An empty context, so its root is not opened under the turn's span
     # (asyncio.create_task(context=...) needs Python 3.11).
     task = contextvars.Context().run(
-        asyncio.get_running_loop().create_task, _refresh_animals_holding_lock(phone, lock_key, force)
+        asyncio.get_running_loop().create_task, _refresh_animals_holding_lock(phone, lock_key, token, force)
     )
     _animal_refreshes.add(task)
     task.add_done_callback(_animal_refreshes.discard)
     return True
 
 
-async def _refresh_animals_holding_lock(phone: str, lock_key: str, force: bool) -> None:
+async def _refresh_animals_holding_lock(phone: str, lock_key: str, token: str, force: bool) -> None:
     try:
         with non_turn_root(
             BACKGROUND_JOB,
@@ -928,9 +946,12 @@ async def _refresh_animals_holding_lock(phone: str, lock_key: str, force: bool) 
     except Exception as e:
         logger.warning("Animal refresh failed for phone hash %s...: %s", _phone_log_hash(phone), e)
     finally:
-        await _clear_animal_progress(phone)
+        # Release only our own lock: if it lapsed and another refresh took it, its
+        # lock and progress are not ours to clear.
         try:
-            await redis_client.delete(lock_key)
+            if await redis_client.get(lock_key) == token:
+                await _clear_animal_progress(phone)
+                await redis_client.delete(lock_key)
         except Exception:
             pass
 

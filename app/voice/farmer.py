@@ -81,6 +81,9 @@ def _animal_records_status(envelope: FarmerDataEnvelope, loaded: int) -> list[st
         fetched = f"fetched {round(age / 3600, 1)} hours ago"
         if animals_expired(envelope):
             fetched += ", past their refresh interval"
+        failed = len([tag for tag in envelope.animalsFailedTags if tag in tags])
+        if failed:
+            fetched += f", {failed} could not be fetched in the last refresh"
     return [
         f"- Animal records: {loaded} of {len(tags)} tags loaded, {fetched}, names set on {named}.",
         "- To find one of the farmer's animals (by name, tag, type, breed or stage), call "
