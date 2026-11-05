@@ -28,6 +28,7 @@ from agents.deps import FarmerContext
 from agents.farmer_context import FarmerContextBundle, get_farmer_context_bundle_by_mobile
 from agents.tools.farmer import normalize_phone_to_mobile
 from agents.tools.session_shc import get_session_shc_context
+from app.services.memory import fetch_memory_context, memory_open_for
 from app.services.translation import (
     translate_text,
     pretranslate_with_tier,
@@ -460,6 +461,13 @@ def _build_deps(
     a tool touches.
     """
     bundle, farmer_profile_status = farmer_context
+    # Normalized caller phone — the micro-loan tool reads this from deps so it
+    # never has to trust an LLM-supplied number. None for anonymous sessions.
+    mobile = (
+        normalize_phone_to_mobile(user_info["phone"])
+        if persona == "farmer" and user_info and user_info.get("phone")
+        else None
+    )
     return FarmerContext(
         query=query,
         session_id=session_id,
@@ -472,13 +480,8 @@ def _build_deps(
         farmer_state=bundle.location.get("state") or None,
         response_max_chars=channel.response_max_chars,
         supports_rich_artifacts=channel.supports_rich_artifacts,
-        # Normalized caller phone — the micro-loan tool reads this from deps so it
-        # never has to trust an LLM-supplied number. None for anonymous sessions.
-        mobile=(
-            normalize_phone_to_mobile(user_info["phone"])
-            if persona == "farmer" and user_info and user_info.get("phone")
-            else None
-        ),
+        mobile=mobile,
+        memory_read_allowed=memory_open_for(mobile) and user_info.get("auth_type") != "api_key",
         persona=persona,
     )
 
@@ -1205,15 +1208,23 @@ async def _chat_agent_input(
     deps.update_moderation_str(moderation_str)
 
     if persona == "farmer":
-        deps.soil_health_card_context = (
-            await get_session_shc_context(session_id, deps.mobile)
-        ) or ""
+        shc_context, memory_context = await asyncio.gather(
+            get_session_shc_context(session_id, deps.mobile),
+            fetch_memory_context(
+                deps.mobile,
+                pretranslated.query,
+                allowed=deps.memory_read_allowed,
+            ),
+        )
+        deps.soil_health_card_context = shc_context or ""
+        deps.memory_context = memory_context or ""
     user_message = deps.get_user_message()
     logger.info(
-        "request_id=%s running_agent=True user_query=%s private_shc_context=%s",
+        "request_id=%s running_agent=True user_query=%s private_shc_context=%s memory_used=%s",
         request_id,
         deps.query,
         bool(deps.soil_health_card_context),
+        bool(deps.memory_context),
     )
 
     # Run the main agent
