@@ -30,7 +30,7 @@ from typing import Optional
 from agents.tools.farmer import normalize_phone_to_mobile
 from agents.tools.farmer_cache import get_or_fetch_farmer_data
 from app.config import settings
-from app.services.memory import MEMORY_ENABLED, MEMORY_VOICE_TIMEOUT_SECONDS, fetch_memory_context
+from app.services.memory import MEMORY_VOICE_ENABLED, MEMORY_VOICE_TIMEOUT_SECONDS, fetch_memory_context
 from app.llm_core import Step
 from app.turn.types import BackgroundFactory, ClassifierResult, Turn
 from app.utils import format_message_pairs
@@ -183,7 +183,7 @@ class VoiceBackground:
         )
         self._mobile = normalize_phone_to_mobile(turn.user_id)
         self._memory_read_allowed = bool(
-            MEMORY_ENABLED
+            MEMORY_VOICE_ENABLED
             and turn.authenticated_user
             and turn.user_id
             and turn.user_id != "anonymous"

@@ -749,3 +749,25 @@ def test_memory_store_reads_through_memory_api(monkeypatch):
     assert dict(seen[3].url.params) == {"limit": "100"}
     assert json.loads(seen[1].content) == {"query": "fever", "limit": 3, "memory_ref": ref}
     assert json.loads(seen[2].content) == {"whole_chunks": True, "chunk_ids": [1]}
+
+
+def test_voice_memory_needs_its_own_switch(monkeypatch):
+    import importlib
+
+    import app.services.memory as memory
+    import app.services.memory_store as memory_store
+    import app.voice.background as background
+
+    monkeypatch.setenv("MEMORY_API_URL", "http://memory.test")
+    monkeypatch.setenv("MEMORY_INTERNAL_TOKEN", "t" * 32)
+    monkeypatch.setenv("MEMORY_ENABLED", "true")
+    try:
+        for voice, expected in (("", False), ("true", True)):
+            monkeypatch.setenv("MEMORY_VOICE_ENABLED", voice)
+            for module in (memory_store, memory, background):
+                importlib.reload(module)
+            assert (memory.MEMORY_ENABLED, background.MEMORY_VOICE_ENABLED) == (True, expected)
+    finally:
+        monkeypatch.undo()
+        for module in (memory_store, memory, background):
+            importlib.reload(module)

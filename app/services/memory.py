@@ -33,6 +33,9 @@ logger = get_logger(__name__)
 MEMORY_ENABLED = os.getenv("MEMORY_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
 if MEMORY_ENABLED:
     validate_config()
+# Voice reads need their own switch on top of MEMORY_ENABLED (default off).
+MEMORY_VOICE_ENABLED = MEMORY_ENABLED and os.getenv(
+    "MEMORY_VOICE_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
 MEMORY_TIMEOUT_SECONDS = float(os.getenv("MEMORY_TIMEOUT_SECONDS", "2.0"))
 MEMORY_TOP_K = int(os.getenv("MEMORY_TOP_K", "3"))
 # Bounds the standing record, episode summaries, contents, dates and available keys.
