@@ -19,6 +19,7 @@ import pytest
 
 import agents.tools.farmer_cache as farmer_cache
 import app.services.langfuse_telemetry_writer as writer
+from app.services import session_outcome
 import app.tasks.suggestions as suggestions
 from opentelemetry import trace as otel_trace
 from app import observability
@@ -126,6 +127,30 @@ def test_the_health_canary_translates_inside_a_health_check_job(lf, monkeypatch)
     assert asyncio.run(health.check_translation_service())["status"] == "healthy"
     assert open_during_translation == [("background_job",)]
     assert lf.opened("background_job")["metadata"] == _root_metadata("background_job", **{"amul.job": "health_check"})
+
+
+def test_session_outcome_is_a_stamped_background_job_linked_to_its_session(lf):
+    session_outcome._publish({
+        "session_id": "session", "environment": "chat-production", "history_complete": "true",
+        "surface": "chat", "pipeline": "webapp", "persona": "farmer", "idle_seconds": "3600",
+        "turn:1": '{"sequence":1,"query":"Where?","answer":"Here.","finished":true}',
+    })
+    metadata = _root_metadata("background_job", **{
+        "amul.job": "session_outcome", "amul.pipeline": "webapp", "amul.persona": "farmer",
+    })
+    root = lf.opened("background_job")
+    assert root["metadata"] == metadata
+    assert root.get("input") is None and root.get("output") is None
+    assert (("background_job",), {
+        "session_id": "session", "user_id": None, "metadata": metadata,
+    }) in lf.propagated()
+    snapshot = lf.opened("session_outcome_ready")
+    assert snapshot["input"] == {"history_complete": True, "conversation": [
+        {"role": "user", "content": "Where?"}, {"role": "assistant", "content": "Here."},
+    ]}
+    assert snapshot["metadata"] == {
+        "surface": "chat", "completion_reason": "inactivity", "idle_seconds": 3600,
+    }
 
 
 def _feedback(trace_id=None):

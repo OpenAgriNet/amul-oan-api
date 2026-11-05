@@ -192,12 +192,17 @@ def test_non_turn_contract_matches_what_the_jobs_and_the_frontend_writer_send():
 def test_non_turn_trace_fields_and_scores_match_the_contract():
     contract = json.loads(NON_TURN_CONTRACT.read_text(encoding="utf-8"))
     passed: dict[str, set] = {}
+    jobs = set()
     for call in _non_turn_calls("non_turn_root"):
-        passed.setdefault(call.args[0].id, set()).update(kw.arg for kw in call.keywords if kw.arg in ("session_id", "user_id"))
+        fields = {kw.arg for kw in call.keywords if kw.arg in ("session_id", "user_id")}
+        if call.args[0].id == "BACKGROUND_JOB":
+            job = next(kw.value.value for kw in call.args[1].keywords if kw.arg == "job")
+            assert fields == set(contract[BACKGROUND_JOB][job]["trace_fields"])
+            jobs.add(job)
+        else:
+            passed.setdefault(call.args[0].id, set()).update(fields)
 
-    # No turn caused a job here, so none passes a session or a user.
-    assert passed["BACKGROUND_JOB"] == set()
-    assert all(entry["trace_fields"] == [] for entry in contract[BACKGROUND_JOB].values())
+    assert jobs == set(contract[BACKGROUND_JOB])
     assert {field for entry in contract[FRONTEND_EVENT].values() for field in entry["trace_fields"]} == passed["FRONTEND_EVENT"]
     scored = {
         event: {mapped["score"]["name"]}

@@ -8,6 +8,8 @@ import json
 import logging
 import uuid
 
+from app.services.telemetry_stamps import BACKGROUND_JOB, non_turn_v1_metadata
+
 logger = logging.getLogger(__name__)
 IDLE_SECONDS = {'voice': 300, 'chat': 3600}
 _worker = None
@@ -168,14 +170,17 @@ def _publish(state):
     client = get_langfuse_client()
     if client is None:
         raise RuntimeError('Langfuse unavailable')
-    with non_turn_root('session_idle', {
-        'amul.kind': 'background_job', 'amul.pipeline': state['pipeline'],
-        'amul.persona': state['persona'], 'amul.surface': state['surface'],
-        'amul.completion_reason': 'inactivity', 'amul.idle_seconds': state['idle_seconds'],
-    }, session_id=state['session_id'], environment=state['environment']):
+    with non_turn_root(
+        BACKGROUND_JOB,
+        non_turn_v1_metadata(BACKGROUND_JOB, job='session_outcome',
+                             pipeline=state['pipeline'], persona=state['persona']),
+        session_id=state['session_id'], environment=state['environment'],
+    ):
         with client.start_as_current_observation(
             name='session_outcome_ready', as_type='span',
             input={'conversation': conversation, 'history_complete': complete},
+            metadata={'surface': state['surface'], 'completion_reason': 'inactivity',
+                      'idle_seconds': int(state['idle_seconds'])},
         ):
             pass
     client.flush()
