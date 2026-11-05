@@ -182,8 +182,7 @@ SIGNED_IN_FARMER_TOOLS = [
     # The farmer's own animals, shared with chat (agents/tools/herd.py): tags come
     # back as their last four digits in words, as the call's context names them.
     Tool(
-        _with_nudge_signal(find_animals_spoken),
-        name="find_animals",
+        _with_nudge_signal(find_animals_spoken),  # named find_animals, like chat's
         takes_ctx=True,
         docstring_format='auto',
         require_parameter_descriptions=True,
