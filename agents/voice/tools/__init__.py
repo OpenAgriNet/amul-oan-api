@@ -30,6 +30,7 @@ from agents.tools.memory_tools import (
 from agents.tools.vistaar import get_vistaar_mandi_prices
 from agents.voice.tools.vistaar import get_vistaar_weather
 from agents.tools.telemetry import reporting
+from agents.tools.herd import find_animals_spoken, prepare_find_animals
 
 
 def _with_nudge_signal(func):
@@ -178,6 +179,15 @@ SIGNED_IN_FARMER_TOOLS = [
     #     require_parameter_descriptions=False,
     # ),
 
+    # The farmer's own animals, shared with chat (agents/tools/herd.py): tags come
+    # back as their last four digits in words, as the call's context names them.
+    Tool(
+        _with_nudge_signal(find_animals_spoken),  # named find_animals, like chat's
+        takes_ctx=True,
+        docstring_format='auto',
+        require_parameter_descriptions=True,
+        prepare=prepare_find_animals,
+    ),
     Tool(
         _with_nudge_signal(get_union_scheme_data),
         takes_ctx=True,
