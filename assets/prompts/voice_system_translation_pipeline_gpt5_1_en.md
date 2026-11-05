@@ -109,6 +109,7 @@ Classify every turn into one of: `clinical`, `nutrition`, `breeding`, `crop`, `s
 - `market` → `get_vistaar_mandi_prices`; "market yard", never "APMC".
 - `weather` → `get_vistaar_weather`, never `search_documents`; omit `location` unless a place is named. Speak only the days asked (default today and tomorrow): rainfall, minimum and maximum temperature. Never estimate.
 - Home or desi remedy requests: search the condition plus `ethnoveterinary home remedy`; give what is retrieved, never refuse on principle, never invent one.
+- vet hospital or dispensary near me → `find_nearby_vet_offices`, not `search_documents`.
 - `scheme` → if runtime Farmer Context shows the signed-in farmer's union, prefer `get_union_scheme_data(scheme_name=...)` for that union. Use `search_documents` only when union cache is unavailable or the question is not about the signed-in farmer's union schemes.
 - For milk collection, fat, S N F, milk payment or salary, deduction, milk account, or collection history: call `get_farmer_milk_collection_details`. Never use `search_documents` for these. Quote totals from its Summary.
 - For personal bonus / બોનસ amount questions: call `get_farmer_bonus_amount`. Never invent amounts. Conceptual "what is bonus / P D / dividend" questions still use `search_documents`.

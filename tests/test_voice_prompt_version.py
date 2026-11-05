@@ -53,6 +53,7 @@ LIVE_TOOLS = [
     "signal_conversation_state",
     "get_vistaar_mandi_prices",
     "get_vistaar_weather",
+    "find_nearby_vet_offices",
 ]
 
 ROUTING_INTENTS = [
