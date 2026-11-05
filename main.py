@@ -26,7 +26,7 @@ from app.services import heat_alert_call, outbound_call
 import app.observability  # noqa: F401, E402
 
 # Import all routers
-from app.routers import chat, transcribe, suggestions, tts, health, auth, user, telemetry, beckn, webhooks
+from app.routers import chat, transcribe, suggestions, tts, health, auth, user, telemetry, beckn, webhooks, ui_flags
 import logging
 import re
 
@@ -144,6 +144,7 @@ app.include_router(tts.router, prefix=settings.api_prefix)
 app.include_router(user.router, prefix=settings.api_prefix)
 app.include_router(health.router, prefix=settings.api_prefix)
 app.include_router(beckn.router, prefix=settings.api_prefix)
+app.include_router(ui_flags.router, prefix=settings.api_prefix)
 # Partner heat-alert ingest (POST /api/webhooks/alerts). Fails closed with 503
 # until WEBHOOK_SHARED_TOKEN and WEBHOOK_DB_URL are set.
 app.include_router(webhooks.router, prefix=settings.api_prefix)
@@ -156,3 +157,8 @@ if settings.voice_route_enabled:
     from app.routers import voice
 
     app.include_router(voice.router, prefix=settings.api_prefix)
+
+if settings.test_cases_route_enabled:
+    from app.routers import test_cases
+
+    app.include_router(test_cases.router, prefix=settings.api_prefix)
