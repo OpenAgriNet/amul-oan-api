@@ -112,12 +112,13 @@ def test_farmer_location_accepts_compatible_partial_records():
 
 
 def test_signed_in_farmer_tools_drops_brittle_three():
-    """The three brittle voice-only farmer tools are commented out; memory, scheme + bonus remain."""
+    """The three brittle voice-only farmer tools are commented out; memory, the
+    shared find_animals, scheme and bonus tools remain."""
     from agents.voice.tools import SIGNED_IN_FARMER_TOOLS
     from agents.voice.tools.bonus import prepare_get_farmer_bonus_amount
 
-    names = {getattr(t.function, "__name__", "") for t in SIGNED_IN_FARMER_TOOLS}
-    assert names == {"search_memories", "list_memories", "read_memory",
+    names = {t.name for t in SIGNED_IN_FARMER_TOOLS}
+    assert names == {"search_memories", "list_memories", "read_memory", "find_animals",
                      "get_union_scheme_data", "get_farmer_bonus_amount"}
     bonus_tool = next(
         t

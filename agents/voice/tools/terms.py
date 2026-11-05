@@ -5,6 +5,8 @@ from pydantic import BaseModel, Field, field_validator
 from rapidfuzz import fuzz
 import re
 
+from agents.tools.telemetry import report_tool
+
 def _with_voice_rows(shared: list[dict]) -> list[dict]:
     """The shared glossary with voice's own rows (``assets/voice_glossary_overrides.json``).
 
@@ -153,6 +155,7 @@ async def search_terms(
         matches = matches[:max_results]
         return f"Matching Terms for `{term}`\n\n" + "\n".join([f"{match[0]} [{match[1]:.0%}]" for match in matches])
     else:
+        report_tool("no_result", "no matching glossary terms")
         return f"No matching terms found for `{term}`"
 
 

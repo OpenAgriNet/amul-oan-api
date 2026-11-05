@@ -8,7 +8,12 @@ from typing import Optional
 import regex
 
 from agents.deps import FarmerAccount
-from agents.tools.farmer_cache import technician_lookup_failed
+from agents.tools.farmer_cache import (
+    _record_tags,
+    animals_age_seconds,
+    animals_expired,
+    technician_lookup_failed,
+)
 from agents.tools.models.farmer_transport import FarmerDataEnvelope, FarmerRecord
 from agents.voice.models.ai_call import strip_ait_name_codes
 from agents.voice.services.farmer_identity import (
@@ -60,11 +65,39 @@ def _render_breeding_value(value) -> str:
     return str(value)
 
 
+def _animal_records_status(envelope: FarmerDataEnvelope, loaded: int) -> list[str]:
+    """How much of the herd the per-animal list below covers and how old it is, so
+    the agent never reads a missing or old record as "no such animal" (AMUL-68)."""
+    tags = {tag for record in envelope.farmers for tag in _record_tags(record)}
+    if not tags:
+        return []
+    named = sum(
+        1 for record in envelope.farmers for animal in (record.animals or []) if animal.animalName
+    )
+    age = animals_age_seconds(envelope)
+    if age is None:
+        fetched = "not fetched yet"
+    else:
+        fetched = f"fetched {round(age / 3600, 1)} hours ago"
+        if animals_expired(envelope):
+            fetched += ", past their refresh interval"
+        failed = len([tag for tag in envelope.animalsFailedTags if tag in tags])
+        if failed:
+            fetched += f", {failed} could not be fetched in the last refresh"
+    return [
+        f"- Animal records: {loaded} of {len(tags)} tags loaded, {fetched}, names set on {named}.",
+        "- To find one of the farmer's animals (by name, tag, type, breed or stage), call "
+        "find_animals: it refreshes old records and says how complete they are. Never say an "
+        "animal is not registered from this list alone.",
+    ]
+
+
 def _append_animal_records(lines: list[str], envelope: FarmerDataEnvelope) -> None:
     """Per-animal records (incl. last AI date + bull id) for breeding/AI-history
     questions. Tags are masked (last 4 digits) so TTS never reads a full tag aloud.
     Populated by the background cache refresh — absent on a brand-new caller's
-    first turn, present from the next turn on."""
+    first turn, present from the next turn on; the status line above them says
+    how many tags they cover and how old they are."""
     blocks: list[str] = []
     for record in envelope.farmers:
         for animal in getattr(record, "animals", None) or []:
@@ -84,6 +117,10 @@ def _append_animal_records(lines: list[str], envelope: FarmerDataEnvelope) -> No
             else:
                 parts.append("no AI records available")
             blocks.append("- " + ", ".join(parts))
+    status = _animal_records_status(envelope, len(blocks))
+    if status:
+        lines.append("")
+        lines.extend(status)
     if blocks:
         lines.append("")
         lines.append("### Per-animal AI / breeding history")
