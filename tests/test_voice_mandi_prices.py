@@ -4,6 +4,7 @@ Before this, every voice prompt variant sent the market intent to
 search_documents, which holds no live prices, so a caller asking a tomato or
 onion rate heard "I don't know based on the provided documents."
 """
+import inspect
 import os
 import re
 
@@ -43,8 +44,9 @@ def test_voice_registers_chats_mandi_tool_itself():
     from agents.voice.tools import BASE_TOOLS
 
     tool = {t.name: t for t in BASE_TOOLS}["get_vistaar_mandi_prices"]
-    # The same function chat registers, not a copy; wrapped for the hold line.
-    assert tool.function.__wrapped__ is get_vistaar_mandi_prices
+    # The same function chat registers, not a copy; wrapped for the hold line
+    # and the tool status.
+    assert inspect.unwrap(tool.function) is get_vistaar_mandi_prices
     assert tool.takes_ctx is True
     assert tool.prepare is None
 

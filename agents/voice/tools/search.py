@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 from pydantic_ai import ModelRetry, RunContext
 
 from agents.deps import FarmerContext
+from agents.tools.telemetry import reason, report_tool
 from agents.voice.tools.terms import normalize_text_with_glossary
 from app.observability import start_observation
 from helpers.utils import get_logger
@@ -489,6 +490,7 @@ async def search_documents(
         )
 
         if len(results) == 0:
+            report_tool("no_result", "no documents returned")
             return f"No results found for `{query}`"
 
         search_hits = []
@@ -508,4 +510,6 @@ async def search_documents(
         return "> Search Results for `" + query + "`\n\n" + document_string
     except Exception as e:
         logger.error("Error searching documents: %s; query_chars=%s", e, len(query or ""))
+        if not isinstance(e, ModelRetry):
+            report_tool("unavailable", f"document search: {reason(e)}")
         raise ModelRetry("Error searching documents, please try again")
