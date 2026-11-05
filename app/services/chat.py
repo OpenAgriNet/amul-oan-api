@@ -23,6 +23,7 @@ from app.utils import (
 )
 from app.tasks.suggestions import create_suggestions
 from app.config import settings
+from app.services import session_outcome
 from app.core.cache import cache
 from agents.deps import FarmerContext
 from agents.farmer_context import FarmerContextBundle, get_farmer_context_bundle_by_mobile
@@ -1394,19 +1395,23 @@ async def stream_chat_messages(
     # closed with it, synchronously, so it records "cancelled" and unwinds its
     # root span now rather than whenever the event loop finalises it. The
     # response layer guarantees that close; see app/routers/chat.py.
-    async with aclosing(run_turn(turn, CHAT_SURFACE, scheduler=scheduler)) as emissions:
-        async for emission in emissions:
-            try:
-                chunks = _render_chat_emission(emission, artifact_sink, emit_artifact_frames)
-            except Exception as exc:
-                # Rendering failed: the turn failed, the caller did not leave.
-                # Raise it inside run_turn so its outcome guard records "error";
-                # letting aclosing close the turn would inject GeneratorExit and
-                # record the failure as "cancelled".
-                await emissions.athrow(exc)
-                raise
-            for chunk in chunks:
-                yield chunk
+    async with session_outcome.track(
+        session_id, query, surface='chat', has_history=bool(history),
+        scope=turn.history_session_id, persona=persona,
+        pipeline=_PIPELINE_BY_CHANNEL.get(turn.channel.channel.value, turn.channel.channel.value),
+    ) as delivered:
+        async with aclosing(run_turn(turn, CHAT_SURFACE, scheduler=scheduler)) as emissions:
+            async for emission in emissions:
+                try:
+                    chunks = _render_chat_emission(emission, artifact_sink, emit_artifact_frames)
+                except Exception as exc:
+                    # Rendering failed: record an error inside the turn, not a disconnect.
+                    await emissions.athrow(exc)
+                    raise
+                for chunk in chunks:
+                    if delivered is not None and isinstance(emission, TextEmission):
+                        delivered.append(chunk)
+                    yield chunk
 
 
 def _render_chat_emission(

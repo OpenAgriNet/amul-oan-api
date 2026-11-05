@@ -392,6 +392,10 @@ class Settings(BaseSettings):
     voice_require_caller_match: bool = _get_bool_env("VOICE_REQUIRE_CALLER_MATCH", default=False)
     # Voice's trace (app/voice/trace.py). Same names and defaults as voice-oan-api.
     enable_voice_tracing: bool = _get_bool_env("ENABLE_VOICE_TRACING", default=True)
+    # Opt-in session snapshot after five minutes without recorded voice activity.
+    voice_session_outcome_enabled: bool = _get_bool_env("VOICE_SESSION_OUTCOME_ENABLED", default=False)
+    # Chat uses the same tracker, with a one-hour inactivity cutoff.
+    chat_session_outcome_enabled: bool = _get_bool_env("CHAT_SESSION_OUTCOME_ENABLED", default=False)
     voice_trace_log_summary: bool = _get_bool_env("VOICE_TRACE_LOG_SUMMARY", default=True)
     # Voice's agent and its farmer data (agents/voice/), inert on the chat path.
     # Same names and defaults as voice-oan-api.

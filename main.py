@@ -14,6 +14,7 @@ from app.tasks.cattle_listings_refresher import (
 # P2 health poller: active LB /health probe feeding the per-endpoint breaker.
 # start_/stop_ are no-ops unless HEALTH_POLLER_ENABLED (flag-off boot is untouched).
 from app.tasks.health_poller import start_health_poller, stop_health_poller
+from app.services import session_outcome
 # Heat-alert retention worker: a no-op unless WEBHOOK_DB_URL is set.
 from app.tasks.webhook_cleanup_worker import (
     start_webhook_cleanup_worker,
@@ -78,9 +79,11 @@ async def lifespan(app: FastAPI):
     await start_cattle_listings_refresher()
     await start_health_poller()
     await start_webhook_cleanup_worker()
+    await session_outcome.start()
     await heat_alert_call.recover()
     yield
     # Shutdown
+    await session_outcome.stop()
     await outbound_call.cancel_scheduled()
     await stop_webhook_cleanup_worker()
     await stop_health_poller()

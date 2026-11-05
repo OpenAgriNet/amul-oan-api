@@ -34,6 +34,7 @@ from app.turn.types import (
 )
 from app.utils import SessionRequestOwner, release_session_request_ownership
 from app.voice import outbound as _outbound
+from app.services import session_outcome
 from app.voice.agent_input import voice_agent_input
 from app.voice.background import voice_background
 from app.voice.classifiers import voice_classifiers
@@ -103,61 +104,66 @@ async def stream_voice_message(
     call_type = _outbound.normalize_call_type(call_type)
     target = (target_lang or "gu").strip().lower()
     try:
-        heat_alert = await heat_alert_call.context_for_call(
-            session_id, normalize_phone_to_mobile(user_id or ""), call_type
-        )
-        # The heat-alert call has its own opening question; the milk-readout consent gate is not it.
-        consent_turn = False if heat_alert else await _is_outbound_consent_turn(session_id, call_type, history)
-        if consent_turn:
-            logger.info(
-                "Outbound consent turn; session_id=%s process_id=%s query_chars=%s",
-                session_id, process_id, len(query or ""),
+        async with session_outcome.track(
+            session_id, query, owner=owner, has_history=bool(history),
+        ) as spoken:
+            heat_alert = await heat_alert_call.context_for_call(
+                session_id, normalize_phone_to_mobile(user_id or ""), call_type
             )
-        turn = Turn(
-            query=query,
-            session_id=session_id,
-            source_lang=source_lang,
-            # As voice read it: an empty or padded value is still Gujarati,
-            # not a language that turns translation off.
-            target_lang=target,
-            user_id=user_id,
-            authenticated_user=MappingProxyType(dict(user_info or {})),
-            history=tuple(history),
-            history_session_id=session_id,
-            persona="farmer",
-            call=TelephonyCall(
-                process_id=process_id,
-                outbound_consent_turn=consent_turn,
-                provider=provider,
-                call_type=call_type,
-                heat_alert=heat_alert,
-                request_epoch=owner.epoch if owner is not None else None,
-                trace_id=owner.trace_id if owner is not None else None,
-                utterance_id=owner.utterance_id if owner is not None else None,
-            ),
-        )
-        surface = dataclasses.replace(VOICE_SURFACE, telemetry=partial(VoiceTelemetry, route=route))
-        turn_stream = run_turn(
-            turn,
-            surface,
-            scheduler=_BackgroundTasksScheduler(background_tasks),
-            side_channel=RayaNudgeSender(session_id=session_id, process_id=process_id),
-            is_stale=CallStaleness(
-                http_request=http_request, owner=owner, session_id=session_id, process_id=process_id
-            ),
-        )
-        # aclosing: a hang-up closes the turn now, so it records the disconnect
-        # and releases the session rather than waiting for the event loop.
-        async with aclosing(turn_stream) as emissions:
-            async for emission in emissions:
-                try:
-                    chunks = _render_voice_emission(emission, target)
-                except Exception as exc:
-                    # Rendering failed: the turn failed, the caller did not leave.
-                    await emissions.athrow(exc)
-                    raise
-                for chunk in chunks:
-                    yield chunk
+            # The heat-alert call has its own opening question; the milk-readout consent gate is not it.
+            consent_turn = False if heat_alert else await _is_outbound_consent_turn(session_id, call_type, history)
+            if consent_turn:
+                logger.info(
+                    "Outbound consent turn; session_id=%s process_id=%s query_chars=%s",
+                    session_id, process_id, len(query or ""),
+                )
+            turn = Turn(
+                query=query,
+                session_id=session_id,
+                source_lang=source_lang,
+                # As voice read it: an empty or padded value is still Gujarati,
+                # not a language that turns translation off.
+                target_lang=target,
+                user_id=user_id,
+                authenticated_user=MappingProxyType(dict(user_info or {})),
+                history=tuple(history),
+                history_session_id=session_id,
+                persona="farmer",
+                call=TelephonyCall(
+                    process_id=process_id,
+                    outbound_consent_turn=consent_turn,
+                    provider=provider,
+                    call_type=call_type,
+                    heat_alert=heat_alert,
+                    request_epoch=owner.epoch if owner is not None else None,
+                    trace_id=owner.trace_id if owner is not None else None,
+                    utterance_id=owner.utterance_id if owner is not None else None,
+                ),
+            )
+            surface = dataclasses.replace(VOICE_SURFACE, telemetry=partial(VoiceTelemetry, route=route))
+            turn_stream = run_turn(
+                turn,
+                surface,
+                scheduler=_BackgroundTasksScheduler(background_tasks),
+                side_channel=RayaNudgeSender(session_id=session_id, process_id=process_id),
+                is_stale=CallStaleness(
+                    http_request=http_request, owner=owner, session_id=session_id, process_id=process_id
+                ),
+            )
+            # aclosing: a hang-up closes the turn now, so it records the disconnect
+            # and releases the session rather than waiting for the event loop.
+            async with aclosing(turn_stream) as emissions:
+                async for emission in emissions:
+                    try:
+                        chunks = _render_voice_emission(emission, target)
+                    except Exception as exc:
+                        # Rendering failed: the turn failed, the caller did not leave.
+                        await emissions.athrow(exc)
+                        raise
+                    for chunk in chunks:
+                        if spoken is not None:
+                            spoken.append(chunk)
+                        yield chunk
     finally:
         released = await release_session_request_ownership(owner)
         if owner is not None:
