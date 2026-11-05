@@ -697,3 +697,77 @@ def test_a_voice_tool_call_wakes_the_nudge(monkeypatch):
 
     (emission,) = sent
     assert emission.text in lv._TOOL_NUDGE_MESSAGES["en"]
+
+
+def test_memory_store_reads_through_memory_api(monkeypatch):
+    import json
+
+    import httpx
+
+    import app.services.memory_store as memory_store
+    from agents.tools.memory_tools import _render_read
+
+    monkeypatch.setattr(memory_store, "MEMORY_API_URL", "http://memory.test")
+    monkeypatch.setattr(memory_store, "MEMORY_INTERNAL_TOKEN", "t" * 32)
+    farmer, ref = "9876543210", "00000000-0000-0000-0000-000000000001"
+    seen = []
+
+    def handler(request):
+        seen.append(request)
+        assert request.headers["Authorization"] == "Bearer " + "t" * 32
+        path = request.url.path
+        if path.endswith("/profile"):
+            return httpx.Response(200, json={"profile": {"herd_size": "4 cows"}})
+        if path.endswith("/search_expanded"):
+            return httpx.Response(200, json={"hits": [{"id": ref, "headline": "Fever", "passage": "p"}], "partial": False})
+        if path.endswith("/read"):
+            return httpx.Response(200, json={"entry": {"id": ref, "source_ts": "2026-10-30T10:00:00Z"},
+                                             "current": True, "chunks": [{"number": 1, "text": "Fever"}],
+                                             "continuation": None})
+        if path.endswith("/entries"):
+            return httpx.Response(200, json={"entries": [
+                {"id": "a", "source_ts": "2026-10-01T00:00:00Z"}, {"id": "undated"},
+                {"id": "b", "source_ts": "2026-10-30T00:00:00Z"}], "truncated": False, "next_cursor": None})
+        return httpx.Response(404)
+
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            store = memory_store.MemoryStore(client, farmer)
+            assert (await store.profile())["profile"] == {"herd_size": "4 cows"}
+            hits = await store.search("fever", using="expanded", limit=3, memory_ref=ref)
+            assert hits["hits"][0]["id"] == ref
+            read = await store.read(ref, chunk_ids=[1])
+            assert "Chunk 1:\nFever" in _render_read(read)
+            newest = await store.list_entries(order="desc", limit=2)
+            assert [e["id"] for e in newest["entries"]] == ["b", "a"] and newest["truncated"]
+            oldest = await store.list_entries(order="asc", limit=3)
+            assert [e["id"] for e in oldest["entries"]] == ["a", "b", "undated"]
+
+    asyncio.run(run())
+    assert [r.url.path for r in seen][:3] == [
+        f"/memory/{farmer}/profile", f"/memory/{farmer}/search_expanded", f"/memory/{farmer}/entries/{ref}/read"]
+    assert dict(seen[3].url.params) == {"limit": "100"}
+    assert json.loads(seen[1].content) == {"query": "fever", "limit": 3, "memory_ref": ref}
+    assert json.loads(seen[2].content) == {"whole_chunks": True, "chunk_ids": [1]}
+
+
+def test_voice_memory_needs_its_own_switch(monkeypatch):
+    import importlib
+
+    import app.services.memory as memory
+    import app.services.memory_store as memory_store
+    import app.voice.background as background
+
+    monkeypatch.setenv("MEMORY_API_URL", "http://memory.test")
+    monkeypatch.setenv("MEMORY_INTERNAL_TOKEN", "t" * 32)
+    monkeypatch.setenv("MEMORY_ENABLED", "true")
+    try:
+        for voice, expected in (("", False), ("true", True)):
+            monkeypatch.setenv("MEMORY_VOICE_ENABLED", voice)
+            for module in (memory_store, memory, background):
+                importlib.reload(module)
+            assert (memory.MEMORY_ENABLED, background.MEMORY_VOICE_ENABLED) == (True, expected)
+    finally:
+        monkeypatch.undo()
+        for module in (memory_store, memory, background):
+            importlib.reload(module)
