@@ -56,10 +56,11 @@ def test_market_goes_to_the_mandi_tool_not_document_search(name):
     routed = 0
     for line in text.splitlines():
         before = line.split("search_documents")[0]
-        if "search_documents" in line and re.search(r"\bcrop\b", before) and "weather" in before:
+        # Weather left this line for its own tool (AMUL-81); find it by clinical + crop.
+        if "search_documents" in line and re.search(r"\bcrop\b", before) and "clinical" in before:
             routed += 1
             assert not re.search(r"\bmarket\b", before), line
-    assert routed, "the clinical/crop/weather routing line was not found"
+    assert routed, "the clinical/crop routing line was not found"
 
 
 @pytest.mark.parametrize("name", VARIANTS)
