@@ -209,6 +209,8 @@ def _heat_alert_hint(call) -> str:
         "WhatsApp link or by calling, and end the call.\n"
         "- Once the booking flow has started, each reply answers your last question. Never go back a "
         "step: do not ask again for a species or a technician they have already given.\n"
+        "- If a reply names no technician on the list, ask for the name again. Never pick one yourself: "
+        "this call ends once the booking is made, so a wrong technician cannot be corrected.\n"
         "- When you have read the booking back and they agree, a bare yes included, call create_ai_call "
         "in this same turn.\n"
         "- When create_ai_call confirms the ticket, say only the ticket number. Ask nothing and offer "
