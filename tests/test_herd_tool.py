@@ -232,11 +232,15 @@ def test_a_refresh_already_running_is_joined_not_repeated(herd_env):
     assert out["herd"]["refresh"].startswith("running: 1 of 3 tags fetched")
 
 
-def test_current_records_without_names_say_a_name_cannot_identify_the_animal(herd_env):
+def test_current_records_without_names_say_a_name_cannot_identify_the_animal(herd_env, monkeypatch):
     redis, _, beckn = herd_env
     _store(redis, animals_age_hours=1)
+    reported = []
+    monkeypatch.setattr(herd, "report_tool", lambda status, message=None: reported.append(status))
 
     out = json.loads(asyncio.run(herd.find_animals(_ctx(), name="lakshmi")))
+
+    assert reported == ["no_result"]
 
     assert beckn.calls == []
     assert out["herd"]["records_current"] is True

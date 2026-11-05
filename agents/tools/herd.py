@@ -36,6 +36,7 @@ from agents.tools.farmer_cache import (
     start_animal_refresh,
 )
 from agents.tools.models.farmer_transport import AnimalRecord, FarmerDataEnvelope
+from agents.tools.telemetry import report_tool
 from helpers.gujarati_numbers import mask_tag_identifier
 from helpers.utils import get_logger
 
@@ -321,11 +322,13 @@ async def _find(
 ) -> str:
     mobile = (getattr(ctx.deps, "mobile", None) or "").strip()
     if not mobile:
+        report_tool("error", "no registered phone on the session")
         return "The farmer's animal records are not available in this session."
     # Voice is on a live call and its turn already loaded the record: never block on
     # upstream for it. Chat builds its context elsewhere and may need the fetch.
     envelope = await (get_farmer_data_cached_only if spoken else get_or_fetch_farmer_data)(mobile)
     if envelope is None or envelope.lookupStatus != "found" or not envelope.farmers:
+        report_tool("unavailable", "no cached farmer record")
         return "The farmer's animal records are not available right now."
 
     filters = dict(filters)
@@ -394,6 +397,8 @@ async def _find(
     if _filters_given(filters):
         result["matches"] = [_animal_out(animal, spoken) for animal in matches[:MAX_MATCHES]]
         result["matches_total"] = len(matches)
+        if not matches:
+            report_tool("no_result", "refresh still running" if progress is not None else "no animal matched")
     result["note"] = _note(
         filters=filters,
         matches=matches,
@@ -488,8 +493,9 @@ async def find_animals_spoken(
     )
 
 
-# The model reads the chat docstring for both surfaces.
+# The model sees one tool on both surfaces: the chat docstring, and its name.
 find_animals_spoken.__doc__ = find_animals.__doc__
+find_animals_spoken.__name__ = find_animals_spoken.__qualname__ = "find_animals"
 
 
 async def prepare_find_animals(
