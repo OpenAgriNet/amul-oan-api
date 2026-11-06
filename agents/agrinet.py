@@ -2,6 +2,7 @@ from pydantic_ai import Agent, RunContext
 from helpers.utils import get_prompt, get_today_date_str
 from app.config import get_config_value, settings
 from agents.tools.registry import TOOLS
+from agents.tools.fodderinfo import FODDERINFO_INSTRUCTIONS
 from agents.tools.terms import get_ambiguity_hints_for_query
 from pydantic_ai.settings import ModelSettings
 from agents.deps import FarmerContext, MEMORY_INSTRUCTIONS
@@ -78,6 +79,8 @@ def get_agrinet_instructions(ctx: RunContext):
     # agent always runs on the English-only prompt; the response is translated
     # into the target language downstream (app.services.chat).
     instructions = get_prompt("agrinet_system_translation_pipeline.md", context=context)
+    if settings.fodderinfo_api_key:
+        instructions += "\n\n" + FODDERINFO_INSTRUCTIONS
     if ctx.deps.memory_read_allowed:
         instructions += "\n\n" + MEMORY_INSTRUCTIONS
     return instructions

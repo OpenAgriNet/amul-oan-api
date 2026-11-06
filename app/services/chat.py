@@ -1630,12 +1630,16 @@ async def run_turn(
                 # sentence-batches + stream-translates (or passes English through). The
                 # disconnect-safe first-token-commit primitives are reused verbatim.
                 new_messages: list = []
+                prompt = agent_input.prompt
+                if (turn.persona == "farmer" and settings.fodderinfo_api_key
+                        and turn.query != agent_input.deps.query):
+                    prompt += f"\n\nOriginal user wording (for fodder name lookup): {turn.query}"
                 # Only a surface that sets limits passes them (voice's).
                 limits = {} if agent_input.usage_limits is None else {"usage_limits": agent_input.usage_limits}
 
                 english_src = execution.stream(
                     agent_input.agent,
-                    agent_input.prompt,
+                    prompt,
                     message_history=agent_input.message_history,
                     deps=agent_input.deps,
                     new_messages=new_messages,
@@ -1689,6 +1693,16 @@ async def run_turn(
             chat_artifacts = agent_input.deps.take_chat_artifacts()
             if chat_artifacts:
                 yield ArtifactEmission(artifacts=tuple(chat_artifacts))
+
+            # Deliver consented contact outside the model, sink, trace and history.
+            mobile = agent_input.deps.take_fodder_contact()
+            if mobile and sink_outcome is None:
+                stale = await _stale_outcome(is_stale, "before_fodder_contact")
+                if stale is not None:
+                    _turn_outcome = stale
+                    return
+                contact_text = " ".join(mobile) if turn.call and target_lang != "gu" else mobile
+                yield TextEmission(f"\n\n{contact_text}\n")
 
             # A last raw line after the answer: voice's hang-up token when the
             # agent said the conversation is closing. Said after the trouble line

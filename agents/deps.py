@@ -111,6 +111,21 @@ class FarmerContext(BaseModel):
     # the model transcript.  Keeping them on the per-turn deps object prevents
     # provider HTML from entering prompts, translation, TTS, or chat history.
     _chat_artifacts: list[dict[str, Any]] = PrivateAttr(default_factory=list)
+    _fodder_contact_requested: bool = PrivateAttr(default=False)
+    _fodder_contact: Optional[str] = PrivateAttr(default=None)
+
+    def reserve_fodder_contact(self) -> bool:
+        if self._fodder_contact_requested:
+            return False
+        self._fodder_contact_requested = True
+        return True
+
+    def set_fodder_contact(self, mobile: str) -> None:
+        self._fodder_contact = mobile
+
+    def take_fodder_contact(self) -> Optional[str]:
+        mobile, self._fodder_contact = self._fodder_contact, None
+        return mobile
 
     def set_moderation_task(self, task: Optional["asyncio.Task"]) -> None:
         """Attach the concurrently-running moderation task for tool self-gating."""
