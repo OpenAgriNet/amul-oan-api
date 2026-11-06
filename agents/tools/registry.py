@@ -3,6 +3,7 @@ says how the call went (agents/tools/telemetry.py)."""
 from pydantic_ai import Tool
 
 from agents.tools.telemetry import reporting
+from agents.tools.fodderinfo import FODDER_TOOLS, prepare_fodder_tool
 
 from agents.tools.ai_call import create_ai_call, prepare_create_ai_call
 from agents.tools.milk_collection import (
@@ -44,6 +45,7 @@ from agents.tools.vistaar_pmkisan import (
 )
 
 TOOLS = [
+    *(Tool(reporting(tool), prepare=prepare_fodder_tool) for tool in FODDER_TOOLS),
     # # Search Terms
 
     # Search Documents

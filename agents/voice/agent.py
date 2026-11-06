@@ -7,6 +7,7 @@ from app.config import settings
 from agents.voice.tools import BASE_TOOLS, SIGNED_IN_FARMER_TOOLS
 from pydantic_ai.settings import ModelSettings
 from agents.deps import FarmerContext
+from agents.tools.fodderinfo import FODDERINFO_INSTRUCTIONS
 
 logger = get_logger(__name__)
 
@@ -54,6 +55,8 @@ VOICE_SYSTEM_PROMPT_NAME = _resolve_voice_prompt_name()
 STATIC_VOICE_SYSTEM_PROMPT = _render_voice_prompt(VOICE_SYSTEM_PROMPT_NAME)
 
 def _build_voice_agent(name: str, tools, instructions: str = STATIC_VOICE_SYSTEM_PROMPT):
+    if settings.fodderinfo_search_api_key:
+        instructions += "\n\n" + FODDERINFO_INSTRUCTIONS
     return Agent(
         # Model selection belongs to app.llm_core: every run is given the
         # turn's model, as chat's agents are.
