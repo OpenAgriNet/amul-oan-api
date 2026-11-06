@@ -286,9 +286,9 @@ async def _species(event: HeatAlertWebhookEvent, account: AuthenticatedFarmerAcc
                 if str(animal.tagNumber or "").strip() in ids:
                     return _species_name(animal.animalType)
         # The Pashu Aadhaar only: a short collar tag ("1") could name another farmer's animal.
-        if account and event.pashuaadhar_no:
+        if event.pashuaadhar_no:
             profile = await asyncio.wait_for(
-                fetch_animal_profile(event.pashuaadhar_no.strip(), union_code=account.union_code),
+                fetch_animal_profile(event.pashuaadhar_no.strip(), union_code=account.union_code if account else None),
                 _PROFILE_TIMEOUT_S,
             )
             return _species_name(profile.animal_type if profile else None)

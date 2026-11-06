@@ -59,6 +59,7 @@ def test_a_heat_alert_call_nudges_the_translator_only_on_the_booking_question():
     assert f"«{script}»" in vp._heat_alert_context(script, None)
     readback = vp._heat_alert_context(script, _conv("Booking insemination for your cow with Mahesh. Shall I confirm?"))
     assert "Yes, confirm the booking." in readback and script not in readback
+    assert "હમ, હમ્મ -> 'Hmm.'" in readback
     assert vp._heat_alert_context(script, _conv("Is this for a cow or buffalo?")) == ""
     assert vp._heat_alert_context(script, _conv("Which technician should I book with?")) == ""
     assert "heat-alert" not in _system("હ")
