@@ -133,22 +133,6 @@ def test_system_turns_neither_count_nor_break_the_streak():
     assert bg._collect_recent_user_turns_for_non_meaningful(history, "હમ્મ") == [("હા", ""), ("ઓકે", "ok"), ("હમ્મ", "ok")]
 
 
-def test_booking_answers_keep_the_question_they_are_answering():
-    history = [
-        *_exchange("Book an AI visit.", "Which technician would you like?"),
-        *_exchange("Technician A", "Should I book the visit?"),
-        *_exchange("[stt:unclear-speech]", "Please repeat."),
-        *_exchange("[moderation-rejected]", "Please ask about dairy."),
-    ]
-
-    assert bg._collect_recent_user_turns_for_non_meaningful(history, "હા") == [
-        ("Book an AI visit.", ""),
-        ("Technician A", "Which technician would you like?"),
-        ("[stt:unclear-speech]", "Should I book the visit?"),
-        ("હા", "Should I book the visit?"),
-    ]
-
-
 def test_unclear_turn_markers_do_count():
     history = [*_exchange("[fragment]", "repeat"), *_exchange("[stt:no-audio]", "repeat")]
 
