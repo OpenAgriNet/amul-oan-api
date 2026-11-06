@@ -72,7 +72,7 @@ def _is_eligible_non_meaningful_turn(text: str) -> bool:
     cleaned = (text or "").strip()
     if not cleaned:
         return False
-    if cleaned in _NON_MEANINGFUL_EXCLUDED_TURNS:
+    if cleaned in _NON_MEANINGFUL_EXCLUDED_TURNS or cleaned.startswith("Runtime context for this turn:"):
         return False
     return True
 
@@ -96,27 +96,39 @@ def _normalize_user_turn_for_non_meaningful(text: str) -> str:
     return cleaned
 
 
-def _collect_recent_user_turns_for_non_meaningful(history: list, current_query: str, limit: int = 5) -> list[str]:
-    turns: list[str] = []
-    for msg in reversed(history or []):
-        for part in getattr(msg, "parts", []) or []:
-            if getattr(part, "part_kind", "") != "user-prompt":
-                continue
+def _collect_recent_user_turns_for_non_meaningful(
+    history: list, current_query: str, limit: int = 5
+) -> list[tuple[str, str]]:
+    """Pair each eligible caller turn with the prompt it could be answering."""
+    unclear_turns = {
+        HISTORY_MARKERS[key] for key in ("fragment", "low_confidence", "stt_no_audio", "stt_unclear")
+    }
+    turns: list[tuple[str, str]] = []
+    assistant_prompt = ""
+    keep_assistant_text = False
+    for message in history:
+        for part in getattr(message, "parts", ()) or ():
             content = getattr(part, "content", None)
-            if not isinstance(content, str):
+            if not isinstance(content, str) or not content.strip():
                 continue
-            normalized = _normalize_user_turn_for_non_meaningful(content)
-            if not _is_eligible_non_meaningful_turn(normalized):
-                continue
-            turns.append(normalized)
-            if len(turns) >= limit - 1:
-                break
-        if len(turns) >= limit - 1:
-            break
-    turns.reverse()
-    normalized_current = _normalize_user_turn_for_non_meaningful(current_query)
-    if _is_eligible_non_meaningful_turn(normalized_current):
-        turns.append(normalized_current)
+            kind = getattr(part, "part_kind", "")
+            if kind == "user-prompt":
+                caller_text = _normalize_user_turn_for_non_meaningful(content)
+                if _is_eligible_non_meaningful_turn(caller_text):
+                    turns.append((caller_text, assistant_prompt))
+                # Retain the question across synthetic turns and requests to
+                # repeat unclear audio. Their canned replies are not new prompts.
+                keep_assistant_text = (
+                    _is_eligible_non_meaningful_turn(caller_text) and caller_text not in unclear_turns
+                )
+                if keep_assistant_text:
+                    assistant_prompt = ""
+            elif kind == "text" and keep_assistant_text:
+                assistant_prompt = f"{assistant_prompt} {content.strip()}".strip()[-600:]
+
+    caller_text = _normalize_user_turn_for_non_meaningful(current_query)
+    if _is_eligible_non_meaningful_turn(caller_text):
+        turns.append((caller_text, assistant_prompt))
     return turns[-limit:]
 
 
@@ -161,7 +173,9 @@ class VoiceBackground:
         self._history_text = turn.query
         history = list(turn.history)
         self._moderation_recent_history = "\n\n".join(format_message_pairs(history, 2))
-        self._non_meaningful_turns = _collect_recent_user_turns_for_non_meaningful(history, turn.query, limit=5)
+        window = _collect_recent_user_turns_for_non_meaningful(history, turn.query)
+        self._non_meaningful_turns = [caller for caller, _ in window]
+        self._booking_attempted = False
         self._started_at: dict[str, float] = {}
         self._done_at: dict[str, float] = {}
         self._moderation_task = self._timed(
@@ -177,6 +191,7 @@ class VoiceBackground:
             "non_meaningful",
             check_non_meaningful_streak(
                 user_turns=self._non_meaningful_turns,
+                assistant_prompts=[assistant for _, assistant in window],
                 source_lang=self._source_lang,
                 execution=execution,
             ),
@@ -293,6 +308,9 @@ class VoiceBackground:
             return await self._decline(verdict)
         return None
 
+    def record_booking_attempt(self) -> None:
+        self._booking_attempted = True
+
     async def gate(self) -> Optional[ClassifierResult]:
         declined = await self.decline()
         if declined is not None:
@@ -300,7 +318,13 @@ class VoiceBackground:
         # Resolving here also reaps the classifier task on the normal agent path.
         streak = await self._resolve_non_meaningful()
         if streak is not None and streak.five_consecutive_non_meaningful:
-            return self._hang_up(streak)
+            if not self._booking_attempted:
+                return self._hang_up(streak)
+            logger.info(
+                "Suppressed non-meaningful hang-up on AI booking turn session_id=%s process_id=%s",
+                self._turn.session_id,
+                self._process_id,
+            )
         return None
 
     async def close(self) -> None:
