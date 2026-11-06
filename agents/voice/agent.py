@@ -55,7 +55,7 @@ VOICE_SYSTEM_PROMPT_NAME = _resolve_voice_prompt_name()
 STATIC_VOICE_SYSTEM_PROMPT = _render_voice_prompt(VOICE_SYSTEM_PROMPT_NAME)
 
 def _build_voice_agent(name: str, tools, instructions: str = STATIC_VOICE_SYSTEM_PROMPT):
-    if settings.fodderinfo_search_api_key:
+    if settings.fodderinfo_api_key:
         instructions += "\n\n" + FODDERINFO_INSTRUCTIONS
     return Agent(
         # Model selection belongs to app.llm_core: every run is given the

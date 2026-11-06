@@ -1631,7 +1631,7 @@ async def run_turn(
                 # disconnect-safe first-token-commit primitives are reused verbatim.
                 new_messages: list = []
                 prompt = agent_input.prompt
-                if (turn.persona == "farmer" and settings.fodderinfo_search_api_key
+                if (turn.persona == "farmer" and settings.fodderinfo_api_key
                         and turn.query != agent_input.deps.query):
                     prompt += f"\n\nOriginal user wording (for fodder name lookup): {turn.query}"
                 # Only a surface that sets limits passes them (voice's).

@@ -43,10 +43,11 @@ unavailable, offer the returned public listing link when present."""
 
 
 async def prepare_fodder_tool(ctx, tool_def):
-    return tool_def if settings.fodderinfo_search_api_key else None
+    return tool_def if settings.fodderinfo_api_key else None
 
 
-async def _get(path: str, key: str, params: dict | None = None) -> dict:
+async def _get(path: str, params: dict | None = None) -> dict:
+    key = settings.fodderinfo_api_key
     if key:
         try:
             async with httpx.AsyncClient(timeout=_TIMEOUT_SECONDS, follow_redirects=False) as client:
@@ -120,7 +121,7 @@ async def search_fodder_availability(
 ) -> dict:
     """Find current seller listings in Gujarat. Use the farmer's wording for q, and English names for subdistrict (taluka) and village."""
     params = {name: value for name, value in locals().items() if value is not None}
-    body = await _get("listings", settings.fodderinfo_search_api_key, params)
+    body = await _get("listings", params)
     status = body.get("status")
     if status == "ok":
         rows = body.get("listings")
@@ -145,7 +146,7 @@ async def lookup_fodder_locations(
 ) -> dict:
     """Resolve a Gujarat place name by prefix. Use English for village and taluka. Use a known parent ID to narrow the lookup."""
     params = {name: value for name, value in locals().items() if value is not None}
-    body = await _get("locations", settings.fodderinfo_search_api_key, params)
+    body = await _get("locations", params)
     if body.get("status") == "no_match":
         report_tool("no_result")
         return {"status": "no_match"}
@@ -156,8 +157,8 @@ async def lookup_fodder_locations(
     return {"status": "unavailable"}
 
 
-async def _detail(listing_id: int, key: str) -> tuple[str, dict]:
-    body = await _get(f"listings/{listing_id}", key)
+async def _detail(listing_id: int) -> tuple[str, dict]:
+    body = await _get(f"listings/{listing_id}")
     status = body.get("status")
     if status == "ok":
         item = body.get("listing")
@@ -174,7 +175,7 @@ async def _detail(listing_id: int, key: str) -> tuple[str, dict]:
 
 async def get_fodder_listing(listing_id: ListingId) -> dict:
     """Recheck a specific FodderInfo listing before describing it. Omits contact details."""
-    status, item = await _detail(listing_id, settings.fodderinfo_search_api_key)
+    status, item = await _detail(listing_id)
     return {"status": status, "listing": _listing(item)} if item else {"status": status}
 
 
@@ -186,12 +187,11 @@ async def request_fodder_seller_phone(ctx: RunContext[FarmerContext], listing_id
     if not deps.reserve_fodder_contact():
         return {"status": "already_requested"}
 
-    contact_key = settings.fodderinfo_contact_api_key
-    status, item = await _detail(listing_id, contact_key or settings.fodderinfo_search_api_key)
+    status, item = await _detail(listing_id)
     if not item:
         return {"status": status}
     mobile = _fields(item.get("contact"), "mobile").get("mobile")
-    if contact_key and item.get("contact_status") == "shared" and isinstance(mobile, str) and re.fullmatch(r"[0-9]{10}", mobile):
+    if item.get("contact_status") == "shared" and isinstance(mobile, str) and re.fullmatch(r"[0-9]{10}", mobile):
         deps.set_fodder_contact(mobile)
         return {"status": "delivery_pending"}
     return {"status": "contact_unavailable", "listing_url": f"{ORIGIN}/listing/{listing_id}"}
