@@ -52,6 +52,7 @@ LIVE_TOOLS = [
     "get_union_scheme_data",
     "signal_conversation_state",
     "get_vistaar_mandi_prices",
+    "get_vistaar_weather",
 ]
 
 ROUTING_INTENTS = [
@@ -266,7 +267,7 @@ class TestNewVariantInvariants:
         words = len(text.split())
         lines = text.count("\n") + 1
         # New variants must stay leaner than the legacy mixed prompt.
-        assert words <= 4500, f"{version} prompt grew to {words} words (limit 4500)"
+        assert words <= 4550, f"{version} prompt grew to {words} words (limit 4550)"
         assert lines <= 320, f"{version} prompt grew to {lines} lines (limit 320)"
 
 

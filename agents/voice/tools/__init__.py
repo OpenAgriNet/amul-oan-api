@@ -25,6 +25,7 @@ from agents.tools.memory_tools import (
     search_memories,
 )
 from agents.tools.vistaar import get_vistaar_mandi_prices
+from agents.voice.tools.vistaar import get_vistaar_weather
 
 
 def _with_nudge_signal(func):
@@ -80,6 +81,14 @@ BASE_TOOLS = [
     ),
     Tool(
         _with_nudge_signal(get_vistaar_mandi_prices),
+        takes_ctx=True,
+        docstring_format='auto',
+        require_parameter_descriptions=True,
+    ),
+    # AMUL-81. Like mandi, not identity-gated: with no farmer district the
+    # forecast falls back to Anand and says so.
+    Tool(
+        _with_nudge_signal(get_vistaar_weather),
         takes_ctx=True,
         docstring_format='auto',
         require_parameter_descriptions=True,
