@@ -707,6 +707,11 @@ class Settings(BaseSettings):
     heat_alert_call_delay_seconds: int = int(os.getenv("HEAT_ALERT_CALL_DELAY_SECONDS", "600"))
     # Test phase: comma-separated 10-digit numbers; when set, nobody else is rung.
     heat_alert_call_only_numbers: str = os.getenv("HEAT_ALERT_CALL_ONLY_NUMBERS", "")
+    # An unanswered call is rung again this many times, this far apart, while the AI window is open.
+    heat_alert_call_retries: int = int(os.getenv("HEAT_ALERT_CALL_RETRIES", "2"))
+    heat_alert_call_retry_after_seconds: int = int(os.getenv("HEAT_ALERT_CALL_RETRY_AFTER_SECONDS", "1800"))
+    # Seconds between two dials on the Raya key, across all replicas (Raya's default limit: 1 call / 20 s).
+    raya_outbound_call_gap_seconds: float = float(os.getenv("RAYA_OUTBOUND_CALL_GAP_SECONDS", "25"))
 
     # ── Test cases (/api/test-cases/) ────────────────────────────────────────
     # Dev only: the routes are mounted only when this is on, and the UI's
