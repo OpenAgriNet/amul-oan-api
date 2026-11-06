@@ -357,10 +357,14 @@ def _heat_alert_context(script: str, conversation: Optional[Sequence[tuple[str, 
         )
     block += (
         "\nOn this call a short reply to the booking question is an answer, not noise: હા, હ, હં, હા જી, "
-        "જી, ઓકે, બરાબર, કરો, કરી દો -> 'Yes.'; ના, નહી, નથી, ના ના -> 'No.'. A greeting stays a greeting.\n"
+        "જી, ઓકે, બરાબર, કરો, કરી દો -> 'Yes.'; ના, નહી, નથી, ના ના -> 'No.'; હમ, હમ્મ -> 'Hmm.' (only these two, "
+        "spelled with મ: હં is 'Yes.'). A greeting stays a greeting.\n"
     )
     if last is not None and "confirm" in last.lower():
-        block += "The last assistant turn read a booking back: translate an agreement as 'Yes, confirm the booking.'.\n"
+        block += (
+            "The last assistant turn read a booking back: translate an agreement as 'Yes, confirm the booking.', "
+            "and only a clear agreement.\n"
+        )
     return block
 
 
