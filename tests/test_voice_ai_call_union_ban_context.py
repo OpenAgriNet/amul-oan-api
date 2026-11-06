@@ -194,7 +194,7 @@ def test_technician_summary_still_lists_kaira_technicians():
         aiTechnicians=[_kaira_group()],
     )
     text = _build_ai_technician_summary(envelope)
-    assert "Ramesh Patel" in text
+    assert "name=Ramesh" in text
     assert "ait-1" in text
     assert UNION_BANNED_MESSAGE not in text
     assert "Do not call `create_ai_call`" not in text
@@ -216,7 +216,7 @@ def test_technician_summary_mixed_unions_hides_kutch_keeps_kaira():
     )
     text = _build_ai_technician_summary(envelope)
     _assert_ban_copy(text)
-    assert "Ramesh Patel" in text
+    assert "name=Ramesh" in text
     assert "ait-1" in text
     assert "Kutch Tech" not in text
     assert "ait-kutch" not in text
@@ -239,7 +239,7 @@ def test_technician_summary_without_farmers_keeps_cached_groups():
     """Existing unit tests build envelopes with technician groups and no farmers."""
     envelope = FarmerDataEnvelope(farmers=[], aiTechnicians=[_kaira_group()])
     text = _build_ai_technician_summary(envelope)
-    assert "Ramesh Patel" in text
+    assert "name=Ramesh" in text
     assert UNION_BANNED_MESSAGE not in text
 
 

@@ -74,9 +74,12 @@ def test_a_context_built_without_a_status_offers_no_identity_tools():
 def test_the_agents_have_voices_tools():
     base = [
         "search_terms", "search_documents", "create_ai_call", "get_farmer_milk_collection_details",
-        "get_cattle_trade_prices", "get_vistaar_mandi_prices", "signal_conversation_state", "find_nearby_vet_offices", "check_loan_eligibility",
+        "get_cattle_trade_prices", "get_verified_cattle_listings", "get_vistaar_mandi_prices", "signal_conversation_state", "find_nearby_vet_offices", "check_loan_eligibility",
     ]
-    signed_in = ["search_memories", "list_memories", "read_memory", "get_union_scheme_data", "get_farmer_bonus_amount"]
+    signed_in = [
+        "search_memories", "list_memories", "read_memory", "find_animals", "get_union_scheme_data",
+        "get_farmer_bonus_amount",
+    ]
     assert [tool.name for tool in BASE_TOOLS] == base
     assert [tool.name for tool in SIGNED_IN_FARMER_TOOLS] == signed_in
     assert sorted(voice_agent_module.voice_agent._function_toolset.tools) == sorted(base)

@@ -8,7 +8,12 @@ from typing import Optional
 import regex
 
 from agents.deps import FarmerAccount
-from agents.tools.farmer_cache import technician_lookup_failed
+from agents.tools.farmer_cache import (
+    _record_tags,
+    animals_age_seconds,
+    animals_expired,
+    technician_lookup_failed,
+)
 from agents.tools.models.farmer_transport import FarmerDataEnvelope, FarmerRecord
 from agents.voice.models.ai_call import strip_ait_name_codes
 from agents.voice.services.farmer_identity import (
@@ -60,11 +65,39 @@ def _render_breeding_value(value) -> str:
     return str(value)
 
 
+def _animal_records_status(envelope: FarmerDataEnvelope, loaded: int) -> list[str]:
+    """How much of the herd the per-animal list below covers and how old it is, so
+    the agent never reads a missing or old record as "no such animal" (AMUL-68)."""
+    tags = {tag for record in envelope.farmers for tag in _record_tags(record)}
+    if not tags:
+        return []
+    named = sum(
+        1 for record in envelope.farmers for animal in (record.animals or []) if animal.animalName
+    )
+    age = animals_age_seconds(envelope)
+    if age is None:
+        fetched = "not fetched yet"
+    else:
+        fetched = f"fetched {round(age / 3600, 1)} hours ago"
+        if animals_expired(envelope):
+            fetched += ", past their refresh interval"
+        failed = len([tag for tag in envelope.animalsFailedTags if tag in tags])
+        if failed:
+            fetched += f", {failed} could not be fetched in the last refresh"
+    return [
+        f"- Animal records: {loaded} of {len(tags)} tags loaded, {fetched}, names set on {named}.",
+        "- To find one of the farmer's animals (by name, tag, type, breed or stage), call "
+        "find_animals: it refreshes old records and says how complete they are. Never say an "
+        "animal is not registered from this list alone.",
+    ]
+
+
 def _append_animal_records(lines: list[str], envelope: FarmerDataEnvelope) -> None:
     """Per-animal records (incl. last AI date + bull id) for breeding/AI-history
     questions. Tags are masked (last 4 digits) so TTS never reads a full tag aloud.
     Populated by the background cache refresh — absent on a brand-new caller's
-    first turn, present from the next turn on."""
+    first turn, present from the next turn on; the status line above them says
+    how many tags they cover and how old they are."""
     blocks: list[str] = []
     for record in envelope.farmers:
         for animal in getattr(record, "animals", None) or []:
@@ -84,6 +117,10 @@ def _append_animal_records(lines: list[str], envelope: FarmerDataEnvelope) -> No
             else:
                 parts.append("no AI records available")
             blocks.append("- " + ", ".join(parts))
+    status = _animal_records_status(envelope, len(blocks))
+    if status:
+        lines.append("")
+        lines.extend(status)
     if blocks:
         lines.append("")
         lines.append("### Per-animal AI / breeding history")
@@ -532,6 +569,22 @@ def _append_ai_call_union_ban_lines(lines: list[str], farmer: FarmerRecord) -> N
     lines.append("- Do not ask which technician they want. Do not call `create_ai_call`.")
 
 
+def _short_technician_names(names: list[Optional[str]]) -> list[Optional[str]]:
+    """Each technician's first name, the list read aloud is long enough without
+    the rest. Two technicians sharing it keep as many words as tell them apart."""
+    worded = [(name or "").casefold().split() for name in names]
+
+    def short(index: int) -> Optional[str]:
+        words = (names[index] or "").split()
+        for count in range(1, len(words)):
+            head = worded[index][:count]
+            if not any(other[:count] == head for i, other in enumerate(worded) if i != index):
+                return " ".join(words[:count])
+        return names[index]
+
+    return [short(index) for index in range(len(names))]
+
+
 def _build_ai_technician_summary(envelope: Optional[FarmerDataEnvelope]) -> str:
     if envelope is None:
         return ""
@@ -570,8 +623,8 @@ def _build_ai_technician_summary(envelope: Optional[FarmerDataEnvelope]) -> str:
         lines.append("- AI technician options for booking are internal context, not user-provided information.")
         lines.append("- The caller does not know which AI technicians are available unless you tell them by technician name.")
         lines.append("- AI technician options for booking are grouped by farmer and society.")
-        lines.append("- Each technician option only has these fields: id, full_name, mobile_number.")
-        lines.append("- When asking the farmer to choose a technician, use the technician full name in natural spoken form.")
+        lines.append("- Each technician option only has these fields: id, name, mobile_number.")
+        lines.append("- When asking the farmer to choose a technician, say the name exactly as given here, nothing longer.")
         lines.append("- Do not ask by technician position, number, option index, or ordinal words such as first, second, or third.")
         lines.append("- Mention phone only if a disambiguating mobile number is needed.")
         # Every group and every technician is listed. A cap here is silent: the
@@ -599,15 +652,15 @@ def _build_ai_technician_summary(envelope: Optional[FarmerDataEnvelope]) -> str:
                 else:
                     lines.append("- AI technician option: none available for this farmer group.")
                 continue
-            for technician in technicians:
-                name = strip_ait_name_codes(technician.get("fullName"))
+            names = _short_technician_names([strip_ait_name_codes(t.get("fullName")) for t in technicians])
+            for technician, name in zip(technicians, names):
                 mobile = technician.get("mobileNumber")
                 user_id = technician.get("userId")
                 option = "- AI technician option:"
                 if user_id:
                     option += f" id={user_id}"
                 if name:
-                    option += f" full_name={name}"
+                    option += f" name={name}"
                 if mobile:
                     option += f", mobile_number={mobile}"
                 lines.append(option)

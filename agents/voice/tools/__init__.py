@@ -17,7 +17,10 @@ from agents.voice.tools.union_schemes import get_union_scheme_data, prepare_get_
 from agents.voice.tools.loan import check_loan_eligibility, prepare_check_loan_eligibility
 from agents.voice.tools.bonus import get_farmer_bonus_amount, prepare_get_farmer_bonus_amount
 from agents.voice.services.farmer_identity import prepare_requires_farmer_identity
-from agents.tools.cattle_trade import get_cattle_trade_prices
+from agents.tools.cattle_trade import (
+    get_cattle_trade_prices,
+    get_verified_cattle_listings,
+)
 from agents.tools.memory_tools import (
     list_memories,
     prepare_memory_tool,
@@ -25,6 +28,7 @@ from agents.tools.memory_tools import (
     search_memories,
 )
 from agents.tools.vistaar import get_vistaar_mandi_prices
+from agents.tools.herd import find_animals_spoken, prepare_find_animals
 
 
 def _with_nudge_signal(func):
@@ -75,6 +79,12 @@ BASE_TOOLS = [
     Tool(
         _with_nudge_signal(get_cattle_trade_prices),
         takes_ctx=False,
+        docstring_format='auto',
+        require_parameter_descriptions=True,
+    ),
+    Tool(
+        _with_nudge_signal(get_verified_cattle_listings),
+        takes_ctx=True,
         docstring_format='auto',
         require_parameter_descriptions=True,
     ),
@@ -157,6 +167,15 @@ SIGNED_IN_FARMER_TOOLS = [
     #     require_parameter_descriptions=False,
     # ),
 
+    # The farmer's own animals, shared with chat (agents/tools/herd.py): tags come
+    # back as their last four digits in words, as the call's context names them.
+    Tool(
+        _with_nudge_signal(find_animals_spoken),  # named find_animals, like chat's
+        takes_ctx=True,
+        docstring_format='auto',
+        require_parameter_descriptions=True,
+        prepare=prepare_find_animals,
+    ),
     Tool(
         _with_nudge_signal(get_union_scheme_data),
         takes_ctx=True,

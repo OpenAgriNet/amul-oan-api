@@ -119,6 +119,9 @@ class FarmerDataEnvelope(BaseModel):
     # tags with no data are not refetched on every voice turn. Refreshes carry
     # it over with the animals until the refresh interval has passed.
     animalsFetchedAt: Optional[str] = None
+    # Tags whose animal fetch failed on the last refresh (they keep what was
+    # cached), so animalsFetchedAt is not read as "every record is current".
+    animalsFailedTags: List[str] = []
 
     @classmethod
     def from_records(

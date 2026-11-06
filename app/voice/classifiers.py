@@ -191,9 +191,11 @@ def _fast_paths_apply(turn: Turn) -> bool:
     They answer only while nothing meaningful has been said yet. They also leave
     alone the reply to an outbound call's opening question: "હા બોલો", the most
     likely yes, is itself a greeting, and answering it with the greeting would
-    lose the reply.
+    lose the reply. A heat-alert call is the same: the provider has already asked
+    whether to book, outside our history, so a bare "હા" or "ના" is the answer,
+    not a fragment.
     """
-    if turn.call is not None and turn.call.outbound_consent_turn:
+    if turn.call is not None and (turn.call.outbound_consent_turn or turn.call.heat_alert is not None):
         return False
     return not _has_meaningful_history(turn.history)
 

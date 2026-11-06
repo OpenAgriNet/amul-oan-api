@@ -189,6 +189,7 @@ def build_redis_client():
             host=settings.redis_host,
             port=settings.redis_port,
             db=settings.redis_db,
+            username=settings.redis_username,
             password=settings.redis_password,
             socket_connect_timeout=timeout,
             socket_timeout=timeout,
