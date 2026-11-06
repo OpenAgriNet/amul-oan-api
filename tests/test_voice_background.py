@@ -117,7 +117,7 @@ def test_the_window_is_the_last_four_turns_plus_this_one():
     for text in ["one", "two", "three", "four", "five"]:
         history.extend(_exchange(text, "reply"))
 
-    assert bg._collect_recent_user_turns_for_non_meaningful(history, "six") == ["two", "three", "four", "five", "six"]
+    assert bg._collect_recent_user_turns_for_non_meaningful(history, "six") == [(text, "reply") for text in ("two", "three", "four", "five", "six")]
 
 
 def test_system_turns_neither_count_nor_break_the_streak():
@@ -126,16 +126,33 @@ def test_system_turns_neither_count_nor_break_the_streak():
         *_exchange("[pretranslation-failed]", "please repeat"),
         *_exchange("[moderation-rejected]", "declined"),
         *_exchange("[outbound-call-started]", "intro"),
+        *_exchange("Runtime context for this turn: test context", "system reply"),
         *_exchange("ઓકે", "ok"),
     ]
 
-    assert bg._collect_recent_user_turns_for_non_meaningful(history, "હમ્મ") == ["હા", "ઓકે", "હમ્મ"]
+    assert bg._collect_recent_user_turns_for_non_meaningful(history, "હમ્મ") == [("હા", ""), ("ઓકે", "ok"), ("હમ્મ", "ok")]
+
+
+def test_booking_answers_keep_the_question_they_are_answering():
+    history = [
+        *_exchange("Book an AI visit.", "Which technician would you like?"),
+        *_exchange("Technician A", "Should I book the visit?"),
+        *_exchange("[stt:unclear-speech]", "Please repeat."),
+        *_exchange("[moderation-rejected]", "Please ask about dairy."),
+    ]
+
+    assert bg._collect_recent_user_turns_for_non_meaningful(history, "હા") == [
+        ("Book an AI visit.", ""),
+        ("Technician A", "Which technician would you like?"),
+        ("[stt:unclear-speech]", "Should I book the visit?"),
+        ("હા", "Should I book the visit?"),
+    ]
 
 
 def test_unclear_turn_markers_do_count():
     history = [*_exchange("[fragment]", "repeat"), *_exchange("[stt:no-audio]", "repeat")]
 
-    assert bg._collect_recent_user_turns_for_non_meaningful(history, "હા") == ["[fragment]", "[stt:no-audio]", "હા"]
+    assert bg._collect_recent_user_turns_for_non_meaningful(history, "હા") == [("[fragment]", ""), ("[stt:no-audio]", ""), ("હા", "")]
 
 
 @pytest.mark.parametrize("stored, expected", [
@@ -175,6 +192,7 @@ def test_building_it_starts_both_checks_with_voices_inputs(checks):
     assert moderation["execution"] is _EXECUTION
     (streak,) = checks["non_meaningful"]
     assert streak["user_turns"] == ["oldest question", "મારી ગાયને તાવ છે", "ભેંસ", "હા"]
+    assert streak["assistant_prompts"] == ["", "old answer", "Call a vet.", "Which animal?"]
     assert streak["source_lang"] == "gu"
     assert streak["execution"] is _EXECUTION
 
