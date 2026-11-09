@@ -735,3 +735,14 @@ def test_a_rejected_query_with_nothing_translated_is_declined_on_the_seam(monkey
     assert emission.text.startswith("<gu> ")
     assert seen["deps"] == [], "the agent ran"
     assert ("output", "moderation_rejected", emission.text) in _Outcomes.seen
+
+
+def test_gujarati_date_prompt_preserves_date_components_and_uncertainty():
+    messages = vp._build_openai_pretranslation_messages(
+        "Gujarati", "gu", "વીસ નવ બે હજાર છવ્વીસ"
+    )
+    prompt = messages[0]["content"]
+    assert "વીસ નવ બે હજાર છવ્વીસ is 20 September 2026" in prompt
+    assert "'unclear year'" in prompt
+    assert "Never supply a guessed year" in prompt
+    assert "Keep ordinary quantities and identifiers as spoken" in prompt

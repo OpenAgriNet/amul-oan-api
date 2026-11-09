@@ -1,8 +1,13 @@
 """Tool for fetching farmer milk collection and deduction details."""
+from datetime import date, datetime
 from typing import Optional
+from zoneinfo import ZoneInfo
+
+from dateutil.relativedelta import relativedelta
 
 from pydantic import ValidationError
 from pydantic_ai import RunContext
+from pydantic_ai.messages import TextPart, UserPromptPart
 
 from agents.deps import FarmerAccount, FarmerContext
 from agents.tools.beckn.amul import AuthenticatedFarmerAccount, fetch_milk_collection
@@ -113,6 +118,52 @@ def _account_label(account: FarmerAccount, multi: bool) -> str:
     return f"Account — {label}:"
 
 
+def _india_today() -> date:
+    return datetime.now(ZoneInfo("Asia/Kolkata")).date()
+
+
+def _spoken_date(value: date) -> str:
+    return f"{value.day} {value:%B %Y}"
+
+
+def _historical_question(start: date, end: date) -> str:
+    period = (
+        f"for {_spoken_date(start)}" if start == end
+        else f"from {_spoken_date(start)} to {_spoken_date(end)}"
+    )
+    return f"Should I check milk collection {period}?"
+
+
+def _confirmed_historical_range(ctx: RunContext[FarmerContext], question: str) -> bool:
+    # Read the actual caller turn and preceding reply, not a model-supplied flag.
+    if ctx.deps.query.strip().lower().rstrip(".!").strip() not in {
+        "yes", "yes please", "yes, please", "okay", "ok", "હા", "હા જી", "બરાબર",
+    }:
+        return False
+
+    # Skip current-turn messages. Only the immediately preceding assistant reply
+    # can authorize this range, and only when it asked this exact question.
+    current_user_seen = False
+    for message in reversed(getattr(ctx, "messages", ())):
+        if any(
+            isinstance(part, UserPromptPart)
+            and not (
+                isinstance(part.content, str)
+                and part.content.startswith("Hints for the current user query:\n")
+            )
+            for part in message.parts
+        ):
+            if current_user_seen:
+                return False
+            current_user_seen = True
+            continue
+        if current_user_seen:
+            text = " ".join(part.content for part in message.parts if isinstance(part, TextPart))
+            if text.strip():
+                return " ".join(text.split()).casefold() == question.casefold()
+    return False
+
+
 async def get_farmer_milk_collection_details(
     ctx: RunContext[FarmerContext],
     union_code: str,
@@ -159,6 +210,10 @@ async def get_farmer_milk_collection_details(
         return (
             "Milk collection lookup failed. The farmer account details are not available."
         )
+    for component in ("day", "month", "year"):
+        if f"unclear {component}" in ctx.deps.query.casefold():
+            return f"Milk collection lookup needs clarification. Ask the caller for the {component}."
+
     logger.info(
         "Milk collection tool invoked: accounts=%s from=%s to=%s (llm_codes=%s/%s)",
         len(accounts), fromdate, todate, union_code, society_code,
@@ -169,6 +224,7 @@ async def get_farmer_milk_collection_details(
         todate,
         session_id=ctx.deps.session_id,
         tool_call_id=getattr(ctx, "tool_call_id", None),
+        caller_context=ctx,
     )
 
 
@@ -179,6 +235,7 @@ async def fetch_milk_summary_for_accounts(
     *,
     session_id: Optional[str] = None,
     tool_call_id: Optional[str] = None,
+    caller_context: RunContext[FarmerContext] | None = None,
 ) -> str:
     """Fan out over every account and render one plain-text summary.
 
@@ -201,9 +258,22 @@ async def fetch_milk_summary_for_accounts(
             fromdate=fromdate,
             todate=todate,
         ).validate_date_range()
+        start, end = date.fromisoformat(fromdate), date.fromisoformat(todate)
     except (ValidationError, ValueError) as e:
         logger.info("Milk collection date validation failed: from=%s to=%s error=%s", fromdate, todate, e)
-        return f"Milk collection lookup failed. {e}"
+        return "Milk collection lookup failed. Ask for a valid calendar date or range in YYYY-MM-DD."
+
+    today = _india_today()
+    if end > today:
+        return (
+            f"Milk collection lookup needs clarification. Today is {_spoken_date(today)}. "
+            "The requested range extends into the future. Ask the caller for a valid date or "
+            "offer to end the range today if it has already started. Wait for their reply."
+        )
+    if start < today - relativedelta(years=1):
+        question = _historical_question(start, end)
+        if caller_context is None or not _confirmed_historical_range(caller_context, question):
+            return f"Historical milk collection range needs confirmation. Say exactly: {question}"
 
     multi = len(accounts) > 1
     sections: list[str] = []

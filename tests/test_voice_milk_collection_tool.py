@@ -1,7 +1,13 @@
 import asyncio
 import os
 import sys
+from datetime import date
 from types import SimpleNamespace
+
+import pytest
+from pydantic_ai import Agent
+from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, ToolCallPart, UserPromptPart
+from pydantic_ai.models.function import FunctionModel
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -207,3 +213,87 @@ def test_outbound_prefetch_tags_the_lookup_with_the_call(monkeypatch):
 
     assert seen["session_id"] == "s-out"
     assert len(cached) == 1
+
+
+@pytest.mark.parametrize(
+    "today,query,start,end,expected",
+    [
+        ("2026-10-09", "Milk for 20 September 2026", "2026-09-20", "2026-09-20", None),
+        ("2026-09-16", "Milk for 16 August 2026", "2026-08-16", "2026-08-16", None),
+        ("2026-10-09", "Milk for 9 October, unclear year", "2022-10-09", "2022-10-09", "Ask the caller for the year"),
+        ("2026-10-08", "First ten days of October", "2026-10-01", "2026-10-10", "Today is 8 October 2026"),
+        ("2026-10-08", "Yes", "2026-10-01", "2026-10-08", None),
+        ("2026-10-08", "Today", "2026-10-08", "2026-10-08", None),
+        ("2026-10-08", "Tomorrow", "2026-10-09", "2026-10-09", "extends into the future"),
+        ("2026-10-08", "8 October 2025", "2025-10-08", "2025-10-08", None),
+        ("2026-10-08", "7 October 2025", "2025-10-07", "2025-10-07", "needs confirmation"),
+        ("2024-02-29", "28 February 2023", "2023-02-28", "2023-02-28", None),
+        ("2024-03-01", "29 February 2024", "2024-02-29", "2024-02-29", None),
+        ("2026-10-08", "29 February 2026", "2026-02-29", "2026-02-29", "valid calendar date"),
+        ("2026-10-08", "8 October to 1 October", "2026-10-08", "2026-10-01", "valid calendar date"),
+    ],
+)
+def test_date_guard(monkeypatch, today, query, start, end, expected):
+    calls = []
+
+    async def fetch(account, **kwargs):
+        calls.append((kwargs["fromdate"], kwargs["todate"]))
+        return FarmerMilkCollectionResponseModel.model_validate({"milk": [], "deduction": []})
+
+    monkeypatch.setattr(FETCH, fetch)
+    monkeypatch.setattr("agents.voice.tools.milk_collection._india_today", lambda: date.fromisoformat(today))
+    ctx = _ctx([FarmerAccount(union_code="2021", society_code="1066", farmer_code="123")])
+    ctx.deps.query = query
+    result = asyncio.run(get_farmer_milk_collection_details(ctx, "2021", "1066", "123", start, end))
+
+    if expected is None:
+        assert calls == [(start, end)]
+        assert "fetched successfully" in result
+    else:
+        assert calls == []
+        assert expected in result
+
+
+@pytest.mark.parametrize(
+    "previous_reply,caller,requested_date,allowed",
+    [
+        ("Should I check milk collection for 1 April 2022?", "Yes.", "2022-04-01", True),
+        ("Should I check milk collection for 1 April 2022?", "Yes.", "2022-04-02", False),
+        ("Should I check milk collection for 1 April 2022?", "No.", "2022-04-01", False),
+        ("Do you need anything else?", "Yes.", "2022-04-01", False),
+    ],
+)
+def test_historical_confirmation_through_agent(monkeypatch, previous_reply, caller, requested_date, allowed):
+    calls = []
+
+    async def fetch(account, **kwargs):
+        calls.append((kwargs["fromdate"], kwargs["todate"]))
+        return FarmerMilkCollectionResponseModel.model_validate({"milk": [], "deduction": []})
+
+    def model(messages, _info):
+        for part in messages[-1].parts:
+            if part.part_kind == "tool-return":
+                return ModelResponse(parts=[TextPart(part.content)])
+        return ModelResponse(parts=[ToolCallPart(
+            "get_farmer_milk_collection_details",
+            dict(union_code="2021", society_code="1066", farmer_code="123",
+                 fromdate=requested_date, todate=requested_date),
+        )])
+
+    monkeypatch.setattr(FETCH, fetch)
+    monkeypatch.setattr("agents.voice.tools.milk_collection._india_today", lambda: date(2026, 10, 9))
+    deps = _ctx([FarmerAccount(union_code="2021", society_code="1066", farmer_code="123")]).deps
+    deps.query = caller
+    agent = Agent(FunctionModel(model), deps_type=FarmerContext, tools=[get_farmer_milk_collection_details])
+    result = agent.run_sync(caller, deps=deps, message_history=[
+        ModelRequest(parts=[UserPromptPart("Milk for 1 April 2022")]),
+        ModelResponse(parts=[TextPart(previous_reply)]),
+        ModelRequest(parts=[UserPromptPart("Hints for the current user query:\n- Test hint")]),
+    ])
+
+    if allowed:
+        assert calls == [(requested_date, requested_date)]
+        assert "fetched successfully" in result.output
+    else:
+        assert calls == []
+        assert "needs confirmation" in result.output
