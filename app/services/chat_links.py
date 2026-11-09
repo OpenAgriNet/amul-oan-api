@@ -9,35 +9,63 @@ _URL = re.compile(
     r"[a-z]{2,63}(?::[0-9]+)?(?:[/#?][^\s<>\"`]*)?",
     re.I,
 )
-_LINK_START = re.compile(r"!?\[[^\]\n]*\]\(")
-_OPEN_LABEL = re.compile(r"!?\[[^\]\n]*(?:\])?$")
 _AUTOLINK = re.compile(r"<https?://[^\s<>]+>", re.I)
 
 
-def link_spans(text: str, *, streaming: bool = False) -> list[tuple[int, int]]:
-    """URL and inline Markdown-link ranges, including balanced URL parentheses.
+def _balanced_end(text: str, start: int, opening: str, closing: str) -> int | None:
+    depth = 0
+    escaped = False
+    for index in range(start, len(text)):
+        char = text[index]
+        if not escaped:
+            if char == opening:
+                depth += 1
+            elif char == closing:
+                depth -= 1
+                if depth == 0:
+                    return index + 1
+        escaped = char == "\\" and not escaped
+    return None
 
-    While collecting a stream, an unfinished label/destination is protected too:
-    a closing bracket or parenthesis can arrive in a later model chunk.
+
+def markdown_link_spans(text: str, *, streaming: bool = False) -> list[tuple[int, int]]:
+    """Inline link ranges, including unfinished labels/destinations in a stream.
+
+    The same ranges guard batching and bypass translation. Nested brackets and
+    multiline labels remain together, as do balanced destination parentheses.
     """
-    spans = [match.span() for match in _AUTOLINK.finditer(text)]
-    for match in _LINK_START.finditer(text):
-        depth = 1
-        end = match.end()
-        escaped = False
-        while end < len(text) and depth:
-            char = text[end]
-            if not escaped:
-                if char == "(":
-                    depth += 1
-                elif char == ")":
-                    depth -= 1
-            escaped = char == "\\" and not escaped
-            end += 1
-        if depth == 0:
-            spans.append((match.start(), end))
-        elif streaming:
-            spans.append((match.start(), len(text)))
+    spans = []
+    offset = 0
+    while offset < len(text):
+        start = text.find("[", offset)
+        if start < 0:
+            break
+        if start and text[start - 1] == "\\":
+            offset = start + 1
+            continue
+        label_end = _balanced_end(text, start, "[", "]")
+        link_start = start - 1 if start and text[start - 1] == "!" else start
+        if label_end is None or label_end == len(text):
+            if streaming:
+                spans.append((link_start, len(text)))
+            break
+        if text[label_end] != "(":
+            offset = label_end
+            continue
+        end = _balanced_end(text, label_end, "(", ")")
+        if end is None:
+            if streaming:
+                spans.append((link_start, len(text)))
+            break
+        spans.append((link_start, end))
+        offset = end
+    return spans
+
+
+def link_spans(text: str) -> list[tuple[int, int]]:
+    """URL and inline Markdown-link ranges, including balanced URL parentheses."""
+    spans = markdown_link_spans(text)
+    spans.extend(match.span() for match in _AUTOLINK.finditer(text))
     for match in _URL.finditer(text):
         start, end = match.span()
         # Sentence punctuation and Markdown delimiters are not part of a URL.
@@ -53,10 +81,6 @@ def link_spans(text: str, *, streaming: bool = False) -> list[tuple[int, int]]:
                 break
         if end > start:
             spans.append((start, end))
-    if streaming:
-        match = _OPEN_LABEL.search(text)
-        if match:
-            spans.append(match.span())
     merged: list[tuple[int, int]] = []
     for start, end in sorted(spans):
         if merged and start < merged[-1][1]:
@@ -64,28 +88,6 @@ def link_spans(text: str, *, streaming: bool = False) -> list[tuple[int, int]]:
         else:
             merged.append((start, end))
     return merged
-
-
-def protect_sentence_boundaries(text: str, sentences: list[str]) -> list[str]:
-    """Merge punctuation splits inside links or the stream's unfinished word."""
-    spans = link_spans(text, streaming=True)
-    # Even before a token looks like a URL ("pmki"), its next chunk may add a
-    # domain suffix. Do not commit any boundary inside the final lexical token.
-    final_word = re.search(r"\S+$", text)
-    if final_word:
-        spans.append(final_word.span())
-    result = []
-    pending = ""
-    offset = 0
-    for sentence in sentences:
-        pending += sentence
-        offset += len(sentence)
-        if not any(start < offset < end for start, end in spans):
-            result.append(pending)
-            pending = ""
-    if pending:
-        result.append(pending)
-    return result
 
 
 def translation_parts(text: str) -> list[tuple[str, bool]]:

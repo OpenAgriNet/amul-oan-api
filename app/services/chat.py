@@ -36,7 +36,7 @@ from app.services.translation import (
     INDIAN_LANGUAGES,
     LANG_CODES,
 )
-from app.services.chat_links import protect_sentence_boundaries, translation_parts
+from app.services.chat_links import markdown_link_spans, translation_parts
 from pydantic_ai.messages import ModelRequest, ModelResponse, UserPromptPart, TextPart
 from app.services.identity_profile import (
     build_doctor_identity_response,
@@ -67,25 +67,28 @@ from app.turn.types import (
 
 
 class SentenceSegmenter:
-    sep = 'ŽžŽžSentenceSeparatorŽžŽž'
     latin_terminals = '!?.'
     jap_zh_terminals = '。！？'
     terminals = latin_terminals + jap_zh_terminals
 
     def __init__(self):
-        terminals = self.terminals
-        self._re = [
-            (regex.compile(r'(\P{N})([' + terminals + r'])(\p{Z}*)'),
-             r'\1\2\3' + self.sep),
-            (regex.compile(r'(' + terminals + r')(\P{N})'),
-             r'\1' + self.sep + r'\2'),
-        ]
+        # A punctuation mark is a boundary only once the following whitespace
+        # has arrived. A chunk ending at ".gov." must wait for the next chunk.
+        self._boundary = regex.compile(r'[' + self.terminals + r']\s+')
 
     @lru_cache(maxsize=2**16)
     def __call__(self, line: str):
-        for (_re, repl) in self._re:
-            line = _re.sub(repl, line)
-        return [t for t in line.split(self.sep) if t != '']
+        parts = []
+        start = 0
+        links = markdown_link_spans(line, streaming=True)
+        for boundary in self._boundary.finditer(line):
+            if any(left <= boundary.start() < right for left, right in links):
+                continue
+            parts.append(line[start:boundary.end()])
+            start = boundary.end()
+        if start < len(line):
+            parts.append(line[start:])
+        return parts
 
 
 sentence_segmenter = SentenceSegmenter()
@@ -94,7 +97,7 @@ sentence_segmenter = SentenceSegmenter()
 def extract_complete_sentences(text: str):
     if not text:
         return [], ""
-    sentences = protect_sentence_boundaries(text, sentence_segmenter(text))
+    sentences = sentence_segmenter(text)
     if len(sentences) <= 1:
         return [], text
     complete = sentences[:-1]
