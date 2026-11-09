@@ -36,6 +36,7 @@ from app.services.translation import (
     INDIAN_LANGUAGES,
     LANG_CODES,
 )
+from app.services.chat_links import protect_sentence_boundaries, translation_parts
 from pydantic_ai.messages import ModelRequest, ModelResponse, UserPromptPart, TextPart
 from app.services.identity_profile import (
     build_doctor_identity_response,
@@ -93,7 +94,7 @@ sentence_segmenter = SentenceSegmenter()
 def extract_complete_sentences(text: str):
     if not text:
         return [], ""
-    sentences = sentence_segmenter(text)
+    sentences = protect_sentence_boundaries(text, sentence_segmenter(text))
     if len(sentences) <= 1:
         return [], text
     complete = sentences[:-1]
@@ -634,24 +635,31 @@ async def _stream_to_client(
             yield "\n"
         delivered: list[str] = []
         try:
-            async for translated_chunk in translate_text_stream_fast(
-                text=text,
-                source_lang="english",
-                target_lang=translate_to,
-                max_output_chars=max_output_chars,
-                execution=execution,
-                parent=step.open(),
-                species=species,
-            ):
-                output_chunks.append(translated_chunk)
-                delivered.append(translated_chunk)
-                yield translated_chunk
-        except Exception as e:
-            logger.error(f"{label} translation failed, falling back to English: {e}")
-            step.failed(e)
-            output_chunks.append(text)
-            delivered.append(text)
-            yield text
+            for part, verbatim in translation_parts(text):
+                if verbatim:
+                    output_chunks.append(part)
+                    delivered.append(part)
+                    yield part
+                    continue
+                try:
+                    async for translated_chunk in translate_text_stream_fast(
+                        text=part,
+                        source_lang="english",
+                        target_lang=translate_to,
+                        max_output_chars=max_output_chars,
+                        execution=execution,
+                        parent=step.open(),
+                        species=species,
+                    ):
+                        output_chunks.append(translated_chunk)
+                        delivered.append(translated_chunk)
+                        yield translated_chunk
+                except Exception as e:
+                    logger.error(f"{label} translation failed, falling back to English: {e}")
+                    step.failed(e)
+                    output_chunks.append(part)
+                    delivered.append(part)
+                    yield part
         finally:
             step.record(text, delivered)
 

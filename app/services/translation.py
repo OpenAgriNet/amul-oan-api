@@ -731,6 +731,7 @@ _CHAT_STRICT_TRANSLATION_CONTRACT = (
     "Translate exactly what is present. Do not infer, guess, complete fragments, explain, add facts, add conclusions, or omit information. "
     "Preserve the speaker, addressee, negation, names, brands, units, and product identity. "
     "Write names, brands and abbreviations in {lang} script; never expand initials. "
+    "Never translate or transliterate URLs or domain names; copy their exact characters unchanged. "
     "Keep the markdown exactly: the same ** bold markers, bullets, numbered items, # headings and line breaks, in the same places. "
     "Keep every number exactly as written in the source, in the same digits: amounts, dates, decimals, percentages, list numbers and identifiers. "
     "Glossary and style rules guide wording only; they must not change the source meaning or add content.\n"
