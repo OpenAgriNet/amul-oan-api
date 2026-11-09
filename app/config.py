@@ -267,11 +267,12 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("AMUL_CHAT_BE_UVICORN_WORKERS", "UVICORN_WORKERS"),
     )
 
-    # Redis Settings (set REDIS_HOST, REDIS_PORT, REDIS_DB, REDIS_PASSWORD, etc. via env)
+    # Redis Settings (set REDIS_HOST, REDIS_PORT, REDIS_DB, REDIS_USERNAME, REDIS_PASSWORD, etc. via env)
     redis_host: str = "localhost"
     redis_port: int = 6379
     redis_db: int = 0
     redis_password: Optional[str] = None
+    redis_username: Optional[str] = None  # ACL user. Set with redis_password. Both unset: no AUTH.
     redis_key_prefix: str = "sva-cache-"
     redis_socket_connect_timeout: int = 10
     redis_socket_timeout: int = 10
@@ -812,6 +813,14 @@ class Settings(BaseSettings):
         validation_alias="AMULPASHUDHAN_BASE_URL",
     )
     farmer_backend_http_timeout_seconds: float = Field(default=30.0, validation_alias="FARMER_BACKEND_HTTP_TIMEOUT_SECONDS")
+    # Verified cattle listings (GetVerifiedAnimalDetails), kept in Redis: a request
+    # refetches data older than refresh_seconds; the background refresher refetches
+    # hourly only while a request came in within idle_seconds; a failed fetch keeps
+    # serving the last good copy until max_stale_seconds (its Redis TTL).
+    cattle_listings_refresh_seconds: int = Field(default=60 * 60, validation_alias="CATTLE_LISTINGS_REFRESH_SECONDS")
+    cattle_listings_idle_seconds: int = Field(default=5 * 60 * 60, validation_alias="CATTLE_LISTINGS_IDLE_SECONDS")
+    cattle_listings_max_stale_seconds: int = Field(default=24 * 60 * 60, validation_alias="CATTLE_LISTINGS_MAX_STALE_SECONDS")
+    cattle_listings_fetch_timeout_seconds: float = Field(default=10.0, validation_alias="CATTLE_LISTINGS_FETCH_TIMEOUT_SECONDS")
     # Farmer cache SWR worker tunables (tool-adjacent path used by loan checks).
     farmer_refresh_lock_ttl_seconds: int = Field(default=60 * 5, validation_alias="FARMER_REFRESH_LOCK_TTL_SECONDS")
     farmer_cold_fetch_timeout_seconds: float = Field(default=4.0, validation_alias="FARMER_COLD_FETCH_TIMEOUT_SECONDS")

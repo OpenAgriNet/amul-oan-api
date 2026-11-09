@@ -13,7 +13,11 @@ from agents.tools.bonus import (
     get_farmer_bonus_amount,
     prepare_get_farmer_bonus_amount,
 )
-from agents.tools.cattle_trade import get_cattle_trade_prices
+from agents.tools.cattle_trade import (
+    get_cattle_trade_prices,
+    get_verified_cattle_listings,
+)
+from agents.tools.herd import find_animals, prepare_find_animals
 from agents.tools.search import search_documents
 from agents.tools.vet_offices import find_nearby_vet_offices
 from agents.tools.union_schemes import get_union_scheme_data, prepare_get_union_scheme_data
@@ -113,11 +117,28 @@ TOOLS = [
     ),
 
     Tool(
+        reporting(get_verified_cattle_listings),
+        takes_ctx=True,
+        docstring_format='auto',
+        require_parameter_descriptions=True,
+    ),
+
+    Tool(
         reporting(get_union_scheme_data),
         takes_ctx=True,
         docstring_format='auto',
         require_parameter_descriptions=False,
         prepare=prepare_get_union_scheme_data,
+    ),
+
+    # The farmer's own animals: lookup by name, tag or description, with how
+    # complete and current the records are (agents/tools/herd.py). Shared with voice.
+    Tool(
+        reporting(find_animals),
+        takes_ctx=True,  # keyed by the signed-in mobile only
+        docstring_format='auto',
+        require_parameter_descriptions=True,
+        prepare=prepare_find_animals,  # hidden unless a farmer record was resolved
     ),
 
     Tool(

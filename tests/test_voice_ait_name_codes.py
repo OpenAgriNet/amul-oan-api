@@ -1,6 +1,7 @@
 import pytest
 
 from agents.voice.models.ai_call import AICallResponseModel, strip_ait_name_codes
+from app.voice.farmer import _short_technician_names
 
 
 @pytest.mark.parametrize("raw,expected", [
@@ -38,4 +39,14 @@ def test_summary_cleans_names_written_raw_by_chat_into_the_shared_cache():
         }],
         source="cache",
     )
-    assert "full_name=Ulpeshpuri Kodarpuri Goshvami" in _build_ai_technician_summary(envelope)
+    assert "name=Ulpeshpuri" in _build_ai_technician_summary(envelope)
+
+
+def test_technicians_go_by_first_name_unless_two_share_it():
+    assert _short_technician_names(["Kalpeshkumar Hathibhai Solanki", "Manubhai Jenabhai Solanki"]) == [
+        "Kalpeshkumar", "Manubhai",
+    ]
+    assert _short_technician_names(["Pravinbhai Motibhai Parmar", "pravinbhai Shankarbhai Chaudhari", "Maheshbhai R"]) == [
+        "Pravinbhai Motibhai", "pravinbhai Shankarbhai", "Maheshbhai",
+    ]
+    assert _short_technician_names(["Ramesh Patel", "Ramesh Patel", None]) == ["Ramesh Patel", "Ramesh Patel", None]

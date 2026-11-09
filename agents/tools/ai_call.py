@@ -210,6 +210,16 @@ async def _already_booked_message(session_id: str, species_value: str, account: 
     return ALREADY_REQUESTED_MESSAGE
 
 
+async def session_booking_confirmed(session_id: str) -> bool:
+    """A confirmed ticket sits on this session's reservation (see above)."""
+    try:
+        marker = await cache.get(session_id, namespace=AI_CALL_CACHE_NAMESPACE)
+    except Exception as e:
+        logger.warning("Failed to read AI call reservation: %s", e)
+        return False
+    return isinstance(marker, dict) and bool(marker.get("ticket"))
+
+
 async def _mark_session_booked(
     session_id: str | None,
     ticket: str | None,
