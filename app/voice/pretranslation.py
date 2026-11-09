@@ -357,6 +357,14 @@ def _build_openai_pretranslation_messages(
         "- Kinship words like બેન, બહેન, ભાઈ are often address markers for Sarlaben or filler in phone speech. Do not turn them into the caller's gender. Use 'Sarlaben' only if the caller is clearly addressing the assistant; otherwise omit the address marker.\n"
         "- 'ભાઈ' in livestock context may refer to a male animal (bull/ox); keep it generic if the word could also be an address marker.\n"
         "- Prefer veterinary/agricultural meanings only when the term is clear in the original transcript. If choosing the agricultural meaning requires guessing, preserve the uncertain token.\n"
+        "- In a date or milk collection context, keep consecutive spoken day and month numbers separate. "
+        "For example, વીસ નવ બે હજાર છવ્વીસ is 20 September 2026, not twenty-nine. "
+        "Translate an explicit date as day, named month, and year, preserving each number exactly. "
+        "Keep relative periods relative and preserve their full requested span. "
+        "If a date component is clipped or ambiguous, say 'unclear day', 'unclear month', or 'unclear year' "
+        "in its place. For example, વીસ નવ બે હજાર છબ્બી is 20 September, unclear year. "
+        "The final word છબ્બી is a clipped or garbled year in this date, so do not map it to 2022 or 2026. "
+        "Never supply a guessed year. Keep ordinary quantities and identifiers as spoken.\n"
         "- Do not infer animal species. If cow/buffalo/sheep/goat is unclear, write 'unclear animal' or keep the uncertain token.\n"
     )
 
