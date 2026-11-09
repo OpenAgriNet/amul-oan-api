@@ -21,6 +21,7 @@ os.environ.setdefault("OPENAI_API_KEY", "test-key")
 
 from app.config import settings
 from app.core import webhook_db
+from app.routers import webhooks
 from app.services import whatsapp_heat_alert
 from app.tasks import webhook_cleanup_worker as cleanup
 from main import app
@@ -163,19 +164,23 @@ def test_auth_fails_closed(wired, monkeypatch):
     assert db.rows == {} and whatsapp.posts == []
 
 
-def test_a_failed_whatsapp_send_rolls_back_so_the_retry_sends(wired):
+def test_a_failed_whatsapp_send_still_stores_the_alert_and_schedules_the_call(wired, monkeypatch):
     client, db, whatsapp = wired
+    scheduled = []
+    monkeypatch.setattr(webhooks.heat_alert_call, "enabled", lambda: True)
+    monkeypatch.setattr(webhooks.heat_alert_call, "schedule", lambda rid, due: scheduled.append(rid))
     whatsapp.replies.append((500, {"error": "down"}))
 
     failed = client.post("/api/webhooks/alerts", json=PAYLOAD, headers=AUTH)
 
-    assert failed.status_code == 502
-    assert db.rows == {}
-
-    retry = client.post("/api/webhooks/alerts", json=PAYLOAD, headers=AUTH)
-    assert retry.status_code == 202
-    assert len(whatsapp.posts) == 2
+    assert failed.status_code == 202
     assert len(db.rows) == 1
+    assert [str(r) for r in scheduled] == [failed.json()["id"]]
+
+    # A partner retry is the same alert: no second row, no second call, no second WhatsApp.
+    retry = client.post("/api/webhooks/alerts", json=PAYLOAD, headers=AUTH)
+    assert retry.status_code == 202 and retry.json()["id"] == failed.json()["id"]
+    assert len(whatsapp.posts) == 1 and len(db.rows) == 1 and len(scheduled) == 1
 
 
 def test_without_webhook_db_url_the_route_refuses_and_no_worker_starts(wired, monkeypatch):

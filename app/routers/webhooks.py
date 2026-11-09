@@ -151,18 +151,6 @@ async def receive_heat_alert(payload: HeatAlertWebhookRequest) -> HeatAlertWebho
             inserted_row = (await session.execute(insert_stmt)).first()
             if inserted_row is not None:
                 record_id, stored_received_at = inserted_row
-                message_uuid = await send_heat_alert_to_farmer(
-                    mobile=whatsapp_values["farmer_contact"],
-                    animal_no=whatsapp_values["Pashuaadhar No"],
-                    tag_no=whatsapp_values["tag no"],
-                    booking_link=whatsapp_values["booking_url"],
-                )
-                logger.info(
-                    "Heat alert WhatsApp queued id=%s alert_id=%s message_uuid=%s",
-                    record_id,
-                    payload.alert_id,
-                    message_uuid,
-                )
             else:
                 existing_stmt = (
                     select(
@@ -185,26 +173,6 @@ async def receive_heat_alert(payload: HeatAlertWebhookRequest) -> HeatAlertWebho
             await session.commit()
         if inserted_row is not None and call_due_at is not None:
             heat_alert_call.schedule(record_id, call_due_at)
-    except WhatsAppHeatAlertConfigurationError as exc:
-        logger.error(
-            "Heat alert WhatsApp is not configured alert_id=%s error=%s",
-            payload.alert_id,
-            exc,
-        )
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="WhatsApp delivery is not configured",
-        ) from exc
-    except WhatsAppHeatAlertDeliveryError as exc:
-        logger.error(
-            "Heat alert WhatsApp delivery failed alert_id=%s error=%s",
-            payload.alert_id,
-            exc,
-        )
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="WhatsApp provider did not accept the message",
-        ) from exc
     except HTTPException:
         raise
     except Exception as exc:
@@ -218,6 +186,33 @@ async def receive_heat_alert(payload: HeatAlertWebhookRequest) -> HeatAlertWebho
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to persist webhook payload",
         ) from exc
+
+    # The alert is stored and its call scheduled before WhatsApp is tried, so a
+    # WhatsApp outage never costs the farmer the call.
+    if inserted_row is not None:
+        try:
+            message_uuid = await send_heat_alert_to_farmer(
+                mobile=whatsapp_values["farmer_contact"],
+                animal_no=whatsapp_values["Pashuaadhar No"],
+                tag_no=whatsapp_values["tag no"],
+                booking_link=whatsapp_values["booking_url"],
+            )
+            logger.info(
+                "Heat alert WhatsApp queued id=%s alert_id=%s message_uuid=%s",
+                record_id,
+                payload.alert_id,
+                message_uuid,
+            )
+        except (WhatsAppHeatAlertConfigurationError, WhatsAppHeatAlertDeliveryError) as exc:
+            logger.error(
+                "Heat alert WhatsApp delivery failed, call still scheduled "
+                "id=%s alert_id=%s error=%s cause=%s",
+                record_id,
+                payload.alert_id,
+                exc,
+                # Type only: the cause's text can carry the URL or headers.
+                type(exc.__cause__).__name__ if exc.__cause__ else None,
+            )
 
     record_id = UUID(str(record_id))
     # farmer_contact is a phone number, so it stays out of the log.
