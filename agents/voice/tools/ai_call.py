@@ -33,6 +33,8 @@ INVALID_IDENTIFIERS_MESSAGE = (
     "Artificial insemination call booking failed. "
     "The farmer or technician details are not available."
 )
+# Only the model sees it: the turn's reply is never spoken.
+SUPERSEDED_MESSAGE = "Not booked: the caller kept talking, and a newer request handles what they said."
 
 
 def _invalid_booking_identifier(
@@ -127,6 +129,14 @@ async def create_ai_call(
         )
         report_tool("error", f"invalid {invalid_field}")
         return INVALID_IDENTIFIERS_MESSAGE
+
+    # Raya sends a new request when the caller keeps talking, and that request
+    # takes the call over. This turn's reply will not be heard and its turn is
+    # not saved, so it must not book: the newer request has the caller's full
+    # words and decides.
+    if await ctx.deps.superseded():
+        logger.info("AI call not booked: a newer request took the call over; session=%s", session_id)
+        return SUPERSEDED_MESSAGE
 
     # Chat's Beckn booking: one reservation per session whatever
     # AI_CALL_BOOKING_GUARD_ENABLED says, released only when the booking

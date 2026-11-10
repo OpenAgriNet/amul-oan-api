@@ -247,6 +247,7 @@ def call(monkeypatch):
     monkeypatch.setattr(outbound, "set_stage", _nothing)
     monkeypatch.setattr(outbound, "get_prefetched_milk_summary", _prefetched)
     monkeypatch.setattr(ai, "get_farmer_data_cached_only", _nothing)
+    monkeypatch.setattr(ai, "unheard_booking_note", _nothing)
     monkeypatch.setattr(ai, "enqueue_farmer_refresh", _nothing)
     monkeypatch.setattr(ai, "update_message_history", _history)
     monkeypatch.setattr(ai, "_build_union_scheme_summary", _schemes)
