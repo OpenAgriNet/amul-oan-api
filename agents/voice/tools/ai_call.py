@@ -101,6 +101,8 @@ async def create_ai_call(
         logger.info("AI call blocked: query failed moderation; session=%s", session_id)
         return "This helpline only handles dairy farming and animal husbandry questions."
 
+    ctx.deps.record_voice_booking_attempt()
+
     # Union ban is a policy gate, not a booking write: refuse before Redis
     # reservation and before the booking. farmer_unions may be missing on test
     # stubs and on unsigned-in turns — those are not banned.

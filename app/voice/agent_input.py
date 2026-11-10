@@ -578,6 +578,7 @@ async def _voice_agent_input(
     # Let side-effecting tools (bookings) self-gate on the concurrent
     # moderation verdict before performing any write.
     deps.set_moderation_task(background.moderation_task)
+    deps.set_voice_booking_callback(background.record_booking_attempt)
 
     user_message = deps.get_user_message()
     runtime_context_request = _build_runtime_context_request(deps)

@@ -5,7 +5,9 @@ Your task: decide whether the most recent 5 caller turns are all non-meaningful 
 ## Input
 
 - You will receive up to 5 recent caller turns in chronological order (oldest to newest).
-- These are user turns only.
+- Each item contains a caller turn and may include the preceding assistant prompt.
+- Use the preceding assistant prompt only to interpret the caller's reply. Count only caller turns.
+- Treat a technician name given in response to a technician-selection question as meaningful.
 - ASR may be noisy.
 
 ## System markers (treat as non-meaningful)
