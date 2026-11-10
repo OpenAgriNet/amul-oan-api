@@ -1,0 +1,35 @@
+name: chat-links
+
+on:
+  pull_request:
+    paths:
+      - 'app/services/chat.py'
+      - 'app/services/chat_links.py'
+      - 'app/services/translation.py'
+      - 'tests/test_chat_url_preservation.py'
+      - '.github/workflows/chat-links.yml'
+      - 'requirements.txt'
+  push:
+    branches: [main]
+    paths:
+      - 'app/services/chat.py'
+      - 'app/services/chat_links.py'
+      - 'app/services/translation.py'
+      - 'tests/test_chat_url_preservation.py'
+      - '.github/workflows/chat-links.yml'
+      - 'requirements.txt'
+
+jobs:
+  chat-links:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          cache: pip
+      - run: pip install -r requirements.txt pytest
+      - run: python -m pytest -q tests/test_chat_url_preservation.py tests/test_run_turn_sink.py tests/test_chat_turn_contract.py
+        env:
+          LANGFUSE_TRACING_ENABLED: 'false'
+          HASHICORP_VAULT_ENABLED: 'false'
