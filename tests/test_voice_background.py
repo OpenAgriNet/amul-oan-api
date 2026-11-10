@@ -334,6 +334,70 @@ def test_a_classifier_error_lets_the_turn_through(checks):
     assert background._non_meaningful_verdict.reason == "task error: ConnectionError"
 
 
+# ── a refusal asked again in English (#567) ─────────────────────────────────
+
+_MISHEARD = "વીજ દાન કરવાનું છે"  # બીજદાન (artificial insemination) heard as "electricity donation"
+_ENGLISH = "Artificial insemination needs to be done"
+_IRRELEVANT = ModerationVerdict(category="irrelevant", reason="electricity donation")
+_OFFENSIVE = ModerationVerdict(category="offensive", reason="abuse")
+_ENGLISH_ALLOWS = ModerationVerdict(category="in_scope", reason="AI request")
+_RECHECK_FAILED = ModerationVerdict(category="in_scope", reason="non-json model output", failed_open=True)
+
+
+def _answers(checks, *verdicts):
+    queue = list(verdicts)
+
+    async def _next():
+        return queue.pop(0)
+
+    checks["moderation_result"] = _next
+
+
+def _after_pretranslation(history_text):
+    """Pretranslation hands its text over, then the gate reads the verdict, as on
+    a call turn. Returns the gate's decision and the verdict booking tools wait on."""
+    async def _run():
+        background = bg.VoiceBackground(_turn(_MISHEARD, source_lang="gu", target_lang="gu"),
+                                        execution=_EXECUTION, render=_render)
+        try:
+            background.set_history_text(history_text)
+            return await background.gate(), await background.moderation_task
+        finally:
+            await background.close()
+
+    return asyncio.run(_run())
+
+
+def test_a_misheard_refusal_is_asked_again_in_english_and_that_verdict_stands(checks, monkeypatch):
+    monkeypatch.setattr(settings, "voice_moderation_english_recheck", True)
+    _answers(checks, _IRRELEVANT, _ENGLISH_ALLOWS)
+
+    decision, verdict = _after_pretranslation(_ENGLISH)
+
+    assert decision is None
+    assert (verdict.category, verdict.reason) == ("in_scope", "english recheck: AI request")
+    first, second = checks["moderation"]
+    assert (first["text"], first["source_lang"]) == (_MISHEARD, "gu")
+    assert (second["text"], second["source_lang"]) == (_ENGLISH, "en")
+    assert second["recent_history_text"] == first["recent_history_text"]
+
+
+@pytest.mark.parametrize("recheck_on, first, history_text, second", [
+    (False, _IRRELEVANT, _ENGLISH, None),
+    (True, _OFFENSIVE, _ENGLISH, None),
+    (True, _IRRELEVANT, "[pretranslation-failed]", None),
+    (True, _IRRELEVANT, _ENGLISH, _RECHECK_FAILED),
+], ids=["recheck_off", "offensive_is_not_asked_again", "no_english", "recheck_failed"])
+def test_otherwise_the_refusal_stands(checks, monkeypatch, recheck_on, first, history_text, second):
+    monkeypatch.setattr(settings, "voice_moderation_english_recheck", recheck_on)
+    _answers(checks, first, *([second] if second else []))
+
+    decision, verdict = _after_pretranslation(history_text)
+
+    assert decision is not None and verdict is first
+    assert len(checks["moderation"]) == (2 if second else 1)
+
+
 # ── close ───────────────────────────────────────────────────────────────────
 
 
