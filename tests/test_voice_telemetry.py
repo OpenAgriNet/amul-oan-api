@@ -24,6 +24,7 @@ from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, UserPromptPart
 
+import agents.tools.farmer_cache as fc
 from agents.voice import agent as voice_agents
 from app import observability
 from app.channels.chat import WEB
@@ -353,6 +354,9 @@ def test_an_answered_turn_is_one_turn_v1_root_with_its_steps_under_it(lf, call):
         "farmer_info_chars": record.metadata["farmer_context"]["farmer_info_chars"],
         "technician_info_chars": record.metadata["farmer_context"]["technician_info_chars"],
     }
+    assert lf.step("farmer_context").sent["metadata"] == {
+        "amul.tool_status": "success", "amul.farmer_ok": 1, "amul.farmer_failed": 0,
+    }
     agent = lf.step("agent").sent
     assert (agent["as_type"], agent["input"], agent["output"]) == ("agent", "My cow has fever", "Give her water.")
     assert set(agent["metadata"]) == {"amul.configured_tier", "amul.served_tier", "amul.attempts"}
@@ -655,6 +659,27 @@ def test_a_milk_readout_is_routed_as_one(lf, call, prefetched, route, source):
     # On the trace the readout is a step, and the outcome stays success.
     assert lf.step("milk_readout").sent["output"] == {"source": source}
     assert lf.closed["amul.outcome"] == "success"
+
+
+def test_the_farmer_context_step_says_why_the_lookup_came_back_empty(lf, call, monkeypatch):
+    """A caller whose number is in the retry wait gets no farmer data on this
+    turn, and the step says why (#565)."""
+    async def _no_record(_phone):
+        return None
+
+    async def _waiting(_phone):
+        return True
+
+    monkeypatch.setattr(bg, "get_or_fetch_farmer_data", fc.get_or_fetch_farmer_data)
+    monkeypatch.setattr(fc, "get_cached_farmer_data", _no_record)
+    monkeypatch.setattr(fc, "_enqueue_backoff_active", _waiting)
+
+    _run(_turn(history=_PRIOR))
+
+    step = lf.step("farmer_context").sent
+    assert step["output"]["source"] is None
+    assert step["metadata"] == {"amul.tool_status": "unavailable", "amul.farmer_ok": 0, "amul.farmer_failed": 1}
+    assert (step["level"], step["status_message"]) == ("ERROR", "farmer 1 of 1 failed: retry_backoff")
 
 
 def test_an_anonymous_caller_is_recorded_as_not_signed_in(lf, call, monkeypatch):

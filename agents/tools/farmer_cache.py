@@ -27,7 +27,7 @@ import json
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Any, Optional
+from typing import Any, Awaitable, Optional
 
 from app.core.cache import cache, redis_client, build_cache_key
 from app.config import settings
@@ -71,6 +71,31 @@ _PROGRESS_FAILED = "failed"
 # A refresh the farmer asked for (an animal's details just changed) skips the
 # animal-profile response cache, but not for animals fetched less than this ago.
 FARMER_ANIMAL_FORCE_MIN_AGE_SECONDS = 60
+
+# Why a lookup failed, for the voice turn's farmer_context step. Only a lookup
+# run through lookup_failure_noted() records it. The fetch tasks the lookup
+# starts share the holder, and the first reason stays: a fetch that outlives the
+# turn's budget can fail later.
+_lookup_failure: contextvars.ContextVar[Optional[dict]] = contextvars.ContextVar(
+    "farmer_lookup_failure", default=None
+)
+
+
+def _note_failure(reason: str) -> None:
+    holder = _lookup_failure.get()
+    if holder is not None:
+        holder.setdefault("reason", reason)
+
+
+async def lookup_failure_noted(
+    lookup: Awaitable[Optional[FarmerDataEnvelope]], holder: dict
+) -> Optional[FarmerDataEnvelope]:
+    """Await ``lookup``, writing why it failed, if it did, to ``holder["reason"]``."""
+    token = _lookup_failure.set(holder)
+    try:
+        return await lookup
+    finally:
+        _lookup_failure.reset(token)
 
 
 def _normalize_cache_phone(phone: str) -> str:
@@ -282,6 +307,7 @@ async def _normalize_for_consumer(
         _phone_log_hash(phone),
         envelope.lookupStatus,
     )
+    _note_failure("non_authoritative")
     await enqueue_farmer_refresh(phone)
     return None
 
@@ -444,6 +470,7 @@ async def refresh_farmer_data(phone: str, *, background: bool = False) -> Option
                 return env
             # Holder outlived our wait — re-queue so the refresh isn't lost
             # (covers the worker path) and signal "not done" to the caller.
+            _note_failure("refresh_in_flight")
             await enqueue_farmer_refresh(phone)
             return None
 
@@ -493,6 +520,7 @@ async def refresh_farmer_data(phone: str, *, background: bool = False) -> Option
             return envelope
 
         # Provider/transport error: never replace authoritative cached data.
+        _note_failure("provider_error")
         existing = await get_cached_farmer_data(phone)
         if existing is not None and existing.lookupStatus == "found":
             logger.info(
@@ -508,6 +536,7 @@ async def refresh_farmer_data(phone: str, *, background: bool = False) -> Option
         return None
     except Exception as e:
         logger.warning("Farmer refresh failed for phone hash %s...: %s", _cache_key(phone)[:8], e)
+        _note_failure("exception")
         await _record_refresh_failure(phone, outcome="exception")
         return None
     finally:
@@ -641,6 +670,7 @@ async def get_or_fetch_farmer_data(phone: str) -> Optional[FarmerDataEnvelope]:
             "Farmer cache read: cold_fetch_deferred phone_hash=%s reason=retry_backoff",
             _phone_log_hash(phone),
         )
+        _note_failure("retry_backoff")
         return None
 
     logger.info(
@@ -688,6 +718,7 @@ async def refresh_farmer_data_bounded(
             timeout,
             _cache_key(phone)[:8],
         )
+        _note_failure("timeout")
         await enqueue_farmer_refresh(phone)
         return None
 
