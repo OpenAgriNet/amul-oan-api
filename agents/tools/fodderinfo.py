@@ -7,9 +7,7 @@ from typing import Annotated, Literal
 
 import httpx
 from pydantic import Field
-from pydantic_ai import RunContext
 
-from agents.deps import FarmerContext
 from agents.tools.telemetry import report_tool
 from app.config import settings
 
@@ -18,28 +16,6 @@ _TIMEOUT_SECONDS = 5.0
 Form = Literal["GREEN", "DRY", "HAY", "SILAGE", "CONCENTRATE"]
 PlaceLevel = Literal["state", "district", "subdistrict", "village"]
 ListingId = Annotated[int, Field(gt=0)]
-_CONTACT_WORDS = re.compile(
-    r"\b(?:phone|mobile|telephone|contact|whatsapp|seller['’]s number|the number)\b"
-    r"|ફોન|મોબાઇલ|મોબાઈલ|નંબર|સંપર્ક|फोन|मोबाइल|नंबर|संपर्क",
-    re.IGNORECASE,
-)
-
-FODDERINFO_INSTRUCTIONS = """For current fodder stock, sellers or asking rates in Gujarat, use
-search_fodder_availability. General feeding, nutrition and growing advice use the usual tools.
-Ask for a location for a local search if missing. Use the farmer's original fodder wording in q
-and only use supplied or confirmed filters. For an unclear crop or form, ask which they mean.
-For an unresolved or potentially ambiguous place, use lookup_fodder_locations and confirm the
-place with the farmer if needed. Taluka and village lookups use English names.
-Answer from current results and the notice. Give the seller's asking rate in its original unit,
-location and last confirmation date, plus quantity and pickup or delivery terms when available.
-Identify each option by its listing ID or public listing link so it can be selected later.
-Ask the farmer to confirm stock with the seller. Distinguish no matches from a failed lookup.
-Never estimate stock, rates or distance. Recheck a selected listing with get_fodder_listing.
-Only if the current user explicitly asks for the phone number of one listing, call
-request_fodder_seller_phone with its ID instead of get_fodder_listing. Ask the user to choose if
-the listing is unclear. Never guess an ID or request multiple numbers. On delivery_pending,
-tell the user the seller's number follows and let the application deliver it. If contact is
-unavailable, offer the returned public listing link when present."""
 
 
 async def prepare_fodder_tool(ctx, tool_def):
@@ -103,6 +79,9 @@ def _listing(item: dict) -> dict:
         result[key] = _fields(item.get(key), fields)
     location = _fields(item.get("location"), "state district subdistrict village")
     result["location"] = {key: _fields(value, "id name_en name_gu") for key, value in location.items() if value}
+    contact = _fields(item.get("contact"), "name mobile")
+    if item.get("contact_status") == "shared" and re.fullmatch(r"[0-9]{10}", str(contact.get("mobile", ""))):
+        result["seller"] = contact
     return result
 
 
@@ -119,7 +98,33 @@ async def search_fodder_availability(
     sort: Literal["recent", "rate", "qty"] | None = None,
     limit: Annotated[int, Field(ge=1, le=20)] = 5,
 ) -> dict:
-    """Find current seller listings in Gujarat. Use the farmer's wording for q, and English names for subdistrict (taluka) and village."""
+    """
+    Find fodder offered for sale in Gujarat on FodderInfo, each listing with its asking rate, place, last confirmation and seller's name and mobile.
+
+    Use it when the farmer wants to buy fodder or asks who has fodder, how much is available or the
+    asking rate. Use the usual tools for feeding or growing advice and get_vistaar_mandi_prices for
+    mandi crop prices. Ask for the place if the farmer gave none. Give the rate in its own unit, the
+    place, the last confirmation date and the seller's name and mobile exactly as returned, without
+    assuming the seller's gender, and ask the farmer to confirm stock with the seller. Never estimate
+    stock, rates or distance.
+
+    Args:
+        q: Fodder name as the farmer said it, e.g. "green bajra".
+        form: GREEN, DRY, HAY, SILAGE or CONCENTRATE, only when the farmer said it.
+        district: District, only as the farmer named it; leave empty when they named only a taluka or village.
+        subdistrict: Taluka name in English; add district when the name can match several places.
+        village: Village name in English; add district or subdistrict to narrow it.
+        comparison_group: Fodder group, only when the farmer named a group rather than a fodder.
+        delivery: "delivery" when the seller must deliver, "pickup" when the farmer will collect.
+        max_rate_per_kg: Highest rate in rupees per kg the farmer will pay.
+        min_qty_kg: Least quantity in kg the farmer needs.
+        sort: "recent" (last confirmed first), "rate" (cheapest first) or "qty" (largest first).
+        limit: How many listings to return.
+
+    Returns:
+        Current listings with the total match count, or a status with a message saying what to ask
+        the farmer (for example green or dry when the fodder name is unclear).
+    """
     params = {name: value for name, value in locals().items() if value is not None}
     body = await _get("listings", params)
     status = body.get("status")
@@ -130,21 +135,28 @@ async def search_fodder_availability(
             return {"status": "unavailable"}
         listings = [_listing(row) for row in rows if _current(row)][:limit]
         if listings:
-            return {"status": "ok", "notice": body.get("notice"), "listings": listings}
+            return {"status": "ok", "notice": body.get("notice"), "total": body.get("total"), "listings": listings}
         status = "no_current_listings"
     if status in ("no_current_listings", "location_not_found", "name_not_resolved"):
         report_tool("no_result")
     elif status not in ("clarification_needed", "unavailable"):
         report_tool("unavailable", "Invalid FodderInfo search status")
         status = "unavailable"
-    return {"status": status, "notice": body.get("notice")}
+    return {"status": status, "notice": body.get("notice"), **_fields(body, "message resolution")}
 
 
 async def lookup_fodder_locations(
     q: Annotated[str, Field(min_length=2)], level: PlaceLevel | None = None,
     parent_id: ListingId | None = None,
 ) -> dict:
-    """Resolve a Gujarat place name by prefix. Use English for village and taluka. Use a known parent ID to narrow the lookup."""
+    """
+    Resolve a Gujarat place name for search_fodder_availability when the place is unclear or could match several places.
+
+    Args:
+        q: Start of the place name; English for taluka and village.
+        level: state, district, subdistrict (taluka) or village.
+        parent_id: ID of a place already resolved, to search only inside it.
+    """
     params = {name: value for name, value in locals().items() if value is not None}
     body = await _get("locations", params)
     if body.get("status") == "no_match":
@@ -157,49 +169,30 @@ async def lookup_fodder_locations(
     return {"status": "unavailable"}
 
 
-async def _detail(listing_id: int) -> tuple[str, dict]:
+async def get_fodder_listing(listing_id: ListingId) -> dict:
+    """
+    Recheck one FodderInfo listing the farmer picked, with its seller's name and mobile.
+
+    Args:
+        listing_id: listing_id from search_fodder_availability.
+    """
     body = await _get(f"listings/{listing_id}")
     status = body.get("status")
     if status == "ok":
         item = body.get("listing")
         if isinstance(item, dict) and item.get("listing_id") == listing_id:
             if _current(item):
-                return "ok", item
+                return {"status": "ok", "listing": _listing(item)}
             status = "not_current"
     if status in ("not_found", "not_current"):
         report_tool("no_result")
-        return status, {}
-    report_tool("unavailable", "FodderInfo listing lookup failed")
-    return "unavailable", {}
-
-
-async def get_fodder_listing(listing_id: ListingId) -> dict:
-    """Recheck a specific FodderInfo listing before describing it. Omits contact details."""
-    status, item = await _detail(listing_id)
-    return {"status": status, "listing": _listing(item)} if item else {"status": status}
-
-
-async def request_fodder_seller_phone(ctx: RunContext[FarmerContext], listing_id: ListingId) -> dict:
-    """Recheck and arrange private phone delivery only for an explicit request about one identified listing."""
-    deps = ctx.deps
-    if not _CONTACT_WORDS.search(deps.query) or not await deps.ensure_in_scope():
-        return {"status": "explicit_request_required"}
-    if not deps.reserve_fodder_contact():
-        return {"status": "already_requested"}
-
-    status, item = await _detail(listing_id)
-    if not item:
         return {"status": status}
-    mobile = _fields(item.get("contact"), "mobile").get("mobile")
-    if item.get("contact_status") == "shared" and isinstance(mobile, str) and re.fullmatch(r"[0-9]{10}", mobile):
-        deps.set_fodder_contact(mobile)
-        return {"status": "delivery_pending"}
-    return {"status": "contact_unavailable", "listing_url": f"{ORIGIN}/listing/{listing_id}"}
+    report_tool("unavailable", "FodderInfo listing lookup failed")
+    return {"status": "unavailable"}
 
 
 FODDER_TOOLS = (
     search_fodder_availability,
     lookup_fodder_locations,
     get_fodder_listing,
-    request_fodder_seller_phone,
 )

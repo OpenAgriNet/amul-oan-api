@@ -73,7 +73,7 @@ def test_a_context_built_without_a_status_offers_no_identity_tools():
 
 def test_the_agents_have_voices_tools():
     base = [
-        "search_fodder_availability", "lookup_fodder_locations", "get_fodder_listing", "request_fodder_seller_phone",
+        "search_fodder_availability", "lookup_fodder_locations", "get_fodder_listing",
         "search_terms", "search_documents", "create_ai_call", "get_farmer_milk_collection_details",
         "get_cattle_trade_prices", "get_verified_cattle_listings", "get_vistaar_mandi_prices", "get_vistaar_weather", "signal_conversation_state", "find_nearby_vet_offices", "check_loan_eligibility",
     ]
