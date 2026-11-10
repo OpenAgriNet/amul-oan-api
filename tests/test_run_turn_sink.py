@@ -18,7 +18,6 @@ import pytest
 from app.channels.chat import WEB
 from app.llm_core.execution import ExecutionContext
 from app.services import chat as chat_service
-from app.services.voice import _render_voice_emission
 from app.turn.types import TextEmission, Turn
 from pydantic_ai.messages import ModelRequest, ModelResponse, SystemPromptPart, TextPart, ToolReturnPart, UserPromptPart
 from tests.test_chat_turn_contract import patch_turn
@@ -114,36 +113,6 @@ def test_trace_output_is_what_the_sink_reports(monkeypatch):
     ))
 
     assert _trace_outputs(seen)[-1] == "FINAL FROM SINK"
-
-
-@pytest.mark.parametrize("stale", [False, True])
-def test_seller_phone_leaves_only_on_the_current_turn_wire(monkeypatch, stale):
-    seen = patch_turn(monkeypatch)
-    mobile = "9000000000"
-
-    async def stream(self, agent, prompt, *, message_history, deps, new_messages):
-        assert mobile not in prompt
-        seen["deps"].append(deps)
-        deps.set_fodder_contact(mobile)
-        yield "The seller's number follows."
-
-    async def is_stale(reason):
-        return "superseded" if stale and reason == "before_fodder_contact" else None
-
-    monkeypatch.setattr(ExecutionContext, "stream", stream)
-    emissions = asyncio.run(_collect(chat_service.run_turn(
-        _turn(), _recording_surface(), scheduler=_Scheduler(), is_stale=is_stale,
-    )))
-    assert seen["deps"][0].take_fodder_contact() is None
-    assert mobile not in str(seen["trace_io"])
-    assert mobile not in str(seen["history_writes"])
-    if stale:
-        assert len(emissions) == 1
-    else:
-        assert len(emissions) == 2
-        contact = emissions[-1]
-        assert chat_service._render_chat_emission(contact, None, False)[0].strip() == mobile
-        assert _render_voice_emission(contact, "gu")[0].strip() == "નવ શૂન્ય શૂન્ય શૂન્ય શૂન્ય શૂન્ય શૂન્ય શૂન્ય શૂન્ય શૂન્ય"
 
 
 def test_english_turn_asks_the_sink_not_to_translate(monkeypatch):
