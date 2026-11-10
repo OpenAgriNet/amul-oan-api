@@ -4,7 +4,6 @@ on:
   pull_request:
     paths:
       - 'app/services/chat.py'
-      - 'app/services/chat_links.py'
       - 'app/services/translation.py'
       - 'tests/test_chat_url_preservation.py'
       - '.github/workflows/chat-links.yml'
@@ -13,7 +12,6 @@ on:
     branches: [main]
     paths:
       - 'app/services/chat.py'
-      - 'app/services/chat_links.py'
       - 'app/services/translation.py'
       - 'tests/test_chat_url_preservation.py'
       - '.github/workflows/chat-links.yml'

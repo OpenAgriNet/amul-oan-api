@@ -36,7 +36,6 @@ from app.services.translation import (
     INDIAN_LANGUAGES,
     LANG_CODES,
 )
-from app.services.chat_links import markdown_link_spans, translation_parts
 from pydantic_ai.messages import ModelRequest, ModelResponse, UserPromptPart, TextPart
 from app.services.identity_profile import (
     build_doctor_identity_response,
@@ -72,18 +71,16 @@ class SentenceSegmenter:
     terminals = latin_terminals + jap_zh_terminals
 
     def __init__(self):
-        # A punctuation mark is a boundary only once the following whitespace
-        # has arrived. A chunk ending at ".gov." must wait for the next chunk.
-        self._boundary = regex.compile(r'[' + self.terminals + r']\s+')
+        # Keep horizontal separators with the sentence, but leave newlines for
+        # the next batch's layout handling. Do not split line-start "1." markers.
+        # A domain dot at the end of a streamed chunk waits for more text.
+        self._boundary = regex.compile(r'(?<!(?:^|\n)[ \t]*\d+)[.!?。！？](?:\p{Z}+|(?=\n))')
 
     @lru_cache(maxsize=2**16)
     def __call__(self, line: str):
         parts = []
         start = 0
-        links = markdown_link_spans(line, streaming=True)
         for boundary in self._boundary.finditer(line):
-            if any(left <= boundary.start() < right for left, right in links):
-                continue
             parts.append(line[start:boundary.end()])
             start = boundary.end()
         if start < len(line):
@@ -638,31 +635,24 @@ async def _stream_to_client(
             yield "\n"
         delivered: list[str] = []
         try:
-            for part, verbatim in translation_parts(text):
-                if verbatim:
-                    output_chunks.append(part)
-                    delivered.append(part)
-                    yield part
-                    continue
-                try:
-                    async for translated_chunk in translate_text_stream_fast(
-                        text=part,
-                        source_lang="english",
-                        target_lang=translate_to,
-                        max_output_chars=max_output_chars,
-                        execution=execution,
-                        parent=step.open(),
-                        species=species,
-                    ):
-                        output_chunks.append(translated_chunk)
-                        delivered.append(translated_chunk)
-                        yield translated_chunk
-                except Exception as e:
-                    logger.error(f"{label} translation failed, falling back to English: {e}")
-                    step.failed(e)
-                    output_chunks.append(part)
-                    delivered.append(part)
-                    yield part
+            async for translated_chunk in translate_text_stream_fast(
+                text=text,
+                source_lang="english",
+                target_lang=translate_to,
+                max_output_chars=max_output_chars,
+                execution=execution,
+                parent=step.open(),
+                species=species,
+            ):
+                output_chunks.append(translated_chunk)
+                delivered.append(translated_chunk)
+                yield translated_chunk
+        except Exception as e:
+            logger.error(f"{label} translation failed, falling back to English: {e}")
+            step.failed(e)
+            output_chunks.append(text)
+            delivered.append(text)
+            yield text
         finally:
             step.record(text, delivered)
 
