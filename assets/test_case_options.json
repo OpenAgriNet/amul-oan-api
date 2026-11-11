@@ -17,7 +17,7 @@
     {"id": "ait_booking", "label": "AIT booking", "hint": "Booking an artificial insemination technician, and its status."},
     {"id": "milk_collection", "label": "Milk collection", "hint": "Farmer's milk pouring records, fat/SNF, quantities."},
     {"id": "milk_earnings", "label": "Milk earnings & bonus", "hint": "Payments, earnings, bonus calculation."},
-    {"id": "union_schemes", "label": "Union schemes", "hint": "Schemes of the milk union (e.g. a specific district union) and their helpline numbers."},
+    {"id": "union_schemes", "label": "Union schemes", "hint": "Schemes of the farmer's milk union (e.g. a specific district union), what its circulars offer, and their helpline numbers. A scheme question that doesn't name the government goes here."},
     {"id": "government_schemes", "label": "Government schemes", "hint": "State and central government schemes and subsidies, and their helpline numbers."},
     {"id": "animal_nutrition", "label": "Feed & nutrition", "hint": "Cattle feed, fodder, mineral mixture."},
     {"id": "weather", "label": "Weather", "hint": "Forecasts and weather-based advice."},
@@ -30,18 +30,10 @@
     {"id": "loan", "label": "Micro-loan", "hint": "Micro-loan eligibility and loan codes."},
     {"id": "vet_office", "label": "Nearest vet office", "hint": "Finding the nearest government veterinary office."},
     {"id": "pm_kisan", "label": "PM-KISAN status", "hint": "The farmer's PM-KISAN registration and installment status."},
-    {"id": "follow_up", "label": "Follow-up question", "hint": "A question that depends on what was said earlier in the chat."},
+    {"id": "follow_up", "label": "Follow-up question", "hint": "A question that depends on what was said earlier in the chat.", "category": false},
     {"id": "suggestions", "label": "Suggested questions", "hint": "The follow-up questions the bot suggests after an answer."},
     {"id": "safety", "label": "Safety", "hint": "Moderation declines, abuse, prompt injection, personal data in a question, vet drug and dose rules."},
-    {"id": "general", "label": "General / other", "hint": "Greetings, small talk, out-of-scope questions."}
-  ],
-  "groups": [
-    {"id": "ai", "label": "AI", "hint": "anything about artificial insemination (AI): booking an AI call, the technicians, semen, when to inseminate, past AI records"},
-    {"id": "vet-health", "label": "Vet & health", "hint": "animal health, disease and treatment, heat and pregnancy, feed and fodder, how to raise milk yield or fat, the farmer's animals and their records, vet visits and the nearest vet office"},
-    {"id": "milk", "label": "Milk", "hint": "milk pouring records (what was poured, its fat and SNF, and how that changed), the milk price, payments and deductions, and the SMS after pouring"},
-    {"id": "bonus", "label": "Bonus", "hint": "bonus and bhav fer (the price difference)"},
-    {"id": "scheme", "label": "Schemes", "hint": "union and government schemes, subsidies, insurance, loans and PM-KISAN, and their helplines"},
-    {"id": "other", "label": "Other", "hint": "anything else, like weather, mandi prices, the soil health card, cattle trade (animal rates, buying and selling), greetings or off-topic questions"}
+    {"id": "general", "label": "General / other", "hint": "Greetings, small talk, out-of-scope questions, and anything that fits no other feature."}
   ],
   "answer_types": [
     {"id": "answer", "label": "Answers", "hint": "it answers"},
