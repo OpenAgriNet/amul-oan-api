@@ -5,6 +5,7 @@ import re
 
 import httpx
 from pydantic_ai import RunContext
+from pydantic_ai.messages import ModelRequest, UserPromptPart
 from pydantic_ai.tools import ToolDefinition
 
 from agents.deps import FarmerContext
@@ -66,6 +67,62 @@ INVALID_IDENTIFIERS_MESSAGE = (
     "Artificial insemination call booking failed.\n\n"
     "The farmer or technician details are not available."
 )
+
+
+# With two or more technicians the farmer must pick one. Told only the species, the
+# model has booked the first technician in the list itself (dev, 5 Nov 2026: "for
+# the buffalo" booked Mahesh, whom the farmer never named, and her "send Dinesh"
+# then booked a second visit). A pick is the technician's name or mobile number in
+# the farmer's own messages, or a position ("the second one", or just "2").
+_POSITION_PICK = re.compile(r"\b(first|second|third|fourth|fifth|last|1st|2nd|3rd|4th|5th)\b|^\W*\d\W*$", re.IGNORECASE)
+_NAME_SPLIT = re.compile(r"[\s(),.;:/-]+")
+
+
+def _farmer_texts(messages) -> list[str]:
+    """The farmer's own messages in this run: the question and the chat history."""
+    return [
+        part.content
+        for message in messages or []
+        if isinstance(message, ModelRequest)
+        for part in message.parts
+        if isinstance(part, UserPromptPart) and isinstance(part.content, str)
+    ]
+
+
+def _farmer_picked(technician, messages) -> bool:
+    """True when the farmer's messages name this technician (any part of the name
+    of three letters or more, in English or Gujarati, or the start of one, as
+    "Dinesh" for DINESHBHAI; or the mobile number) or pick one by position. Without
+    the messages there is nothing to check, so it allows."""
+    texts = _farmer_texts(messages)
+    if not texts:
+        return True
+    parts = {
+        part.casefold()
+        for name in (technician.fullName, technician.gujaratiFullName)
+        for part in _NAME_SPLIT.split(name or "")
+        if len(part) >= 3
+    }
+    mobile = re.sub(r"\D", "", technician.mobileNumber or "")[-10:]
+    for text in texts:
+        folded = text.casefold()
+        if any(part in folded for part in parts):
+            return True
+        words = [word for word in _NAME_SPLIT.split(folded) if len(word) >= 4]
+        if any(part.startswith(word) for part in parts for word in words):
+            return True
+        if len(mobile) == 10 and mobile in re.sub(r"\D", "", text):
+            return True
+        if _POSITION_PICK.search(text):
+            return True
+    return False
+
+
+def _choose_technician_message(technicians) -> str:
+    choices = "\n".join(
+        f"- {t.display_full_name or t.fullName} ({t.mobileNumber})" for t in technicians if t.userId
+    )
+    return f"No booking was made yet. Please choose the technician you want:\n{choices}"
 
 
 def _invalid_booking_identifier(
@@ -400,6 +457,10 @@ async def create_ai_call(
             "Artificial insemination call booking failed.\n\n"
             "Unable to verify your farmer and technician details at the moment."
         )
+    if len(technicians) > 1 and not _farmer_picked(technician, getattr(ctx, "messages", None)):
+        logger.info("AI call held: the farmer has not picked a technician; session=%s", session_id)
+        report_tool("error", "the farmer has not picked a technician")
+        return _choose_technician_message(technicians)
     union_code = account.union_code
     society_code = account.society_code
     farmer_code = account.farmer_code
