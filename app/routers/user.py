@@ -6,7 +6,7 @@ from typing import Any
 from fastapi import APIRouter, Depends
 
 from app.auth.jwt_auth import get_current_user
-from agents.tools.farmer_cache import get_or_fetch_farmer_data
+from agents.tools.farmer_cache import get_farmer_data_for_profile
 from helpers.utils import get_logger
 
 logger = get_logger(__name__)
@@ -18,6 +18,10 @@ router = APIRouter(prefix="/user", tags=["user"])
 async def get_user_profile(user_info: dict = Depends(get_current_user)) -> Any:
     """
     Returns farmer profile data for the authenticated user.
+
+    The record is served from the farmer cache as it is; `farmer.fetchedAt` is
+    when it was last fetched. Voice turns and the agent's tools refresh it, and
+    it is fetched here only when nothing is cached.
 
     Response status values:
     - `ok`: Farmer data found and returned
@@ -37,7 +41,7 @@ async def get_user_profile(user_info: dict = Depends(get_current_user)) -> Any:
         return {"status": "anonymous", "farmer": None}
 
     try:
-        data = await get_or_fetch_farmer_data(phone)
+        data = await get_farmer_data_for_profile(phone)
         if data is None:
             return {"status": "error", "farmer": None}
         if data.lookupStatus == "not_found":
