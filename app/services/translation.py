@@ -7,6 +7,7 @@ TranslateGemma 27B base model deployed on vLLM.
 
 import json
 import re
+import regex
 import string
 import aiohttp
 from contextlib import contextmanager, nullcontext
@@ -715,12 +716,18 @@ def _chat_script_grammar(letters: str) -> str:
     )
 
 
-# A chat source with Latin that must be copied as written ($...$ math, `code`,
-# a bare domain like pmkisan.gov.in) is translated with the strict prompt but no
-# grammar: under the grammar it is unwritable and the model degrades, and
-# letting Latin into the grammar for it lets the model leave the script anywhere.
-_LATIN_VERBATIM_RE = re.compile(
-    r"\$[^$\n]*\\[A-Za-z]|`[^`\n]+`|(?<![/\w.])(?:www\.)?[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.(?:gov\.in|co\.in|in|com|org|net)\b"
+# Recognise domain syntax, not a list of registered suffixes: document links
+# can use new TLDs, punycode or internationalised names. This only decides whether
+# the script-only grammar can represent the source; it does not validate a site.
+_DOMAIN_LABEL = r"[\p{L}\p{N}](?:[\p{L}\p{N}\p{M}-]{0,61}[\p{L}\p{N}\p{M}])?"
+_DOMAIN_SUFFIX = r"(?:[\p{L}][\p{L}\p{M}]{1,62}|xn--[A-Za-z0-9](?:[A-Za-z0-9-]{0,57}[A-Za-z0-9])?)"
+# A bare domain, $...$ math or `code` cannot be copied under the chat's
+# script-only grammar. Keep the strict translation prompt, but omit that grammar
+# for the whole batch so the surrounding sentence retains its context.
+_LATIN_VERBATIM_RE = regex.compile(
+    r"\$[^$\n]*\\[A-Za-z]|`[^`\n]+`|"
+    rf"(?<![/\w.@-])(?:{_DOMAIN_LABEL}\.)+{_DOMAIN_SUFFIX}(?![\w-]|\.[\p{{L}}\p{{N}}])",
+    regex.IGNORECASE,
 )
 
 
@@ -731,6 +738,7 @@ _CHAT_STRICT_TRANSLATION_CONTRACT = (
     "Translate exactly what is present. Do not infer, guess, complete fragments, explain, add facts, add conclusions, or omit information. "
     "Preserve the speaker, addressee, negation, names, brands, units, and product identity. "
     "Write names, brands and abbreviations in {lang} script; never expand initials. "
+    "Never translate or transliterate URLs or domain names; copy their exact characters unchanged. "
     "Keep the markdown exactly: the same ** bold markers, bullets, numbered items, # headings and line breaks, in the same places. "
     "Keep every number exactly as written in the source, in the same digits: amounts, dates, decimals, percentages, list numbers and identifiers. "
     "Glossary and style rules guide wording only; they must not change the source meaning or add content.\n"

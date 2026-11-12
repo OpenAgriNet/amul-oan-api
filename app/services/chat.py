@@ -66,25 +66,26 @@ from app.turn.types import (
 
 
 class SentenceSegmenter:
-    sep = 'ŽžŽžSentenceSeparatorŽžŽž'
     latin_terminals = '!?.'
     jap_zh_terminals = '。！？'
     terminals = latin_terminals + jap_zh_terminals
 
     def __init__(self):
-        terminals = self.terminals
-        self._re = [
-            (regex.compile(r'(\P{N})([' + terminals + r'])(\p{Z}*)'),
-             r'\1\2\3' + self.sep),
-            (regex.compile(r'(' + terminals + r')(\P{N})'),
-             r'\1' + self.sep + r'\2'),
-        ]
+        # Keep horizontal separators with the sentence, but leave newlines for
+        # the next batch's layout handling. Do not split line-start "1." markers.
+        # A domain dot at the end of a streamed chunk waits for more text.
+        self._boundary = regex.compile(r'(?<!(?:^|\n)[ \t]*\d+)[.!?。！？](?:\p{Z}+|(?=\n))')
 
     @lru_cache(maxsize=2**16)
     def __call__(self, line: str):
-        for (_re, repl) in self._re:
-            line = _re.sub(repl, line)
-        return [t for t in line.split(self.sep) if t != '']
+        parts = []
+        start = 0
+        for boundary in self._boundary.finditer(line):
+            parts.append(line[start:boundary.end()])
+            start = boundary.end()
+        if start < len(line):
+            parts.append(line[start:])
+        return parts
 
 
 sentence_segmenter = SentenceSegmenter()
