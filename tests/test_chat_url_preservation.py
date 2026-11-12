@@ -210,3 +210,77 @@ def test_sentence_collection_loses_no_source_characters(text):
         complete, buffer = chat.extract_complete_sentences(buffer + char)
         collected.extend(complete)
     assert "".join(collected) + buffer == text
+
+
+# Grammar selection is a real request-builder check, not a fake translation.
+BARE_DOMAINS = [
+    'www.amul.coop', 'portal.agriculture', 'help.technology', 'docs.museum',
+    'farm.solutions', 'service.photography', 'portal.brandnewending',
+    'PORTAL.COOP', 'a.b.c.example.coop', 'farm-2.example.coop',
+    'xn--bcher-kva.example', 'portal.xn--p1ai', 'bücher.example',
+    'उदाहरण.भारत', 'ઉદાહરણ.ભારત',
+]
+
+
+@pytest.mark.parametrize('domain', BARE_DOMAINS)
+@pytest.mark.parametrize('template', [
+    'Read {} for more information.', 'Open ({}).',
+    '**Website:** {}\n', 'Visit {}/path?q=1#help for details.',
+    'Read [the portal]({}) for details.',
+])
+def test_unfamiliar_domain_disables_unwritable_chat_grammar(domain, template):
+    from app.services import translation as tr
+
+    text = template.format(domain)
+    tier = SimpleNamespace(tier=SimpleNamespace(target_script_only=True))
+    with tr.translation_channel('chat'):
+        request = tr._script_only_request(tier, 'instruction', text, 'gujarati', 2048)
+    assert request.grammar is None, text
+
+
+@pytest.mark.parametrize('text', [
+    'Give 2.5 litres daily.', 'The version is 1.2.3.', 'Call Dr. Patel.',
+    'Finish this. Start that.', 'Use portal.c for details.',
+    'Read -invalid.coop for details.', 'Read invalid-.coop for details.',
+    'Read invalid..coop for details.', 'Read portal.123 for details.',
+    'Read ' + 'a' * 64 + '.coop for details.',
+    'Read portal.' + 'a' * 64 + ' for details.',
+    'Visit https://www.amul.coop for details.',
+])
+def test_ordinary_prose_and_invalid_domains_keep_chat_grammar(text):
+    from app.services import translation as tr
+
+    tier = SimpleNamespace(tier=SimpleNamespace(target_script_only=True))
+    with tr.translation_channel('chat'):
+        request = tr._script_only_request(tier, 'instruction', text, 'gujarati', 2048)
+    assert request.grammar is not None, text
+
+
+def test_domain_recognition_does_not_depend_on_registered_suffix_list():
+    from app.services import translation as tr
+
+    rng = random.Random(581)
+    for _ in range(2000):
+        suffix = ''.join(rng.choices('abcdefghijklmnopqrstuvwxyz', k=rng.randint(2, 63)))
+        domain = 'farm-2.portal.' + suffix
+        match = tr._LATIN_VERBATIM_RE.search('Read (' + domain + ') for details.')
+        assert match is not None and match.group() == domain
+
+
+@pytest.mark.parametrize('text', ['Read www.amul.coop.', r'Read $\alpha$.', 'Read `value`.'])
+def test_verbatim_detection_preserves_voice_grammar_policy(text):
+    from app.services import translation as tr
+
+    tier = SimpleNamespace(tier=SimpleNamespace(target_script_only=True))
+    with tr.translation_channel('voice'):
+        request = tr._script_only_request(tier, 'instruction', text, 'gujarati', 2048)
+    assert request.grammar == tr.GU_SCRIPT_ONLY_GRAMMAR
+
+
+@pytest.mark.parametrize('domain', BARE_DOMAINS)
+@pytest.mark.parametrize('size_range, seed', SCHEDULES)
+def test_unfamiliar_domain_and_context_survive_streaming(monkeypatch, domain, size_range, seed):
+    sentence = f'Read {domain} for the latest application information.'
+    output, calls = stream(monkeypatch, sentence + ' Keep your documents ready.', size_range, seed)
+    assert sentence in output
+    assert any(sentence in call for call in calls), calls
