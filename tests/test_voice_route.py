@@ -96,6 +96,9 @@ def world(monkeypatch):
         seen["stage_reads"] += 1
         return seen["stage"]
 
+    async def _no_booking(session_id, history):
+        return None
+
     answer = [ModelRequest(parts=[UserPromptPart(content="q")]), ModelResponse(parts=[TextPart(content="Give her water.")])]
     monkeypatch.setattr(bg, "check_moderation", _moderation)
     monkeypatch.setattr(bg, "check_non_meaningful_streak", _streak)
@@ -105,6 +108,7 @@ def world(monkeypatch):
     monkeypatch.setattr(lv, "refresh_session_request_ownership", _owner)
     monkeypatch.setattr(lv, "is_session_request_owner", _owner)
     monkeypatch.setattr(outbound, "get_stage", _stage)
+    monkeypatch.setattr("app.voice.agent_input.unheard_booking_note", _no_booking)
     monkeypatch.setattr(chat_service, "update_message_history", _history)
     monkeypatch.setattr(voice_agents.voice_agent, "iter", lambda **_kw: _Run(["Give her water."], answer))
     monkeypatch.setattr(settings, "enable_voice_nudges", False)

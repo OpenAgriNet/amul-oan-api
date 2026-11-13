@@ -9,10 +9,12 @@ os.environ.setdefault("OPENAI_API_KEY", "test-key")
 os.environ.setdefault("LLM_MODEL_NAME", "gpt-test")
 
 import asyncio
+import time
 from types import SimpleNamespace
 
 import httpx
 import pytest
+from pydantic_ai.messages import ModelRequest, ToolReturnPart, UserPromptPart
 
 from agents.tools import ai_call as chat_ai_call
 from agents.tools.beckn import network as beckn_network
@@ -28,12 +30,15 @@ TECH_ID = "YWl0LXRlY2gtMDAwMDAwMQ=="
 SPECIES = next(iter(AISpecies))
 
 
-def _ctx(session_id, tool_call_id=None):
+def _ctx(session_id, tool_call_id=None, superseded=False):
     async def _ensure_in_scope():
         return True
 
+    async def _superseded():
+        return superseded
+
     return SimpleNamespace(
-        deps=SimpleNamespace(session_id=session_id, ensure_in_scope=_ensure_in_scope),
+        deps=SimpleNamespace(session_id=session_id, ensure_in_scope=_ensure_in_scope, superseded=_superseded),
         tool_call_id=tool_call_id,
     )
 
@@ -184,6 +189,157 @@ def test_ai_call_concurrent_submits_book_once(monkeypatch, store):
     assert len(calls) == 1
     assert any("booked successfully" in r.lower() for r in (r1, r2))
     assert any("already" in r.lower() for r in (r1, r2))
+
+
+# ── a repeat that lands while the booking is still being made (#566) ────────
+
+
+def _quick_wait(monkeypatch, seconds=1.0):
+    monkeypatch.setattr(chat_ai_call, "_INFLIGHT_WAIT_SECONDS", seconds)
+    monkeypatch.setattr(chat_ai_call, "_INFLIGHT_POLL_SECONDS", 0.01)
+
+
+def _overlapping():
+    """Raya sends one "yes" as two fragments: the second runs the booking tool
+    while the first one's booking is still in flight."""
+    async def go():
+        first = asyncio.create_task(
+            ai_mod.create_ai_call(_ctx("sR"), "159", "00002", "5058", TECH_ID, SPECIES)
+        )
+        await asyncio.sleep(0.02)
+        second = await ai_mod.create_ai_call(_ctx("sR"), "159", "00002", "5058", TECH_ID, SPECIES)
+        return await first, second
+
+    return asyncio.run(go())
+
+
+def test_a_repeat_that_lands_while_the_booking_is_in_flight_gets_the_ticket(monkeypatch, store):
+    """The first fragment's turn books but is superseded, so its reply never
+    reaches the caller. The second must read the ticket back, not say the
+    booking may have gone through."""
+    _quick_wait(monkeypatch)
+    calls = _confirms(monkeypatch, [_booked("T1"), _booked("T2")], delay=0.2)
+
+    first, second = _overlapping()
+
+    assert len(calls) == 1
+    assert "booked successfully" in first.lower()
+    assert second == "Artificial insemination call is already booked. Ticket: T1."
+
+
+@pytest.mark.parametrize("outcome", [
+    _pending(),
+    httpx.ReadTimeout("read timed out"),
+])
+def test_a_repeat_waiting_on_an_unconfirmed_booking_answers_once_it_settles(monkeypatch, store, outcome):
+    """The booking was neither confirmed nor refused: the waiting repeat says it
+    may have gone through as soon as that is known, not after the full wait,
+    and the session stays held."""
+    _quick_wait(monkeypatch, seconds=5.0)
+    calls = _confirms(monkeypatch, [outcome, _booked()], delay=0.2)
+
+    started = time.monotonic()
+    first, second = _overlapping()
+    elapsed = time.monotonic() - started
+
+    assert len(calls) == 1
+    assert first == chat_ai_call.UNCONFIRMED_MESSAGE
+    assert second == chat_ai_call.ALREADY_REQUESTED_MESSAGE
+    assert elapsed < 2.0
+    assert store[("ai_call_booked", "sR")] == {
+        "ticket": None, "species": SPECIES.value, "account": "159/00002/5058"
+    }
+
+
+@pytest.mark.parametrize("outcome", [
+    _nack(),
+    httpx.ConnectError("connection refused"),
+])
+def test_a_repeat_waiting_on_a_booking_that_provably_failed_is_told_nothing_was_booked(
+    monkeypatch, store, outcome
+):
+    _quick_wait(monkeypatch)
+    calls = _confirms(monkeypatch, [outcome, _booked()], delay=0.2)
+
+    first, second = _overlapping()
+
+    assert len(calls) == 1
+    assert "booked successfully" not in first.lower()
+    assert second == chat_ai_call.EARLIER_ATTEMPT_FAILED_MESSAGE
+    assert ("ai_call_booked", "sR") not in store
+
+
+def test_a_repeat_stops_waiting_when_the_wait_runs_out(monkeypatch, store):
+    """A booking still running after the wait: the repeat says it may have gone
+    through, and the visit is still booked only once."""
+    _quick_wait(monkeypatch, seconds=0.1)
+    calls = _confirms(monkeypatch, [_booked("T1"), _booked("T2")], delay=0.5)
+
+    first, second = _overlapping()
+
+    assert len(calls) == 1
+    assert "booked successfully" in first.lower()
+    assert second == chat_ai_call.ALREADY_REQUESTED_MESSAGE
+
+
+# ── a request that a newer one has taken over (#566) ────────────────────────
+
+
+def test_a_superseded_request_does_not_book_and_leaves_the_call_free(monkeypatch, store):
+    """The caller kept talking after "yes": the older request's reply will not
+    be heard, so it books nothing, and the newer request can still book."""
+    calls = _confirms(monkeypatch, [_booked("T1")])
+
+    told = asyncio.run(
+        ai_mod.create_ai_call(_ctx("s1", superseded=True), "159", "00002", "5058", TECH_ID, SPECIES)
+    )
+
+    assert told == ai_mod.SUPERSEDED_MESSAGE
+    assert calls == []
+    assert ("ai_call_booked", "s1") not in store
+    assert "booked successfully" in _book_ai().lower()
+
+
+# ── a booking whose reply never reached the caller (#566) ───────────────────
+
+
+def test_the_next_turn_is_told_a_booking_the_caller_never_heard(monkeypatch, store):
+    """The request that booked was taken over, so nothing of its turn is in the
+    call's history: the next turn is given the ticket to tell."""
+    _confirms(monkeypatch, [_booked("T1")])
+    _book_ai(species=AISpecies.BUFFALO)
+
+    note = asyncio.run(chat_ai_call.unheard_booking_note("s1", []))
+
+    assert note == chat_ai_call.UNHEARD_BOOKING_NOTE.format(species="buffalo", ticket="T1")
+
+
+def test_a_booking_the_history_already_has_is_not_told_again(monkeypatch, store):
+    _confirms(monkeypatch, [_booked("T1")])
+    told = _book_ai()
+    history = [ModelRequest(parts=[ToolReturnPart(tool_name="create_ai_call", content=told)])]
+
+    assert asyncio.run(chat_ai_call.unheard_booking_note("s1", history)) is None
+
+
+def test_a_ticket_inside_a_longer_number_is_not_one_told(monkeypatch, store):
+    _confirms(monkeypatch, [_booked("1234")])
+    _book_ai()
+    history = [ModelRequest(parts=[UserPromptPart(content='**User:** "my number is 9812345670, farmer code 51234"')])]
+
+    assert asyncio.run(chat_ai_call.unheard_booking_note("s1", history)) is not None
+
+
+@pytest.mark.parametrize("marker", [
+    None,
+    True,
+    {"ticket": None, "species": "cow", "account": "159/00002/5058"},
+], ids=["no_booking", "in_flight", "unconfirmed"])
+def test_there_is_nothing_to_tell_without_a_ticket(store, marker):
+    if marker is not None:
+        store[("ai_call_booked", "s1")] = marker
+
+    assert asyncio.run(chat_ai_call.unheard_booking_note("s1", [])) is None
 
 
 def test_ai_call_no_session_does_not_crash(monkeypatch, store):

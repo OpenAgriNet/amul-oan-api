@@ -106,6 +106,9 @@ class FarmerContext(BaseModel):
     # await it via ensure_in_scope() so a rejected query can never produce a write,
     # even though the agent executes optimistically before the verdict is known.
     _moderation_task: Optional["asyncio.Task"] = PrivateAttr(default=None)
+    # The voice turn's staleness check (app.voice.liveness.CallStaleness), for
+    # superseded().
+    _staleness_check: Any = PrivateAttr(default=None)
     _memory_tool_lock: asyncio.Lock = PrivateAttr(default_factory=asyncio.Lock)
     # Rich documents returned by trusted tools travel to the web client outside
     # the model transcript.  Keeping them on the per-turn deps object prevents
@@ -149,6 +152,24 @@ class FarmerContext(BaseModel):
         except Exception:
             return True
         return not bool(verdict is not None and getattr(verdict, "rejected", False))
+
+    def set_staleness_check(self, check) -> None:
+        """Attach the voice turn's staleness check."""
+        self._staleness_check = check
+
+    async def superseded(self) -> bool:
+        """True when a newer request in the call has taken over from this one.
+
+        This turn's reply will then not reach the caller, so a tool must not
+        book from it. False on chat, which has no check, and when the check
+        fails: like ensure_in_scope, it must never drop a real booking.
+        """
+        if self._staleness_check is None:
+            return False
+        try:
+            return await self._staleness_check("before_booking") == "stale_request"
+        except Exception:
+            return False
 
     def update_moderation_str(self, moderation_str: str):
         """Update the moderation result of the user's question (chat)."""

@@ -28,6 +28,7 @@ from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, UserProm
 from pydantic_ai.usage import UsageLimits
 
 from agents.deps import MEMORY_INSTRUCTIONS, FarmerAccount, FarmerContext
+from agents.tools.ai_call import unheard_booking_note
 from agents.tools.farmer_cache import (
     enqueue_farmer_refresh,
     get_farmer_data_cached_only,
@@ -575,11 +576,19 @@ async def _voice_agent_input(
             turn.call.heat_alert.event_id if turn.call is not None and turn.call.heat_alert else None
         ),
     )
+    # A request that a newer one has taken over does not book.
+    deps.set_staleness_check(is_stale)
     # Let side-effecting tools (bookings) self-gate on the concurrent
     # moderation verdict before performing any write.
     deps.set_moderation_task(background.moderation_task)
 
     user_message = deps.get_user_message()
+    booking_note = await unheard_booking_note(session_id, turn.history)
+    if booking_note:
+        # In the prompt rather than a hint, so a turn that is heard saves it to
+        # the call's history and the next turn does not say it again.
+        logger.info("Caller not yet told the booking's ticket; session_id=%s", session_id)
+        user_message = f"{booking_note}\n\n{user_message}"
     runtime_context_request = _build_runtime_context_request(deps)
     # Sizes only: the conversation and the model's message carry the farmer's
     # words and details, which stay out of application logs.

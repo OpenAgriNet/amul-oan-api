@@ -1,7 +1,9 @@
 """
 Tool for booking an artificial insemination call for a farmer.
 """
+import asyncio
 import re
+import time
 
 import httpx
 from pydantic_ai import RunContext
@@ -41,6 +43,25 @@ ALREADY_REQUESTED_MESSAGE = (
     "An artificial insemination call booking was already requested in this session.\n\n"
     "It may have gone through. If it did, you will get an SMS. If no SMS comes, please "
     "check with your society or try again later, so you do not get two visits."
+)
+# A second booking that waited on the session's earlier one, which then provably
+# did not book and released the session.
+EARLIER_ATTEMPT_FAILED_MESSAGE = (
+    "Artificial insemination call booking failed.\n\n"
+    "The booking request made a moment ago in this session did not go through, so no "
+    "visit was booked. You can try again."
+)
+# How long a repeat waits for the ticket of a booking still being made, and how
+# often it re-reads the reservation meanwhile. On prod (20 Oct - 6 Nov 2026) a
+# booking took 0.33 s at p50 and 1.44 s at p99.
+_INFLIGHT_WAIT_SECONDS = 3.0
+_INFLIGHT_POLL_SECONDS = 0.15
+# Put before the caller's words on the first turn after a booking whose reply
+# never reached them.
+UNHEARD_BOOKING_NOTE = (
+    "**Not yet told to the caller:** an artificial insemination visit was booked earlier "
+    "in this call for the {species}, ticket {ticket}. Start your reply by telling them it "
+    "is booked and the ticket number, then answer what they said. Do not book it again."
 )
 OUT_OF_SCOPE_MESSAGE = "This helpline only handles dairy farming and animal husbandry questions."
 
@@ -186,17 +207,30 @@ def _is_refused(exc: BaseException) -> bool:
 async def _already_booked_message(session_id: str, species_value: str, account: str) -> str:
     """What a second booking in the session is told.
 
-    Only a confirmed booking leaves its ticket on the reservation. Without one,
-    the earlier booking is still in flight or was never confirmed, and may or may
-    not have booked the visit, so the farmer is not told it is active. A repeat
-    for the same farmer record and species gets that booking's ticket back; a
+    Only a confirmed booking leaves its ticket on the reservation. A repeat for
+    the same farmer record and species gets that booking's ticket back; a
     request for another animal is told nothing new was booked.
+
+    A bare reservation (``True``) means the earlier booking is still being made,
+    usually by a request that a newer one has taken over, whose reply will not
+    be heard. So the repeat waits for the ticket instead of answering at once
+    that the booking may have gone through.
     """
-    try:
-        marker = await cache.get(session_id, namespace=AI_CALL_CACHE_NAMESPACE)
-    except Exception as e:
-        logger.warning("Failed to read AI call reservation: %s", e)
-        marker = None
+    deadline = time.monotonic() + _INFLIGHT_WAIT_SECONDS
+    while True:
+        try:
+            marker = await cache.get(session_id, namespace=AI_CALL_CACHE_NAMESPACE)
+        except Exception as e:
+            logger.warning("Failed to read AI call reservation: %s", e)
+            return ALREADY_REQUESTED_MESSAGE
+        if marker is not True or time.monotonic() >= deadline:
+            break
+        await asyncio.sleep(_INFLIGHT_POLL_SECONDS)
+
+    if marker is None:
+        # The reservation existed when this repeat was turned away, so the
+        # earlier booking released it: that one provably did not book.
+        return EARLIER_ATTEMPT_FAILED_MESSAGE
     if isinstance(marker, dict) and marker.get("ticket"):
         booked_species = marker.get("species")
         booked_account = marker.get("account")
@@ -207,7 +241,34 @@ async def _already_booked_message(session_id: str, species_value: str, account: 
                 booked_species=booked_species, ticket=marker["ticket"]
             )
         return ALREADY_BOOKED_MESSAGE.format(ticket=marker["ticket"])
+    # Still in flight after the wait, or settled without a ticket.
     return ALREADY_REQUESTED_MESSAGE
+
+
+async def unheard_booking_note(session_id: str | None, history) -> str | None:
+    """The call's booking, when no reply that reached the caller has told it.
+
+    A request that a newer one takes over is neither heard nor saved to the
+    call's history, but a booking it made stands. Its ticket is on the
+    reservation; a turn that was heard and told it, through the booking tool or
+    this note, has the ticket in the history.
+    """
+    if not session_id:
+        return None
+    try:
+        marker = await cache.get(session_id, namespace=AI_CALL_CACHE_NAMESPACE)
+    except Exception as e:
+        logger.warning("Failed to read AI call reservation: %s", e)
+        return None
+    ticket = marker.get("ticket") if isinstance(marker, dict) else None
+    if not ticket:
+        return None
+    # The ticket on its own: a short one inside a farmer code or a phone number
+    # was not told.
+    told = re.compile(rf"(?<![0-9A-Za-z]){re.escape(str(ticket))}(?![0-9A-Za-z])")
+    if any(told.search(str(message)) for message in history):
+        return None
+    return UNHEARD_BOOKING_NOTE.format(species=marker.get("species"), ticket=ticket)
 
 
 async def _mark_session_booked(
@@ -217,7 +278,11 @@ async def _mark_session_booked(
     account: str,
     guard: bool | None = None,
 ) -> None:
-    """Mark this session as booked so a re-run (or retry) does not double-book."""
+    """Mark this session as booked so a re-run (or retry) does not double-book.
+
+    With no ticket when the booking may have gone through but was not
+    confirmed: the session stays held, and a repeat stops waiting for a ticket.
+    """
     if guard is None:
         guard = settings.ai_call_booking_guard_enabled
     if guard and session_id:
@@ -503,6 +568,8 @@ async def _book_via_network(
                 # deliberate — a possible ~30-minute lockout is preferable to a
                 # possible duplicate visit and duplicate SMS.
                 failure_message = UNCONFIRMED_MESSAGE
+                if _owned:
+                    await _mark_session_booked(session_id, None, species.value, account, guard)
             record_api_result(
                 ai_tool_obs,
                 ok=False,
@@ -521,6 +588,8 @@ async def _book_via_network(
             # the reservation, same rule as the ambiguous exceptions above.
             if _owned and result.authoritative_no_booking:
                 await release_reservation(session_id, AI_CALL_CACHE_NAMESPACE)
+            elif _owned:
+                await _mark_session_booked(session_id, None, species.value, account, guard)
             logger.info(
                 "Network AI call failed for union=%s society=%s farmer=%s species=%s "
                 "authoritative=%s reservation=%s",

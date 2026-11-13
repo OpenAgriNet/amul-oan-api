@@ -307,10 +307,15 @@ async def _in_scope():
     return True
 
 
+async def _not_superseded():
+    return False
+
+
 def _booking_ctx(session_id="s-ban", unions=None, include_unions=True):
     deps = SimpleNamespace(session_id=session_id, ensure_in_scope=_in_scope)
     if include_unions:
         deps.farmer_unions = unions
+    deps.superseded = _not_superseded
     return SimpleNamespace(deps=deps)
 
 

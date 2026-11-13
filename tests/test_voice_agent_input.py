@@ -88,6 +88,8 @@ def world(monkeypatch):
         "prefetches": [],
         "scheme_summary": "",
         "trims": [],
+        "unheard": None,
+        "unheard_asked": [],
     }
 
     async def _moderation(**_kw):
@@ -141,6 +143,10 @@ def world(monkeypatch):
         seen["trims"].append(kwargs)
         return list(history)
 
+    async def _unheard(session_id, history):
+        seen["unheard_asked"].append((session_id, history))
+        return seen["unheard"]
+
     monkeypatch.setattr(bg, "check_moderation", _moderation)
     monkeypatch.setattr(bg, "check_non_meaningful_streak", _streak)
     monkeypatch.setattr(bg, "get_or_fetch_farmer_data", _fetch)
@@ -154,6 +160,7 @@ def world(monkeypatch):
     monkeypatch.setattr(ai, "update_message_history", _history)
     monkeypatch.setattr(ai, "_build_union_scheme_summary", _schemes)
     monkeypatch.setattr(ai, "trim_history", _trim)
+    monkeypatch.setattr(ai, "unheard_booking_note", _unheard)
     yield seen
     for coro, _label in seen["spawned"]:
         coro.close()
@@ -300,6 +307,55 @@ def test_an_anonymous_caller_gets_the_base_agent(world):
     assert built.deps.mobile is None and built.deps.signed_in is False
     assert "no registered mobile number" in built.deps.farmer_info
     assert "- Tool groups in this run: retrieval" in _content(built.message_history[0])
+
+
+@pytest.mark.parametrize("outcome, superseded", [
+    ("stale_request", True),
+    ("cancelled", False),
+    (None, False),
+    (RuntimeError("redis went away"), False),
+], ids=["newer_request", "hung_up", "current", "check_failed"])
+def test_a_booking_asks_the_turns_staleness_check(world, outcome, superseded):
+    """Only a newer request taking the call over stops a booking: a caller who
+    hung up still gets the visit they asked for."""
+    asked = []
+
+    async def is_stale(reason):
+        asked.append(reason)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+    built, _ = _agent_input(_turn(), is_stale=is_stale)
+
+    assert asyncio.run(built.deps.superseded()) is superseded
+    assert asked == ["before_booking"]
+
+
+def test_a_booking_the_caller_never_heard_comes_before_their_words(world):
+    world["unheard"] = "**Not yet told to the caller:** ticket T1."
+
+    built, _ = _agent_input(_turn())
+
+    assert built.prompt == '**Not yet told to the caller:** ticket T1.\n\n**User:** "My cow has fever"'
+    assert world["unheard_asked"] == [("call-1", _PRIOR)]
+
+
+def test_a_saved_booking_note_is_not_read_back_as_the_callers_words():
+    """The note is saved with the caller's words; pretranslation's context and
+    the non-meaningful check read only the words."""
+    from app.voice.pretranslation import _pretranslation_context
+
+    def _history(prompt):
+        return [
+            ModelRequest(parts=[UserPromptPart(content=prompt)]),
+            ModelResponse(parts=[TextPart(content="It is booked, ticket T1.")]),
+        ]
+
+    noted = '**Not yet told to the caller:** ticket T1.\n\n**User:** "My cow has fever"'
+
+    assert _pretranslation_context(_history(noted)) == _pretranslation_context(_history('**User:** "My cow has fever"'))
+    assert bg._normalize_user_turn_for_non_meaningful(noted) == "My cow has fever"
 
 
 def test_an_unresolved_fetch_is_read_again_from_the_cache(world):
