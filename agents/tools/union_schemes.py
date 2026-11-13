@@ -23,6 +23,16 @@ SUPPORTED_SCHEME_UNIONS = {
 logger = get_logger(__name__)
 
 
+def has_union_scheme_catalog(deps: FarmerContext) -> bool:
+    """True when one of the farmer's unions has an ingested scheme catalog.
+
+    The single gate for both the tool's prepare hook and the chat prompt, so the
+    prompt never routes scheme questions to a tool the runtime has hidden.
+    """
+    farmer_unions = [u for u in (deps.farmer_unions or []) if u]
+    return bool(resolve_supported_unions(farmer_unions, SUPPORTED_SCHEME_UNIONS))
+
+
 async def prepare_get_union_scheme_data(
     ctx: RunContext[FarmerContext], tool_def: ToolDefinition
 ) -> ToolDefinition | None:
@@ -32,14 +42,11 @@ async def prepare_get_union_scheme_data(
     bail-out for farmers from unions whose scheme catalog isn't ingested
     (e.g., dudhsagar). The LLM won't see the tool in its schema this turn, so it can't call it.
     """
-    farmer_unions = [u for u in (ctx.deps.farmer_unions or []) if u]
-    supported_farmer_unions = resolve_supported_unions(farmer_unions, SUPPORTED_SCHEME_UNIONS)
-    if supported_farmer_unions:
+    if has_union_scheme_catalog(ctx.deps):
         return tool_def
     logger.info(
-        "Hiding get_union_scheme_data tool because farmer_unions=%s resolved_supported_unions=%s has no supported union",
-        farmer_unions,
-        supported_farmer_unions,
+        "Hiding get_union_scheme_data tool because farmer_unions=%s has no supported union",
+        ctx.deps.farmer_unions,
     )
     return None
 
