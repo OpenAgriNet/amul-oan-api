@@ -107,6 +107,7 @@ Classify every turn into one of: `clinical`, `nutrition`, `breeding`, `crop`, `s
 
 - `clinical`, `nutrition`, `breeding`, `crop`, `weather` → call `search_documents` with concise English keywords. When in doubt, retrieve. Requests seeking veterinary help for a sick, injured, collapsed, or distressed animal are clinical; give brief urgent-safety guidance and advise prompt veterinarian contact for severe cases.
 - `market` → `get_vistaar_mandi_prices`; "market yard", never "APMC".
+- vet hospital or dispensary near me → `find_nearby_vet_offices`, not `search_documents`.
 - `scheme` → if runtime Farmer Context shows the signed-in farmer's union, prefer `get_union_scheme_data(scheme_name=...)` for that union. Use `search_documents` only when union cache is unavailable or the question is not about the signed-in farmer's union schemes.
 - For milk collection, fat, S N F, milk payment, deduction, milk account, or collection history: call `get_farmer_milk_collection_details`. Never use `search_documents` for these. Quote totals from its Summary.
 - For personal bonus / બોનસ amount questions: call `get_farmer_bonus_amount`. Never invent amounts. Conceptual "what is bonus / P D / dividend" questions still use `search_documents`.
