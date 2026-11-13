@@ -24,6 +24,7 @@ from __future__ import annotations
 import asyncio
 import re
 import time
+from dataclasses import replace
 from functools import partial
 from typing import Optional
 
@@ -46,6 +47,15 @@ from app.voice.trace import check_mode, current_trace, step_tiers
 from helpers.utils import get_logger
 
 logger = get_logger(__name__)
+
+# A refusal as irrelevant may be a word speech-to-text misheard (બીજદાન heard as
+# વીજ દાન, electricity donation): with VOICE_MODERATION_ENGLISH_RECHECK on it is
+# asked again on the English pretranslation, which reads it back (#567). Every
+# misheard AI request in the replay was refused as irrelevant. The unsafe
+# refusals are not asked again: aberration covers jailbreaks, crimes and
+# self-harm, cultural_sensitivity communal baiting, and like slurs (offensive)
+# the pretranslation can soften them.
+_RECHECK_IN_ENGLISH = frozenset({"irrelevant"})
 
 # Markers that are dropped from the non-meaningful window entirely (neither
 # counted nor streak-breaking). Excluded turns are skipped, so "5 consecutive
@@ -164,15 +174,9 @@ class VoiceBackground:
         self._non_meaningful_turns = _collect_recent_user_turns_for_non_meaningful(history, turn.query, limit=5)
         self._started_at: dict[str, float] = {}
         self._done_at: dict[str, float] = {}
-        self._moderation_task = self._timed(
-            "moderation",
-            check_moderation(
-                text=turn.query,
-                source_lang=self._source_lang,
-                recent_history_text=self._moderation_recent_history,
-                execution=execution,
-            ),
-        )
+        # The English pretranslation, once it is in: a refusal may be asked again on it.
+        self._english: asyncio.Future = asyncio.get_running_loop().create_future()
+        self._moderation_task = self._timed("moderation", self._moderate())
         self._non_meaningful_task = self._timed(
             "non_meaningful",
             check_non_meaningful_streak(
@@ -219,7 +223,8 @@ class VoiceBackground:
         later, and that wait is not the check's latency."""
         self._started_at[name] = time.monotonic()
         task = asyncio.create_task(check)
-        task.add_done_callback(lambda _t: self._done_at.__setitem__(name, time.monotonic()))
+        # setdefault: moderation stamps its own end before an English recheck.
+        task.add_done_callback(lambda _t: self._done_at.setdefault(name, time.monotonic()))
         return task
 
     def _duration_ms(self, name: str) -> float:
@@ -285,6 +290,9 @@ class VoiceBackground:
         """What history keeps for the caller's turn: the English pretranslation
         gave, or the marker it left when it gave nothing."""
         self._history_text = text
+        if not self._english.done():
+            translated = text not in HISTORY_MARKERS.values() and text != self._turn.query
+            self._english.set_result(text if translated else "")
 
     async def decline(self) -> Optional[ClassifierResult]:
         """The decline for a query moderation rejected, else None."""
@@ -321,6 +329,57 @@ class VoiceBackground:
                 await _cancel_and_reap(task)
             except Exception:
                 pass
+
+    async def _moderate(self) -> ModerationVerdict:
+        """Moderation on the caller's words as they came. With the recheck on, a
+        refusal in _RECHECK_IN_ENGLISH is asked again on the English
+        pretranslation, and that verdict stands. If the second call fails or
+        raises, the first refusal stands: no verdict would let the turn, and a
+        booking, through. The reason keeps the first verdict, and the attempts
+        both calls', for the rollout check. The moderation stage is timed on the
+        first call. Pretranslation always hands its text over before anything
+        reads the verdict, so the wait for it is never on a reader's path first."""
+        verdict = await check_moderation(
+            text=self._turn.query,
+            source_lang=self._source_lang,
+            recent_history_text=self._moderation_recent_history,
+            execution=self._execution,
+        )
+        self._done_at["moderation"] = time.monotonic()
+        if not (settings.voice_moderation_english_recheck and verdict.category in _RECHECK_IN_ENGLISH):
+            return verdict
+        english = (await self._english).strip()
+        if not english:
+            return verdict
+        try:
+            recheck = await check_moderation(
+                text=english,
+                source_lang="en",
+                recent_history_text=self._moderation_recent_history,
+                execution=self._execution,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Moderation recheck in English raised %s; the refusal stands session_id=%s process_id=%s",
+                type(exc).__name__, self._turn.session_id, self._process_id,
+            )
+            return replace(verdict, reason=f"{verdict.reason} (english recheck raised {type(exc).__name__})")
+        logger.info(
+            "Moderation rechecked in English: %s -> %s session_id=%s process_id=%s",
+            verdict.category, recheck.category, self._turn.session_id, self._process_id,
+        )
+        attempts = [
+            {**attempt, "call": call}
+            for call, checked in (("first", verdict), ("english_recheck", recheck))
+            for attempt in checked.attempts or []
+        ]
+        if recheck.failed_open or recheck.failed_closed:
+            return replace(verdict, reason=f"{verdict.reason} (english recheck failed: {recheck.reason})", attempts=attempts)
+        return replace(
+            recheck,
+            reason=f"english recheck of {verdict.category} ({verdict.reason}): {recheck.reason}",
+            attempts=attempts,
+        )
 
     async def _resolve_moderation(self) -> Optional[ModerationVerdict]:
         if self._moderation_resolved:
