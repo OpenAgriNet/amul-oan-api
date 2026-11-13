@@ -87,7 +87,8 @@ def _normalize_user_turn_for_non_meaningful(text: str) -> str:
     cleaned = (text or "").strip()
     if not cleaned:
         return ""
-    match = re.match(r'^\*\*User:\*\*\s*"?(.*?)"?$', cleaned, flags=re.IGNORECASE)
+    # Searched: a saved note can come before the caller's words (agents/tools/ai_call.py).
+    match = re.search(r'\*\*User:\*\*\s*"?(.*?)"?$', cleaned, flags=re.IGNORECASE)
     if match:
         cleaned = (match.group(1) or "").strip()
     # Remove balanced outer quotes if still present.

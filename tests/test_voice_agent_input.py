@@ -341,6 +341,23 @@ def test_a_booking_the_caller_never_heard_comes_before_their_words(world):
     assert world["unheard_asked"] == [("call-1", _PRIOR)]
 
 
+def test_a_saved_booking_note_is_not_read_back_as_the_callers_words():
+    """The note is saved with the caller's words; pretranslation's context and
+    the non-meaningful check read only the words."""
+    from app.voice.pretranslation import _pretranslation_context
+
+    def _history(prompt):
+        return [
+            ModelRequest(parts=[UserPromptPart(content=prompt)]),
+            ModelResponse(parts=[TextPart(content="It is booked, ticket T1.")]),
+        ]
+
+    noted = '**Not yet told to the caller:** ticket T1.\n\n**User:** "My cow has fever"'
+
+    assert _pretranslation_context(_history(noted)) == _pretranslation_context(_history('**User:** "My cow has fever"'))
+    assert bg._normalize_user_turn_for_non_meaningful(noted) == "My cow has fever"
+
+
 def test_an_unresolved_fetch_is_read_again_from_the_cache(world):
     world["envelope"] = None
     world["cached"] = _FOUND
