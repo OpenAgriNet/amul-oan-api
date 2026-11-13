@@ -26,16 +26,19 @@ _ANSWER = "પાણી આપો."
 
 
 class _Redis:
-    """The two calls the store makes, kept in a dict."""
+    """The calls the store makes, kept in a dict; Redis's own expiry is not run."""
 
     def __init__(self):
-        self.values, self.ttls = {}, {}
+        self.values, self.expiry_ms = {}, {}
 
     async def get(self, key):
         return self.values.get(key)
 
-    async def set(self, key, value, ex=None):
-        self.values[key], self.ttls[key] = value, ex
+    async def set(self, key, value, px=None):
+        self.values[key], self.expiry_ms[key] = value, px
+
+    async def delete(self, key):
+        self.values.pop(key, None)
 
 
 @pytest.fixture
@@ -54,23 +57,30 @@ def no_heat_alert(monkeypatch):
     monkeypatch.setattr(voice_service.heat_alert_call, "context_for_call", _none)
 
 
-def _remember(heard=(_ANSWER,), query=_WORDS, at=100.0, session="call-1"):
-    asyncio.run(duplicates.remember_answer(session, query, list(heard), at))
+def _remember(heard=(_ANSWER,), query=_WORDS, session="call-1"):
+    asyncio.run(duplicates.remember_answer(session, query, list(heard)))
 
 
-def _repeat(query=_WORDS, at=101.0, session="call-1"):
-    return asyncio.run(duplicates.answer_to_repeat(session, query, at))
+def _repeat(query=_WORDS, session="call-1"):
+    return asyncio.run(duplicates.answer_to_repeat(session, query))
 
 
 # ── the store ───────────────────────────────────────────────────────────────
 
 
-def test_the_same_words_within_five_seconds_get_the_answer_again(kept):
+def test_the_answer_is_kept_as_heard_for_two_seconds_after_it_went_out(kept):
+    _remember(heard=("પાણી ", "આપો."))
+
+    (value,) = kept.values.values()
+    assert json.loads(value) == {"words": _WORDS, "answer": _ANSWER}
+    assert list(kept.expiry_ms.values()) == [2000]
+
+
+def test_the_same_words_while_it_is_kept_get_the_answer_again(kept):
     _remember()
 
-    assert _repeat(at=101.0) == _ANSWER
-    assert _repeat(at=105.0) == _ANSWER
-    assert _repeat(at=105.1) is None
+    assert _repeat() == _ANSWER
+    assert _repeat() == _ANSWER  # a second repeat too
 
 
 def test_punctuation_and_spacing_are_not_new_words(kept):
@@ -79,20 +89,19 @@ def test_punctuation_and_spacing_are_not_new_words(kept):
     assert _repeat(query=f" {_WORDS.replace(' ', '  ')}? ") == _ANSWER
 
 
-def test_other_words_or_another_call_are_not_a_repeat(kept):
+def test_other_words_clear_the_kept_answer(kept):
     _remember()
 
     assert _repeat(query="ભેંસ ખાતી નથી") is None
+    assert kept.values == {}
+    assert _repeat() is None  # the old words, after the caller said something else
+
+
+def test_another_call_is_not_a_repeat_and_leaves_this_one(kept):
+    _remember()
+
     assert _repeat(session="call-2") is None
-    assert _repeat(query=" ? ") is None
-
-
-def test_the_answer_is_kept_as_heard_a_little_longer_than_the_window(kept):
-    _remember(heard=("પાણી ", "આપો."))
-
-    (value,) = kept.values.values()
-    assert json.loads(value) == {"words": _WORDS, "answer": _ANSWER, "at": 100.0}
-    assert list(kept.ttls.values()) == [6]
+    assert _repeat() == _ANSWER
 
 
 def test_an_answer_that_hung_up_or_said_nothing_is_not_kept(kept):

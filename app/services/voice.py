@@ -9,7 +9,6 @@ The turn itself is ``run_turn`` with voice's pieces.
 from __future__ import annotations
 
 import dataclasses
-import time
 from contextlib import aclosing
 from types import MappingProxyType
 from typing import AsyncGenerator, Optional
@@ -105,8 +104,6 @@ async def stream_voice_message(
     """
     call_type = _outbound.normalize_call_type(call_type)
     target = (target_lang or "gu").strip().lower()
-    # On the wall clock, so a repeat is told on whichever pod it reaches.
-    received_at = time.time()
     try:
         heat_alert = await heat_alert_call.context_for_call(
             session_id, normalize_phone_to_mobile(user_id or ""), call_type
@@ -118,7 +115,7 @@ async def stream_voice_message(
                 "Outbound consent turn; session_id=%s process_id=%s query_chars=%s",
                 session_id, process_id, len(query or ""),
             )
-        repeated_answer = await duplicates.answer_to_repeat(session_id, query, received_at)
+        repeated_answer = await duplicates.answer_to_repeat(session_id, query)
         turn = Turn(
             query=query,
             session_id=session_id,
@@ -176,7 +173,7 @@ async def stream_voice_message(
                 for chunk in chunks:
                     yield chunk
         if telemetry is not None and telemetry.outcome == "success":
-            await duplicates.remember_answer(session_id, query, heard, received_at)
+            await duplicates.remember_answer(session_id, query, heard)
     finally:
         released = await release_session_request_ownership(owner)
         if owner is not None:
