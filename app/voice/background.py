@@ -28,7 +28,7 @@ from functools import partial
 from typing import Optional
 
 from agents.tools.farmer import normalize_phone_to_mobile
-from agents.tools.farmer_cache import get_or_fetch_farmer_data
+from agents.tools.farmer_cache import get_or_fetch_farmer_data, lookup_failure_noted
 from app.config import settings
 from app.services.memory import MEMORY_VOICE_ENABLED, MEMORY_VOICE_TIMEOUT_SECONDS, fetch_memory_context, memory_open_for
 from app.llm_core import Step
@@ -190,8 +190,11 @@ class VoiceBackground:
             and memory_open_for(self._mobile)
         )
         self._memory_task: Optional[asyncio.Task] = None
+        self._farmer_lookup: dict = {}
         self._farmer_task = (
-            asyncio.create_task(get_or_fetch_farmer_data(self._mobile))
+            asyncio.create_task(
+                lookup_failure_noted(get_or_fetch_farmer_data(self._mobile), self._farmer_lookup)
+            )
             if self._mobile
             else None
         )
@@ -247,6 +250,12 @@ class VoiceBackground:
         if self._farmer_task is None:
             return None
         return await self._farmer_task
+
+    @property
+    def farmer_lookup_failure(self) -> Optional[str]:
+        """Why the farmer fetch failed, when it did: timeout, retry_backoff,
+        provider_error, exception, refresh_in_flight or non_authoritative."""
+        return self._farmer_lookup.get("reason")
 
     @property
     def memory_read_allowed(self) -> bool:

@@ -28,6 +28,7 @@ from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, UserProm
 from pydantic_ai.usage import UsageLimits
 
 from agents.deps import MEMORY_INSTRUCTIONS, FarmerAccount, FarmerContext
+from agents.farmer_context import _Lookups
 from agents.tools.farmer_cache import (
     enqueue_farmer_refresh,
     get_farmer_data_cached_only,
@@ -35,6 +36,8 @@ from agents.tools.farmer_cache import (
 )
 from agents.voice.agent import voice_agents
 from agents.voice.services.farmer_identity import (
+    FOUND,
+    UNRESOLVED,
     has_usable_farmer_identity,
     identity_state_for_envelope,
     identity_tool_groups,
@@ -175,6 +178,17 @@ def _build_runtime_context_request(deps: FarmerContext) -> ModelRequest:
         f"- Tool groups in this run: {', '.join(tool_groups)}",
     ]
     return ModelRequest(parts=[UserPromptPart(content="\n".join(context_lines))])
+
+
+def _farmer_lookup_report(identity: str, failure: Optional[str]) -> dict:
+    """turn.v1's farmer_context metadata for the turn's farmer lookup, as chat
+    records its lookups (agents/farmer_context.py). A lookup that left the turn
+    unresolved failed: unavailable, level ERROR, and why in the status message."""
+    lookups = _Lookups(found=identity == FOUND)
+    lookups.record("farmer", (failure or "unknown") if identity == UNRESOLVED else None)
+    if not lookups.failed:
+        return {"metadata": lookups.metadata()}
+    return {"metadata": lookups.metadata(), "level": "ERROR", "status_message": lookups.status_message()}
 
 
 def _heat_alert_hint(call) -> str:
@@ -435,7 +449,8 @@ async def _voice_agent_input(
                         unions=farmer_unions,
                         farmer_info_chars=len(farmer_info),
                         technician_info_chars=len(ai_technician_info),
-                    )
+                    ),
+                    **_farmer_lookup_report(farmer_identity, background.farmer_lookup_failure),
                 )
             logger.info(
                 "Farmer summary loaded from cache; session_id=%s source=%s stale=%s unions=%s summary_chars=%s technician_chars=%s",
