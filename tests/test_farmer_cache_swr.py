@@ -530,6 +530,24 @@ def test_a_refresh_held_by_another_past_the_wait_is_noted():
         assert _noted(lambda: fc.refresh_farmer_data("9999999999")) == (None, "refresh_in_flight")
 
 
+def test_voice_waiting_on_another_refresh_is_noted_as_that_not_a_timeout():
+    """Voice's bounded fetch has the same budget as the wait for the lock, so
+    its own timeout fires first; the reason is still the refresh it waited on."""
+    fake_redis = _locked_redis(acquired=False, held=1)
+
+    async def _slow_set(*_a, **_kw):
+        await asyncio.sleep(0.03)  # the lock's round trip
+
+    fake_redis.set = AsyncMock(side_effect=_slow_set)
+    with patch.object(fc, "FARMER_COLD_FETCH_TIMEOUT", 0.2),          patch.object(fc, "redis_client", fake_redis),          patch.object(fc, "get_cached_farmer_data", new=AsyncMock(return_value=None)),          patch.object(fc, "enqueue_farmer_refresh", new=AsyncMock()):
+        assert _noted(lambda: fc.refresh_farmer_data_bounded("9999999999", timeout=0.2)) == (None, "refresh_in_flight")
+
+
+def test_another_refresh_that_ends_without_a_record_is_noted():
+    with patch.object(fc, "redis_client", _locked_redis(acquired=False, held=0)),          patch.object(fc, "get_cached_farmer_data", new=AsyncMock(return_value=None)):
+        assert _noted(lambda: fc.refresh_farmer_data("9999999999")) == (None, "refresh_in_flight")
+
+
 def test_a_record_that_is_not_authoritative_is_noted():
     with patch.object(fc, "get_cached_farmer_data", new=AsyncMock(return_value=_Env("unknown", 0))), \
          patch.object(fc, "enqueue_farmer_refresh", new=AsyncMock()):

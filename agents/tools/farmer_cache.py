@@ -463,6 +463,10 @@ async def refresh_farmer_data(phone: str, *, background: bool = False) -> Option
             # rather than None — None would make max-serve-stale serve the ancient
             # record and would let the worker drop a queued phone as a no-op.
             logger.debug("Farmer refresh in flight for phone hash %s...; awaiting result", _cache_key(phone)[:8])
+            # Noted before the wait: voice's bounded fetch has the same budget as
+            # this wait and would note a timeout first. A wait that ends with the
+            # record leaves the turn resolved, and the reason is not read.
+            _note_failure("refresh_in_flight")
             env, cleared = await _await_inflight_refresh(
                 phone, lock_key, timeout=FARMER_COLD_FETCH_TIMEOUT
             )
@@ -470,7 +474,6 @@ async def refresh_farmer_data(phone: str, *, background: bool = False) -> Option
                 return env
             # Holder outlived our wait — re-queue so the refresh isn't lost
             # (covers the worker path) and signal "not done" to the caller.
-            _note_failure("refresh_in_flight")
             await enqueue_farmer_refresh(phone)
             return None
 
