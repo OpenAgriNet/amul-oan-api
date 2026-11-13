@@ -651,15 +651,23 @@ async def get_or_fetch_farmer_data(phone: str) -> Optional[FarmerDataEnvelope]:
     return await _normalize_for_consumer(phone, refreshed)
 
 
+# A found record /user/me refreshes, in the background, once it has less than a
+# refresh interval left before Redis drops it: 4 days with prod's 3-day interval
+# and 7-day retention, 6.5 with the code defaults.
+_PROFILE_REFRESH_AFTER = FARMER_CACHE_TTL - FARMER_REFRESH_INTERVAL
+
+
 async def get_farmer_data_for_profile(phone: str) -> Optional[FarmerDataEnvelope]:
     """The cached record as it is, for the app's profile (/user/me).
 
     The app shows the farmer's name and profile card from it, never the
     technicians or animal records a refresh also fetches, and it reads far more
     often than farmers talk to the agent: 98% of the farmer reads on 10-11 Nov
-    were /user/me (#565). So a cached record is not refreshed here. Voice turns
-    and the agent's tools refresh it, and ``fetchedAt`` tells the app when it
-    was last updated.
+    were /user/me (#565). So the read never waits, and a found record is not
+    refreshed here until ``_PROFILE_REFRESH_AFTER``, in the background, so that
+    Redis never drops the record of a farmer who only opens the app. Voice turns
+    and the agent's tools refresh it otherwise, and ``fetchedAt`` tells the app
+    when it was last updated.
 
     A not_found record is still re-checked in the background once its interval
     has passed, so a farmer who registers later shows up. With nothing cached,
@@ -671,14 +679,19 @@ async def get_farmer_data_for_profile(phone: str) -> Optional[FarmerDataEnvelope
         return await get_or_fetch_farmer_data(phone)
     if not _is_authoritative_envelope(cached):
         return await _normalize_for_consumer(phone, cached)
-    if cached.lookupStatus == "not_found" and cached.stale:
-        await enqueue_farmer_refresh(phone)
     age = _envelope_age_seconds(cached)
+    if cached.lookupStatus == "not_found":
+        due = cached.stale
+    else:
+        due = age is None or age >= _PROFILE_REFRESH_AFTER
+    if due:
+        await enqueue_farmer_refresh(phone)
     logger.info(
-        "Farmer cache read: profile_served phone_hash=%s lookup_status=%s age_hours=%s",
+        "Farmer cache read: profile_served phone_hash=%s lookup_status=%s age_hours=%s refresh=%s",
         _phone_log_hash(phone),
         cached.lookupStatus,
         None if age is None else round(age / 3600, 1),
+        due,
     )
     return cached
 

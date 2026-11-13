@@ -1,8 +1,9 @@
 """The app's profile read (/user/me): the cached farmer record as it is.
 
-A found record is never refreshed by this read, whatever its age or the reason
-it is stale. A not_found record is re-checked in the background once its
-interval has passed. With nothing cached, the record is fetched.
+The read never waits on the farmer API for a cached record. A found record is
+refreshed, in the background, only once it nears the end of its Redis retention,
+whatever else made it stale. A not_found record is re-checked in the background
+once its interval has passed. With nothing cached, the record is fetched.
 
 Self-contained: asyncio.run + mocks, no Redis.
 """
@@ -49,7 +50,7 @@ def _read(cached: Optional[FarmerDataEnvelope], phone: str = PHONE):
     [
         (1, None),
         (13, None),  # past the refresh interval
-        (1000, None),  # past max-serve-stale: other readers would wait on a fetch
+        (30, None),  # past max-serve-stale at the code defaults: other readers wait on a fetch
         (1, "ai_technician_lookup_failed"),
         (1, "animals_expired"),
         (1, "missing_animals"),
@@ -63,8 +64,21 @@ def test_found_record_is_served_without_a_refresh(age_hours, stale_reason):
     bounded.assert_not_called()
 
 
+def test_a_found_record_near_the_end_of_its_retention_is_refreshed_in_the_background():
+    due_hours = fc._PROFILE_REFRESH_AFTER / 3600
+
+    result, enqueue, bounded = _read(_cached("found", due_hours - 1))
+    enqueue.assert_not_called()
+
+    cached = _cached("found", due_hours + 1, "ai_technician_lookup_failed")
+    result, enqueue, bounded = _read(cached)
+    assert result is cached
+    enqueue.assert_awaited_once_with(PHONE)
+    bounded.assert_not_called()
+
+
 def test_old_not_found_record_is_rechecked_in_the_background():
-    cached = _cached("not_found", 3)  # past the 2 h not_found interval
+    cached = _cached("not_found", fc.FARMER_NEGATIVE_REFRESH_INTERVAL / 3600 + 1)
     result, enqueue, bounded = _read(cached)
     assert result is cached
     enqueue.assert_awaited_once_with(PHONE)
@@ -72,7 +86,7 @@ def test_old_not_found_record_is_rechecked_in_the_background():
 
 
 def test_recent_not_found_record_is_not_rechecked():
-    cached = _cached("not_found", 1)
+    cached = _cached("not_found", fc.FARMER_NEGATIVE_REFRESH_INTERVAL / 3600 - 1)
     result, enqueue, bounded = _read(cached)
     assert result is cached
     enqueue.assert_not_called()
