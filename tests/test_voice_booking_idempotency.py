@@ -111,6 +111,34 @@ def _book_ai(session_id="s1", tool_call_id=None, species=SPECIES):
     )
 
 
+def _book_on_heat_alert_call(monkeypatch, outcome):
+    """The booking turn of a heat-alert call: what the call-closing flag ends up as."""
+    _confirms(monkeypatch, [outcome])
+
+    async def mark_booked(_event_id):
+        return None
+
+    monkeypatch.setattr("app.services.heat_alert_call.mark_booked", mark_booked)
+    ctx = _ctx("s1")
+    ctx.deps.heat_alert_event_id = "event-1"
+    ctx.deps.heat_alert_booked = False
+    asyncio.run(ai_mod.create_ai_call(ctx, "159", "00002", "5058", TECH_ID, SPECIES))
+    return ctx.deps.heat_alert_booked
+
+
+def test_a_heat_alert_call_closes_on_a_confirmed_ticket(monkeypatch, store):
+    assert _book_on_heat_alert_call(monkeypatch, _booked()) is True
+
+
+@pytest.mark.parametrize("outcome", [
+    _nack(),
+    beckn_network.NetworkBookingResult(False, None, "still pending"),
+    httpx.ReadTimeout("no answer"),
+], ids=["refused", "not_confirmed", "may_have_booked"])
+def test_a_heat_alert_call_stays_open_without_a_confirmed_ticket(monkeypatch, store, outcome):
+    assert _book_on_heat_alert_call(monkeypatch, outcome) is False
+
+
 def test_ai_call_idempotent_on_rerun(monkeypatch, store):
     calls = _confirms(monkeypatch, [_booked(), _booked("T2")])
 
