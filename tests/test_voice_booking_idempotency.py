@@ -14,7 +14,7 @@ from types import SimpleNamespace
 
 import httpx
 import pytest
-from pydantic_ai.messages import ModelRequest, ToolReturnPart
+from pydantic_ai.messages import ModelRequest, ToolReturnPart, UserPromptPart
 
 from agents.tools import ai_call as chat_ai_call
 from agents.tools.beckn import network as beckn_network
@@ -320,6 +320,14 @@ def test_a_booking_the_history_already_has_is_not_told_again(monkeypatch, store)
     history = [ModelRequest(parts=[ToolReturnPart(tool_name="create_ai_call", content=told)])]
 
     assert asyncio.run(chat_ai_call.unheard_booking_note("s1", history)) is None
+
+
+def test_a_ticket_inside_a_longer_number_is_not_one_told(monkeypatch, store):
+    _confirms(monkeypatch, [_booked("1234")])
+    _book_ai()
+    history = [ModelRequest(parts=[UserPromptPart(content='**User:** "my number is 9812345670, farmer code 51234"')])]
+
+    assert asyncio.run(chat_ai_call.unheard_booking_note("s1", history)) is not None
 
 
 @pytest.mark.parametrize("marker", [

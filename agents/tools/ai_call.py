@@ -261,7 +261,12 @@ async def unheard_booking_note(session_id: str | None, history) -> str | None:
         logger.warning("Failed to read AI call reservation: %s", e)
         return None
     ticket = marker.get("ticket") if isinstance(marker, dict) else None
-    if not ticket or any(str(ticket) in str(message) for message in history):
+    if not ticket:
+        return None
+    # The ticket on its own: a short one inside a farmer code or a phone number
+    # was not told.
+    told = re.compile(rf"(?<![0-9A-Za-z]){re.escape(str(ticket))}(?![0-9A-Za-z])")
+    if any(told.search(str(message)) for message in history):
         return None
     return UNHEARD_BOOKING_NOTE.format(species=marker.get("species"), ticket=ticket)
 
