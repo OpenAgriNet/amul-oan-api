@@ -621,7 +621,7 @@ def should_refresh_farmer_data(envelope: Optional[FarmerDataEnvelope]) -> bool:
 
 
 async def get_or_fetch_farmer_data(phone: str) -> Optional[FarmerDataEnvelope]:
-    """Cache-first retrieval used by the /user endpoint and loan tool.
+    """Cache-first retrieval for voice turns and the agent's tools.
 
     Fresh cache hits return immediately. Soft-stale hits are served immediately
     and enqueued for background refresh. Records older than max-serve-stale
@@ -649,6 +649,51 @@ async def get_or_fetch_farmer_data(phone: str) -> Optional[FarmerDataEnvelope]:
     )
     refreshed = await refresh_farmer_data_bounded(phone)
     return await _normalize_for_consumer(phone, refreshed)
+
+
+# A found record /user/me refreshes, in the background, once it has less than a
+# refresh interval left before Redis drops it: 4 days with prod's 3-day interval
+# and 7-day retention, 6.5 with the code defaults.
+_PROFILE_REFRESH_AFTER = FARMER_CACHE_TTL - FARMER_REFRESH_INTERVAL
+
+
+async def get_farmer_data_for_profile(phone: str) -> Optional[FarmerDataEnvelope]:
+    """The cached record as it is, for the app's profile (/user/me).
+
+    The app shows the farmer's name and profile card from it, never the
+    technicians or animal records a refresh also fetches, and it reads far more
+    often than farmers talk to the agent: 98% of the farmer reads on 10-11 Nov
+    were /user/me (#565). So the read never waits, and a found record is not
+    refreshed here until ``_PROFILE_REFRESH_AFTER``, in the background, so that
+    Redis never drops the record of a farmer who only opens the app. Voice turns
+    and the agent's tools refresh it otherwise, and ``fetchedAt`` tells the app
+    when it was last updated.
+
+    A not_found record is still re-checked in the background once its interval
+    has passed, so a farmer who registers later shows up. With nothing cached,
+    the record is fetched as for every other reader.
+    """
+    phone = _normalize_cache_phone(phone)
+    cached = await get_cached_farmer_data(phone)
+    if cached is None:
+        return await get_or_fetch_farmer_data(phone)
+    if not _is_authoritative_envelope(cached):
+        return await _normalize_for_consumer(phone, cached)
+    age = _envelope_age_seconds(cached)
+    if cached.lookupStatus == "not_found":
+        due = cached.stale
+    else:
+        due = age is None or age >= _PROFILE_REFRESH_AFTER
+    if due:
+        await enqueue_farmer_refresh(phone)
+    logger.info(
+        "Farmer cache read: profile_served phone_hash=%s lookup_status=%s age_hours=%s refresh=%s",
+        _phone_log_hash(phone),
+        cached.lookupStatus,
+        None if age is None else round(age / 3600, 1),
+        due,
+    )
+    return cached
 
 
 # Cold fetches that outlived their turn's budget, held until they finish so the
