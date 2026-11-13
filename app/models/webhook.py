@@ -14,6 +14,7 @@ from sqlalchemy import (
     Boolean,
     DateTime,
     Index,
+    Integer,
     String,
     Text,
     UniqueConstraint,
@@ -85,6 +86,11 @@ class HeatAlertWebhookEvent(WebhookBase):
     call_due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     outbound_call_uuid: Mapped[str | None] = mapped_column(String(64))
     call_error: Mapped[str | None] = mapped_column(String(64))
+    # Calls placed for this alert, how the latest ended (Completed / Failure), and
+    # when it was last dialled (dials keep their spacing through this).
+    call_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    call_outcome: Mapped[str | None] = mapped_column(String(16))
+    call_dialled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     # Parsed timestamps (if parseable) improve queryability.
     ai_window_start_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

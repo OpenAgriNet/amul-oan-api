@@ -97,7 +97,7 @@ Env reference: the heat-alert block in `example.env`.
 1. Create a dedicated Postgres DB/user for webhook storage.
 2. Apply the schema migration before deploying the matching application code:
    - fresh database: `psql "$WEBHOOK_DSN" -f migrations/webhook/001_init.sql`
-   - existing database: apply `migrations/webhook/003_booking_url.sql`, `migrations/webhook/004_call_flags.sql`, then `migrations/webhook/005_outbound_call.sql`
+   - existing database: apply `migrations/webhook/003_booking_url.sql`, `migrations/webhook/004_call_flags.sql`, `migrations/webhook/005_outbound_call.sql`, then `migrations/webhook/006_call_retries.sql`
 3. Set runtime env on this service:
    - `WEBHOOK_SHARED_TOKEN`
    - `WEBHOOK_DB_URL` (`postgresql+asyncpg://...`)
@@ -105,7 +105,7 @@ Env reference: the heat-alert block in `example.env`.
    - optional: `SARLABEN_WHATSAPP_BASE_URL` (defaults to `https://comm.amul.in/sarlaben`)
    - optional: `SARLABEN_WHATSAPP_TIMEOUT_SECONDS` (defaults to `15`)
    - optional: `WEBHOOK_DB_POOL_SIZE`, `WEBHOOK_RETENTION_HOURS`, `WEBHOOK_CLEANUP_INTERVAL_SECONDS`
-   - outbound call: `RAYA_OUTBOUND_CALL_API_KEY`, `RAYA_HEAT_ALERT_AGENT_ID`; optional `RAYA_OUTBOUND_CALL_API_URL`, `HEAT_ALERT_CALL_DELAY_SECONDS`, `HEAT_ALERT_CALL_ONLY_NUMBERS`
+   - outbound call: `RAYA_OUTBOUND_CALL_API_KEY`, `RAYA_HEAT_ALERT_AGENT_ID`; optional `RAYA_OUTBOUND_CALL_API_URL`, `RAYA_OUTBOUND_CALL_GAP_SECONDS`, `HEAT_ALERT_CALL_DELAY_SECONDS`, `HEAT_ALERT_CALL_RETRIES`, `HEAT_ALERT_CALL_RETRY_AFTER_SECONDS`, `HEAT_ALERT_CALL_ONLY_NUMBERS`
 4. Restart the API process and confirm startup log includes webhook cleanup worker start (or the "not started: WEBHOOK_DB_URL not configured" skip line).
 5. Smoke test:
    ```bash
