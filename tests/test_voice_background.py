@@ -81,6 +81,9 @@ def checks(monkeypatch):
 
     monkeypatch.setattr(bg, "check_moderation", _moderation)
     monkeypatch.setattr(bg, "check_non_meaningful_streak", _non_meaningful)
+    # As in code, whatever a developer's .env says: a refusal asked again waits on
+    # the pretranslation, which most tests here never hand over.
+    monkeypatch.setattr(settings, "voice_moderation_english_recheck", False)
     return seen
 
 
@@ -338,17 +341,27 @@ def test_a_classifier_error_lets_the_turn_through(checks):
 
 _MISHEARD = "વીજ દાન કરવાનું છે"  # બીજદાન (artificial insemination) heard as "electricity donation"
 _ENGLISH = "Artificial insemination needs to be done"
-_IRRELEVANT = ModerationVerdict(category="irrelevant", reason="electricity donation")
+_IRRELEVANT = ModerationVerdict(
+    category="irrelevant", reason="electricity donation", attempts=[{"tier": "oss", "status": "ok"}]
+)
 _OFFENSIVE = ModerationVerdict(category="offensive", reason="abuse")
-_ENGLISH_ALLOWS = ModerationVerdict(category="in_scope", reason="AI request")
+_ABERRATION = ModerationVerdict(category="aberration", reason="self-harm")
+_COMMUNAL = ModerationVerdict(category="cultural_sensitivity", reason="caste baiting")
+_ENGLISH_ALLOWS = ModerationVerdict(
+    category="in_scope", reason="AI request", attempts=[{"tier": "oss", "status": "ok"}]
+)
 _RECHECK_FAILED = ModerationVerdict(category="in_scope", reason="non-json model output", failed_open=True)
 
 
 def _answers(checks, *verdicts):
+    """Moderation's answers in order: a verdict, or an exception it raises."""
     queue = list(verdicts)
 
     async def _next():
-        return queue.pop(0)
+        answer = queue.pop(0)
+        if isinstance(answer, BaseException):
+            raise answer
+        return answer
 
     checks["moderation_result"] = _next
 
@@ -375,27 +388,63 @@ def test_a_misheard_refusal_is_asked_again_in_english_and_that_verdict_stands(ch
     decision, verdict = _after_pretranslation(_ENGLISH)
 
     assert decision is None
-    assert (verdict.category, verdict.reason) == ("in_scope", "english recheck: AI request")
+    assert verdict.category == "in_scope"
+    # The first verdict, and both calls' attempts, stay for the rollout check.
+    assert verdict.reason == "english recheck of irrelevant (electricity donation): AI request"
+    assert [attempt["call"] for attempt in verdict.attempts] == ["first", "english_recheck"]
     first, second = checks["moderation"]
     assert (first["text"], first["source_lang"]) == (_MISHEARD, "gu")
     assert (second["text"], second["source_lang"]) == (_ENGLISH, "en")
     assert second["recent_history_text"] == first["recent_history_text"]
 
 
-@pytest.mark.parametrize("recheck_on, first, history_text, second", [
-    (False, _IRRELEVANT, _ENGLISH, None),
-    (True, _OFFENSIVE, _ENGLISH, None),
-    (True, _IRRELEVANT, "[pretranslation-failed]", None),
-    (True, _IRRELEVANT, _ENGLISH, _RECHECK_FAILED),
-], ids=["recheck_off", "offensive_is_not_asked_again", "no_english", "recheck_failed"])
-def test_otherwise_the_refusal_stands(checks, monkeypatch, recheck_on, first, history_text, second):
+@pytest.mark.parametrize("recheck_on, first, history_text, second, reason", [
+    (False, _IRRELEVANT, _ENGLISH, None, "electricity donation"),
+    (True, _OFFENSIVE, _ENGLISH, None, "abuse"),
+    (True, _ABERRATION, _ENGLISH, None, "self-harm"),
+    (True, _COMMUNAL, _ENGLISH, None, "caste baiting"),
+    (True, _IRRELEVANT, "[pretranslation-failed]", None, "electricity donation"),
+    (True, _IRRELEVANT, "   ", None, "electricity donation"),
+    (True, _IRRELEVANT, _ENGLISH, _RECHECK_FAILED,
+     "electricity donation (english recheck failed: non-json model output)"),
+    (True, _IRRELEVANT, _ENGLISH, RuntimeError("langfuse down"),
+     "electricity donation (english recheck raised RuntimeError)"),
+], ids=["recheck_off", "offensive", "aberration", "cultural_sensitivity", "no_english",
+        "blank_english", "recheck_failed", "recheck_raised"])
+def test_otherwise_the_refusal_stands(checks, monkeypatch, recheck_on, first, history_text, second, reason):
     monkeypatch.setattr(settings, "voice_moderation_english_recheck", recheck_on)
-    _answers(checks, first, *([second] if second else []))
+    _answers(checks, first, *([second] if second is not None else []))
 
     decision, verdict = _after_pretranslation(history_text)
 
-    assert decision is not None and verdict is first
-    assert len(checks["moderation"]) == (2 if second else 1)
+    assert decision is not None
+    assert (verdict.category, verdict.reason) == (first.category, reason)
+    assert len(checks["moderation"]) == (2 if second is not None else 1)
+
+
+def test_the_moderation_stage_is_timed_on_the_first_call(checks, monkeypatch):
+    monkeypatch.setattr(settings, "voice_moderation_english_recheck", True)
+    answers = [_IRRELEVANT]
+
+    async def _slow_recheck():
+        if answers:
+            return answers.pop()
+        await asyncio.sleep(0.3)
+        return _ENGLISH_ALLOWS
+
+    checks["moderation_result"] = _slow_recheck
+
+    async def _run():
+        background = bg.VoiceBackground(_turn(_MISHEARD, source_lang="gu", target_lang="gu"),
+                                        execution=_EXECUTION, render=_render)
+        try:
+            background.set_history_text(_ENGLISH)
+            await background.moderation_task
+            return background._duration_ms("moderation")
+        finally:
+            await background.close()
+
+    assert asyncio.run(_run()) < 200
 
 
 # ── close ───────────────────────────────────────────────────────────────────
