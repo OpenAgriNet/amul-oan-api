@@ -1303,7 +1303,7 @@ def _agent_text(new_messages) -> str:
 
 
 #: The chat surface's population of the seam. Chat is the degenerate case: one
-#: classifier where voice has five.
+#: classifier where voice has six.
 CHAT_SURFACE = SurfaceProfile(
     surface=Surface.CHAT,
     classifiers=(_identity_classifier,),

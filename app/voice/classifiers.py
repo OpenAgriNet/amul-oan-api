@@ -1,9 +1,10 @@
-"""Voice's pre-turn classifiers: the five ways a call turn is answered without the agent.
+"""Voice's pre-turn classifiers: the six ways a call turn is answered without the agent.
 
 Brought over from voice-oan-api (``app/services/voice.py`` at amul-dev
 ``3b19835``): the short-circuits at the top of ``stream_voice_message`` and the
 helpers they use. Detection rules, canned lines and history markers are voice's,
 unchanged. The order is voice's too, and it matters: the first match answers.
+The repeat check that runs before them is ours (``app/voice/duplicates.py``).
 
 Each classifier returns the caller's text *before* voice's output normalizer,
 which applies to every emission that is not ``raw`` (see ``TextEmission.raw``).
@@ -349,13 +350,32 @@ async def _fragment_classifier(turn: Turn, *, render: RenderForCaller) -> Option
     )
 
 
+async def _duplicate_request_classifier(turn: Turn) -> Optional[ClassifierResult]:
+    """Raya sent the words just answered again: that answer again, without the agent.
+
+    The voice adapter finds the repeat and puts the answer on the call
+    (``app/voice/duplicates.py``). It is said as the caller heard it, so raw, and
+    nothing is added to the history, which has the turn it repeats.
+    """
+    answer = turn.call.repeated_answer if turn.call is not None else None
+    if not answer:
+        return None
+    logger.info(
+        "Repeat of the answered request; saying its answer again - session_id=%s process_id=%s",
+        turn.session_id, _process_id(turn),
+    )
+    return ClassifierResult(canned_text=answer, label="duplicate_request", raw=True, outcome="duplicate_request")
+
+
 def voice_classifiers(render: RenderForCaller) -> tuple[Classifier, ...]:
-    """Voice's chain, in voice's order, for ``SurfaceProfile.classifiers``.
+    """Voice's chain, in voice's order, for ``SurfaceProfile.classifiers``, after
+    the repeat check, which answers a repeat as the first answer was given.
 
     The labels are voice's route and outcome names, which ``voice_turns``
     already counts as ``non_question``.
     """
     return (
+        _duplicate_request_classifier,
         _stt_signal_classifier,
         _hold_message_classifier,
         partial(_greeting_classifier, render=render),
