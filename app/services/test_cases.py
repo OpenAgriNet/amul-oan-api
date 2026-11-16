@@ -5,10 +5,12 @@ as the screen sent it, ``metadata.received_at`` is when it came in (Langfuse mov
 ``createdAt`` on every write), and ``metadata.label`` is its label once the labeller has
 run. Archiving an item in Langfuse takes it off the list.
 
-The labeller gives each new case a group and an answer type with Gemma 4 through
+The labeller gives each new case a category and an answer type with Gemma 4 through
 LiteLLM, reached the way oan-evaluation's judge reaches it: SCENARIO_GEMMA_BASE_URL,
 LITELLM_API_KEY and SCENARIO_GEMMA_MODEL. It is off while the first two are unset.
-Testers, case types, tags, groups and answer types are in assets/test_case_options.json.
+Testers, case types, tags and answer types are in assets/test_case_options.json. The tags
+are the bot's features: a tester picks any as hints, and the category is the one feature
+the labeller files the case under.
 """
 import hashlib
 import json
@@ -29,6 +31,8 @@ logger = get_logger(__name__)
 
 _OPTIONS_FILE = Path(__file__).resolve().parents[2] / "assets" / "test_case_options.json"
 OPTIONS = json.loads(_OPTIONS_FILE.read_text(encoding="utf-8"))
+# A case can be filed under any tag the options file doesn't mark "category": false.
+CATEGORIES = [tag for tag in OPTIONS["tags"] if tag.get("category", True)]
 
 # Same namespace as before, so a case sent again keeps its id.
 _ID_NAMESPACE = uuid.uuid5(uuid.NAMESPACE_URL, "amul-oan-api/test-cases")
@@ -39,21 +43,21 @@ _LONG_NUMBER = re.compile(r"(?<!\d)\+?(?:\d{7,}|(?=(?:\d[ -]?){9,12}\d(?!\d))\d{
 _ID = re.compile(r"[0-9a-f]{32}|[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}")
 _dataset_ready = False
 
-_PROMPT = """You label one test case of Amul's chatbot for dairy farmers in Gujarat.
+_PROMPT = """You label one test case of Amul's chatbot for dairy farmers in Gujarat. AI here means artificial insemination.
 Reply with one JSON object and nothing else:
-{{"group": "...", "answer_type": "..."}}
+{{"category": "...", "answer_type": "..."}}
 
-group: the one group the case is about:
-{groups}
-A chat that moves from one group to another goes in the group of the farmer's last message.
+category: the one feature the case tests. It is one of these ids and nothing else:
+{categories}
+A long chat can touch several features. Its category is the feature the case was written for, not the one its last message is about. The tester's tags name the features the tester thinks it covers: if any of them fits the chat, the category is one of those. With several that fit, it is the one most of the farmer's messages are about, or the first of them in the tester's list when the chat is spread evenly. Take a feature the tester didn't tag only when none of the tags fits or there are none; it is then the feature most of the farmer's messages are about. A tester's tag that isn't in the list above is not a category.
 
-answer_type: what the bot should do after the farmer's last message:
+answer_type: what the bot should do after the farmer's last message. It is one of these and nothing else:
 {answer_types}
 - ask:<what it should ask for>: it asks the farmer for something first, like ask:species, or ask:clarify when it can't tell what the farmer means.
 
 The farmer's last message is the last one that asks or tells the bot something: a thank you or ok at the end doesn't count.
 The only thing the bot can book is an AI call. For that it needs the animal (cow or buffalo) and the technician: it asks for whichever the farmer hasn't given, ask:species first, then ask:technician, and books once it has both. In an AI booking chat, a reply like "the first one" or "the second one" picks one of the technicians the bot listed. For an AI call it never asks for a date, a time or an animal number. If the case shows booking isn't open to the farmer (the union doesn't allow it, there's no technician, or no farmer profile), it's say_unavailable.
-The bot can't book a vet or doctor visit for an animal, or a health call. A case that asks for one is vet-health with the answer_type vet, even if it asks about other things too.
+The bot can't book a vet or doctor visit for an animal, or a health call: that is not an AI booking. The answer_type of a case that asks for one is vet, even if it asks about other things too.
 If the hints say persona: doctor, the user is a vet, not a farmer. That bot only answers from its documents: it books nothing and doesn't tell them to see a vet.
 
 Phone and Aadhaar numbers in the text are cut to their last 4 digits, like ******1234.
@@ -173,12 +177,15 @@ def build_prompt(body: dict) -> str:
             first = "the farmer first wrote" if turn["role"] == "user" else "the bot first said"
             line += f" [the tester corrected this; {first}: {_text(turn.get('original_content'))}]"
         lines.append(line)
-    listed = {key: "\n".join(f"- {o['id']}: {o['hint']}" for o in OPTIONS[key]) for key in ("groups", "answer_types")}
-    return _PROMPT.format(groups=listed["groups"], answer_types=listed["answer_types"], case="\n".join(lines))
+    listed = {
+        key: "\n".join(f"- {o['id']}: {o['hint']}" for o in options)
+        for key, options in (("categories", CATEGORIES), ("answer_types", OPTIONS["answer_types"]))
+    }
+    return _PROMPT.format(**listed, case="\n".join(lines))
 
 
 def parse_label(reply: Any) -> Optional[dict]:
-    """The model's reply as {group, answer_type}, or None when it isn't a usable label."""
+    """The model's reply as {category, answer_type}, or None when it isn't a usable label."""
     if not isinstance(reply, str):
         return None
     try:
@@ -187,13 +194,14 @@ def parse_label(reply: Any) -> Optional[dict]:
         return None
     if not isinstance(data, dict):
         return None
-    group = str(data.get("group", "")).strip().lower().replace("_", "-")
-    answer_type = str(data.get("answer_type", "")).strip().lower().replace("-", "_")
+    category, answer_type = (
+        str(data.get(key, "")).strip().lower().replace("-", "_") for key in ("category", "answer_type")
+    )
     known_types = {o["id"] for o in OPTIONS["answer_types"]}
-    if group in {o["id"] for o in OPTIONS["groups"]} and (
+    if category in {o["id"] for o in CATEGORIES} and (
         answer_type in known_types or re.fullmatch(r"ask:[a-z_]{1,30}", answer_type)
     ):
-        return {"group": group, "answer_type": answer_type}
+        return {"category": category, "answer_type": answer_type}
     return None
 
 
@@ -224,7 +232,7 @@ async def label_case(client: Any, name: str, item_id: str, body: dict, metadata:
         # Only metadata is sent, so Langfuse keeps the input, status and expected output.
         await save_case(client, name, item_id, metadata={**metadata, "label": label})
         logger.info(
-            "test_case_label saved id=%s group=%s answer_type=%s", item_id, label["group"], label["answer_type"]
+            "test_case_label saved id=%s category=%s answer_type=%s", item_id, label["category"], label["answer_type"]
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning("test_case_label failed id=%s error=%s", item_id, type(exc).__name__)

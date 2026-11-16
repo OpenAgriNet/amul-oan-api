@@ -61,15 +61,16 @@ async def submit_test_case(request: Request, background: BackgroundTasks):
 
 @router.get("/options/")
 async def case_options():
-    """Testers, case types and tags for the screen, plus the labeller's groups and answer types."""
+    """Testers, case types and tags for the screen, plus the labeller's answer types. The
+    tags are also its categories, less any marked "category": false."""
     return cases.OPTIONS
 
 
 @router.get("/")
 async def list_test_cases():
     """Every case that isn't archived, newest first, as Langfuse keeps it: {id, input,
-    metadata}. metadata.received_at is when it came in, and metadata.label its group and
-    answer type once it is labelled."""
+    metadata}. metadata.received_at is when it came in, and metadata.label its category
+    and answer type once it is labelled."""
     store = cases.store()
     if store is None:
         return _error(503, "Test case store is not configured")
