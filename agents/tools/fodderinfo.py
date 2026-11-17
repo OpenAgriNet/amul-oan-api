@@ -175,7 +175,9 @@ async def get_fodder_listing(listing_id: ListingId) -> dict:
 
     Args:
         listing_id: The chosen listing's listing_id exactly as search_fodder_availability returned it,
-            never its position in the list ("the first one" means the first listing's listing_id).
+            never its position in the list. Earlier turns keep only your replies, not tool results, so
+            when the farmer means a listing from an earlier answer, first call search_fodder_availability
+            again with the same filters and take that listing's listing_id from the new results.
     """
     body = await _get(f"listings/{listing_id}")
     status = body.get("status")
