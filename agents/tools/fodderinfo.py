@@ -169,6 +169,13 @@ async def lookup_fodder_locations(
     return {"status": "unavailable"}
 
 
+_RECHECK_MISS = (
+    "Not a current listing. If the farmer meant a listing from an earlier answer, its listing_id is not "
+    "this number: call search_fodder_availability again with the same filters and recheck the "
+    "matching listing's listing_id before answering."
+)
+
+
 async def get_fodder_listing(listing_id: ListingId) -> dict:
     """
     Recheck one FodderInfo listing the farmer picked, with its seller's name and mobile.
@@ -189,7 +196,7 @@ async def get_fodder_listing(listing_id: ListingId) -> dict:
             status = "not_current"
     if status in ("not_found", "not_current"):
         report_tool("no_result")
-        return {"status": status}
+        return {"status": status, "message": _RECHECK_MISS}
     report_tool("unavailable", "FodderInfo listing lookup failed")
     return {"status": "unavailable"}
 
