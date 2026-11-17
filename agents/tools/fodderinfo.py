@@ -174,7 +174,8 @@ async def get_fodder_listing(listing_id: ListingId) -> dict:
     Recheck one FodderInfo listing the farmer picked, with its seller's name and mobile.
 
     Args:
-        listing_id: listing_id from search_fodder_availability.
+        listing_id: The chosen listing's listing_id exactly as search_fodder_availability returned it,
+            never its position in the list ("the first one" means the first listing's listing_id).
     """
     body = await _get(f"listings/{listing_id}")
     status = body.get("status")
