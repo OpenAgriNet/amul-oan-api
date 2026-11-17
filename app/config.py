@@ -737,6 +737,7 @@ class Settings(BaseSettings):
     amul_network_url: str = os.getenv("AMUL_NETWORK_URL", "http://amul-bap-seeker:3000")
     # Timeout (seconds) for network calls from the agent tools.
     amul_network_timeout_s: float = float(os.getenv("AMUL_NETWORK_TIMEOUT_S", "35"))
+    fodderinfo_api_key: str = os.getenv("FODDERINFO_API_KEY", "")
     # Doctor persona only: Qdrant search service pinned to the doctor collection.
     # Empty = the doctor searches through Beckn like the farmer.
     doctor_search_url: str = os.getenv("DOCTOR_SEARCH_URL", "")
