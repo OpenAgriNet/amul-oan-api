@@ -88,3 +88,16 @@ def test_the_list_hides_archived_cases_and_masks_numbers(setup):
     listed = client.get("/api/test-cases/")
     assert [case["id"] for case in listed.json()["items"]] == [kept]
     assert "9876543210" not in listed.text and "******3210" in listed.text
+
+
+@pytest.mark.parametrize(
+    "text, shown",
+    [
+        ("my farmer code is 1234", "my farmer code is [code]"),
+        ("society code: NA4192, OTP 4821", "society code: [code], OTP [code]"),
+        ("સભાસદ કોડ ૧૨૩૪", "સભાસદ કોડ [code]"),
+        ("2 litres at 7.5 fat on 12-11-2026 for 2025-26", "2 litres at 7.5 fat on 12-11-2026 for 2025-26"),
+    ],
+)
+def test_codes_are_hidden_and_ordinary_numbers_stay(text, shown):
+    assert cases.mask({"turns": [{"content": text}]}) == {"turns": [{"content": shown}]}

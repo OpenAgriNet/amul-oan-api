@@ -2,8 +2,8 @@
 
 Mounted only when TEST_CASES_ROUTE_ENABLED is on (main.py). POST / keeps one case as
 sent and labels a new one in the background. GET /options/ gives the screen its lists.
-GET / lists the cases as Langfuse keeps them, with phone and Aadhaar numbers cut. Turn
-text never goes to the logs.
+GET / lists the cases as Langfuse keeps them, with phone and Aadhaar numbers cut and
+farmer codes hidden. Turn text never goes to the logs.
 """
 from datetime import datetime, timezone
 
