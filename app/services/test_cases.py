@@ -39,6 +39,14 @@ _ID_NAMESPACE = uuid.uuid5(uuid.NAMESPACE_URL, "amul-oan-api/test-cases")
 # Phone and Aadhaar numbers: a run of 7+ digits, or 2-4 groups of 10-13 digits in all.
 # Dates, amounts and cycles like 2025-26 stay.
 _LONG_NUMBER = re.compile(r"(?<!\d)\+?(?:\d{7,}|(?=(?:\d[ -]?){9,12}\d(?!\d))\d{2,6}(?:[ -]\d{2,6}){1,3})(?!\d)")
+# Farmer, member, society and union codes and OTPs are short, so only the word in front
+# gives them away: "farmer code 1234", "society code: NA4192", "OTP is 4821", "સભાસદ કોડ ૧૨૩૪".
+# The code needs a digit; both parts are bounded so a long run of "-" can't make it slow.
+_CODE = re.compile(
+    r"(?i)((?:\b(?:otp\b|code\b|(?:farmer|member)\s+(?:id\b|number\b|no\b\.?))|કોડ|ઓટીપી|સભાસદ\s+નંબર|कोड|ओटीपी)"
+    r"(?:\s*(?:is|no\.?|number|[:#=-])){0,3}\s*)"
+    r"((?:[A-Za-z/-]|\d){0,32}\d(?:[A-Za-z/-]|\d){0,32})"
+)
 # Trace and session ids: 32 hex characters, or a UUID. Masking leaves them as they are.
 _ID = re.compile(r"[0-9a-f]{32}|[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}")
 _dataset_ready = False
@@ -60,7 +68,7 @@ The only thing the bot can book is an AI call. For that it needs the animal (cow
 The bot can't book a vet or doctor visit for an animal, or a health call: that is not an AI booking. The answer_type of a case that asks for one is vet, even if it asks about other things too.
 If the hints say persona: doctor, the user is a vet, not a farmer. That bot only answers from its documents: it books nothing and doesn't tell them to see a vet.
 
-Phone and Aadhaar numbers in the text are cut to their last 4 digits, like ******1234.
+Phone and Aadhaar numbers in the text are cut to their last 4 digits, like ******1234, and farmer codes and OTPs show as [code].
 The hints come from the tester and may be wrong.
 
 {case}"""
@@ -134,7 +142,8 @@ async def list_items(client: Any, name: str) -> list:
 
 
 def mask(value: Any) -> Any:
-    """A copy of a JSON value with phone and Aadhaar numbers cut to their last 4 digits.
+    """A copy of a JSON value with phone and Aadhaar numbers cut to their last 4 digits,
+    and farmer, member, society and union codes and OTPs replaced by [code].
     It walks the value in a loop, not by recursion, so no case is nested too deep for it."""
     top = [value]
     todo = [(top, 0)]
@@ -143,6 +152,7 @@ def mask(value: Any) -> Any:
         node = parent[key]
         if isinstance(node, str):
             if not _ID.fullmatch(node):
+                node = _CODE.sub(lambda m: m.group(1) + "[code]", node)
                 parent[key] = _LONG_NUMBER.sub(lambda m: "******" + re.sub(r"\D", "", m.group())[-4:], node)
         elif isinstance(node, (list, dict)):
             parent[key] = node = node.copy()
