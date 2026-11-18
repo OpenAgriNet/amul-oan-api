@@ -85,6 +85,12 @@ def _listing(item: dict) -> dict:
     return result
 
 
+_NAME_MISS = (
+    "Not a fodder name. If the farmer asked for any or all fodder, call search_fodder_availability "
+    "again without q and list those results."
+)
+
+
 async def search_fodder_availability(
     q: str | None = None,
     form: Form | None = None,
@@ -109,7 +115,8 @@ async def search_fodder_availability(
     stock, rates or distance.
 
     Args:
-        q: Fodder name as the farmer said it, e.g. "green bajra".
+        q: Fodder name as the farmer said it, e.g. "green bajra". Leave empty when the farmer asks
+            for any or all fodder.
         form: GREEN, DRY, HAY, SILAGE or CONCENTRATE, only when the farmer said it.
         district: District, only as the farmer named it; leave empty when they named only a taluka or village.
         subdistrict: Taluka name in English; add district when the name can match several places.
@@ -137,6 +144,8 @@ async def search_fodder_availability(
         if listings:
             return {"status": "ok", "notice": body.get("notice"), "total": body.get("total"), "listings": listings}
         status = "no_current_listings"
+    if status == "name_not_resolved":
+        body = {**body, "message": _NAME_MISS}
     if status in ("no_current_listings", "location_not_found", "name_not_resolved"):
         report_tool("no_result")
     elif status not in ("clarification_needed", "unavailable"):
