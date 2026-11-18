@@ -724,9 +724,10 @@ _DOMAIN_SUFFIX = r"(?:[\p{L}][\p{L}\p{M}]{1,62}|xn--[A-Za-z0-9](?:[A-Za-z0-9-]{0
 # A bare domain, $...$ math or `code` cannot be copied under the chat's
 # script-only grammar. Keep the strict translation prompt, but omit that grammar
 # for the whole batch so the surrounding sentence retains its context.
+# Allow a domain after @ too: an email address needs the same grammar exception.
 _LATIN_VERBATIM_RE = regex.compile(
     r"\$[^$\n]*\\[A-Za-z]|`[^`\n]+`|"
-    rf"(?<![/\w.@-])(?:{_DOMAIN_LABEL}\.)+{_DOMAIN_SUFFIX}(?![\w-]|\.[\p{{L}}\p{{N}}])",
+    rf"(?<![/\w.-])(?:{_DOMAIN_LABEL}\.)+{_DOMAIN_SUFFIX}(?![\w-]|\.[\p{{L}}\p{{N}}])",
     regex.IGNORECASE,
 )
 

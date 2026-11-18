@@ -284,3 +284,49 @@ def test_unfamiliar_domain_and_context_survive_streaming(monkeypatch, domain, si
     output, calls = stream(monkeypatch, sentence + ' Keep your documents ready.', size_range, seed)
     assert sentence in output
     assert any(sentence in call for call in calls), calls
+
+
+EMAIL_ADDRESSES = [
+    'pmkisan-ict@gov.in',
+    'support@example.com',
+    'farmer.help@portal.coop',
+    'farmer+scheme@help.agriculture',
+    'HELP@PORTAL.COOP',
+    'support@portal.xn--p1ai',
+    'support@bücher.example',
+    'support@उदाहरण.भारत',
+]
+
+
+@pytest.mark.parametrize('email', EMAIL_ADDRESSES)
+@pytest.mark.parametrize('language', ['gujarati', 'hindi', 'marathi', 'bengali', 'punjabi'])
+def test_email_domain_disables_unwritable_chat_grammar(email, language):
+    from app.services import translation as tr
+
+    tier = SimpleNamespace(tier=SimpleNamespace(target_script_only=True))
+    text = f'Email {email} for application information.'
+    instruction = tr._build_translation_instruction(text, 'english', language)
+    with tr.translation_channel('chat'):
+        request = tr._script_only_request(tier, instruction, text, language, 2048)
+    assert request.grammar is None, email
+    assert email in request.prompt
+    assert 'Your ONLY task is to translate' in request.prompt
+
+
+@pytest.mark.parametrize('email', EMAIL_ADDRESSES)
+@pytest.mark.parametrize('size_range, seed', SCHEDULES)
+def test_email_and_context_reach_translation_together(monkeypatch, email, size_range, seed):
+    sentence = f'Email {email} for the latest application information.'
+    output, calls = stream(monkeypatch, sentence + ' Keep your documents ready.', size_range, seed)
+    assert sentence in output
+    assert any(sentence in call for call in calls), calls
+
+
+@pytest.mark.parametrize('email', EMAIL_ADDRESSES)
+def test_email_detection_does_not_change_voice_grammar(email):
+    from app.services import translation as tr
+
+    tier = SimpleNamespace(tier=SimpleNamespace(target_script_only=True))
+    with tr.translation_channel('voice'):
+        request = tr._script_only_request(tier, 'instruction', f'Email {email}.', 'gujarati', 2048)
+    assert request.grammar == tr.GU_SCRIPT_ONLY_GRAMMAR
