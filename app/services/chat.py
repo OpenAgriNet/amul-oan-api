@@ -27,6 +27,7 @@ from app.core.cache import cache
 from agents.deps import FarmerContext
 from agents.farmer_context import FarmerContextBundle, get_farmer_context_bundle_by_mobile
 from agents.tools.farmer import normalize_phone_to_mobile
+from agents.tools import contacts as _contacts
 from agents.tools.session_shc import get_session_shc_context
 from app.services.memory import fetch_memory_context, memory_open_for
 from app.services.translation import (
@@ -740,7 +741,9 @@ class _ChatSink:
     """Chat's sink: English passed through or stream-translated in sentence batches.
 
     The Doctor persona is sanitised on both sides of translation: provenance
-    labels in the English answer, and any that post-translation invents.
+    labels in the English answer, and any that post-translation invents. In a
+    session that used FodderInfo, an English line with a phone number no tool
+    returned is dropped (agents/tools/contacts.py).
     Everything the caller receives is kept for the trace.
     """
 
@@ -760,8 +763,11 @@ class _ChatSink:
         self._max_output_chars = deps.response_max_chars
         self._species = deps.named_species if translate_to else None
         self._chunks: list[str] = []
+        # Set before the agent runs, so its tools report what they returned.
+        self._contacts = _contacts.track(turn.history)
 
     def stream(self, english):
+        english = self._contacts.filter(english)
         if self._persona == "doctor":
             english = _sanitize_doctor_stream(english)
         out = _stream_to_client(
