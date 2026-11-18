@@ -174,6 +174,21 @@ def _build_runtime_context_request(deps: FarmerContext) -> ModelRequest:
         runtime_context.replace("Runtime context for this turn:\n", "", 1),
         f"- Tool groups in this run: {', '.join(tool_groups)}",
     ]
+    if "signed-in-farmer-data" in tool_groups:
+        context_lines.append(
+            "- Milk collection dates: preserve every clear day, month, and year. "
+            "Use the same date for both endpoints of a one-day request. "
+            "If a component is unclear, keep the clear parts and ask for the missing part "
+            "before calling the tool. Resolve relative dates using today's date above. "
+            "For a future range, ask for a valid range. If it already started, offer to "
+            "end it today and wait for agreement. Keep the pending request across turns. "
+            "If the tool returns a clarification, ask the caller and wait. "
+            "If it gives a historical confirmation question, say that exact question "
+            "as your entire reply. On an explicit yes, use the exact dates in the question. "
+            "A list of dates is not a range. Look up only the specified dates, and ask which date "
+            "to check first if the request is unclear. "
+            "Name the queried day, month, and year when reporting results, even with no records."
+        )
     return ModelRequest(parts=[UserPromptPart(content="\n".join(context_lines))])
 
 
