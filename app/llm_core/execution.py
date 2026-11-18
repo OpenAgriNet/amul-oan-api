@@ -39,6 +39,7 @@ from app.llm_core.config_model import (
 )
 from app.llm_core.factory import build_handle
 from app.llm_core import health
+from app.llm_core.thinking import ThinkingFilter, strip_thinking_from_messages
 from helpers.utils import get_logger
 
 logger = get_logger(__name__)
@@ -866,7 +867,10 @@ class ExecutionContext:
         new_messages: list,
         usage_limits: Any = None,
     ) -> AsyncIterator[str]:
-        """Stream Agent text, committing on its first model activity event."""
+        """Stream Agent text, committing on its first model activity event.
+
+        Gemma's thinking markers are taken out of the text, as it streams and
+        as it is saved to the history (#612)."""
 
         async def raw(tier: ExecutionTarget) -> AsyncIterator[Any]:
             activity_signaled = False
@@ -880,19 +884,29 @@ class ExecutionContext:
                 async for node in agent_run:
                     if type(node).__name__ != "ModelRequestNode":
                         continue
+                    # One model response: a block it leaves open ends with it.
+                    thinking = ThinkingFilter()
                     async with node.stream(agent_run.ctx) as request_stream:
                         async for event in request_stream:
                             if not activity_signaled:
                                 activity_signaled = True
                                 yield AGENT_ACTIVITY
                             event_type = type(event).__name__
+                            text = None
                             if event_type == "PartStartEvent" and type(event.part).__name__ == "TextPart":
-                                if event.part.content:
-                                    yield event.part.content
+                                text = event.part.content
                             elif event_type == "PartDeltaEvent" and type(event.delta).__name__ == "TextPartDelta":
-                                if event.delta.content_delta:
-                                    yield event.delta.content_delta
-                new_messages.extend(agent_run.result.new_messages())
+                                text = event.delta.content_delta
+                            if text:
+                                text = thinking.feed(text)
+                                if text:
+                                    yield text
+                    rest = thinking.flush()
+                    if rest:
+                        yield rest
+                result_messages = agent_run.result.new_messages()
+                strip_thinking_from_messages(result_messages)
+                new_messages.extend(result_messages)
 
         async for chunk in self.stream_adapter(Step.AGENT, raw):
             yield chunk
