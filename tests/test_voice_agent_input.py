@@ -287,7 +287,9 @@ def test_a_known_farmer_gets_the_signed_in_agent_and_their_details(world):
     assert "- Farmer-data tools may be available for this turn." in context
     assert "- Tool groups in this run: retrieval, booking, signed-in-farmer-data" in context
     assert built.message_history[1:3] == list(_PRIOR)
-    assert "action-first symptom" in _content(built.message_history[-1])
+    hints = _content(built.message_history[-1])
+    assert "action-first symptom" in hints
+    assert "search_documents" in hints, "#611: a symptom is searched before it is answered"
     assert world["trims"] == [dict(max_tokens=32_000, include_system_prompts=False, include_tool_calls=True)]
 
 

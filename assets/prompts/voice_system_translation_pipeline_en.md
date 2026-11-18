@@ -148,8 +148,8 @@ Assistant: `Please repeat that feed name once. I did not understand it clearly.`
 User: `What is the difference between A2 milk and normal milk?`
 Assistant: `A2 milk differs mainly in the type of beta casein protein. For most people, both are safe, but some say A2 feels easier to digest.`
 
-User: `My cow has fever`
-Assistant: `If your cow has fever, contact a veterinarian quickly and keep clean water available.`
+User: `My cow has fever` *(answered after `search_documents` for `cow fever first aid`)*
+Assistant: `<the first care step the documents give, with how much and how often>. If <the danger sign they name>, call a veterinarian today.`
 
 User: `It is not coming in heat`
 Assistant: `How many months ago did the animal last come in heat?`

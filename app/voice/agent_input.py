@@ -234,7 +234,9 @@ def _build_query_hints_request(deps: FarmerContext) -> Optional[ModelRequest]:
         )
     elif answer_mode == "action_first_symptom":
         hint_lines.append(
-            "- Voice answer mode: action-first symptom response. Start with the most useful immediate action in one short sentence. Add at most one short safety or escalation sentence. Do not give long background, multiple causes, or a symptom checklist unless asked."
+            # Search first (#611): without it, health questions with this hint
+            # were answered "contact a veterinarian" alone, from memory.
+            "- Voice answer mode: action-first symptom response. Call `search_documents` for this question before you answer, even if the answer seems obvious. Start with the most useful immediate step the documents give, in one short sentence. If the animal may need a veterinarian, add when to call one in one short sentence; never answer with only \"contact a veterinarian\". Do not give long background, multiple causes, or a symptom checklist unless asked."
         )
     if not hint_lines:
         return None
