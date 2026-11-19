@@ -19,7 +19,7 @@ from pydantic_ai.messages import ModelRequest, TextPart, UserPromptPart
 from app.channels.chat import WEB
 from app.config import settings
 from app.services import chat as chat_service
-from app.turn.types import TelephonyCall, TextEmission, Turn
+from app.turn.types import HeatAlertCall, TelephonyCall, TextEmission, Turn
 from app.voice import classifiers as vc
 from app.voice import stt_signals
 from app.voice.classifiers import voice_classifiers
@@ -354,6 +354,19 @@ def test_the_consent_reply_is_left_to_the_consent_gate():
     """"ha bolo" is also a greeting token: answering it with the greeting would
     swallow the farmer's yes to the outbound readout."""
     assert _answer(_turn("ha bolo", call=_CONSENT_CALL)) is None
+
+
+@pytest.mark.parametrize("query", ["હા", "હ", "ના", "હલો", "Oh"])
+def test_the_reply_to_a_heat_alert_call_goes_to_the_agent(query):
+    """Raya speaks the booking question before our first turn, so history is
+    empty: these first replies from prod collar calls were answered "please
+    repeat" or with the generic greeting instead of reaching the agent."""
+    call = TelephonyCall(
+        process_id="proc-1",
+        call_type="outbound",
+        heat_alert=HeatAlertCall(event_id="e1", alert_id="a1", animal_no="1", tag_no="1"),
+    )
+    assert _answer(_turn(query, call=call)) is None
 
 
 # ── identity ───────────────────────────────────────────────────────────────
