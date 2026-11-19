@@ -204,13 +204,13 @@ def _heat_alert_hint(call) -> str:
     )
 
 
-def _build_query_hints_request(deps: FarmerContext) -> Optional[ModelRequest]:
+def _build_query_hints_request(deps: FarmerContext) -> ModelRequest:
     """Per-query hints derived from the caller's current utterance: disambiguation
     rules (for ambiguous terms) and the voice answer mode. Kept OUT of the stable
     pre-history context — these change every turn, so placing them before history
     would break the cacheable prefix. Appended right before the user message
     instead, where the instructions also sit closest to the query they describe.
-    Returns None when the query triggers neither hint."""
+    Every turn has one: it asks for a fact to be looked up before it is answered."""
     hint_lines: list[str] = []
     if deps.memory_read_allowed:
         hint_lines.append(
@@ -238,8 +238,12 @@ def _build_query_hints_request(deps: FarmerContext) -> Optional[ModelRequest]:
             # were answered "contact a veterinarian" alone, from memory.
             "- Voice answer mode: action-first symptom response. Call `search_documents` for this question before you answer, even if the answer seems obvious. Start with the most useful immediate step the documents give, in one short sentence. If the animal may need a veterinarian, add when to call one in one short sentence; never answer with only \"contact a veterinarian\". Do not give long background, multiple causes, or a symptom checklist unless asked."
         )
-    if not hint_lines:
-        return None
+    # Every turn (#611): a follow-up was answered from memory, and "I don't know"
+    # said with no search. In the system prompt this rule changed 1 of 83 such
+    # turns on dev; here, before the caller's words, 25.
+    hint_lines.append(
+        "- If this turn asks for a fact (an amount, a scheme, how to apply, where to get something), call a tool before you answer, even after a short yes. Say that you don't know, or that you checked, only after that tool call found nothing."
+    )
     return ModelRequest(parts=[UserPromptPart(content="\n".join(["Hints for the current user query:", *hint_lines]))])
 
 
@@ -605,12 +609,10 @@ async def _voice_agent_input(
     )
     logger.info(f"Trimmed history length: {len(trimmed_history)} messages")
     # Stable context first → [system][stable-context][history] is a single
-    # growing prefix vLLM can cache across turns. Per-query hints (if any)
+    # growing prefix vLLM can cache across turns. Per-query hints
     # go last, right before the user message, so they never break it.
     model_input_history = [runtime_context_request, *trimmed_history]
-    query_hints_request = _build_query_hints_request(deps)
-    if query_hints_request is not None:
-        model_input_history.append(query_hints_request)
+    model_input_history.append(_build_query_hints_request(deps))
     if turn.call is not None and turn.call.heat_alert is not None:
         model_input_history.append(
             ModelRequest(parts=[UserPromptPart(content=(

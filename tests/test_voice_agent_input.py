@@ -360,6 +360,15 @@ def test_per_query_hints_come_right_before_the_prompt(world):
     assert built.message_history[1:-1] == list(_PRIOR)
 
 
+def test_a_follow_up_with_no_other_hint_is_told_to_look_its_fact_up(world):
+    """#611: follow-ups were answered from memory, "I don't know" with no search."""
+    built, _ = _agent_input(_turn(), query="yes")
+
+    hints = _content(built.message_history[-1])
+    assert hints.startswith("Hints for the current user query:")
+    assert "call a tool before you answer" in hints
+
+
 _ORPHANED = (
     *_PRIOR,
     ModelResponse(parts=[ToolCallPart(tool_name="search_documents", args={"query": "x"}, tool_call_id="lost")]),
