@@ -168,6 +168,117 @@ def mask_tag_identifier(tag: str, *, visible_digits: int = 4) -> str:
     return " ".join(_EN_DIGIT_WORDS[d] for d in digits[-visible_digits:])
 
 
+# --- English number words, put in Gujarati words before translation (#613) ---
+# Voice's agent writes every number in English words, and the output translator
+# often gets a compound's Gujarati word wrong: on prod voice, 11-18 Nov, 299 litres
+# were said as 31 and 7,097 rupees as 7,099, and ninety came out as નવદ. Gujarati
+# has a word of its own for each of 1-99, which this module already has right, so
+# the number goes to the translator in Gujarati words and is copied. A number
+# under ten, and digits said one by one (a tag, a phone number), stay English: the
+# translator gets those right, and "one" is not always a number.
+
+_EN_UNITS = {w: n for n, w in enumerate("zero one two three four five six seven eight nine".split())}
+_EN_TEENS = {w: n + 10 for n, w in enumerate(
+    "ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen".split()
+)}
+_EN_TENS = {w: (n + 2) * 10 for n, w in enumerate(
+    "twenty thirty forty fifty sixty seventy eighty ninety".split()
+)}
+_EN_SCALES = {"thousand": 1_000, "lakh": 100_000, "lakhs": 100_000, "crore": 10_000_000, "crores": 10_000_000}
+_EN_ORDINALS = {
+    "first": "one", "second": "two", "third": "three", "fourth": "four", "fifth": "five",
+    "sixth": "six", "seventh": "seven", "eighth": "eight", "ninth": "nine", "tenth": "ten",
+    "eleventh": "eleven", "twelfth": "twelve",
+    **{f"{w}th": w for w in ("thirteen", "fourteen", "fifteen", "sixteen", "seventeen", "eighteen", "nineteen")},
+    **{f"{w[:-1]}ieth": w for w in _EN_TENS},
+}
+_EN_MONTH_RE = re.compile(
+    r"\b(?:January|February|March|April|May|June|July|August|September|October|November|December)\b"
+)
+_EN_WORD_RE = re.compile(r"[A-Za-z]+")
+# Words of one number are apart by spaces or a hyphen only, never punctuation.
+_EN_JOIN_RE = re.compile(r"[ \t-]+")
+
+
+def _read_english_number(text: str, words: list, i: int):
+    """The number written in words from ``words[i]``: (index after it, value,
+    decimal digits, ordinal). The index is ``i`` when no number starts there."""
+    total = cur = 0
+    last = None
+    scale_cap = None
+    ordinal = False
+    j = i
+    while j < len(words) and not ordinal:
+        if j > i and not _EN_JOIN_RE.fullmatch(text[words[j - 1].end():words[j].start()]):
+            break
+        word = words[j].group().lower()
+        card = _EN_ORDINALS.get(word, word)
+        if card in _EN_UNITS and last in (None, "tens", "hundred", "scale"):
+            cur, last = cur + _EN_UNITS[card], "unit"
+        elif card in _EN_TEENS and last in (None, "hundred", "scale"):
+            cur, last = cur + _EN_TEENS[card], "teen"
+        elif card in _EN_TENS and last in (None, "hundred", "scale"):
+            cur, last = cur + _EN_TENS[card], "tens"
+        elif card == "hundred" and last in ("unit", "teen", "tens") and cur < 100:
+            cur, last = cur * 100, "hundred"
+        elif card in _EN_SCALES and cur and (scale_cap is None or _EN_SCALES[card] < scale_cap):
+            scale_cap = _EN_SCALES[card]
+            total, cur, last = total + cur * scale_cap, 0, "scale"
+        else:
+            break
+        ordinal = card != word
+        j += 1
+    decimals: list[int] = []
+    if j > i and not ordinal and j + 1 < len(words) and words[j].group().lower() == "point" \
+            and _EN_JOIN_RE.fullmatch(text[words[j - 1].end():words[j].start()]):
+        k = j + 1
+        while k < len(words) and words[k].group().lower() in _EN_UNITS \
+                and _EN_JOIN_RE.fullmatch(text[words[k - 1].end():words[k].start()]):
+            decimals.append(_EN_UNITS[words[k].group().lower()])
+            k += 1
+        if decimals:
+            j = k
+    return j, total + cur, decimals, ordinal
+
+
+def _in_a_date(text: str, start: int, end: int) -> bool:
+    """Whether the sentence around ``text[start:end]`` names a month."""
+    left = max(text.rfind(mark, 0, start) for mark in ".!?\n") + 1
+    rights = [p for p in (text.find(mark, end) for mark in ".!?\n") if p >= 0]
+    return _EN_MONTH_RE.search(text[left:min(rights, default=len(text))]) is not None
+
+
+def english_number_words_to_gujarati(text: str) -> str:
+    """``text`` with each number of ten or more written in English words put in
+    Gujarati words: "two hundred ninety nine point three litres" -> "બસો
+    નવ્વાણું પોઈન્ટ ત્રણ litres". An ordinal changes only in a sentence that
+    names a month, as a date's day, "fourteenth November" -> "ચૌદમી November":
+    elsewhere its Gujarati ending follows its noun (દસમા મહિનામાં, her tenth
+    month), which the translator already gets right."""
+    words = list(_EN_WORD_RE.finditer(text))
+    out: list[str] = []
+    at = i = 0
+    while i < len(words):
+        end, value, decimals, ordinal = _read_english_number(text, words, i)
+        if end == i:
+            i += 1
+            continue
+        if ordinal and not _in_a_date(text, words[i].start(), words[end - 1].end()):
+            i = end
+            continue
+        if value >= 10:
+            spoken = _int_to_gujarati(value)
+            if decimals:
+                spoken += " પોઈન્ટ " + " ".join(_ONES[d] for d in decimals)
+            if ordinal:
+                spoken += "મી"
+            out += [text[at:words[i].start()], spoken]
+            at = words[end - 1].end()
+        i = end
+    out.append(text[at:])
+    return "".join(out)
+
+
 # --- Text normalizer for TTS output ---
 
 # Matches sequences of digits, optionally with one decimal point

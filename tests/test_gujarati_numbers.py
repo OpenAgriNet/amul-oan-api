@@ -7,6 +7,7 @@ from helpers.gujarati_numbers import (
     tag_to_gujarati,
     normalize_numbers_for_tts,
     mask_tag_identifier,
+    english_number_words_to_gujarati,
     _int_to_gujarati,
 )
 
@@ -293,3 +294,42 @@ class TestExpandedIntegerCoverage:
     ])
     def test_integer_values(self, n, expected):
         assert number_to_gujarati(n) == expected
+
+
+# ---------------------------------------------------------------------------
+# english_number_words_to_gujarati – voice's numbers before translation (#613)
+# ---------------------------------------------------------------------------
+
+class TestEnglishNumberWords:
+    """Numbers prod's translator said wrong, 11-18 Nov, given in Gujarati words."""
+
+    @pytest.mark.parametrize("english, gujarati", [
+        ("milk was two hundred ninety nine point three liters.", "milk was બસો નવ્વાણું પોઈન્ટ ત્રણ liters."),
+        ("seven thousand ninety seven rupees and eighty seven paise",
+         "સાત હજાર સત્તાણું rupees and સત્યાસી paise"),
+        ("seventy five to ninety days", "પંચોતેર to નેવું days"),
+        ("one lakh sixty thousand six hundred ninety three", "એક લાખ સાઠ હજાર છસો ત્રાણું"),
+        # An ordinal in a sentence that names a month is a date's day.
+        ("on fourteenth November", "on ચૌદમી November"),
+        ("from November sixteenth to thirtieth", "from November સોળમી to ત્રીસમી"),
+    ])
+    def test_a_number_of_ten_or_more_is_put_in_gujarati_words(self, english, gujarati):
+        assert english_number_words_to_gujarati(english) == gujarati
+
+    @pytest.mark.parametrize("english", [
+        # Digits said one by one are an identifier, and "one" is not always a number.
+        "Tag ending one two three four.",
+        "One of the cows, at first.",
+        # Outside a date an ordinal's ending follows its noun (દસમા મહિનામાં).
+        "Your buffalo is in her tenth month.",
+    ])
+    def test_what_the_translator_gets_right_stays_english(self, english):
+        assert english_number_words_to_gujarati(english) == english
+
+    @pytest.mark.parametrize("english, gujarati", [
+        ("ticket thirteen eleven two thousand twenty four two seven",
+         "ticket તેર અગિયાર બે હજાર ચોવીસ two seven"),
+        ("fifty, three thousand", "પચાસ, ત્રણ હજાર"),
+    ])
+    def test_numbers_side_by_side_stay_apart(self, english, gujarati):
+        assert english_number_words_to_gujarati(english) == gujarati

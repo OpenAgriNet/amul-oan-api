@@ -488,6 +488,40 @@ async def test_a_silage_suppliers_name_is_pinned_on_the_voice_and_chat_streams(
     assert chat == said
 
 
+@pytest.mark.asyncio
+async def test_voice_gives_the_gujarati_translator_its_numbers_in_gujarati_words(
+    monkeypatch, _managed_pipeline
+):
+    """#613: voice's translator copies a number rather than translating its English
+    words, on the stream and the unary call. Chat, and voice to another language,
+    send the English as it is."""
+    from app.voice.sink import _voice_translation
+
+    sent = []
+    reply = _FakeResp(sse=_sse("ઠીક."), body={"choices": [{"text": "ઠીક."}]})
+
+    class _Recording(_FakeSession):
+        def post(self, *a, **k):
+            sent.append(k["json"]["prompt"])
+            return super().post(*a, **k)
+
+    monkeypatch.setattr(tr.aiohttp, "ClientSession", lambda *a, **k: _Recording(reply))
+    src = "The amount is seven thousand ninety seven rupees."
+
+    "".join([c async for c in _voice_translation(src, "gu", None)])
+    with tr.translation_channel("voice"):
+        await tr.translate_text(src, "english", "gujarati")
+        "".join([c async for c in tr.translate_text_stream_fast(src, "english", "hindi")])
+    "".join([c async for c in tr.translate_text_stream_fast(src, "english", "gujarati")])
+
+    voice_stream, voice_unary, voice_hindi, chat = sent
+    for prompt in (voice_stream, voice_unary):
+        assert "The amount is સાત હજાર સત્તાણું rupees." in prompt
+        assert "seven thousand" not in prompt
+    for prompt in (voice_hindi, chat):
+        assert src in prompt
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # 8. Faithful HTTP status classification
 # ══════════════════════════════════════════════════════════════════════════════
