@@ -135,6 +135,7 @@ class TestPromptGuidance:
         # high. A Gujarat મણ is 20 kg: one quintal is five maunds.
         rendered = self._render(name, True)
         assert "1 maund = **20 kg**" in rendered
+        assert "also written mann or man" in rendered
         assert "by **5**" in rendered
         assert "Never use 37.3, 40 or 50 kg" in rendered
 

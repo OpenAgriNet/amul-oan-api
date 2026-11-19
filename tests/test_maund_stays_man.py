@@ -10,13 +10,41 @@ os.environ.setdefault("OPENAI_API_KEY", "test-key")
 
 import pytest
 
-from agents.tools.terms import get_mini_glossary_for_text
+from agents.tools.terms import get_ambiguity_hints_for_query, get_mini_glossary_for_text
 from app.services.translation import _post_normalize_gu_translation, translation_channel
+
+
+@pytest.mark.parametrize("query", [
+    "magfali no mann no bhav",
+    "Mann ma bhav janavo",
+    "groundnut price per mann",
+])
+def test_a_romanized_mann_is_translated_as_maund(query):
+    # Romanized "mann" is also મન (mind); the hint pins the weight sense.
+    hints = get_ambiguity_hints_for_query(query, include_ask=False)
+    assert "**maund**" in hints and "20 kg" in hints
+
+
+@pytest.mark.parametrize("query", [
+    "a man came to check my cow",
+    "how many litres of milk",
+    "cow dung manure for groundnut",
+    "how to feed in a proper manner",
+])
+def test_lookalikes_do_not_get_the_maund_hint(query):
+    # "manner" contains "mann": the substring path still fires on it, so this
+    # pins that the rule is conditional rather than claiming it never fires.
+    hints = get_ambiguity_hints_for_query(query, include_ask=False)
+    if "manner" in query:
+        assert "next to a price, crop or weight" in hints
+    else:
+        assert "maund" not in hints
 
 
 @pytest.mark.parametrize("text", [
     "Groundnut (Bold, Local): ₹1,450 per maund (20 kg)",
     "1 quintal is 5 maunds.",
+    "Groundnut: ₹1,450 per mann",
 ])
 def test_the_reply_leg_is_told_maund_is_man(text):
     assert "maund -> મણ" in get_mini_glossary_for_text(text, threshold=0.90, max_terms=40)
@@ -43,6 +71,7 @@ def test_other_languages_get_their_own_maund(lang, word):
 @pytest.mark.parametrize("raw", [
     "મગફળી: ₹૧,૪૫૦ પ્રતિ maund",
     "મગફળી: ₹૧,૪૫૦ પ્રતિ Maunds",
+    "મગફળી: ₹૧,૪૫૦ પ્રતિ mann",
     "મગફળી: ₹૧,૪૫૦ પ્રતિ માઉન્ડ",
     "મગફળી: ₹૧,૪૫૦ પ્રતિ મૌન્ડ",
 ])
@@ -50,7 +79,8 @@ def test_a_maund_that_slips_through_becomes_man(channel, raw):
     with translation_channel(channel):
         out = _post_normalize_gu_translation(raw, target_lang="gu", strip_outer=True)
     assert "પ્રતિ મણ" in out
-    assert "maund" not in out.lower() and "માઉન્ડ" not in out and "મૌન્ડ" not in out
+    assert "maund" not in out.lower() and "mann" not in out.lower()
+    assert "માઉન્ડ" not in out and "મૌન્ડ" not in out
 
 
 @pytest.mark.parametrize("channel", ["chat", "voice"])

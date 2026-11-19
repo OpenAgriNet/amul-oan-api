@@ -204,7 +204,7 @@ GU_POST_REPLACEMENTS_BASE = [
     # Terminology ownership should live in the glossary/policy layers.
     (r"(?i)\bpaho\b", "બાવલું"),
     # AMUL-124: the farmer's own word, મણ, never an English "maund" left behind.
-    (r"(?i)\bmaunds?\b", "મણ"),
+    (r"(?i)\b(?:maunds?|mann)\b", "મણ"),
     (r"ગર્ભવતી", "ગાભણ"),
     # TranslateGemma confuses the digit ૫ with the letter પ. Adjacency to a
     # Gujarati digit disambiguates: "૧પ" is 15, not "1p".
