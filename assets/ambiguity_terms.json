@@ -544,5 +544,13 @@
     "type": "hardcode",
     "fuzzy": false,
     "rule": "પગાર / pagar / salary, when a dairy farmer asks about their own, means their **milk payment**: the money their dairy society pays them for the milk they poured. It is NOT a job salary or wage. When translating to English, always render it as 'milk payment'. Answer it from the farmer's milk collection details (`get_farmer_milk_collection_details`) for the dates asked, giving the total amount from its Summary."
+  },
+  {
+    "gu_terms": [
+      "mann"
+    ],
+    "type": "hardcode",
+    "fuzzy": false,
+    "rule": "'mann' (also 'man', Gujarati 'મણ') next to a price, crop or weight is the Gujarati weight unit **maund**: 1 maund = 20 kg. Translate it as 'maund', NOT 'mind' and NOT 'man' (a person)."
   }
 ]

@@ -86,6 +86,7 @@ def test_a_maund_is_twenty_kilograms(name, heading):
     # 20 kg, so the per-maund price is the per-quintal price divided by five.
     section = _section(get_prompt(name, context=CONTEXT), heading)
     assert "a maund is twenty kilograms, never forty or fifty" in section
+    assert "maund (મણ, mann)" in section
     assert "divide the per-quintal price by five" in section
     assert "rupees per maund" in section
 
