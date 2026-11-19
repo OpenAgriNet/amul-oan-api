@@ -59,7 +59,7 @@ def test_populated_technician_context_is_unchanged():
         "technicians": [{"userId": VALID_TECH_ID, "fullName": "Real Name",
                          "mobileNumber": "9876543210"}],
     }]))
-    assert f"id={VALID_TECH_ID} full_name=Real Name" in summary
+    assert f"id={VALID_TECH_ID} name=Real" in summary
     assert "Do NOT name any technician" not in summary
 
 

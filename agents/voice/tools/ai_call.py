@@ -8,7 +8,7 @@ from typing import Optional
 from pydantic_ai import RunContext
 
 from agents.deps import FarmerContext
-from agents.tools.ai_call import _book_via_network
+from agents.tools.ai_call import _book_via_network, session_booking_confirmed
 from agents.tools.telemetry import report_tool
 from agents.voice.models.ai_call import AISpecies
 from agents.voice.services.farmer_identity import (
@@ -131,7 +131,8 @@ async def create_ai_call(
     # Chat's Beckn booking: one reservation per session whatever
     # AI_CALL_BOOKING_GUARD_ENABLED says, released only when the booking
     # provably did not happen.
-    return await _book_via_network(
+    heat_alert_event_id = getattr(ctx.deps, "heat_alert_event_id", None)
+    message = await _book_via_network(
         union_code,
         society_code,
         farmer_code,
@@ -147,5 +148,10 @@ async def create_ai_call(
         },
         tool_call_id=getattr(ctx, "tool_call_id", None),
         guard=True,
-        heat_alert_event_id=getattr(ctx.deps, "heat_alert_event_id", None),
+        heat_alert_event_id=heat_alert_event_id,
     )
+    # The ticket on the reservation, not the wording of the message: a pending
+    # or unconfirmed booking must keep the farmer on the line.
+    if heat_alert_event_id and await session_booking_confirmed(session_id):
+        ctx.deps.heat_alert_booked = True
+    return message

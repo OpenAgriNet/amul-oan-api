@@ -85,6 +85,7 @@ class FarmerContext(BaseModel):
     signed_in: bool = Field(default=False, description="Whether the session is signed in/authenticated for farmer-specific tools.")
     mobile: Optional[str] = Field(default=None, description="Normalized mobile number when available.")
     heat_alert_event_id: Optional[str] = Field(default=None, description="The heat-alert event this outbound voice call was placed for (voice).")
+    heat_alert_booked: bool = Field(default=False, description="This heat-alert call's booking is confirmed, so the call can end (voice).")
     farmer_accounts: list[FarmerAccount] = Field(
         default_factory=list,
         description="All (union, society, farmer) accounts on the caller's mobile, for multi-account fan-out.",
