@@ -129,6 +129,17 @@ class TestPromptGuidance:
         assert "**latest date**" in rendered
 
     @pytest.mark.parametrize("name", PROMPTS)
+    def test_a_maund_is_twenty_kg(self, name):
+        # AMUL-124: asked for groundnut prices "મણ માં", the agent divided the
+        # quintal price by 2 ("1 maund = 50 kg"), so every price was 2.5x too
+        # high. A Gujarat મણ is 20 kg: one quintal is five maunds.
+        rendered = self._render(name, True)
+        assert "1 maund = **20 kg**" in rendered
+        assert "also written mann or man" in rendered
+        assert "by **5**" in rendered
+        assert "Never use 37.3, 40 or 50 kg" in rendered
+
+    @pytest.mark.parametrize("name", PROMPTS)
     def test_the_presentation_rule_is_gated_with_the_tools(self, name):
         assert "as a table" not in self._render(name, False)
 
