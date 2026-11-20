@@ -16,7 +16,7 @@ from typing import Optional
 from agents.tools.farmer import normalize_phone_to_mobile
 from app.llm_core import Step
 from app.llm_core import trace as _pipeline_trace
-from app.services.telemetry_stamps import turn_v1_metadata
+from app.services.telemetry_stamps import HEAT_ALERT_FLOW, turn_v1_metadata
 from app.services.translation import INDIAN_LANGUAGES
 from app.turn.types import Turn
 from app.voice.farmer import _is_signed_in_session
@@ -99,6 +99,7 @@ class VoiceTelemetry:
         # The root's trace-level keys, as turn.v1 names them. The metadata and field
         # names are built here on purpose: the contract test reads them from these calls.
         signed_in = _is_signed_in_session(turn.authenticated_user, turn.user_id)
+        heat_alert = call.heat_alert if call is not None else None
         trace.root_metadata = turn_v1_metadata(
             pipeline=PIPELINE,
             direction=trace.metadata["call_type"],
@@ -121,6 +122,11 @@ class VoiceTelemetry:
             signed_in="true" if signed_in else "false",
             # The caller's number is a farmer id when the call signed in.
             farmer_id=normalize_phone_to_mobile(turn.user_id) if signed_in else None,
+            # A turn of a collar heat-alert call we placed: the flow and the alert, so
+            # the call's turns join its heat_alert_call job and its webhook row.
+            flow=HEAT_ALERT_FLOW if heat_alert is not None else None,
+            heat_alert_event_id=heat_alert.event_id if heat_alert is not None else None,
+            heat_alert_id=heat_alert.alert_id if heat_alert is not None else None,
         )
         self._trace = trace
 
