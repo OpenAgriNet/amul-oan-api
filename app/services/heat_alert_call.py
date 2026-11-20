@@ -11,6 +11,11 @@ When the farmer answers, Raya sends the voice turn with ``session_id`` equal to
 the call UUID it returned to us and ``call_type=outbound`` (seen 2026-10-26);
 ``context_for_call`` matches that to the call we placed, so the voice agent
 knows which animal it is about and books for that account.
+
+Each attempt to call writes one ``heat_alert_call`` background_job trace
+(amul-telemetry telemetry/turn.v1.yaml): placed, skipped or error, and why.
+A placed call's trace has the call UUID as its session, the session its
+turns carry, so a call with no farmer turns is still on record.
 """
 from __future__ import annotations
 
@@ -34,7 +39,9 @@ from agents.tools.farmer_cache import get_farmer_data_cached_only
 from app.config import get_config_value, settings
 from app.core.webhook_db import get_webhook_session, webhook_db_configured
 from app.models.webhook import HeatAlertWebhookEvent
+from app.observability import non_turn_root, surface_environment
 from app.services import outbound_call
+from app.services.telemetry_stamps import BACKGROUND_JOB, HEAT_ALERT_FLOW, non_turn_v1_metadata
 from app.turn.types import HeatAlertCall
 from app.utils import get_cache, set_cache
 from app.voice.outbound import is_outbound
@@ -104,10 +111,17 @@ def schedule(event_id: uuid.UUID, due_at: datetime, rate_limit_retries: int = 0)
 async def call_farmer(event_id: uuid.UUID, rate_limit_retries: int = 0) -> None:
     event = await _claim(event_id)
     if event is None:
-        return  # already called, booked another way, or the AI window has closed
+        # Already called, booked another way, or the AI window has closed. A row another
+        # replica or an earlier attempt took has its trace from that attempt.
+        event, skip = await _why_not_claimed(event_id)
+        if skip:
+            logger.info("Heat-alert call skipped id=%s reason=%s", event_id, skip)
+            _trace_attempt(event, "skipped", skip)
+        return
     skip = await _reason_not_to_call(event)
     if skip:
         logger.info("Heat-alert call skipped id=%s reason=%s", event_id, skip)
+        _trace_attempt(event, "skipped", skip)
         await _record(event_id, call_error=skip)
         return
     try:
@@ -119,6 +133,7 @@ async def call_farmer(event_id: uuid.UUID, rate_limit_retries: int = 0) -> None:
         call_uuid = await _dial(event, species)
     except outbound_call.OutboundCallError as exc:
         logger.warning("Heat-alert call not placed id=%s reason=%s", event_id, exc)
+        _trace_attempt(event, "error", str(exc)[:64])
         # A definite refusal releases the claim; an ambiguous one keeps it, the call may exist.
         await _record(event_id, called=exc.ambiguous, call_error=str(exc)[:64])
         if str(exc) == "rate_limited" and rate_limit_retries < _RATE_LIMIT_RETRIES:
@@ -126,7 +141,50 @@ async def call_farmer(event_id: uuid.UUID, rate_limit_retries: int = 0) -> None:
             schedule(event_id, datetime.now(timezone.utc) + timedelta(seconds=delay), rate_limit_retries + 1)
         return
     logger.info("Heat-alert call placed id=%s call_uuid=%s", event_id, call_uuid)
+    _trace_attempt(event, "placed", call_uuid=call_uuid)
     await _record(event_id, outbound_call_uuid=call_uuid)
+
+
+def _trace_attempt(
+    event: HeatAlertWebhookEvent, result: str, reason: str | None = None, *, call_uuid: str | None = None
+) -> None:
+    """The attempt's ``heat_alert_call`` trace: placed, skipped or error, with the reason
+    as the row's call_error says it. A placed call's session is its call UUID. No phone
+    number: the event id leads to the row. Never raises: tracing must not stop a call."""
+    try:
+        with non_turn_root(
+            BACKGROUND_JOB,
+            non_turn_v1_metadata(
+                BACKGROUND_JOB,
+                job="heat_alert_call",
+                pipeline="telephony",
+                direction="outbound",
+                flow=HEAT_ALERT_FLOW,
+                heat_alert_event_id=str(event.id),
+                heat_alert_id=event.alert_id,
+                call_result=result,
+                call_reason=reason,
+            ),
+            session_id=call_uuid,
+            # Beside the call's turns.
+            environment=surface_environment("voice"),
+        ):
+            pass
+    except Exception as exc:
+        logger.debug("Heat-alert call trace not written: %s", exc)
+
+
+async def _why_not_claimed(event_id: uuid.UUID) -> tuple[HeatAlertWebhookEvent | None, str | None]:
+    """The row, and why it was not called when no one called it: booked or past its AI window."""
+    async with get_webhook_session() as session:
+        event = await session.get(HeatAlertWebhookEvent, event_id)
+    if event is None or event.called:
+        return event, None
+    if event.call_booked:
+        return event, "already_booked"
+    if event.ai_window_end_at is not None and event.ai_window_end_at <= datetime.now(timezone.utc):
+        return event, "window_passed"
+    return event, None
 
 
 async def _reason_not_to_call(event: HeatAlertWebhookEvent) -> str | None:

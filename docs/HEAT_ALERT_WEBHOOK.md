@@ -70,6 +70,15 @@ milk-readout consent gate, and tells the agent which animal and account the call
 is about so a "yes" runs the AI booking for it. A booking made on that session
 sets `call_booked=true`.
 
+Telemetry (turn.v1, amul-telemetry `telemetry/turn.v1.yaml`): each attempt writes one
+`background_job` trace with `amul.job=heat_alert_call`, `amul.flow=heat_alert`,
+`amul.heat_alert_event_id` (the row id), `amul.heat_alert_id` (the partner's alert id),
+`amul.call_result` (`placed`, `skipped` or `error`) and `amul.call_reason` (the
+`call_error` value; also `window_passed` and `already_booked` when the claim found the
+alert past its window or booked). A placed call's trace has the call UUID as its
+session, so it sits with the call's turns; every turn of the call carries the same
+`amul.flow` and alert ids. No phone or animal number is on the job trace.
+
 Successful response (`202 Accepted`):
 ```json
 {

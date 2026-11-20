@@ -25,6 +25,7 @@ from app.config import settings
 from app.services import chat as chat_service
 from app.services import translation as tr
 from app.services.telemetry_stamps import TURN_ROOT, VOICE_TELEMETRY_SCHEMA_VERSION
+from app.turn.types import HeatAlertCall
 from app.voice import classifiers as vc
 from app.voice.liveness import VoiceLiveness
 from app.voice.moderation import ModerationVerdict
@@ -110,6 +111,10 @@ def _every_turn(lf, call, monkeypatch):  # noqa: F811
     runs = []
     answered = _turn(history=_PRIOR)
     _run(dataclasses.replace(answered, call=dataclasses.replace(answered.call, request_epoch=3)))
+    runs.append(_take(lf))
+    # A turn of a collar heat-alert call we placed.
+    alert = HeatAlertCall(event_id="event-1", alert_id="alert-1", animal_no="", tag_no="")
+    _run(dataclasses.replace(answered, call=dataclasses.replace(answered.call, heat_alert=alert)))
     runs.append(_take(lf))
     # A request another took the session over from, before its history write.
     _run(_turn(history=_PRIOR), is_stale=_taken_over(monkeypatch, by="ef" * 16, owner=False))
