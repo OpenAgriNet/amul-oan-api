@@ -1,6 +1,7 @@
 import os
 from typing import Optional
 from pydantic_ai import Agent
+from agents.crop_protection import CROP_PROTECTION_INSTRUCTIONS
 from helpers.utils import get_prompt, get_logger
 from dotenv import load_dotenv
 from app.config import settings
@@ -38,7 +39,7 @@ def _resolve_voice_prompt_name(version: Optional[str] = None) -> str:
 
 
 def _render_voice_prompt(prompt_name: str) -> str:
-    return get_prompt(
+    prompt = get_prompt(
         prompt_name,
         context={
             "loan_max_amount": f"{int(settings.loan_max_amount):,}",
@@ -48,6 +49,7 @@ def _render_voice_prompt(prompt_name: str) -> str:
             "helpline_number_words": settings.voice_profile_helpline_number_words,
         },
     )
+    return prompt + "\n\n" + CROP_PROTECTION_INSTRUCTIONS
 
 
 VOICE_SYSTEM_PROMPT_NAME = _resolve_voice_prompt_name()

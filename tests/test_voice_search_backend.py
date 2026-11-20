@@ -127,3 +127,18 @@ def test_provider_unavailability_is_not_an_empty_result_or_marqo_fallback(monkey
 
     assert asyncio.run(search.search_documents(None, "mastitis cattle")) == unavailable
     provider.assert_awaited_once()
+
+
+def test_marqo_excludes_triazophos_passage_before_top_k(monkeypatch):
+    monkeypatch.setenv("MARQO_ENDPOINT_URL", "http://unused.invalid")
+    monkeypatch.setattr(search, "_get_index_capabilities_sync", lambda *args: {"exists": True})
+    hits = [
+        {"name": "Mung bean", "text": "ટ્રાયઝોફોસ", "_id": "mung"},
+        {"name": "Tomato", "text": "Inspect affected leaves.", "_id": "tomato"},
+    ]
+    monkeypatch.setattr(search, "_marqo_search_sync", lambda *args: hits)
+
+    result = asyncio.run(search.search_documents(None, "tomato leaf curl", top_k=1))
+    assert "Mung bean" not in result
+    assert "ટ્રાયઝોફોસ" not in result
+    assert "Inspect affected leaves." in result

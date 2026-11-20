@@ -1,4 +1,5 @@
 from pydantic_ai import Agent, RunContext
+from agents.crop_protection import CROP_PROTECTION_INSTRUCTIONS
 from helpers.utils import get_prompt, get_today_date_str
 from app.config import get_config_value, settings
 from agents.tools.registry import TOOLS
@@ -78,6 +79,7 @@ def get_agrinet_instructions(ctx: RunContext):
     # agent always runs on the English-only prompt; the response is translated
     # into the target language downstream (app.services.chat).
     instructions = get_prompt("agrinet_system_translation_pipeline.md", context=context)
+    instructions += "\n\n" + CROP_PROTECTION_INSTRUCTIONS
     if ctx.deps.memory_read_allowed:
         instructions += "\n\n" + MEMORY_INSTRUCTIONS
     return instructions

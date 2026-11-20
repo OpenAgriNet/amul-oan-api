@@ -422,3 +422,15 @@ def test_union_scheme_docstring_does_not_contradict_the_merge():
     assert "do not use this for central" not in lowered
     # It must positively acknowledge the merged behaviour.
     assert "central" in lowered
+
+
+@pytest.mark.asyncio
+async def test_vet_search_skips_triazophos_before_limiting_results():
+    unsafe = {"descriptor": {"name": "Mung bean", "long_desc": "Triazophos 40 EC"}}
+    safe = {"descriptor": {"name": "Tomato", "short_desc": "Inspect affected leaves."}}
+    fake = _FakeAsyncClient(_seeker_payload("amulvet", [unsafe, safe]))
+    with patch.object(bn.httpx, "AsyncClient", return_value=fake):
+        out = await bn.network_search_documents("tomato leaf curl", top_k=1)
+    assert "Triazophos" not in out
+    assert "Mung bean" not in out
+    assert "Inspect affected leaves." in out

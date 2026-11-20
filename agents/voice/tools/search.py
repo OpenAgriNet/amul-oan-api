@@ -12,6 +12,7 @@ import marqo
 from pydantic import BaseModel, Field
 from pydantic_ai import ModelRetry, RunContext
 
+from agents.crop_protection import mentions_triazophos
 from agents.deps import FarmerContext
 from agents.tools.telemetry import reason, report_tool
 from agents.voice.tools.terms import normalize_text_with_glossary
@@ -474,6 +475,16 @@ async def search_documents(
                     },
                 )
 
+        # Drop the whole passage, including any accompanying dose, before
+        # selecting the final hits so safe lower-ranked results can fill the slot.
+        results = [
+            hit
+            for hit in results
+            if not any(
+                mentions_triazophos(str(hit.get(key) or ""))
+                for key in ("text", "name", "name_en", "name_gu", "filename")
+            )
+        ]
         rerank_mode = (os.getenv("MARQO_RERANK_MODE", "bm25lite") or "bm25lite").strip().lower()
         if rerank_mode not in {"off", "none", "disabled"}:
             results = _rerank_hits(query, results)
