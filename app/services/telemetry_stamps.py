@@ -18,6 +18,8 @@ TURN_KIND = "turn"
 # The traces that are not turns, each named after its kind (turn.v1's amul.kind).
 BACKGROUND_JOB = "background_job"
 FRONTEND_EVENT = "frontend_event"
+# turn.v1's amul.flow: the flow a telephony turn or job belongs to, when it is one.
+HEAT_ALERT_FLOW = "heat_alert"
 
 
 @lru_cache(maxsize=1)
