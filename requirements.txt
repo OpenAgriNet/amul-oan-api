@@ -41,6 +41,7 @@ openpyxl==3.1.5
 
 ### Pydantic AI (Updated to resolve conflicts)
 pydantic-ai-slim[ag-ui,anthropic,bedrock,cli,cohere,evals,fastmcp,google,groq,huggingface,logfire,mcp,openai,retries,temporal,ui,vertexai,xai]==1.50.0
+ag-ui-protocol==1.0.0
 asgiref==3.11.0
 
 # Web Server

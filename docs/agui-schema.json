@@ -1,0 +1,1062 @@
+{
+  "$defs": {
+    "Account": {
+      "additionalProperties": false,
+      "properties": {
+        "option_id": {
+          "title": "Option Id",
+          "type": "string"
+        },
+        "label": {
+          "title": "Label",
+          "type": "string"
+        }
+      },
+      "required": [
+        "option_id",
+        "label"
+      ],
+      "title": "Account",
+      "type": "object"
+    },
+    "ChangeAccount": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "change_milk_account",
+          "title": "Kind",
+          "type": "string"
+        },
+        "state_revision": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "title": "State Revision",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "kind",
+        "state_revision"
+      ],
+      "title": "ChangeAccount",
+      "type": "object"
+    },
+    "ChartComponent": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "workflow_id": {
+          "title": "Workflow Id",
+          "type": "string"
+        },
+        "message_id": {
+          "title": "Message Id",
+          "type": "string"
+        },
+        "revision": {
+          "title": "Revision",
+          "type": "integer"
+        },
+        "title": {
+          "title": "Title",
+          "type": "string"
+        },
+        "status": {
+          "const": "submitted",
+          "title": "Status",
+          "type": "string"
+        },
+        "kind": {
+          "const": "chart",
+          "title": "Kind",
+          "type": "string"
+        },
+        "purpose": {
+          "const": "milk_records",
+          "title": "Purpose",
+          "type": "string"
+        },
+        "data": {
+          "$ref": "#/$defs/MilkResult"
+        }
+      },
+      "required": [
+        "id",
+        "workflow_id",
+        "message_id",
+        "revision",
+        "title",
+        "status",
+        "kind",
+        "purpose",
+        "data"
+      ],
+      "title": "ChartComponent",
+      "type": "object"
+    },
+    "ChatRunRequest": {
+      "additionalProperties": false,
+      "properties": {
+        "threadId": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "title": "Threadid",
+          "type": "string"
+        },
+        "runId": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "title": "Runid",
+          "type": "string"
+        },
+        "state": {
+          "additionalProperties": true,
+          "title": "State",
+          "type": "object"
+        },
+        "messages": {
+          "items": {
+            "$ref": "#/$defs/UserMessage"
+          },
+          "maxItems": 1,
+          "title": "Messages",
+          "type": "array"
+        },
+        "tools": {
+          "items": {},
+          "title": "Tools",
+          "type": "array"
+        },
+        "context": {
+          "items": {},
+          "title": "Context",
+          "type": "array"
+        },
+        "forwardedProps": {
+          "$ref": "#/$defs/RequestProps"
+        }
+      },
+      "required": [
+        "threadId",
+        "runId",
+        "state",
+        "messages",
+        "tools",
+        "context",
+        "forwardedProps"
+      ],
+      "title": "ChatRunRequest",
+      "type": "object"
+    },
+    "ChoiceAction": {
+      "additionalProperties": false,
+      "properties": {
+        "component_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "title": "Component Id",
+          "type": "string"
+        },
+        "revision": {
+          "minimum": 1,
+          "title": "Revision",
+          "type": "integer"
+        },
+        "kind": {
+          "const": "choice",
+          "title": "Kind",
+          "type": "string"
+        },
+        "value": {
+          "$ref": "#/$defs/ChoiceValue"
+        }
+      },
+      "required": [
+        "component_id",
+        "revision",
+        "kind",
+        "value"
+      ],
+      "title": "ChoiceAction",
+      "type": "object"
+    },
+    "ChoiceComponent": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "workflow_id": {
+          "title": "Workflow Id",
+          "type": "string"
+        },
+        "message_id": {
+          "title": "Message Id",
+          "type": "string"
+        },
+        "revision": {
+          "title": "Revision",
+          "type": "integer"
+        },
+        "title": {
+          "title": "Title",
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "pending",
+            "submitted",
+            "expired"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "kind": {
+          "const": "choice",
+          "title": "Kind",
+          "type": "string"
+        },
+        "purpose": {
+          "const": "milk_account",
+          "title": "Purpose",
+          "type": "string"
+        },
+        "options": {
+          "items": {
+            "$ref": "#/$defs/Option"
+          },
+          "title": "Options",
+          "type": "array"
+        },
+        "selected": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ChoiceValue"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "workflow_id",
+        "message_id",
+        "revision",
+        "title",
+        "status",
+        "kind",
+        "purpose",
+        "options",
+        "selected"
+      ],
+      "title": "ChoiceComponent",
+      "type": "object"
+    },
+    "ChoiceValue": {
+      "additionalProperties": false,
+      "properties": {
+        "option_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "title": "Option Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "option_id"
+      ],
+      "title": "ChoiceValue",
+      "type": "object"
+    },
+    "ConfirmAction": {
+      "additionalProperties": false,
+      "properties": {
+        "component_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "title": "Component Id",
+          "type": "string"
+        },
+        "revision": {
+          "minimum": 1,
+          "title": "Revision",
+          "type": "integer"
+        },
+        "kind": {
+          "const": "confirm",
+          "title": "Kind",
+          "type": "string"
+        },
+        "value": {
+          "$ref": "#/$defs/ConfirmValue"
+        }
+      },
+      "required": [
+        "component_id",
+        "revision",
+        "kind",
+        "value"
+      ],
+      "title": "ConfirmAction",
+      "type": "object"
+    },
+    "ConfirmValue": {
+      "additionalProperties": false,
+      "properties": {
+        "confirmed": {
+          "title": "Confirmed",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "confirmed"
+      ],
+      "title": "ConfirmValue",
+      "type": "object"
+    },
+    "DailyQuantity": {
+      "additionalProperties": false,
+      "properties": {
+        "date": {
+          "title": "Date",
+          "type": "string"
+        },
+        "quantity_litres": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Quantity Litres"
+        }
+      },
+      "required": [
+        "date",
+        "quantity_litres"
+      ],
+      "title": "DailyQuantity",
+      "type": "object"
+    },
+    "DateAction": {
+      "additionalProperties": false,
+      "properties": {
+        "component_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "title": "Component Id",
+          "type": "string"
+        },
+        "revision": {
+          "minimum": 1,
+          "title": "Revision",
+          "type": "integer"
+        },
+        "kind": {
+          "const": "date_range",
+          "title": "Kind",
+          "type": "string"
+        },
+        "value": {
+          "$ref": "#/$defs/Period"
+        }
+      },
+      "required": [
+        "component_id",
+        "revision",
+        "kind",
+        "value"
+      ],
+      "title": "DateAction",
+      "type": "object"
+    },
+    "DateComponent": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "workflow_id": {
+          "title": "Workflow Id",
+          "type": "string"
+        },
+        "message_id": {
+          "title": "Message Id",
+          "type": "string"
+        },
+        "revision": {
+          "title": "Revision",
+          "type": "integer"
+        },
+        "title": {
+          "title": "Title",
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "pending",
+            "submitted",
+            "expired"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "kind": {
+          "const": "date_range",
+          "title": "Kind",
+          "type": "string"
+        },
+        "purpose": {
+          "const": "milk_period",
+          "title": "Purpose",
+          "type": "string"
+        },
+        "constraints": {
+          "$ref": "#/$defs/DateConstraints"
+        },
+        "selected": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Period"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "workflow_id",
+        "message_id",
+        "revision",
+        "title",
+        "status",
+        "kind",
+        "purpose",
+        "constraints",
+        "selected"
+      ],
+      "title": "DateComponent",
+      "type": "object"
+    },
+    "DateConstraints": {
+      "additionalProperties": false,
+      "properties": {
+        "date_format": {
+          "const": "YYYY-MM-DD",
+          "default": "YYYY-MM-DD",
+          "title": "Date Format",
+          "type": "string"
+        },
+        "max_difference_days": {
+          "const": 31,
+          "default": 31,
+          "title": "Max Difference Days",
+          "type": "integer"
+        },
+        "max_date": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Date"
+        }
+      },
+      "title": "DateConstraints",
+      "type": "object"
+    },
+    "Deduction": {
+      "additionalProperties": false,
+      "properties": {
+        "date": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Date"
+        },
+        "account_name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Account Name"
+        },
+        "amount": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Amount"
+        }
+      },
+      "required": [
+        "date",
+        "account_name",
+        "amount"
+      ],
+      "title": "Deduction",
+      "type": "object"
+    },
+    "ErrorDetail": {
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "title": "Code",
+          "type": "string"
+        },
+        "message": {
+          "title": "Message",
+          "type": "string"
+        },
+        "retryable": {
+          "default": false,
+          "title": "Retryable",
+          "type": "boolean"
+        },
+        "component_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Component Id"
+        },
+        "field": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Field"
+        }
+      },
+      "required": [
+        "code",
+        "message"
+      ],
+      "title": "ErrorDetail",
+      "type": "object"
+    },
+    "ErrorResponse": {
+      "additionalProperties": false,
+      "properties": {
+        "error": {
+          "$ref": "#/$defs/ErrorDetail"
+        }
+      },
+      "required": [
+        "error"
+      ],
+      "title": "ErrorResponse",
+      "type": "object"
+    },
+    "MilkResult": {
+      "additionalProperties": false,
+      "properties": {
+        "status": {
+          "enum": [
+            "ok",
+            "no_records"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "account": {
+          "$ref": "#/$defs/Account"
+        },
+        "period": {
+          "$ref": "#/$defs/Period"
+        },
+        "summary": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Summary"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "milk": {
+          "items": {
+            "$ref": "#/$defs/MilkRow"
+          },
+          "title": "Milk",
+          "type": "array"
+        },
+        "deductions": {
+          "items": {
+            "$ref": "#/$defs/Deduction"
+          },
+          "title": "Deductions",
+          "type": "array"
+        },
+        "daily_quantity": {
+          "items": {
+            "$ref": "#/$defs/DailyQuantity"
+          },
+          "title": "Daily Quantity",
+          "type": "array"
+        },
+        "warnings": {
+          "items": {
+            "enum": [
+              "unplottable_dates",
+              "missing_quantities"
+            ],
+            "type": "string"
+          },
+          "title": "Warnings",
+          "type": "array"
+        }
+      },
+      "required": [
+        "status",
+        "account",
+        "period",
+        "summary",
+        "milk",
+        "deductions",
+        "daily_quantity",
+        "warnings"
+      ],
+      "title": "MilkResult",
+      "type": "object"
+    },
+    "MilkRow": {
+      "additionalProperties": false,
+      "properties": {
+        "date": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Date"
+        },
+        "shift": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Shift"
+        },
+        "qty": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Qty"
+        },
+        "fat": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Fat"
+        },
+        "snf": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Snf"
+        },
+        "amount": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Amount"
+        }
+      },
+      "required": [
+        "date",
+        "shift",
+        "qty",
+        "fat",
+        "snf",
+        "amount"
+      ],
+      "title": "MilkRow",
+      "type": "object"
+    },
+    "Option": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "label": {
+          "title": "Label",
+          "type": "string"
+        },
+        "description": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Description"
+        }
+      },
+      "required": [
+        "id",
+        "label",
+        "description"
+      ],
+      "title": "Option",
+      "type": "object"
+    },
+    "Period": {
+      "additionalProperties": false,
+      "properties": {
+        "fromdate": {
+          "title": "Fromdate",
+          "type": "string"
+        },
+        "todate": {
+          "title": "Todate",
+          "type": "string"
+        }
+      },
+      "required": [
+        "fromdate",
+        "todate"
+      ],
+      "title": "Period",
+      "type": "object"
+    },
+    "RequestProps": {
+      "additionalProperties": false,
+      "properties": {
+        "version": {
+          "const": 1,
+          "title": "Version",
+          "type": "integer"
+        },
+        "channel": {
+          "default": "web",
+          "enum": [
+            "web",
+            "whatsapp"
+          ],
+          "title": "Channel",
+          "type": "string"
+        },
+        "source_lang": {
+          "default": "gu",
+          "maxLength": 16,
+          "minLength": 1,
+          "title": "Source Lang",
+          "type": "string"
+        },
+        "target_lang": {
+          "default": "gu",
+          "maxLength": 16,
+          "minLength": 1,
+          "title": "Target Lang",
+          "type": "string"
+        },
+        "input_method": {
+          "anyOf": [
+            {
+              "maxLength": 32,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Input Method"
+        },
+        "user_id": {
+          "default": "anonymous",
+          "maxLength": 128,
+          "title": "User Id",
+          "type": "string"
+        },
+        "persona": {
+          "anyOf": [
+            {
+              "enum": [
+                "farmer",
+                "doctor"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Persona"
+        },
+        "ui_action": {
+          "anyOf": [
+            {
+              "discriminator": {
+                "mapping": {
+                  "choice": "#/$defs/ChoiceAction",
+                  "confirm": "#/$defs/ConfirmAction",
+                  "date_range": "#/$defs/DateAction"
+                },
+                "propertyName": "kind"
+              },
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/ChoiceAction"
+                },
+                {
+                  "$ref": "#/$defs/DateAction"
+                },
+                {
+                  "$ref": "#/$defs/ConfirmAction"
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Ui Action"
+        },
+        "command": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ChangeAccount"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "version"
+      ],
+      "title": "RequestProps",
+      "type": "object"
+    },
+    "Summary": {
+      "additionalProperties": false,
+      "properties": {
+        "days_with_milk": {
+          "title": "Days With Milk",
+          "type": "integer"
+        },
+        "total_quantity_litres": {
+          "title": "Total Quantity Litres",
+          "type": "number"
+        },
+        "total_amount_rupees": {
+          "title": "Total Amount Rupees",
+          "type": "number"
+        },
+        "weighted_fat": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Weighted Fat"
+        },
+        "weighted_snf": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Weighted Snf"
+        }
+      },
+      "required": [
+        "days_with_milk",
+        "total_quantity_litres",
+        "total_amount_rupees",
+        "weighted_fat",
+        "weighted_snf"
+      ],
+      "title": "Summary",
+      "type": "object"
+    },
+    "UIState": {
+      "additionalProperties": false,
+      "properties": {
+        "version": {
+          "const": 1,
+          "default": 1,
+          "title": "Version",
+          "type": "integer"
+        },
+        "state_revision": {
+          "title": "State Revision",
+          "type": "integer"
+        },
+        "selected_milk_account": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Account"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "components": {
+          "items": {
+            "discriminator": {
+              "mapping": {
+                "chart": "#/$defs/ChartComponent",
+                "choice": "#/$defs/ChoiceComponent",
+                "date_range": "#/$defs/DateComponent"
+              },
+              "propertyName": "kind"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/$defs/ChoiceComponent"
+              },
+              {
+                "$ref": "#/$defs/DateComponent"
+              },
+              {
+                "$ref": "#/$defs/ChartComponent"
+              }
+            ]
+          },
+          "title": "Components",
+          "type": "array"
+        }
+      },
+      "required": [
+        "state_revision",
+        "selected_milk_account",
+        "components"
+      ],
+      "title": "UIState",
+      "type": "object"
+    },
+    "UserMessage": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "title": "Id",
+          "type": "string"
+        },
+        "role": {
+          "const": "user",
+          "title": "Role",
+          "type": "string"
+        },
+        "content": {
+          "title": "Content",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "role",
+        "content"
+      ],
+      "title": "UserMessage",
+      "type": "object"
+    }
+  },
+  "title": "AG-UI milk contract v1",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/ChatRunRequest"
+    },
+    {
+      "$ref": "#/$defs/UIState"
+    },
+    {
+      "$ref": "#/$defs/MilkResult"
+    },
+    {
+      "$ref": "#/$defs/ErrorResponse"
+    }
+  ]
+}

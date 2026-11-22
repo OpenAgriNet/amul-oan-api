@@ -218,6 +218,9 @@ class Settings(BaseSettings):
     app_name: str = "Amul AI API"
     environment: str = os.getenv("ENVIRONMENT", "production")
     debug: bool = False
+    # Development UI pilot; account/milk data always comes from authenticated APIs.
+    chat_agui_preview_enabled: bool = False
+    chat_agui_enabled: bool = False
     base_dir: Path = Path(__file__).resolve().parent.parent
     secret_key: str = os.getenv("SECRET_KEY", "your-secret-key-change-in-production")
     timezone: str = "Asia/Kolkata"
