@@ -100,7 +100,12 @@ def test_voice_moderation_passes_pagar_through():
 
 
 def test_chat_agent_routes_salary_to_the_milk_tool():
+    from jinja2 import Template
     text = (PROMPTS / "agrinet_system_translation_pipeline.md").read_text(encoding="utf-8")
+    interactive = Template(text).render(interactive_milk=True)
+    assert "payment / salary / પગાર" in interactive and "request_milk_records" in interactive
+    assert "get_farmer_milk_collection_details" not in interactive
+    text = Template(text).render(interactive_milk=False)
     assert "milk payment / salary / પગાર for some dates → `get_farmer_milk_collection_details`" in text
 
 

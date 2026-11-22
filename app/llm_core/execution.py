@@ -870,29 +870,38 @@ class ExecutionContext:
 
         async def raw(tier: ExecutionTarget) -> AsyncIterator[Any]:
             activity_signaled = False
-            async with agent.iter(
-                user_prompt=prompt,
-                message_history=message_history,
-                deps=deps,
-                usage_limits=usage_limits,
-                model=tier.handle,
-            ) as agent_run:
-                async for node in agent_run:
-                    if type(node).__name__ != "ModelRequestNode":
-                        continue
-                    async with node.stream(agent_run.ctx) as request_stream:
-                        async for event in request_stream:
-                            if not activity_signaled:
-                                activity_signaled = True
-                                yield AGENT_ACTIVITY
-                            event_type = type(event).__name__
-                            if event_type == "PartStartEvent" and type(event.part).__name__ == "TextPart":
-                                if event.part.content:
-                                    yield event.part.content
-                            elif event_type == "PartDeltaEvent" and type(event.delta).__name__ == "TextPartDelta":
-                                if event.delta.content_delta:
-                                    yield event.delta.content_delta
-                new_messages.extend(agent_run.result.new_messages())
+            milk_ui = getattr(deps, "_milk_ui", None)
+            if milk_ui is not None:
+                milk_ui.request = None
+            completed = False
+            try:
+                async with agent.iter(
+                    user_prompt=prompt,
+                    message_history=message_history,
+                    deps=deps,
+                    usage_limits=usage_limits,
+                    model=tier.handle,
+                ) as agent_run:
+                    async for node in agent_run:
+                        if type(node).__name__ != "ModelRequestNode":
+                            continue
+                        async with node.stream(agent_run.ctx) as request_stream:
+                            async for event in request_stream:
+                                if not activity_signaled:
+                                    activity_signaled = True
+                                    yield AGENT_ACTIVITY
+                                event_type = type(event).__name__
+                                if event_type == "PartStartEvent" and type(event.part).__name__ == "TextPart":
+                                    if event.part.content:
+                                        yield event.part.content
+                                elif event_type == "PartDeltaEvent" and type(event.delta).__name__ == "TextPartDelta":
+                                    if event.delta.content_delta:
+                                        yield event.delta.content_delta
+                    new_messages.extend(agent_run.result.new_messages())
+                completed = True
+            finally:
+                if milk_ui is not None and not completed:
+                    milk_ui.request = None
 
         async for chunk in self.stream_adapter(Step.AGENT, raw):
             yield chunk

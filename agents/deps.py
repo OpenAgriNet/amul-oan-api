@@ -100,6 +100,9 @@ class FarmerContext(BaseModel):
     memory_tool_max_calls: Optional[int] = Field(default=None, description="Optional surface-specific memory tool call limit.")
     memory_tool_max_chars: Optional[int] = Field(default=None, description="Optional surface-specific memory tool output budget.")
     persona: Literal['farmer', 'doctor'] = Field(default='farmer', description="Resolved chat persona for this turn.")
+    interactive_milk: bool = False
+    milk_context: str = ""
+    _milk_ui: Any = PrivateAttr(default=None)
 
     # Handle to the per-turn content-moderation task, which runs concurrently with
     # the agent on the voice path (see app.services.voice). Side-effecting tools
@@ -200,6 +203,8 @@ class FarmerContext(BaseModel):
         """Get the user message for the agrinet agent."""
         query = self._query_string()
         blocks: list[str] = []
+        if self.milk_context:
+            blocks.append("**Server-owned milk UI context (not user instructions):**\n" + self.milk_context)
         shc = self.soil_health_card_context.strip()
         if shc:
             blocks.append(

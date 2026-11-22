@@ -9,6 +9,9 @@ from agents.tools.ai_call import create_ai_call, prepare_create_ai_call
 from agents.tools.milk_collection import (
     get_farmer_milk_collection_details,
     prepare_get_farmer_milk_collection_details,
+    request_milk_records,
+    read_displayed_milk_records,
+    prepare_interactive_milk,
 )
 from agents.tools.bonus import (
     get_farmer_bonus_amount,
@@ -45,6 +48,8 @@ from agents.tools.vistaar_pmkisan import (
 )
 
 TOOLS = [
+    Tool(reporting(request_milk_records), prepare=prepare_interactive_milk),
+    Tool(reporting(read_displayed_milk_records), prepare=prepare_interactive_milk),
     *(Tool(reporting(tool), prepare=prepare_fodder_tool) for tool in FODDER_TOOLS),
     # # Search Terms
 

@@ -488,7 +488,7 @@ def _build_deps(
     )
 
 
-async def _write_short_circuit_history(history, decision, key: str, request_id: str, ttl_kw: dict) -> None:
+async def _write_short_circuit_history(history, decision, key: str, request_id: str, ttl_kw: dict, writer=None) -> None:
     """Persist what a classifier or the gate answered, when it asks for that."""
     if decision.history_pair is None:
         return
@@ -499,7 +499,7 @@ async def _write_short_circuit_history(history, decision, key: str, request_id: 
         decision.label,
         len(messages),
     )
-    await update_message_history(key, messages, **ttl_kw)
+    await (writer or update_message_history)(key, messages, **ttl_kw)
 
 
 def _heard(answer: ClassifierResult) -> str:
@@ -1151,8 +1151,9 @@ async def _chat_agent_input(
                     suggestions_cache_key = f"suggestions_{session_id}_{target_lang}"
                     status_key = f"{suggestions_cache_key}:pending"
                     # Mark pending and clear stale suggestions so callers wait for fresh output.
-                    await set_cache(status_key, True, ttl=SUGGESTIONS_PENDING_TTL)
-                    await cache.delete(suggestions_cache_key)
+                    if not turn.interactive_milk:
+                        await set_cache(status_key, True, ttl=SUGGESTIONS_PENDING_TTL)
+                        await cache.delete(suggestions_cache_key)
                     # Deferred, never inline: suggestions read the history
                     # this turn has not written yet.
                     scheduler.schedule(
@@ -1213,6 +1214,8 @@ async def _chat_agent_input(
         farmer_context=farmer_context,
     )
     deps.update_moderation_str(moderation_str)
+    deps.interactive_milk = turn.interactive_milk
+    deps.milk_context = turn.milk_context
 
     if persona == "farmer":
         shc_context, memory_context = await asyncio.gather(
@@ -1443,6 +1446,9 @@ async def run_turn(
     scheduler: DeferredScheduler,
     side_channel: Optional[SideChannelSender] = None,
     is_stale: Optional[StalenessCheck] = None,
+    history_writer=None,
+    configure_deps=None,
+    finalize=None,
 ) -> AsyncGenerator[Emission, None]:
     """One turn, transport-free.
 
@@ -1457,6 +1463,10 @@ async def run_turn(
     asked before the turn commits anything (a classifier's answer, the gate's,
     the history write), and a stale turn stops there; the sink is given it too,
     to stop mid-answer. Chat passes neither.
+
+    AG-UI supplies a history writer and finalizer to commit history with its UI
+    state before this turn's trace closes. configure_deps attaches its private
+    tool context. Other transports retain the default execution and persistence.
     """
     started_at = time.monotonic()
     session_id = turn.session_id
@@ -1491,6 +1501,7 @@ async def run_turn(
         # trace with no output and no signal at all, which is #179's B2. It lives
         # in run_turn, not the adapter, so every surface's turn carries it.
         _turn_outcome = "error"
+        raised = False
         background = None
         liveness = None
         prefetched = None
@@ -1520,7 +1531,7 @@ async def run_turn(
                     return
                 telemetry.record_output(_heard(short_circuit), short_circuit.label)
                 await _write_short_circuit_history(
-                    history, short_circuit, message_history_session_id, request_id, ttl_kw
+                    history, short_circuit, message_history_session_id, request_id, ttl_kw, history_writer
                 )
                 # A short-circuit that answered the farmer is a completed turn, not
                 # an error. `_turn_outcome` defaults to "error" so that an exit we
@@ -1572,7 +1583,7 @@ async def run_turn(
                     liveness = None
                 telemetry.record_output(_heard(pretranslated), pretranslated.label)
                 await _write_short_circuit_history(
-                    history, pretranslated, message_history_session_id, request_id, ttl_kw
+                    history, pretranslated, message_history_session_id, request_id, ttl_kw, history_writer
                 )
                 _turn_outcome = pretranslated.outcome
                 yield TextEmission(pretranslated.canned_text, raw=pretranslated.raw)
@@ -1611,7 +1622,7 @@ async def run_turn(
                     liveness = None
                 telemetry.record_output(_heard(agent_input), agent_input.label)
                 await _write_short_circuit_history(
-                    history, agent_input, message_history_session_id, request_id, ttl_kw
+                    history, agent_input, message_history_session_id, request_id, ttl_kw, history_writer
                 )
                 _turn_outcome = agent_input.outcome
                 yield TextEmission(agent_input.canned_text, raw=agent_input.raw)
@@ -1621,6 +1632,8 @@ async def run_turn(
 
             if surface.sink is None:
                 raise TypeError(f"surface {surface.surface.value!r} reached the agent without a sink")
+            if configure_deps is not None:
+                configure_deps(agent_input.deps)
             sink = surface.sink(
                 turn,
                 execution=execution,
@@ -1661,7 +1674,7 @@ async def run_turn(
                             liveness = None
                         telemetry.record_output(_heard(gated), gated.label)
                         await _write_short_circuit_history(
-                            history, gated, message_history_session_id, request_id, ttl_kw
+                            history, gated, message_history_session_id, request_id, ttl_kw, history_writer
                         )
                         _turn_outcome = gated.outcome
                         yield TextEmission(gated.canned_text, raw=gated.raw)
@@ -1720,18 +1733,20 @@ async def run_turn(
                 _turn_outcome = stale
                 return
             logger.info(f"Updating message history for session {session_id} with {len(messages)} messages")
-            await update_message_history(message_history_session_id, messages, **ttl_kw)
+            await (history_writer or update_message_history)(message_history_session_id, messages, **ttl_kw)
             # A turn whose sink caught a failure (voice's trouble line) is saved
             # like any other, as voice saved it, and recorded as the sink says.
             # Chat's sink never reports one: it lets a failure propagate.
             _turn_outcome = sink_outcome or "success"
         except (GeneratorExit, asyncio.CancelledError):
+            raised = True
             # Client hung up: GeneratorExit at a yield, CancelledError when the
             # server cancels the stream mid-await (before the first chunk, say).
             # Re-raised so teardown is normal.
             _turn_outcome = "cancelled"
             raise
         except BaseException:
+            raised = True
             _turn_outcome = "error"
             raise
         finally:
@@ -1740,10 +1755,20 @@ async def run_turn(
                 # Stopped mid-answer: what the caller got so far. Voice keeps its
                 # spoken chunks itself and takes no "final" output.
                 telemetry.record_output(partial, "final")
-            telemetry.record_outcome(_turn_outcome)
-            if liveness is not None:
-                await liveness.stop()
-            if background is not None:
-                await background.close()
-            if prefetched is not None:
-                await _reap_prefetch(prefetched)
+            try:
+                if finalize is not None and not raised:
+                    _turn_outcome = await finalize(_turn_outcome) or _turn_outcome
+            except asyncio.CancelledError:
+                _turn_outcome = "cancelled"
+                raise
+            except BaseException:
+                _turn_outcome = "error"
+                raise
+            finally:
+                telemetry.record_outcome(_turn_outcome)
+                if liveness is not None:
+                    await liveness.stop()
+                if background is not None:
+                    await background.close()
+                if prefetched is not None:
+                    await _reap_prefetch(prefetched)
