@@ -50,8 +50,8 @@ transition and fetches only the selected, currently owned account.
 
 Account switching sends `command: {kind: "change_milk_account", state_revision}`
 with the latest session revision. It carries the last selected period forward.
-`confirm` and chart submissions are unsupported. All request/output types and
-generated JSON Schemas are in `app/agui/models.py` and `docs/agui-schema.json`.
+`confirm` and chart submissions are unsupported. The request and output models in `app/agui/models.py` are the source of truth;
+JSON Schema can be generated from them when needed.
 
 Dates must be real ISO calendar dates with `0 <= end - start <= 31 days`; this
 preserves main's existing limit, which can cover 32 inclusive dates. No additional
@@ -82,18 +82,8 @@ controls and full interrupted-run recovery are deferred.
 Python protocol package: `ag-ui-protocol==1.0.0`; frontend compatibility target:
 `@ag-ui/client` / `@ag-ui/core` `1.0.4`. Versions need not share a number.
 
-## Compatibility check
 
-`scripts/agui-compat/verify.ts` runs Vishal's actual adapter on backend-emitted
-wire cases, splitting the stream one byte at a time. It makes no network data
-calls and stores no farmer records. Download only the adapter implementation
-from pinned PR head `4d108ed1958c0769ccd54fc2c8b68f778e05e183` to
-`scripts/agui-compat/.client/adapter.ts`, run `npm ci` in that directory after
-dependency installation/lock creation, then:
-
-```sh
-npm run verify -- /path/to/backend-wire-cases.json
-```
-
-The integration check does not substitute for logging in and checking real milk
-records in the UI. No farmer-data fixture files are committed.
+The backend stream was checked against Vishal's actual PR #18 adapter with
+one-byte UTF-8/SSE fragments. This one-off verification tooling is not a runtime
+dependency and is not included in the backend source. Real farmer-data validation
+still requires signing in and checking the records in the UI.
