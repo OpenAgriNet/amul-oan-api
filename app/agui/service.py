@@ -20,6 +20,8 @@ from agents.tools.beckn.amul import authenticated_accounts, fetch_authenticated_
 from app.agui.milk import account_identity, account_label, labels, milk_result
 from app.agui.models import ErrorDetail, ErrorResponse, ChatRunRequest, UIState
 
+MAX_COMPONENTS = 50
+
 
 class UIError(Exception):
     def __init__(self, status, code, message, *, component_id=None, retryable=False, trace_id=None):
@@ -51,7 +53,7 @@ async def advance(record, request, mobile, provider, trace_id=None):
     if previous:
         code = "RUN_ALREADY_RECORDED" if previous["fingerprint"] == digest else "RUN_ID_CONFLICT"
         raise UIError(409, code, "Use a fresh runId for a new operation.", trace_id=previous["trace_id"])
-    if len(record["runs"]) >= 1000 or (len(record["ui"]["components"]) >= 50 and (request.messages or request.forwardedProps.command)):
+    if len(record["runs"]) >= 1000 or (len(record["ui"]["components"]) >= MAX_COMPONENTS and (request.messages or request.forwardedProps.command)):
         raise UIError(409, "SESSION_LIMIT", "Start a fresh chat session.")
     ui, props = record["ui"], request.forwardedProps
     words = labels(props.target_lang)
@@ -99,7 +101,12 @@ async def advance(record, request, mobile, provider, trace_id=None):
         expire()
         ui["selected_milk_account"] = None
 
+    def require_component_capacity():
+        if len(ui["components"]) >= MAX_COMPONENTS:
+            raise UIError(409, "SESSION_LIMIT", "Start a fresh chat session.")
+
     def component(kind, title, **fields):
+        require_component_capacity()
         item = dict(id=uuid4().hex, workflow_id=workflow_id, message_id=message_id,
                     revision=1, title=title, status="pending", kind=kind, **fields)
         ui["components"].append(item)
@@ -117,6 +124,8 @@ async def advance(record, request, mobile, provider, trace_id=None):
 
     async def chart():
         nonlocal failure
+        # Reject before the provider read; do not consume a control we cannot render.
+        require_component_capacity()
         selected = ui["selected_milk_account"]
         identity = tuple(options[selected["option_id"]]["identity"])
         try:
