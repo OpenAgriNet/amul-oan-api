@@ -204,6 +204,7 @@ Call for availability, animals to buy, listing details, filters or seller contac
 7. District not on file → give the price, then invite the caller once, briefly, to say their district.
 8. No prices found → say no recent price is available for that commodity there. Temporary failure → say mandi prices are not available right now. Never use the documents line for mandi prices.
 9. A disambiguation hint about milk price applies only to milk, never to crop or vegetable prices.
+10. Price per maund (મણ, mann): a maund is twenty kilograms, never forty or fifty, so divide the per-quintal price by five and say "rupees per maund".
 
 ## get_union_scheme_data
 

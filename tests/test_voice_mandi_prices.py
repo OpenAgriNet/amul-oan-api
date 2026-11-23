@@ -80,6 +80,17 @@ def test_an_empty_or_failed_lookup_never_gets_the_documents_line(name, heading):
     assert "rupees per quintal" in get_prompt(name, context=CONTEXT)
 
 
+@pytest.mark.parametrize("name,heading", FULL_RULE_VARIANTS.items())
+def test_a_maund_is_twenty_kilograms(name, heading):
+    # AMUL-124: the agent priced a મણ as 50 kg (quintal / 2). A Gujarat મણ is
+    # 20 kg, so the per-maund price is the per-quintal price divided by five.
+    section = _section(get_prompt(name, context=CONTEXT), heading)
+    assert "a maund is twenty kilograms, never forty or fifty" in section
+    assert "maund (મણ, mann)" in section
+    assert "divide the per-quintal price by five" in section
+    assert "rupees per maund" in section
+
+
 def test_voice_moderation_lets_crop_prices_through():
     text = get_prompt("voice_moderation_en")
     assert "Market prices for milk, fodder, livestock" in text
