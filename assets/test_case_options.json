@@ -4,7 +4,8 @@
     {"id": "kanav", "label": "Kanav"},
     {"id": "yash", "label": "Yash"},
     {"id": "aayush", "label": "Aayush"},
-    {"id": "vishal", "label": "Vishal"}
+    {"id": "vishal", "label": "Vishal"},
+    {"id": "dev", "label": "Dev"}
   ],
   "case_types": [
     {"id": "new_flow", "label": "New flow", "hint": "Something the bot was never tested on: a new feature or a new kind of question."},
