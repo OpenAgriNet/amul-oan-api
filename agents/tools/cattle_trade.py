@@ -719,8 +719,9 @@ async def get_verified_cattle_listings(
             "listings."
         )
     lines.append(
-        "Answer with the count and these listings, keeping each listing's number and its "
-        "seller's name and mobile exactly as shown, without assuming the seller's gender. "
+        "Answer with the count and these listings. Start each listing with its own number as "
+        "shown (\"Number 16: ...\"), never a 1, 2, 3 list: the farmer picks by that number. Keep "
+        "each seller's name and mobile exactly as shown, without assuming the seller's gender. "
         "If there are many, offer two or three filters from the breakdown."
     )
     return "\n".join(lines) + stale
