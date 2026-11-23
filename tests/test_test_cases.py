@@ -17,7 +17,7 @@ from app.services import test_cases as cases  # noqa: E402
 CASE = {
     "source": "chat",
     "submitted_by": "suraj",
-    "turns": [{"role": "user", "content": "My buffalo has a swollen leg, call 9876543210"}],
+    "turns": [{"role": "user", "content": "My buffalo has a swollen leg, call 9876543210, farmer code 1234"}],
 }
 
 
@@ -88,3 +88,4 @@ def test_the_list_hides_archived_cases_and_masks_numbers(setup):
     listed = client.get("/api/test-cases/")
     assert [case["id"] for case in listed.json()["items"]] == [kept]
     assert "9876543210" not in listed.text and "******3210" in listed.text
+    assert "code 1234" not in listed.text and "farmer code [code]" in listed.text

@@ -273,6 +273,8 @@ class Settings(BaseSettings):
     redis_db: int = 0
     redis_password: Optional[str] = None
     redis_key_prefix: str = "sva-cache-"
+    # A preview backend sets dev's REDIS_KEY_PREFIX here, so the Beckn callbacks dev receives reach it.
+    beckn_redis_key_prefix: str = ""
     redis_socket_connect_timeout: int = 10
     redis_socket_timeout: int = 10
     redis_max_connections: int = 100
@@ -617,7 +619,7 @@ class Settings(BaseSettings):
     scheme_pdf_render_dpi: int = int(os.getenv("SCHEME_PDF_RENDER_DPI", "200"))
     scheme_lock_ttl_seconds: int = Field(default=60 * 60, validation_alias="SCHEME_LOCK_TTL_SECONDS")
     scheme_http_timeout_seconds: float = Field(default=30.0, validation_alias="SCHEME_HTTP_TIMEOUT_SECONDS")
-    scheme_pdf_max_render_pages: int = Field(default=30, validation_alias="SCHEME_PDF_MAX_RENDER_PAGES")
+    scheme_pdf_max_render_pages: int = Field(default=70, validation_alias="SCHEME_PDF_MAX_RENDER_PAGES")
     scheme_ocr_prompt_type: str = os.getenv("SCHEME_OCR_PROMPT_TYPE", "ocr_layout")
     scheme_ocr_max_output_tokens: int = Field(default=12284, validation_alias="SCHEME_OCR_MAX_OUTPUT_TOKENS")
     scheme_ocr_concurrency: int = Field(default=4, validation_alias="SCHEME_OCR_CONCURRENCY")
@@ -735,6 +737,7 @@ class Settings(BaseSettings):
     amul_network_url: str = os.getenv("AMUL_NETWORK_URL", "http://amul-bap-seeker:3000")
     # Timeout (seconds) for network calls from the agent tools.
     amul_network_timeout_s: float = float(os.getenv("AMUL_NETWORK_TIMEOUT_S", "35"))
+    fodderinfo_api_key: str = os.getenv("FODDERINFO_API_KEY", "")
     # Doctor persona only: Qdrant search service pinned to the doctor collection.
     # Empty = the doctor searches through Beckn like the farmer.
     doctor_search_url: str = os.getenv("DOCTOR_SEARCH_URL", "")
@@ -848,7 +851,7 @@ class Settings(BaseSettings):
     # defaults; parseable but out-of-range values are clamped to safe bounds.
     _SAFE_INT_FIELDS: ClassVar[dict[str, tuple[str, int, int | None, int | None]]] = {
         "scheme_lock_ttl_seconds": ("SCHEME_LOCK_TTL_SECONDS", 60 * 60, 1, None),
-        "scheme_pdf_max_render_pages": ("SCHEME_PDF_MAX_RENDER_PAGES", 30, 1, None),
+        "scheme_pdf_max_render_pages": ("SCHEME_PDF_MAX_RENDER_PAGES", 70, 1, None),
         "scheme_ocr_max_output_tokens": ("SCHEME_OCR_MAX_OUTPUT_TOKENS", 12284, 1, None),
         "scheme_ocr_concurrency": ("SCHEME_OCR_CONCURRENCY", 4, 1, 8),
         "scheme_ocr_page_batch_size": ("SCHEME_OCR_PAGE_BATCH_SIZE", 4, 1, 8),

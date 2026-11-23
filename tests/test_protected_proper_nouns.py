@@ -277,3 +277,89 @@ def test_bengali_words_that_start_like_the_brand_are_kept():
     src = "Amul gives priceless support."
     text = "অমূল্য সহায়তা, অমূলক ভয়"
     assert _apply_protected_output(text, _protected_output_triggers(src, "bn")) == text
+
+
+# ── A silage supplier's name (AMUL-111) ───────────────────────────────────────
+# AMUL-111 reported the supplier Natural Silage said as કુદરતી સાઇલેજ, and a 17 Oct
+# 2026 voice call said કુદરતી સિલેજ; the product says it નેચરલ સાઇલેજ. The other raw
+# strings are the spellings voice's glossary row (Silage -> સાયલેજ) and the
+# translators can give.
+
+SILAGE_EN = "You can buy silage from Natural Silage."
+
+
+@pytest.mark.parametrize("raw,fixed", [
+    # The ticket: "natural" translated instead of said as the name.
+    ("કુદરતી સાઇલેજ પાસેથી સાયલેજ લઈ શકો.", "નેચરલ સાઇલેજ પાસેથી સાયલેજ લઈ શકો."),
+    # The 17 Oct call: only the supplier named Natural changes, not the next one.
+    ("કુદરતી સિલેજ ધનલક્ષ્મી એગ્રો સિલેજ", "નેચરલ સાઇલેજ ધનલક્ષ્મી એગ્રો સિલેજ"),
+    # Voice's glossary row writes silage સાયલેજ.
+    ("કુદરતી સાયલેજ પાસેથી", "નેચરલ સાઇલેજ પાસેથી"),
+    ("પ્રાકૃતિક સાયલેજ પાસેથી", "નેચરલ સાઇલેજ પાસેથી"),
+    ("નેચરલ સાયલેજ પાસેથી", "નેચરલ સાઇલેજ પાસેથી"),
+    ("નેચરલ સાઈલેજ પાસેથી", "નેચરલ સાઇલેજ પાસેથી"),
+    ("નેચ્યુરલ સાયલેજ પાસેથી", "નેચરલ સાઇલેજ પાસેથી"),
+    # A case ending glued to the name is the model's and stays.
+    ("કુદરતી સાયલેજમાંથી મંગાવો.", "નેચરલ સાઇલેજમાંથી મંગાવો."),
+    ("કુદરતી સાઇલેજનો નંબર", "નેચરલ સાઇલેજનો નંબર"),
+    # Already right: self-replace.
+    ("નેચરલ સાઇલેજ પાસેથી", "નેચરલ સાઇલેજ પાસેથી"),
+], ids=["ticket", "call-17-oct", "glossary-silage", "prakrutik", "nechral-sayalej", "nechral-long-ii",
+        "nechyural", "case-ending-manthi", "case-ending-no", "already-right"])
+def test_natural_silage_is_said_the_way_the_product_says_it(raw, fixed):
+    assert _apply_protected_output(raw, _protected_output_triggers(SILAGE_EN, "gu")) == fixed
+
+
+@pytest.mark.parametrize("src", [
+    SILAGE_EN,
+    "For silage bales, call NATURAL SILAGE, Anand.",
+    "natural silage supplies maize silage.",
+])
+def test_natural_silage_gate_arms_in_chat_and_voice_in_any_case(src):
+    assert _protected_output_triggers(src, "gu")
+    with translation_channel("voice"):
+        assert _protected_output_triggers(src, "gu")
+
+
+@pytest.mark.parametrize("src", [
+    "Feed silage daily.",
+    "Natural mating is better than artificial insemination.",
+    "Silage is a natural feed.",
+])
+def test_natural_silage_gate_does_not_arm_without_the_name(src):
+    assert _protected_output_triggers(src, "gu") == []
+
+
+@pytest.mark.parametrize("text", [
+    "કુદરતી ફળવણી કરતાં કૃત્રિમ બીજદાન સારું છે.",  # natural service, the glossary's
+    "રોજ સાયલેજ આપો.",  # silage on its own
+    "કુદરતી રીતે બનેલું સાયલેજ",  # the two words apart
+    "અકુદરતી સાયલેજ",  # unnatural
+    "- લીલો ચારો: તાજો અને કુદરતી\n- સાયલેજ: સૂકી ઋતુમાં સારું",  # two chat list items
+    "આ ચારો તાજો અને કુદરતી\nસાયલેજ પણ આપી શકાય",  # the words on two lines
+], ids=["natural-service", "silage-alone", "words-apart", "unnatural", "list-items", "two-lines"])
+def test_other_natural_and_silage_words_are_left_alone(text):
+    src = "Natural Silage sells silage. Natural mating is better than artificial insemination."
+    assert _apply_protected_output(text, _protected_output_triggers(src, "gu")) == text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("chunks,said", [
+    # Split inside the name.
+    (["કુદરતી સા", "યલેજમાંથી સાયલેજ મંગાવો."], "નેચરલ સાઇલેજમાંથી સાયલેજ મંગાવો."),
+    # The case ending comes in the next chunk: kept, not doubled.
+    (["કુદરતી સાયલેજ", "માંથી સાયલેજ મંગાવો."], "નેચરલ સાઇલેજમાંથી સાયલેજ મંગાવો."),
+    # Past the holdback: the start of the answer is flushed while the name forms.
+    (
+        ["આ નંબર પર ફોન કરો. " * 5 + "કુદરતી", " સાયલેજમાંથી મંગાવો."],
+        "આ નંબર પર ફોન કરો. " * 5 + "નેચરલ સાઇલેજમાંથી મંગાવો.",
+    ),
+], ids=["split-in-name", "ending-in-next-chunk", "past-the-holdback"])
+async def test_natural_silage_pin_survives_a_chunk_boundary(chunks, said):
+    async def gen():
+        for c in chunks:
+            yield c
+
+    triggers = _protected_output_triggers(SILAGE_EN, "gu")
+    out = "".join([c async for c in _buffered_protected_stream(gen(), triggers)])
+    assert out == said

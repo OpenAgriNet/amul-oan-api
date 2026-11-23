@@ -3,8 +3,9 @@
 Reads a farmer's accumulated memory from the memory service and turns it into a
 short, bounded context block for the prompt. Deliberately narrow:
 
-- The global MEMORY_ENABLED switch defaults off. Once on, per-farmer settings
-  default on for now; the service's off flag suppresses reply use. The
+- The global MEMORY_ENABLED switch defaults off. Once on, memory is open only to
+  MEMORY_ALLOWED_USERS (default nobody; * is everyone). For those farmers, per-farmer
+  settings default on for now; the service's off flag suppresses reply use. The
   background writer never changes those settings.
 - **Read-only, and never on the critical path for long.** One quick lookup with a
   hard timeout; on any error or timeout it returns nothing rather than delaying or
@@ -36,6 +37,21 @@ if MEMORY_ENABLED:
 # Voice reads need their own switch on top of MEMORY_ENABLED (default off).
 MEMORY_VOICE_ENABLED = MEMORY_ENABLED and os.getenv(
     "MEMORY_VOICE_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _parse_allowed_users(value: str) -> set[str]:
+    return {"*" if p.strip() == "*" else re.sub(r"\D", "", p)[-10:] for p in value.split(",") if p.strip()}
+
+
+# Who may use memory: comma-separated phones, or * for everyone. Empty or unset is
+# nobody, so MEMORY_ENABLED on its own opens nothing.
+MEMORY_ALLOWED_USERS = _parse_allowed_users(os.getenv("MEMORY_ALLOWED_USERS", ""))
+
+
+def memory_open_for(mobile: str | None) -> bool:
+    return MEMORY_ENABLED and bool(mobile) and ("*" in MEMORY_ALLOWED_USERS or mobile in MEMORY_ALLOWED_USERS)
+
+
 MEMORY_TIMEOUT_SECONDS = float(os.getenv("MEMORY_TIMEOUT_SECONDS", "2.0"))
 MEMORY_TOP_K = int(os.getenv("MEMORY_TOP_K", "3"))
 # Bounds the standing record, episode summaries, contents, dates and available keys.
