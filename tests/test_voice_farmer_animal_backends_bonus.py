@@ -59,6 +59,7 @@ class TestFarmerAnimalBackendsBonus:
 
     def test_sends_expected_endpoint_query_params_and_auth_header(self, monkeypatch):
         monkeypatch.setattr(farmer_animal_backends.httpx, "AsyncClient", _FakeAsyncClient)
+        monkeypatch.setattr(farmer_animal_backends.settings, "amulpashudhan_base_url", "http://pashugpt.test/PashuGPT")
 
         result = asyncio.run(get_farmer_bonus_amount_api(self._request(), "test-token"))
 
@@ -68,7 +69,7 @@ class TestFarmerAnimalBackendsBonus:
         assert result[0].from_date == "2026-04-01T00:00:00"
         assert _FakeAsyncClient.calls == [
             {
-                "url": f"{farmer_animal_backends.BASE_AMULPASHUDHAN}/GetFarmerBonusAmount",
+                "url": "http://pashugpt.test/PashuGPT/GetFarmerBonusAmount",
                 "params": {
                     "unionCode": "0001",
                     "societyCode": "2004",

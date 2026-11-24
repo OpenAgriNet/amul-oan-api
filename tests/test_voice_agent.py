@@ -75,7 +75,7 @@ def test_the_agents_have_voices_tools():
     base = [
         "search_fodder_availability", "lookup_fodder_locations", "get_fodder_listing",
         "search_terms", "search_documents", "create_ai_call", "get_farmer_milk_collection_details",
-        "get_cattle_trade_prices", "get_verified_cattle_listings", "get_vistaar_mandi_prices", "signal_conversation_state", "find_nearby_vet_offices", "check_loan_eligibility",
+        "get_cattle_trade_prices", "get_verified_cattle_listings", "get_vistaar_mandi_prices", "get_vistaar_weather", "signal_conversation_state", "find_nearby_vet_offices", "check_loan_eligibility",
     ]
     signed_in = [
         "search_memories", "list_memories", "read_memory", "find_animals", "get_union_scheme_data",

@@ -9,6 +9,7 @@ from pydantic_ai import RunContext
 
 from agents.deps import FarmerContext
 from agents.tools.ai_call import _book_via_network, session_booking_confirmed
+from agents.tools.telemetry import report_tool
 from agents.voice.models.ai_call import AISpecies
 from agents.voice.services.farmer_identity import (
     CODE_PATTERN,
@@ -100,6 +101,8 @@ async def create_ai_call(
         logger.info("AI call blocked: query failed moderation; session=%s", session_id)
         return "This helpline only handles dairy farming and animal husbandry questions."
 
+    ctx.deps.record_voice_booking_attempt()
+
     # Union ban is a policy gate, not a booking write: refuse before Redis
     # reservation and before the booking. farmer_unions may be missing on test
     # stubs and on unsigned-in turns — those are not banned.
@@ -124,6 +127,7 @@ async def create_ai_call(
             "AI call blocked: invalid %s; session=%s union=%s society=%s user_id=%s",
             invalid_field, session_id, union_code, society_code, user_id,
         )
+        report_tool("error", f"invalid {invalid_field}")
         return INVALID_IDENTIFIERS_MESSAGE
 
     # Chat's Beckn booking: one reservation per session whatever

@@ -458,3 +458,183 @@ def test_a_booking_request_that_raised_is_a_failed_api_step(monkeypatch):
     (update,) = step.updates
     assert update["output"] == {"ok": False, "pre_send_failure": True, "refused": False, "message": ai_call.NOT_SENT_MESSAGE}
     assert (update["level"], update["status_message"]) == ("ERROR", "booking request: ConnectError: bap down")
+
+
+
+# ── a tool that reports its failure, then raises ─────────────────────────────
+
+
+def test_a_failure_the_tool_reported_survives_the_raise(span):
+    @reporting
+    async def tool() -> str:
+        report_tool("unavailable", "document search: ConnectError: seeker down")
+        raise ModelRetry("Error searching documents, please try again")
+
+    with pytest.raises(ModelRetry):
+        asyncio.run(tool())
+    assert _status(span) == ("unavailable", None, "ERROR", "document search: ConnectError: seeker down")
+
+
+def test_a_document_search_that_raised_keeps_the_upstream_reason(span, monkeypatch):
+    from agents.tools import search as chat_search
+
+    async def _down(query, top_k):
+        raise httpx.ConnectError("seeker down")
+
+    monkeypatch.setattr(chat_search, "network_search_documents", _down)
+    with pytest.raises(ModelRetry):
+        asyncio.run(reporting(search_documents)("mastitis treatment"))
+    assert _status(span) == ("unavailable", None, "ERROR", "document search: ConnectError: seeker down")
+
+
+def test_milk_with_one_account_failing_answers_and_is_unavailable(span, monkeypatch):
+    from agents.tools import milk_collection as chat_milk
+    from agents.tools.models.milk_collection import FarmerMilkCollectionResponseModel
+
+    accounts = [SimpleNamespace(union_code="2021", society_code=str(i), farmer_code="1") for i in (1, 2)]
+
+    async def _farmers(*args, **kwargs):
+        return ["farmer"]
+
+    async def _fetch(account, **kwargs):
+        if account.society_code == "2":
+            raise httpx.ReadTimeout("slow")
+        return FarmerMilkCollectionResponseModel(result="success", milk=[], deduction=[])
+
+    monkeypatch.setattr(chat_milk, "fetch_authenticated_farmers", _farmers)
+    monkeypatch.setattr(chat_milk, "authenticated_accounts", lambda farmers: accounts)
+    monkeypatch.setattr(chat_milk, "fetch_milk_collection", _fetch)
+    told = asyncio.run(reporting(chat_milk.get_farmer_milk_collection_details)(
+        _deps(mobile="9000000000", session_id="s"), "2026-10-01", "2026-10-07",
+    ))
+    assert told.startswith("Farmer milk collection details fetched successfully")
+    assert _status(span) == ("unavailable", None, "ERROR", "milk collection provider failed for 1 of 2 accounts")
+
+
+# ── the voice tools ──────────────────────────────────────────────────────────
+
+
+def _reporting_codes():
+    async def _a():
+        return None
+
+    return {reporting(lambda: None).__code__, reporting(_a).__code__}
+
+
+def test_every_voice_tool_reports_and_keeps_its_schema():
+    """Voice's registry wraps every tool too, under the nudge, and the model sees the same tool."""
+    from agents.voice.tools import BASE_TOOLS, SIGNED_IN_FARMER_TOOLS
+
+    codes = _reporting_codes()
+    for tool in [*BASE_TOOLS, *SIGNED_IN_FARMER_TOOLS]:
+        chain, fn = [], tool.function
+        while fn is not None:
+            chain.append(fn)
+            fn = getattr(fn, "__wrapped__", None)
+        assert any(f.__code__ in codes for f in chain), tool.name
+        plain = Tool(chain[-1], takes_ctx=tool.takes_ctx, prepare=tool.prepare)
+        assert (plain.name, plain.description, plain.function_schema.json_schema) == (
+            tool.name, tool.description, tool.function_schema.json_schema,
+        )
+
+
+def _voice_accounts(*societies):
+    from agents.deps import FarmerAccount
+
+    return [FarmerAccount(union_code="2021", society_code=s, farmer_code="NA0002") for s in societies]
+
+
+def test_voice_bonus_failures_are_unavailable(span, monkeypatch):
+    from agents.voice.tools import bonus as voice_bonus
+
+    async def _api(request, token):
+        return None if request.society_code == "2" else []
+
+    monkeypatch.setenv("PASHUGPT_TOKEN", "t")
+    monkeypatch.setattr(voice_bonus, "get_farmer_bonus_amount_api", _api)
+    ctx = _deps(mobile="9000000000", farmer_accounts=_voice_accounts("1", "2"))
+    asyncio.run(reporting(voice_bonus.get_farmer_bonus_amount)(ctx))
+    assert _status(span) == ("unavailable", None, "ERROR", "bonus provider failed for 1 of 2 accounts")
+
+    span.updates.clear()
+    monkeypatch.delenv("PASHUGPT_TOKEN")
+    asyncio.run(reporting(voice_bonus.get_farmer_bonus_amount)(ctx))
+    assert _status(span) == ("unavailable", None, "ERROR", "PASHUGPT_TOKEN is not set")
+
+
+def test_voice_milk_provider_failure_is_unavailable_with_the_reason(span, monkeypatch):
+    from agents.voice.tools import milk_collection as voice_milk
+
+    async def _fetch(account, **kwargs):
+        raise httpx.ConnectError("bap down")
+
+    monkeypatch.setattr(voice_milk, "fetch_milk_collection", _fetch)
+    told = asyncio.run(voice_milk.fetch_milk_summary_for_accounts(_voice_accounts("1"), "2026-10-01", "2026-10-07"))
+    assert told == "Milk collection lookup failed. Unable to fetch details at the moment."
+    assert span.updates == []  # outside a tool (outbound calls) nothing is told
+
+    told = asyncio.run(reporting(voice_milk.fetch_milk_summary_for_accounts)(_voice_accounts("1"), "2026-10-01", "2026-10-07"))
+    assert _status(span) == ("unavailable", None, "ERROR", "milk collection provider: ConnectError: bap down")
+
+
+@pytest.mark.parametrize(("outcome", "recorded"), [("disabled", ("unavailable", "ERROR")), ("no_phone", ("error", "ERROR"))])
+def test_voice_loan_reports_a_service_it_could_not_use(span, monkeypatch, outcome, recorded):
+    from agents.voice.services import loan_eligibility as voice_le
+    from agents.voice.tools import loan as voice_loan
+
+    async def _evaluate(**kwargs):
+        return SimpleNamespace(outcome=outcome, phone=None, code=None, sms_status=None, loan_amount=None, milk_threshold=None)
+
+    async def _in_scope():
+        return True
+
+    monkeypatch.setattr(voice_le, "evaluate_and_issue", _evaluate)
+    ctx = _deps(mobile=None, farmer_accounts=[], session_id="s", ensure_in_scope=_in_scope)
+    asyncio.run(reporting(voice_loan.check_loan_eligibility)(ctx))
+    assert _status(span)[::2] == recorded
+
+
+def test_voice_union_schemes_cache_failure_is_unavailable(span, monkeypatch):
+    from agents.voice.tools import union_schemes as voice_schemes
+
+    async def _cache(union):
+        raise voice_schemes.SchemeCacheError("redis down")
+
+    monkeypatch.setattr(voice_schemes, "get_cached_scheme_records_for_union", _cache)
+    asyncio.run(reporting(voice_schemes.get_union_scheme_data)(_deps(farmer_unions=["banas"])))
+    assert _status(span) == ("unavailable", None, "ERROR", "scheme cache: SchemeCacheError: redis down")
+
+
+def test_voice_search_that_could_not_reach_marqo_is_unavailable(span, monkeypatch):
+    from agents.voice.tools import search as voice_search
+
+    def _down(*args, **kwargs):
+        raise ConnectionError("marqo down")
+
+    monkeypatch.setenv("MARQO_ENDPOINT_URL", "http://marqo.invalid")
+    monkeypatch.setenv("MARQO_SEARCH_MODE", "tensor")
+    monkeypatch.setattr(voice_search, "_get_index_capabilities_sync", lambda url, index: {"exists": False})
+    monkeypatch.setattr(voice_search, "_marqo_search_sync", _down)
+    with pytest.raises(ModelRetry):
+        asyncio.run(reporting(voice_search.search_documents)(_deps(), "mastitis treatment"))
+    assert _status(span) == ("unavailable", None, "ERROR", "document search: ConnectionError: marqo down")
+
+
+def test_voice_vet_directory_that_did_not_load_is_unavailable(span, monkeypatch):
+    from agents.voice.tools import vet_offices as voice_vet
+
+    monkeypatch.setattr(voice_vet, "_load_offices", lambda: ())
+    asyncio.run(reporting(voice_vet.find_nearby_vet_offices)(_deps(farmer_village="", farmer_district="")))
+    assert _status(span) == ("unavailable", None, "ERROR", "the office directory did not load")
+
+
+def test_voice_booking_with_an_invented_code_is_an_error(span):
+    from agents.voice.tools import ai_call as voice_ai_call
+
+    async def _in_scope():
+        return True
+
+    ctx = _deps(session_id="s", farmer_unions=[], farmer_accounts=None, ensure_in_scope=_in_scope)
+    asyncio.run(reporting(voice_ai_call.create_ai_call)(ctx, "MISSING", "1", "1", "TECH1", SPECIES))
+    status, _, level, message = _status(span)
+    assert (status, level) == ("error", "ERROR") and message.startswith("invalid ")

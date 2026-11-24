@@ -33,7 +33,7 @@ def _ctx(session_id, tool_call_id=None):
         return True
 
     return SimpleNamespace(
-        deps=SimpleNamespace(session_id=session_id, ensure_in_scope=_ensure_in_scope),
+        deps=SimpleNamespace(session_id=session_id, ensure_in_scope=_ensure_in_scope, record_voice_booking_attempt=lambda: None),
         tool_call_id=tool_call_id,
     )
 

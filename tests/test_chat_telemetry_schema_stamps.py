@@ -109,8 +109,8 @@ def test_forward_telemetry_metadata_reads_a_git_head_file(monkeypatch, tmp_path)
 
 def test_turn_v1_contract_matches_what_chat_py_sends():
     """The contract lists exactly the amul.* keys chat.py builds (turn_v1_metadata at the
-    root, turn_v1_fields when it closes), the steps it, translation.py and the suggestions
-    task open, and its scores."""
+    root, turn_v1_fields when it closes), the steps it, translation.py, the suggestions
+    task and the farmer context open, and its scores."""
     contract = json.loads(CONTRACT.read_text(encoding="utf-8"))
     chat_calls = _calls("app/services/chat.py")
     sent = STAMPS | {
@@ -122,7 +122,7 @@ def test_turn_v1_contract_matches_what_chat_py_sends():
     assert sent == set(contract["metadata_keys"]), f"chat.py's metadata keys don't match the contract. {NEW_VERSION}"
     opened = {
         name
-        for path in ("app/services/chat.py", "app/services/translation.py", "app/tasks/suggestions.py")
+        for path in ("app/services/chat.py", "app/services/translation.py", "app/tasks/suggestions.py", "agents/farmer_context.py")
         for name in _observation_names(_calls(path))
     } - {TURN_ROOT}
     assert opened == set(contract["steps"]), f"the steps chat opens don't match the contract. {NEW_VERSION}"

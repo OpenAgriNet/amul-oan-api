@@ -9,6 +9,7 @@ from pydantic_ai import RunContext
 from pydantic_ai.tools import ToolDefinition
 
 from agents.deps import FarmerContext
+from agents.tools.telemetry import report_tool
 from agents.voice.tools.farmer_animal_backends import get_farmer_bonus_amount_api
 from app.voice.models.bonus import (
     FarmerBonusAmountRecordModel,
@@ -115,6 +116,7 @@ async def get_farmer_bonus_amount(ctx: RunContext[FarmerContext]) -> str:
     mobile = (ctx.deps.mobile or "").strip() if ctx and ctx.deps else ""
     if not mobile:
         logger.info("Farmer bonus amount tool refused: no authenticated mobile")
+        report_tool("error", "no signed-in mobile")
         return (
             "Bonus amount lookup failed. "
             "Your signed-in farmer profile is not available, so bonus amount "
@@ -123,6 +125,7 @@ async def get_farmer_bonus_amount(ctx: RunContext[FarmerContext]) -> str:
 
     accounts = list(ctx.deps.farmer_accounts) if ctx.deps and ctx.deps.farmer_accounts else []
     if not accounts:
+        report_tool("no_result", "no account for the signed-in mobile")
         return (
             "Bonus amount lookup failed. "
             "No union, society, and farmer account was found for your signed-in mobile."
@@ -131,6 +134,7 @@ async def get_farmer_bonus_amount(ctx: RunContext[FarmerContext]) -> str:
     token = os.getenv("PASHUGPT_TOKEN")
     if not token:
         logger.error("PASHUGPT_TOKEN is not set")
+        report_tool("unavailable", "PASHUGPT_TOKEN is not set")
         return "Bonus amount lookup failed. Service is not configured."
 
     outcomes = await asyncio.gather(
@@ -165,6 +169,7 @@ async def get_farmer_bonus_amount(ctx: RunContext[FarmerContext]) -> str:
             "(count=%s)",
             len(accounts),
         )
+        report_tool("unavailable", f"bonus provider failed for all {len(accounts)} accounts")
         return _temporary_failure_message()
 
     if failed_accounts:
@@ -173,6 +178,7 @@ async def get_farmer_bonus_amount(ctx: RunContext[FarmerContext]) -> str:
             failed_accounts,
             len(accounts),
         )
+        report_tool("unavailable", f"bonus provider failed for {failed_accounts} of {len(accounts)} accounts")
         return _temporary_failure_message()
 
     records = [record for result in successes for record in result]
@@ -181,6 +187,7 @@ async def get_farmer_bonus_amount(ctx: RunContext[FarmerContext]) -> str:
             "Farmer bonus amount lookup returned no records accounts=%s",
             len(accounts),
         )
+        report_tool("no_result", "no bonus records")
         return (
             "Bonus amount lookup completed. "
             "No bonus records were found for your signed-in farmer account(s)."

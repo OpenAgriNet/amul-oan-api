@@ -7,6 +7,7 @@ from pydantic_ai import RunContext
 from agents.deps import FarmerAccount, FarmerContext
 from agents.tools.beckn.amul import AuthenticatedFarmerAccount, fetch_milk_collection
 from agents.tools.milk_collection import _display_date, milk_totals
+from agents.tools.telemetry import reason, report_tool
 from app.voice.models.milk_collection import FarmerMilkCollectionRequestModel
 from helpers.utils import get_logger
 
@@ -89,6 +90,7 @@ async def _fetch_one_account(
         )
     except Exception as e:
         logger.warning("Beckn milk lookup failed: %s", e)
+        report_tool("unavailable", f"milk collection provider: {reason(e)}")
         response = None
     logger.info(
         "Milk collection lookup: session=%s union=%s society=%s from=%s to=%s ok=%s milk=%s ded=%s",
@@ -156,6 +158,7 @@ async def get_farmer_milk_collection_details(
             "Milk collection blocked: no farmer accounts in context (llm_codes=%s/%s)",
             union_code, society_code,
         )
+        report_tool("error", "no farmer account in the context")
         return (
             "Milk collection lookup failed. The farmer account details are not available."
         )
@@ -189,6 +192,7 @@ async def fetch_milk_summary_for_accounts(
     therefore stay in here, not in the tool wrapper.
     """
     if not accounts:
+        report_tool("error", "no farmer account in the context")
         return "Milk collection lookup failed. No farmer account is available."
 
     # Validate the date range once — it is the same for every account, so a bad
@@ -203,6 +207,7 @@ async def fetch_milk_summary_for_accounts(
         ).validate_date_range()
     except (ValidationError, ValueError) as e:
         logger.info("Milk collection date validation failed: from=%s to=%s error=%s", fromdate, todate, e)
+        report_tool("error", f"date range: {e}")
         return f"Milk collection lookup failed. {e}"
 
     multi = len(accounts) > 1

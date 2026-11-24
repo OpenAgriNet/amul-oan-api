@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 from pydantic_ai import ModelRetry, RunContext
 
 from agents.deps import FarmerContext
+from agents.tools.telemetry import reason, report_tool
 from agents.voice.tools.terms import normalize_text_with_glossary
 from app.observability import start_observation
 from helpers.utils import get_logger
@@ -39,6 +40,18 @@ _WRONG_INTENT_HINTS = [
     "tracking numbers",
     "track number",
 ]
+# "desi cow" is a breed, so "desi" only counts next to a remedy word.
+_HOME_REMEDY_RE = re.compile(
+    r"\b(?:home|homemade|household|traditional|herbal|desi|gharelu)\s+(?:remed|treatment|medicine|cure)",
+    re.IGNORECASE,
+)
+
+
+def _expand_home_remedy_query(query: str) -> str:
+    """Home-remedy wording also searches "ethnoveterinary", the term the glossary pins ઘરેલુ ઉપચાર to."""
+    if "ethnoveterinary" in query.lower() or not _HOME_REMEDY_RE.search(query):
+        return query
+    return f"{query} ethnoveterinary"
 
 
 def _validate_search_query(query: str) -> str:
@@ -331,7 +344,7 @@ async def search_documents(
     """
     try:
         del ctx
-        query = _validate_search_query(query)
+        query = _expand_home_remedy_query(_validate_search_query(query))
         backend = os.getenv("VET_SEARCH_BACKEND", "marqo").strip().lower()
         if backend == "beckn":
             # The provider owns backend selection, ranking and chunk diversity.
@@ -477,6 +490,7 @@ async def search_documents(
         )
 
         if len(results) == 0:
+            report_tool("no_result", "no documents returned")
             return f"No results found for `{query}`"
 
         search_hits = []
@@ -496,4 +510,6 @@ async def search_documents(
         return "> Search Results for `" + query + "`\n\n" + document_string
     except Exception as e:
         logger.error("Error searching documents: %s; query_chars=%s", e, len(query or ""))
+        if not isinstance(e, ModelRetry):
+            report_tool("unavailable", f"document search: {reason(e)}")
         raise ModelRetry("Error searching documents, please try again")

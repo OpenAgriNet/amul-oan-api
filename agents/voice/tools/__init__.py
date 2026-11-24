@@ -29,11 +29,15 @@ from agents.tools.memory_tools import (
     search_memories,
 )
 from agents.tools.vistaar import get_vistaar_mandi_prices
+from agents.voice.tools.vistaar import get_vistaar_weather
+from agents.tools.telemetry import reporting
 from agents.tools.herd import find_animals_spoken, prepare_find_animals
 
 
 def _with_nudge_signal(func):
-    """Wrap a tool function so it fires the nudge event on invocation."""
+    """Wrap a tool function so it fires the nudge event on invocation, and tells
+    its TOOL span how the call went (agents/tools/telemetry.py)."""
+    func = reporting(func)
     if inspect.iscoroutinefunction(func):
         @functools.wraps(func)
         async def wrapper(*args, **kwargs):
@@ -96,8 +100,16 @@ BASE_TOOLS = [
         docstring_format='auto',
         require_parameter_descriptions=True,
     ),
+    # AMUL-81. Like mandi, not identity-gated: with no farmer district the
+    # forecast falls back to Anand and says so.
     Tool(
-        signal_conversation_state,
+        _with_nudge_signal(get_vistaar_weather),
+        takes_ctx=True,
+        docstring_format='auto',
+        require_parameter_descriptions=True,
+    ),
+    Tool(
+        reporting(signal_conversation_state),
         takes_ctx=True,
         docstring_format='auto',
     ),

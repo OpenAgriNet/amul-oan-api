@@ -14,6 +14,9 @@ from types import MappingProxyType, SimpleNamespace
 import pytest
 from pydantic_ai.messages import ModelResponse, TextPart
 
+from agents import farmer_context
+from agents.tools.models.animal import AnimalModel
+from agents.tools.models.farmer import FarmerModel
 from app.channels.chat import WEB
 from app.services import chat as chat_service
 from app.services import translation as tr
@@ -141,8 +144,9 @@ def test_the_roots_input_is_the_whole_question(monkeypatch):
 def _module_steps(monkeypatch):
     """The steps chat's modules open on their own, each call recorded: pre_translation,
     stream_translation and text_translation through TranslateGemma and through an LLM
-    tier, under a turn's post_translation span and under the current span, and the
-    suggestions after the response. Only the network is stubbed."""
+    tier, under a turn's post_translation span and under the current span, the
+    suggestions after the response, and a signed-in farmer's farmer_context. Only the
+    network is stubbed."""
     client = _Langfuse()
     monkeypatch.setattr(tr, "_get_langfuse", lambda: client)
     # llm_core targets as the chain hands them to a call: the provider and the tier that served.
@@ -186,6 +190,24 @@ def _module_steps(monkeypatch):
     monkeypatch.setattr(suggestions_task, "_step_metadata", lambda _e: {"amul.served_tier": "vllm:gemma[0]"})
     execution = SimpleNamespace(info=lambda _step: SimpleNamespace(model_name="gemma"), run=_suggest)
 
+    async def _farmers(_mobile, **_kw):
+        return [FarmerModel.model_validate({"unionName": "Kaira", "unionCode": "2021", "societyCode": "S1", "tagNo": "T1"})]
+
+    async def _animal(tag, **_kw):
+        return AnimalModel.model_validate({"tagNumber": tag})
+
+    async def _cvcc(_tag, **_kw):
+        raise RuntimeError("cvcc down")
+
+    async def _technicians(**_kw):
+        return []
+
+    monkeypatch.setattr(farmer_context, "get_langfuse_client", lambda: client)
+    monkeypatch.setattr(farmer_context, "fetch_authenticated_farmers", _farmers)
+    monkeypatch.setattr(farmer_context, "fetch_animal_profile", _animal)
+    monkeypatch.setattr(farmer_context, "fetch_cvcc_health", _cvcc)
+    monkeypatch.setattr(farmer_context, "search_ai_technicians", _technicians)
+
     async def _go():
         args = ("Give the cow water.", "english", "gu", 0.0, 64)
         with client.start_as_current_observation(name="post_translation", as_type="span") as span:
@@ -195,6 +217,7 @@ def _module_steps(monkeypatch):
         await tr._llm_translation_unary(object(), "gemma", "instruction", *args, provider="openai")
         await tr.pretranslate_with_tier(tier, text="મારી ગાયને કેટલું પાણી?", source_lang="gujarati")
         await suggestions_task.create_suggestions("chat-contract", "gu", execution, None)
+        await farmer_context.get_farmer_context_bundle_by_mobile("9000000000")
 
     asyncio.run(_go())
     return client.observations

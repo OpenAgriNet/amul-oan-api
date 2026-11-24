@@ -96,7 +96,7 @@ def test_invented_booking_never_reaches_the_partner_api(monkeypatch):
     async def in_scope():
         return True
 
-    ctx = SimpleNamespace(deps=SimpleNamespace(session_id="s1", ensure_in_scope=in_scope,
+    ctx = SimpleNamespace(deps=SimpleNamespace(session_id="s1", ensure_in_scope=in_scope, record_voice_booking_attempt=lambda: None,
                                                farmer_unions=[]))
     out = asyncio.run(ai_mod.create_ai_call(ctx, "U11223", "S67890", "F12345", "T55667",
                                             next(iter(AISpecies))))

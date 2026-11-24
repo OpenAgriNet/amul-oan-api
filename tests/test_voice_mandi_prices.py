@@ -4,6 +4,7 @@ Before this, every voice prompt variant sent the market intent to
 search_documents, which holds no live prices, so a caller asking a tomato or
 onion rate heard "I don't know based on the provided documents."
 """
+import inspect
 import os
 import re
 
@@ -43,8 +44,9 @@ def test_voice_registers_chats_mandi_tool_itself():
     from agents.voice.tools import BASE_TOOLS
 
     tool = {t.name: t for t in BASE_TOOLS}["get_vistaar_mandi_prices"]
-    # The same function chat registers, not a copy; wrapped for the hold line.
-    assert tool.function.__wrapped__ is get_vistaar_mandi_prices
+    # The same function chat registers, not a copy; wrapped for the hold line
+    # and the tool status.
+    assert inspect.unwrap(tool.function) is get_vistaar_mandi_prices
     assert tool.takes_ctx is True
     assert tool.prepare is None
 
@@ -56,10 +58,11 @@ def test_market_goes_to_the_mandi_tool_not_document_search(name):
     routed = 0
     for line in text.splitlines():
         before = line.split("search_documents")[0]
-        if "search_documents" in line and re.search(r"\bcrop\b", before) and "weather" in before:
+        # Weather left this line for its own tool (AMUL-81); find it by clinical + crop.
+        if "search_documents" in line and re.search(r"\bcrop\b", before) and "clinical" in before:
             routed += 1
             assert not re.search(r"\bmarket\b", before), line
-    assert routed, "the clinical/crop/weather routing line was not found"
+    assert routed, "the clinical/crop routing line was not found"
 
 
 @pytest.mark.parametrize("name", VARIANTS)

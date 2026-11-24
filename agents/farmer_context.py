@@ -1,5 +1,6 @@
 import asyncio
 import json
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, TypeVar
 
@@ -31,11 +32,80 @@ from agents.tools.models.union import (
     canonical_union_name,
     is_ai_call_banned_union,
 )
+from agents.tools.telemetry import reason
+from app.observability import get_langfuse_client
 from helpers.utils import get_logger
 
 
 logger = get_logger(__name__)
 _LookupResult = TypeVar("_LookupResult")
+
+# The farmer_context step (amul-telemetry telemetry/turn.v1.yaml): one per built
+# context, with how many of each provider's lookups answered (amul.<provider>_ok)
+# and how many failed (amul.<provider>_failed). Any failure makes it unavailable,
+# level ERROR, with the first reason per provider. A lookup that answered "not
+# found" answered.
+LOOKUP_PROVIDERS = ("farmer", "ai_technicians", "animal_profile", "banas_visits", "cvcc")
+_PROVIDER_OF_LABEL = {
+    "animal profile": "animal_profile",
+    "Banas operated visits": "banas_visits",
+    "CVCC health history": "cvcc",
+}
+_MESSAGE_CHARS = 300
+
+
+@dataclass
+class _Lookups:
+    ok: dict[str, int] = field(default_factory=dict)
+    failed: dict[str, int] = field(default_factory=dict)
+    reasons: dict[str, str] = field(default_factory=dict)
+    found: bool = True
+
+    def record(self, provider: str, failure: str | None = None) -> None:
+        counts = self.ok if failure is None else self.failed
+        counts[provider] = counts.get(provider, 0) + 1
+        if failure is not None:
+            self.reasons.setdefault(provider, failure)
+
+    def status(self) -> str:
+        if self.failed:
+            return "unavailable"
+        return "success" if self.found else "no_result"
+
+    def metadata(self) -> dict[str, Any]:
+        metadata: dict[str, Any] = {"amul.tool_status": self.status()}
+        for provider in LOOKUP_PROVIDERS:
+            if provider in self.ok or provider in self.failed:
+                metadata[f"amul.{provider}_ok"] = self.ok.get(provider, 0)
+                metadata[f"amul.{provider}_failed"] = self.failed.get(provider, 0)
+        return metadata
+
+    def status_message(self) -> str:
+        return "; ".join(
+            f"{provider} {self.failed[provider]} of {self.failed[provider] + self.ok.get(provider, 0)} failed: "
+            f"{self.reasons[provider]}"
+            for provider in LOOKUP_PROVIDERS
+            if provider in self.failed
+        )[:_MESSAGE_CHARS]
+
+
+_lookups: ContextVar[_Lookups | None] = ContextVar("farmer_context_lookups", default=None)
+
+
+def _record_lookup(provider: str, failure: str | None = None) -> None:
+    lookups = _lookups.get()
+    if lookups is not None:
+        lookups.record(provider, failure)
+
+
+def _report_lookups(step: Any, lookups: _Lookups) -> None:
+    try:
+        if lookups.failed:
+            step.update(metadata=lookups.metadata(), level="ERROR", status_message=lookups.status_message())
+        else:
+            step.update(metadata=lookups.metadata())
+    except Exception as exc:
+        logger.debug("farmer_context step not recorded: %s", exc)
 
 
 def _format_value(value: Any) -> str:
@@ -208,9 +278,12 @@ async def _get_ai_technicians_for_farmer(
         )
     except Exception as exc:
         logger.warning("AI technician Beckn lookup failed: %s", exc)
-        technicians = None
-    if technicians is None:
+        _record_lookup("ai_technicians", reason(exc))
         return None, "AI technician details could not be fetched right now."
+    if technicians is None:
+        _record_lookup("ai_technicians", "no answer")
+        return None, "AI technician details could not be fetched right now."
+    _record_lookup("ai_technicians")
 
     if not technicians:
         return [], None
@@ -321,11 +394,35 @@ async def get_farmer_context_bundle_by_mobile(
     ``location`` is {district, village, state} (possibly empty) and exists
     so tools can read the farmer's location. It is deliberately NOT parsed back
     out of the markdown: the markdown is a prompt, not an API.
+
+    The build is the turn's farmer_context step: how its lookups went.
     """
+    lookups = _Lookups()
+    token = _lookups.set(lookups)
+    try:
+        client = get_langfuse_client()
+        if client is None:
+            return await _build_farmer_context_bundle(mobile_number, lookups)
+        with client.start_as_current_observation(name="farmer_context", as_type="span") as step:
+            try:
+                return await _build_farmer_context_bundle(mobile_number, lookups)
+            finally:
+                _report_lookups(step, lookups)
+    finally:
+        _lookups.reset(token)
+
+
+async def _build_farmer_context_bundle(mobile_number: str, lookups: _Lookups) -> FarmerContextBundle:
     mobile = normalize_phone_to_mobile(mobile_number) or mobile_number
-    farmers = await fetch_authenticated_farmers(mobile)
+    try:
+        farmers = await fetch_authenticated_farmers(mobile)
+    except Exception as exc:
+        lookups.record("farmer", reason(exc))
+        raise
+    lookups.record("farmer")
 
     if not farmers:
+        lookups.found = False
         return _not_found_context(mobile)
 
     farmer_unions = _collect_farmer_unions(farmers)
@@ -617,7 +714,7 @@ async def _fetch_or_none(
     coro: Awaitable[_LookupResult],
 ) -> _LookupResult | None:
     try:
-        return await coro
+        result = await coro
     except Exception as exc:
         logger.warning(
             "Beckn %s lookup failed while building farmer context union=%s: %s",
@@ -625,7 +722,10 @@ async def _fetch_or_none(
             union_name,
             exc,
         )
+        _record_lookup(_PROVIDER_OF_LABEL.get(label, label), reason(exc))
         return None
+    _record_lookup(_PROVIDER_OF_LABEL.get(label, label))
+    return result
 
 
 async def _no_extra_animal_record() -> None:

@@ -5,6 +5,8 @@ from pydantic import BaseModel, Field, field_validator
 from rapidfuzz import fuzz
 import re
 
+from agents.tools.telemetry import report_tool
+
 def _with_voice_rows(shared: list[dict]) -> list[dict]:
     """The shared glossary with voice's own rows (``assets/voice_glossary_overrides.json``).
 
@@ -153,6 +155,7 @@ async def search_terms(
         matches = matches[:max_results]
         return f"Matching Terms for `{term}`\n\n" + "\n".join([f"{match[0]} [{match[1]:.0%}]" for match in matches])
     else:
+        report_tool("no_result", "no matching glossary terms")
         return f"No matching terms found for `{term}`"
 
 
@@ -496,6 +499,12 @@ def get_ambiguity_hints_for_query(query: str, threshold: float | None = None, in
                     matched_rules.append(f"- {rule}")
                     seen.add(rule)
                 break
+            # An entry marked "fuzzy": false matches only where a term appears
+            # verbatim. પગાર (salary) is one letter from the everyday words પાર
+            # (across) and ગાર (mud plaster), which score 86; its inflected forms
+            # (પગારની, પગારમાં) contain it, so fuzzing adds only false hits.
+            if entry.get("fuzzy") is False:
+                continue
             # Fuzzy match fallback, window-scoped (see _ambiguity_fuzzy_score)
             score = _ambiguity_fuzzy_score(term_lower, query_lower)
             if score >= _ambiguity_cutoff_for(term_lower, score_cutoff):

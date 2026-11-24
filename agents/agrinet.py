@@ -6,6 +6,7 @@ from agents.tools.terms import get_ambiguity_hints_for_query
 from pydantic_ai.settings import ModelSettings
 from agents.deps import FarmerContext, MEMORY_INSTRUCTIONS
 from agents.tools.ai_call import NO_FARMER_PROFILE_MESSAGE
+from agents.tools.union_schemes import has_union_scheme_catalog
 
 
 def _agrinet_max_output_tokens() -> int:
@@ -62,6 +63,10 @@ def get_agrinet_instructions(ctx: RunContext):
         'loan_max_amount': f"{int(settings.loan_max_amount):,}",
         'loan_interest_rate_pct': f"{int(settings.loan_interest_rate_pct)}",
         'network_tools_enabled': True,
+        # Same gate as the tool's prepare hook: most unions (Kaira among them)
+        # have no ingested catalog, and a prompt that routes to the hidden tool
+        # leaves the model improvising a different scheme answer each turn.
+        'union_schemes_available': has_union_scheme_catalog(ctx.deps),
         # SHC has a narrower rollout gate than the other Vistaar tools. Keep
         # its prompt contract aligned with the per-turn tool prepare hook so the
         # model never sees instructions for a hidden private-report tool.

@@ -274,6 +274,8 @@ class Settings(BaseSettings):
     redis_password: Optional[str] = None
     redis_username: Optional[str] = None  # ACL user. Set with redis_password. Both unset: no AUTH.
     redis_key_prefix: str = "sva-cache-"
+    # A preview backend sets dev's REDIS_KEY_PREFIX here, so the Beckn callbacks dev receives reach it.
+    beckn_redis_key_prefix: str = ""
     redis_socket_connect_timeout: int = 10
     redis_socket_timeout: int = 10
     redis_max_connections: int = 100
@@ -618,7 +620,7 @@ class Settings(BaseSettings):
     scheme_pdf_render_dpi: int = int(os.getenv("SCHEME_PDF_RENDER_DPI", "200"))
     scheme_lock_ttl_seconds: int = Field(default=60 * 60, validation_alias="SCHEME_LOCK_TTL_SECONDS")
     scheme_http_timeout_seconds: float = Field(default=30.0, validation_alias="SCHEME_HTTP_TIMEOUT_SECONDS")
-    scheme_pdf_max_render_pages: int = Field(default=30, validation_alias="SCHEME_PDF_MAX_RENDER_PAGES")
+    scheme_pdf_max_render_pages: int = Field(default=70, validation_alias="SCHEME_PDF_MAX_RENDER_PAGES")
     scheme_ocr_prompt_type: str = os.getenv("SCHEME_OCR_PROMPT_TYPE", "ocr_layout")
     scheme_ocr_max_output_tokens: int = Field(default=12284, validation_alias="SCHEME_OCR_MAX_OUTPUT_TOKENS")
     scheme_ocr_concurrency: int = Field(default=4, validation_alias="SCHEME_OCR_CONCURRENCY")
@@ -706,6 +708,13 @@ class Settings(BaseSettings):
     heat_alert_call_delay_seconds: int = int(os.getenv("HEAT_ALERT_CALL_DELAY_SECONDS", "600"))
     # Test phase: comma-separated 10-digit numbers; when set, nobody else is rung.
     heat_alert_call_only_numbers: str = os.getenv("HEAT_ALERT_CALL_ONLY_NUMBERS", "")
+
+    # ── Test cases (/api/test-cases/) ────────────────────────────────────────
+    # Dev only: the routes are mounted only when this is on, and the UI's
+    # test_case_entry flag follows it.
+    test_cases_route_enabled: bool = _get_bool_env("TEST_CASES_ROUTE_ENABLED", default=False)
+    # The Langfuse dataset that keeps the cases. Unset, or no Langfuse: 503.
+    test_cases_raw_dataset: Optional[str] = os.getenv("TEST_CASES_RAW_DATASET")
 
     # ── Onex-Aura / OneXtel SMS gateway (DLT-approved KDCC micro-loan template) ─
     # When false, SMS is a dry-run: nothing is sent, the code is still issued and
@@ -808,6 +817,10 @@ class Settings(BaseSettings):
     vistaar_max_items: int = Field(default=20, validation_alias="VISTAAR_MAX_ITEMS")
     mandi_max_candidates: int = 3
     mandi_location_ttl_s: int = 3600
+    # Voice-only cap (seconds) on one Vistaar weather tool call. A voice turn
+    # that runs past the 60 s ingress window drops the call; past this cap the
+    # caller hears the tool's "temporarily unavailable" line instead.
+    voice_vistaar_budget_s: float = Field(default=20.0, validation_alias="VOICE_VISTAAR_BUDGET_S")
     # Direct PashuGPT integrations used by bonus and cattle trade price tools.
     amulpashudhan_base_url: str = Field(
         default="https://api.amulpashudhan.com/configman/v1/PashuGPT",
@@ -839,7 +852,7 @@ class Settings(BaseSettings):
     # defaults; parseable but out-of-range values are clamped to safe bounds.
     _SAFE_INT_FIELDS: ClassVar[dict[str, tuple[str, int, int | None, int | None]]] = {
         "scheme_lock_ttl_seconds": ("SCHEME_LOCK_TTL_SECONDS", 60 * 60, 1, None),
-        "scheme_pdf_max_render_pages": ("SCHEME_PDF_MAX_RENDER_PAGES", 30, 1, None),
+        "scheme_pdf_max_render_pages": ("SCHEME_PDF_MAX_RENDER_PAGES", 70, 1, None),
         "scheme_ocr_max_output_tokens": ("SCHEME_OCR_MAX_OUTPUT_TOKENS", 12284, 1, None),
         "scheme_ocr_concurrency": ("SCHEME_OCR_CONCURRENCY", 4, 1, 8),
         "scheme_ocr_page_batch_size": ("SCHEME_OCR_PAGE_BATCH_SIZE", 4, 1, 8),
