@@ -53,7 +53,8 @@ async def advance_booking(record, request, mobile, provider, message_id, *, inte
 
     props, ui = request.forwardedProps, record["ui"]
     text = words(props.target_lang)
-    booking = record.get("booking")
+    # A new request must not invalidate an earlier booking before creating its own.
+    booking = record.get("booking") if intent is None else None
     if intent is None:
         workflow_id = props.command.workflow_id if props.command else target["workflow_id"]
         if not booking or booking["id"] != workflow_id or booking["stage"] not in ("technician", "species", "confirm"):
@@ -70,8 +71,8 @@ async def advance_booking(record, request, mobile, provider, message_id, *, inte
         return text[5], None, False
 
     def fail(code, message):
-        expire_booking(record)
         if booking:
+            expire_booking(record)
             booking["stage"] = "unavailable"
         return message, booking_error(code, message), False
 
