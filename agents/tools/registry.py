@@ -5,7 +5,7 @@ from pydantic_ai import Tool
 from agents.tools.telemetry import reporting
 from agents.tools.fodderinfo import FODDER_TOOLS, prepare_fodder_tool
 
-from agents.tools.ai_call import create_ai_call, prepare_create_ai_call
+from agents.tools.ai_call import create_ai_call, prepare_create_ai_call, request_ai_booking, prepare_interactive_booking
 from agents.tools.milk_collection import (
     get_farmer_milk_collection_details,
     prepare_get_farmer_milk_collection_details,
@@ -48,6 +48,7 @@ from agents.tools.vistaar_pmkisan import (
 )
 
 TOOLS = [
+    Tool(reporting(request_ai_booking), prepare=prepare_interactive_booking),
     Tool(reporting(request_milk_records), prepare=prepare_interactive_milk),
     Tool(reporting(read_displayed_milk_records), prepare=prepare_interactive_milk),
     *(Tool(reporting(tool), prepare=prepare_fodder_tool) for tool in FODDER_TOOLS),

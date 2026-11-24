@@ -11,13 +11,49 @@ from agents.deps import FarmerContext
 from app.config import settings
 from app.core.cache import cache, reserve, ReservationOutcome, release_reservation
 from agents.tools.beckn.operations import BecknNotSentError
-from agents.tools.models.ai_call import AISpecies
+from agents.tools.models.ai_call import AISpecies, BookingOutcome
 from agents.tools.models.union import any_union_banned_from_ai_calls, union_banned_message
 from agents.tools.telemetry import reason, report_tool
 from app.observability import record_api_result, start_observation
 from helpers.utils import get_logger
 
 logger = get_logger(__name__)
+
+
+class InteractiveBooking:
+    """One private intent per accepted model attempt; never sends a booking."""
+
+    def __init__(self):
+        self.request = None
+
+
+def _interactive_booking_available(deps) -> bool:
+    return (getattr(deps, "_booking_ui", None) is not None and deps.persona == "farmer"
+            and _has_farmer_profile(deps) and not any_union_banned_from_ai_calls(deps.farmer_unions))
+
+
+async def prepare_interactive_booking(ctx: RunContext[FarmerContext], tool_def: ToolDefinition) -> ToolDefinition | None:
+    return tool_def if _interactive_booking_available(ctx.deps) else None
+
+
+async def request_ai_booking(ctx: RunContext[FarmerContext], species: AISpecies | None = None) -> str:
+    """Request AI visit pickers and confirmation; this does not book a visit.
+
+    Args:
+        ctx: Trusted signed-in farmer and interactive session context.
+        species: Cow or buffalo only when clearly specified for this booking; otherwise omit.
+    """
+    if not _interactive_booking_available(ctx.deps) or not await ctx.deps.ensure_in_scope():
+        return "Interactive AI booking is unavailable for this turn."
+    if ctx.deps._milk_ui is not None and ctx.deps._milk_ui.request is not None:
+        return "A milk lookup is already staged. Request one workflow per turn."
+    intent = {"species": species.value if species else None}
+    ui = ctx.deps._booking_ui
+    if ui.request is not None and ui.request != intent:
+        return "An AI booking workflow is already staged. Do not replace it in this turn."
+    ui.request = intent
+    return "AI booking workflow requested. The backend will show technician selection, species if needed, and confirmation. No visit has been booked."
+
 
 # Redis key namespace for booking reservations. Deliberately NOT config: changing
 # it at runtime orphans every in-flight reservation, so a redeploy mid-booking
@@ -249,6 +285,8 @@ async def prepare_create_ai_call(
     _CODE_PATTERN), so the tool is withheld from the schema instead and the
     prompt tells the agent booking is unavailable.
     """
+    if getattr(ctx.deps, "_booking_ui", None) is not None:
+        return None
     if _has_farmer_profile(ctx.deps):
         return tool_def
     logger.info(
@@ -289,6 +327,8 @@ async def create_ai_call(
         str: Formatted result with assigned AIT details and ticket number,
              or a message if booking fails.
     """
+    if getattr(ctx.deps, "_booking_ui", None) is not None:
+        return "Use request_ai_booking. Interactive bookings require picker selection and confirmation."
     session_id = ctx.deps.session_id if ctx and ctx.deps else None
     tool_call_id = getattr(ctx, "tool_call_id", None)
     logger.info(
@@ -437,6 +477,25 @@ async def _book_via_network(
     guard: bool | None = None,
     heat_alert_event_id: str | None = None,
 ) -> str:
+    result = await book_ai_call_result(
+        union_code, society_code, farmer_code, user_id, species, session_id,
+        _ai_tool_input, tool_call_id, guard, heat_alert_event_id,
+    )
+    return result.message
+
+
+async def book_ai_call_result(
+    union_code: str,
+    society_code: str,
+    farmer_code: str,
+    user_id: str,
+    species: AISpecies,
+    session_id: str | None,
+    _ai_tool_input: dict,
+    tool_call_id: str | None = None,
+    guard: bool | None = None,
+    heat_alert_event_id: str | None = None,
+) -> BookingOutcome:
     """Book via the Amul Beckn network with moderation and idempotency guards.
 
     ``guard`` overrides AI_CALL_BOOKING_GUARD_ENABLED. Voice passes True: it
@@ -456,7 +515,7 @@ async def _book_via_network(
     # Atomic reservation immediately before the irreversible write.
     _allowed, _owned = await _reserve_booking_slot(session_id, guard)
     if not _allowed:
-        return await _already_booked_message(session_id, species.value, account)
+        return BookingOutcome(status="already_requested", message=await _already_booked_message(session_id, species.value, account))
 
     # The booking as an API step (turn.v1's "<api name>" SPAN): ok out, level ERROR
     # with the reason when the visit was not booked.
@@ -512,7 +571,7 @@ async def _book_via_network(
                 message=failure_message,
             )
             report_tool("error" if refused else "unavailable", f"booking request: {reason(e)}")
-            return failure_message
+            return BookingOutcome(status="not_sent" if pre_send else "rejected" if refused else "unconfirmed", message=failure_message)
 
         if not result.ok:
             # Release only on an authoritative "I did not book": a NACK, or the
@@ -543,7 +602,7 @@ async def _book_via_network(
                 message=result.message,
             )
             report_tool("error" if result.authoritative_no_booking else "unavailable", result.message)
-            return told
+            return BookingOutcome(status="rejected" if result.authoritative_no_booking else "unconfirmed", message=told)
 
         # Mark this session as booked so a re-run (or retry) does not double-book.
         await _mark_session_booked(session_id, result.ticket, species.value, account, guard)
@@ -561,4 +620,4 @@ async def _book_via_network(
             result.ticket,
         )
         record_api_result(ai_tool_obs, ok=True, ticket_number=result.ticket, message=result.message)
-        return result.message
+        return BookingOutcome(status="confirmed", message=result.message, ticket=result.ticket)

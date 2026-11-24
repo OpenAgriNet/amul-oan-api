@@ -1,4 +1,4 @@
-"""Development-only interactive milk endpoint using existing authenticated APIs."""
+"""Development-only interactive chat using existing authenticated APIs."""
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
@@ -55,7 +55,7 @@ async def interactive_chat(http_request: Request, background_tasks: BackgroundTa
         owner = str(user_info.get("sub") or "")
         if not settings.chat_agui_enabled or props.channel != "web" or persona != "farmer":
             if not request.messages:
-                raise UIError(409, "AGUI_DISABLED", "Interactive milk controls are not enabled for this request.")
+                raise UIError(409, "AGUI_DISABLED", "Interactive controls are not enabled for this request.")
             if owner:
                 await store.clear(owner, persona, request.threadId)
             from app.routers.chat import chat_endpoint
@@ -69,7 +69,7 @@ async def interactive_chat(http_request: Request, background_tasks: BackgroundTa
             return result
         mobile = normalize_phone_to_mobile(str(user_info.get("phone") or ""))
         if not owner or not mobile or user_info.get("anonymous"):
-            raise UIError(403, "FARMER_SIGN_IN_REQUIRED", "Sign in with your registered farmer number to view milk records.")
+            raise UIError(403, "FARMER_SIGN_IN_REQUIRED", "Sign in with your registered farmer number to use interactive services.")
         from app.channels.chat import WEB
         from app.llm_core import trace as pipeline_trace
         from app.services.chat import _ChatTelemetry, _input_method
@@ -78,7 +78,7 @@ async def interactive_chat(http_request: Request, background_tasks: BackgroundTa
         trace_id = uuid4().hex
         telemetry = None
         if not request.messages:
-            turn = Turn(query="Milk UI selection", session_id=request.threadId,
+            turn = Turn(query="Chat UI selection", session_id=request.threadId,
                         source_lang=props.source_lang, target_lang=props.target_lang, user_id=props.user_id,
                         authenticated_user=MappingProxyType(dict(user_info)), history=(), history_session_id=request.threadId,
                         persona=persona, channel=WEB, input_method=_input_method(props.input_method), trace_id=trace_id)

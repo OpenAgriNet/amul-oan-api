@@ -1,5 +1,6 @@
 """Adapt the existing chat pipeline to one committed AG-UI operation."""
 from types import MappingProxyType
+import json
 from uuid import uuid4
 
 from fastapi import BackgroundTasks
@@ -7,6 +8,7 @@ from pydantic_core import to_jsonable_python
 from redis.exceptions import RedisError
 
 from agents.tools.milk_collection import InteractiveMilk
+from agents.tools.ai_call import InteractiveBooking
 from agents.tools.farmer import normalize_phone_to_mobile
 from agents.tools.session_pmkisan import mask_private_numbers, owner_mobile
 from app.agui.milk import account_identity
@@ -34,6 +36,7 @@ async def agent_reply(record, history, commit, *, request, user_info, provider, 
         else:
             selected = None
     ui = InteractiveMilk(selected, data, failed=record.get("date_reselection_required", False))
+    booking_ui = InteractiveBooking()
     props = request.forwardedProps
     query = await mask_private_numbers(request.messages[0].content, request.threadId, owner_mobile(user_info, "farmer"))
     turn = Turn(query=query, session_id=request.threadId, source_lang=props.source_lang,
@@ -44,7 +47,7 @@ async def agent_reply(record, history, commit, *, request, user_info, provider, 
                 interactive_milk=True, milk_context=ui.context())
     tasks = BackgroundTasks()
     reply = dict(text="", message_id=uuid4().hex, artifacts=[], history=None,
-                 intent=None, suggestions_pending=False)
+                 intent=None, booking_intent=None, suggestions_pending=False)
     response = None
 
     async def capture_history(key, messages, **kwargs):
@@ -52,10 +55,17 @@ async def agent_reply(record, history, commit, *, request, user_info, provider, 
 
     def configure(deps):
         deps._milk_ui = ui
+        deps._booking_ui = booking_ui
+        booking = record.get("booking")
+        if booking:
+            context = {k: booking.get(k) for k in ("stage", "summary", "outcome")}
+            encoded = json.dumps(context, ensure_ascii=False)
+            deps.booking_context = encoded if len(encoded.encode()) <= 4096 else json.dumps({"stage": booking["stage"]})
 
     async def finalize(outcome):
         nonlocal response
         reply["intent"] = ui.request
+        reply["booking_intent"] = booking_ui.request
         reply["suggestions_pending"] = any(task.func is create_suggestions for task in tasks.tasks)
         response = await commit(reply)
         if outcome == "error" and response["error"] is None:

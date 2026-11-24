@@ -1,8 +1,16 @@
 import re
 
 from enum import Enum
+from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+
+class BookingOutcome(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    status: Literal["confirmed", "rejected", "not_sent", "unconfirmed", "already_requested"]
+    message: str
+    ticket: str | None = None
 
 
 class AISpecies(str, Enum):

@@ -870,9 +870,9 @@ class ExecutionContext:
 
         async def raw(tier: ExecutionTarget) -> AsyncIterator[Any]:
             activity_signaled = False
-            milk_ui = getattr(deps, "_milk_ui", None)
-            if milk_ui is not None:
-                milk_ui.request = None
+            staged_ui = [ui for name in ("_milk_ui", "_booking_ui") if (ui := getattr(deps, name, None)) is not None]
+            for ui in staged_ui:
+                ui.request = None
             completed = False
             try:
                 async with agent.iter(
@@ -900,8 +900,9 @@ class ExecutionContext:
                     new_messages.extend(agent_run.result.new_messages())
                 completed = True
             finally:
-                if milk_ui is not None and not completed:
-                    milk_ui.request = None
+                if not completed:
+                    for ui in staged_ui:
+                        ui.request = None
 
         async for chunk in self.stream_adapter(Step.AGENT, raw):
             yield chunk
