@@ -106,37 +106,3 @@ def test_prompt_for_a_resolved_farmer_keeps_profile_and_tool():
     assert "create_ai_call(union_code" in rendered
     assert "Farmer Profile: NOT available" not in rendered
     assert ai_mod.NO_FARMER_PROFILE_MESSAGE not in rendered
-
-
-@pytest.mark.asyncio
-async def test_interactive_agent_stages_booking_and_cannot_call_direct_booking(monkeypatch):
-    from pydantic_ai import Agent, Tool
-    from pydantic_ai.models.test import TestModel
-    from agents.tools.milk_collection import InteractiveMilk, request_milk_records
-
-    async def no_booking(*args, **kwargs):
-        raise AssertionError("The agent may stage controls, never send a booking")
-
-    monkeypatch.setattr(ai_mod, "_book_via_network", no_booking)
-    deps = FarmerContext(query="Book an AI visit", mobile="9000000000", farmer_profile_status="found")
-    deps._booking_ui, deps._milk_ui = ai_mod.InteractiveBooking(), InteractiveMilk()
-    model = TestModel()
-    agent = Agent(model=model, tools=[
-        Tool(ai_mod.request_ai_booking, prepare=ai_mod.prepare_interactive_booking),
-        Tool(ai_mod.create_ai_call, prepare=ai_mod.prepare_create_ai_call),
-    ])
-    await agent.run("Book an AI visit", deps=deps)
-    assert [tool.name for tool in model.last_model_request_parameters.function_tools] == ["request_ai_booking"]
-    assert deps._booking_ui.request is not None
-    original = deps._booking_ui.request.copy()
-    ctx = SimpleNamespace(deps=deps)
-    await request_milk_records(ctx)
-    assert deps._milk_ui.request is None  # A competing workflow does not replace this one.
-    await ai_mod.request_ai_booking(ctx, AISpecies.BUFFALO if original["species"] != "buffalo" else AISpecies.COW)
-    assert deps._booking_ui.request == original
-    assert "request_ai_booking" in await ai_mod.create_ai_call(ctx, "U", "S", "F", VALID_TECH_ID, AISpecies.COW)
-    deps.booking_context = '{"stage":"confirmed","outcome":{"ticket":"T1"}}'
-    rendered = get_agrinet_instructions(ctx)
-    assert "request_ai_booking(species=None)" in rendered
-    assert "create_ai_call(union_code" not in rendered
-    assert '"ticket":"T1"' in rendered

@@ -200,8 +200,7 @@ recovery/rebooking, production rollout, or live booking is included here.
 
 Frontend acceptance: technician → optional species → review → confirm; editing
 and cancellation; submitted/expired controls; duplicate submissions; provider
-failures and uncertain outcomes; Gujarati and phone-width layout. Backend tests
-extend `tests/test_booking_beckn_identity.py`; no separate AG-UI test suite is added.
+failures and uncertain outcomes; Gujarati and phone-width layout.
 
 Python protocol package: `ag-ui-protocol==1.0.0`; frontend compatibility target:
 `@ag-ui/client` / `@ag-ui/core` `1.0.4`. Versions need not share a number.
