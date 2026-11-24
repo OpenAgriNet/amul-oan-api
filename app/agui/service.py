@@ -20,6 +20,7 @@ from redis.exceptions import WatchError
 from agents.tools.beckn.amul import authenticated_accounts, fetch_authenticated_farmers, fetch_milk_collection
 from app.agui.milk import account_identity, account_label, labels, milk_result
 from app.agui.models import ErrorDetail, ErrorResponse, ChatRunRequest, UIState
+from app.agui.session import storage_session_id
 
 MAX_COMPONENTS = 50
 
@@ -57,7 +58,32 @@ def check_run(record, request):
     return digest
 
 
-async def advance(record, request, mobile, provider, trace_id=None, *, milk_intent=None):
+def reconcile_accounts(record, accounts):
+    """Apply a successful ownership lookup to this turn's uncommitted record."""
+    ui = record["ui"]
+    by_identity = {account_identity(a): a for a in accounts}
+    options = {k: v for k, v in record["options"].items() if tuple(v["identity"]) in by_identity}
+    for identity, account in by_identity.items():
+        key = next((k for k, v in options.items() if tuple(v["identity"]) == identity), uuid4().hex)
+        options[key] = dict(identity=list(identity), label=account_label(account))
+    record["options"] = options
+    ui["components"] = [c for c in ui["components"]
+                        if c["kind"] != "chart" or c["data"]["account"]["option_id"] in options]
+    selected = ui["selected_milk_account"]
+    removed = selected is not None and selected["option_id"] not in options
+    if removed:
+        ui["selected_milk_account"] = None
+        record["period"] = None
+        record["date_reselection_required"] = False
+    elif selected:
+        selected["label"] = options[selected["option_id"]]["label"]
+    for item in ui["components"]:
+        if item["status"] == "pending" and (removed or not options):
+            item.update(status="expired", revision=item["revision"] + 1)
+    return by_identity, removed
+
+
+async def advance(record, request, mobile, provider, trace_id=None, *, milk_intent=None, accounts=None):
     """Apply a trusted milk intent or a validated control, never model-written UI."""
     record = copy.deepcopy(record)
     digest = check_run(record, request)
@@ -98,24 +124,13 @@ async def advance(record, request, mobile, provider, trace_id=None, *, milk_inte
     if props.command and props.command.state_revision != ui["state_revision"]:
         raise UIError(409, "STALE_STATE", "The chat changed. Use its latest state revision.")
 
-    try:
-        accounts = await provider.accounts(mobile, request.threadId, request.runId)
-    except Exception:
-        raise UIError(503, "ACCOUNTS_UNAVAILABLE", "Your accounts are temporarily unavailable.", retryable=True) from None
-    by_identity = {account_identity(a): a for a in accounts}
-    # Preserve opaque handles for accounts still returned by the authenticated API.
-    options = {k: v for k, v in record["options"].items() if tuple(v["identity"]) in by_identity}
-    for identity, account in by_identity.items():
-        key = next((k for k, v in options.items() if tuple(v["identity"]) == identity), uuid4().hex)
-        options[key] = dict(identity=list(identity), label=account_label(account))
-    record["options"] = options
-    selected = ui["selected_milk_account"]
-    removed = selected is not None and selected["option_id"] not in options
-    if selected and not removed:
-        selected["label"] = options[selected["option_id"]]["label"]
-    if removed:
-        expire()
-        ui["selected_milk_account"] = None
+    if accounts is None:
+        try:
+            accounts = await provider.accounts(mobile, request.threadId, request.runId)
+        except Exception:
+            raise UIError(503, "ACCOUNTS_UNAVAILABLE", "Your accounts are temporarily unavailable.", retryable=True) from None
+    by_identity, removed = reconcile_accounts(record, accounts)
+    options = record["options"]
 
     def require_component_capacity():
         if len(ui["components"]) >= MAX_COMPONENTS:
@@ -234,23 +249,34 @@ class MilkStore:
                 record = json.loads(raw) if raw else new_record()
                 check_run(record, request)  # Reject duplicates before running any agent/tools.
                 history, history_key = [], None
+                accounts = None
+                history_session_id = storage_session_id(owner, persona, request.threadId)
                 if request.messages and agent_reply is not None:
                     from pydantic_ai.messages import ModelMessagesTypeAdapter
                     from app.utils import HISTORY_SUFFIX, _sanitize_legacy_usage
 
-                    history_key = f"{self.prefix}{request.threadId}_{HISTORY_SUFFIX}"
+                    history_key = f"{self.prefix}{history_session_id}_{HISTORY_SUFFIX}"
                     await pipe.watch(history_key)
                     raw_history = await pipe.get(history_key)
                     try:
                         history = ModelMessagesTypeAdapter.validate_python(_sanitize_legacy_usage(json.loads(raw_history))) if raw_history else []
                     except (ValueError, TypeError):
                         history = []  # Match legacy chat's unreadable-history recovery.
+                    if record["options"] or record["ui"]["selected_milk_account"] or any(
+                        c["kind"] == "chart" for c in record["ui"]["components"]
+                    ):
+                        try:
+                            accounts = await self.provider.accounts(mobile, request.threadId, request.runId + ":context")
+                        except Exception:
+                            pass  # Unavailable is not evidence of removal; hide context below.
+                        else:
+                            reconcile_accounts(record, accounts)
 
                 async def commit(reply=None):
                     if disconnected is not None and await disconnected():
                         raise asyncio.CancelledError()
                     updated, response = await advance(record, request, mobile, self.provider, trace_id,
-                                                      milk_intent=reply["intent"] if reply else None)
+                                                      milk_intent=reply["intent"] if reply else None, accounts=accounts)
                     encoded = json.dumps(updated, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
                     if len(encoded.encode()) > 4 * 1024 * 1024:
                         raise UIError(409, "SESSION_LIMIT", "Start a fresh chat session.")
@@ -269,7 +295,7 @@ class MilkStore:
                         if reply["history"] is not None:
                             pipe.set(history_key, json.dumps(reply["history"], allow_nan=False), ex=self.ttl)
                         if reply["suggestions_pending"]:
-                            suggestions_key = f"{self.prefix}suggestions_{request.threadId}_{request.forwardedProps.target_lang}"
+                            suggestions_key = f"{self.prefix}suggestions_{history_session_id}_{request.forwardedProps.target_lang}"
                             pipe.set(suggestions_key + ":pending", "true", ex=30)
                             pipe.delete(suggestions_key)
                         response["agent"] = reply
@@ -277,7 +303,8 @@ class MilkStore:
                     return response
 
                 if request.messages and agent_reply is not None:
-                    return await agent_reply(record, history, commit)
+                    return await agent_reply(record, history, commit, history_session_id=history_session_id,
+                                             accounts_available=accounts is not None)
                 return await commit()
         except UIError:
             raise

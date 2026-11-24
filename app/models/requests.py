@@ -51,6 +51,7 @@ class TranscribeRequest(BaseModel):
 class SuggestionsRequest(BaseModel):
     session_id: str = Field(..., description="Session ID to get suggestions for")
     target_lang: str = Field('gu', description="Target language for suggestions")
+    scope: Optional[Literal['agui-v1']] = Field(None, description="Use authenticated AG-UI conversation suggestions")
 
 
 class TTSRequest(BaseModel):

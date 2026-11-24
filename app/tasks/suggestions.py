@@ -63,6 +63,7 @@ async def create_suggestions(
     target_lang: str,
     execution: llm_core.ExecutionContext,
     turn_root: dict[str, str] | None = None,
+    storage_session_id: str | None = None,
 ):
     """
     Create and save suggestions for a session.
@@ -77,10 +78,11 @@ async def create_suggestions(
 
     sug_model_name = execution.info(_LlmStep.SUGGESTIONS).model_name
 
-    status_key = f"suggestions_{session_id}_{target_lang}:pending"
+    storage_id = storage_session_id or session_id
+    status_key = f"suggestions_{storage_id}_{target_lang}:pending"
     try:
         # Get message history
-        raw_history = await _get_message_history(session_id)
+        raw_history = await _get_message_history(storage_id)
         history = trim_history(raw_history,
                           30_000,
                           include_tool_calls=False,
@@ -133,7 +135,7 @@ async def create_suggestions(
         logger.info(f"Suggestions: {suggestions}")
         
         # Store suggestions in cache
-        result = await set_cache(f"suggestions_{session_id}_{target_lang}", suggestions, ttl=SUGGESTIONS_CACHE_TTL)
+        result = await set_cache(f"suggestions_{storage_id}_{target_lang}", suggestions, ttl=SUGGESTIONS_CACHE_TTL)
         logger.info(f"Suggestions saved for session {session_id}: {result}")
         
         return suggestions

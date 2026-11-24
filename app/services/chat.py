@@ -1156,9 +1156,10 @@ async def _chat_agent_input(
                         await cache.delete(suggestions_cache_key)
                     # Deferred, never inline: suggestions read the history
                     # this turn has not written yet.
-                    scheduler.schedule(
-                        create_suggestions, session_id, target_lang, execution, turn_root
-                    )
+                    suggestion_args = (session_id, target_lang, execution, turn_root)
+                    if turn.interactive_milk:
+                        suggestion_args += (turn.history_session_id,)
+                    scheduler.schedule(create_suggestions, *suggestion_args)
                     logger.info("Successfully added suggestions task")
                 except Exception as e:
                     logger.error(f"Error adding suggestions task: {str(e)}")
