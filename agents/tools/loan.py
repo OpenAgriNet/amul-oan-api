@@ -16,6 +16,7 @@ from pydantic_ai.tools import ToolDefinition
 from agents.tools.telemetry import report_tool
 from agents.deps import FarmerContext
 from agents.tools import loan_eligibility as le
+from agents.tools.farmer_cache import _phone_log_hash
 from agents.tools.farmer_envelope import collect_farmer_accounts
 from app.config import settings
 from helpers.utils import get_logger
@@ -115,7 +116,8 @@ async def _resolve_accounts(ctx: RunContext[FarmerContext]):
         envelope = await get_or_fetch_farmer_data(ctx.deps.mobile)
         return collect_farmer_accounts(envelope)
     except Exception as e:  # non-fatal: milk check will simply report couldn't-check
-        logger.warning("Could not resolve farmer accounts for loan milk check: %s", e)
+        # The error's class only: a farmer lookup error can quote the mobile it was given.
+        logger.warning("Could not resolve farmer accounts for loan milk check: %s", type(e).__name__)
         return accounts
 
 
@@ -154,8 +156,10 @@ async def check_loan_eligibility(ctx: RunContext[FarmerContext], confirmed: bool
         session_id=ctx.deps.session_id,
         confirm=confirmed,
     )
-    logger.info("check_loan_eligibility outcome=%s phone=%s code=%s sms=%s",
-                result.outcome, result.phone, result.code, result.sms_status)
+    # Never the phone or the loan code (#404): the phone as its log hash.
+    logger.info("check_loan_eligibility outcome=%s sms=%s channel=%s phone_hash=%s",
+                result.outcome, result.sms_status, LOAN_CHANNEL,
+                _phone_log_hash(result.phone) if result.phone else None)
     if result.outcome in (le.DISABLED, le.ERROR):
         report_tool("unavailable", f"loan eligibility service: {result.outcome}")
     elif result.outcome == le.NO_PHONE:

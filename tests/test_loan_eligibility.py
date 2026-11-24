@@ -423,3 +423,35 @@ def _code(value):
     async def inner(session):
         return value
     return inner
+
+
+# ── log lines carry no phone and no loan code (#404) ─────────────────────────
+@pytest.mark.parametrize("scenario", ["issued_now", "reshared_resent", "already_issued"])
+def test_loan_logs_carry_neither_phone_nor_code(monkeypatch, caplog, scenario):
+    from agents.deps import FarmerContext
+    from agents.tools.farmer_cache import _phone_log_hash
+
+    phone, code = "9999990000", "424242"
+    _wire(monkeypatch, _FakeSession(), bank=False, milk=False, resend=True, sms=True)
+
+    async def _sms(*a, **k):
+        return SimpleNamespace(status="sent", message_id="m1", error=None)
+
+    async def _a_code(session, mobile):
+        return SimpleNamespace(code=code, loan_amount=5000, farmer_name="Ramesh",
+                               sms_status="sent", issued_at="x", expires_at=None)
+
+    monkeypatch.setattr(le, "send_loan_approval_sms", _sms)
+    monkeypatch.setattr(le, "_eligibility_row_for_phone", _none)
+    monkeypatch.setattr(le, "_generate_unique_code", _code(code))
+    monkeypatch.setattr(le, "_active_code_for_phone", _a_code if scenario == "reshared_resent" else _none)
+    monkeypatch.setattr(le, "_redeemed_code_for_phone", _a_code if scenario == "already_issued" else _none)
+
+    ctx = SimpleNamespace(deps=FarmerContext(query="loan", mobile=phone, farmer_accounts=[]))
+    with caplog.at_level("DEBUG"):
+        asyncio.run(loan_tool.check_loan_eligibility(ctx, confirmed=True))
+
+    lines = [r.getMessage() for r in caplog.records if r.name.startswith("agents.tools.loan")]
+    assert any(f"phone_hash={_phone_log_hash(phone)}" in m and "outcome=" in m for m in lines)
+    for m in lines:
+        assert phone not in m and code not in m, m
