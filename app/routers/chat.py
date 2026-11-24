@@ -6,7 +6,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from starlette.types import Send
 from agents.tools.session_pmkisan import mask_private_numbers, owner_mobile
 from app.auth.jwt_auth import get_chat_user
-from app.channels.chat import whatsapp_languages
+from app.channels.whatsapp_language import whatsapp_languages
 from app.services.chat import stream_chat_messages
 from app.utils import _get_message_history
 from app.models.requests import ChatRequest
