@@ -148,6 +148,36 @@ def test_a_tool_keeps_its_arguments_and_a_readable_result():
     assert tool["parent"] and tool["status"] == "ok" and tool["end_ns"] >= tool["start_ns"]
 
 
+def _search_result(count: int) -> str:
+    """What the document search returns (agents/tools/beckn/network.py), with long texts."""
+    items = []
+    for i in range(1, count + 1):
+        text = f"## Treatment:\nIsolate the animal.\n\n1. Wash the udder\n2. Call the vet\n{'Long advice. ' * 60}"
+        items.append(f"{i}. Document {i}\n{text}" + (f"\n(source: book-{i}.pdf)" if i % 2 else ""))
+    return "\n\n".join(items)
+
+
+def test_a_search_tool_keeps_every_document_even_when_its_result_is_cut():
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    with provider.get_tracer("test").start_as_current_span("running tool") as span:
+        span.set_attribute("gen_ai.tool.name", "search_documents")
+        span.set_attribute("tool_response", _search_result(12))
+    record = debug_view.compact(exporter.get_finished_spans()[0])
+    documents = json.loads(record["attributes"][debug_view.DOCUMENTS_KEY])
+    assert [d["title"] for d in documents] == [f"Document {i}" for i in range(1, 13)]
+    assert [d["source"] for d in documents[:3]] == ["book-1.pdf", None, "book-3.pdf"]
+    assert "(+" in record["attributes"]["tool_response"]  # the text itself was cut
+
+
+def test_result_documents_reads_only_the_numbered_items():
+    assert debug_view.result_documents("No relevant documents were found on the network for this query.") == []
+    assert [d["title"] for d in debug_view.result_documents(_search_result(2))] == ["Document 1", "Document 2"]
+    many = debug_view.result_documents(_search_result(debug_view.MAX_LIST_ITEMS + 5))
+    assert len(many) == debug_view.MAX_LIST_ITEMS
+
+
 def test_model_calls_keep_model_usage_and_output_but_not_the_prompt_or_history():
     spans = run_turn()
     model = debug_view.compact(next(s for name, s in spans.items() if name.startswith("chat ")))

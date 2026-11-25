@@ -10,7 +10,8 @@ Kept small, and kept away from anyone else:
   sign-in), and so are pydantic-ai's tool definitions and bookkeeping.
 - Attributes named like a secret or a user id are dropped, and token-like values are masked.
 - Long values are cut, JSON values pruned so a tool's result stays readable, and a turn keeps
-  at most MAX_SPANS spans.
+  at most MAX_SPANS spans. A search tool's documents are listed in full beside its result
+  (debug.documents), so a cut result still shows every document it returned.
 
 Nothing here can fail a chat turn: capture errors are logged and dropped, and Redis is written
 from a thread of its own, never from the request.
@@ -173,6 +174,31 @@ def _error_of(span: ReadableSpan, attributes: dict) -> Optional[str]:
     return _cut(_mask(span.status.description or "error"), 1000)
 
 
+# A search result as the document tools return it (agents/tools/beckn/network.py): items joined by
+# a blank line, each "<n>. <document name>\n<text>", the text ending "\n(source: <source>)" when known.
+_RESULT_ITEM = re.compile(r"(?:\A|\n\n)(\d+)\. ([^\n]+)")
+_RESULT_SOURCE = re.compile(r"\n\(source: ([^\n)]+)\)\s*\Z")
+DOCUMENTS_KEY = "debug.documents"
+
+
+def result_documents(text: str) -> list[dict]:
+    """The documents a search tool returned, read from its full text before it is cut.
+
+    Only items numbered 1, 2, 3... in order count, so a numbered list inside a document's text
+    is not taken for documents. At most MAX_LIST_ITEMS, names cut to 200 characters.
+    """
+    starts: list[tuple[int, int, str]] = []
+    for match in _RESULT_ITEM.finditer(text):
+        if int(match.group(1)) == len(starts) + 1:
+            starts.append((match.start(), match.end(), match.group(2).strip()))
+    documents = []
+    for index, (_, end, name) in enumerate(starts[:MAX_LIST_ITEMS]):
+        body = text[end : starts[index + 1][0] if index + 1 < len(starts) else len(text)]
+        source = _RESULT_SOURCE.search(body)
+        documents.append({"title": _cut(_mask(name), 200), "source": _cut(_mask(source.group(1).strip()), 200) if source else None})
+    return documents
+
+
 def compact(span: ReadableSpan) -> dict:
     """One span as the debug view keeps it."""
     attributes: dict[str, Any] = {}
@@ -180,11 +206,17 @@ def compact(span: ReadableSpan) -> dict:
         if key in DROPPED_ATTRIBUTES or is_hidden_key(key):
             continue
         attributes[key] = clean_value(value)
+    # A search tool's documents, all of them: its result itself may be cut below.
+    response = (span.attributes or {}).get("tool_response")
+    if isinstance(response, str) and response.startswith("1. "):
+        documents = result_documents(response)
+        if documents:
+            attributes[DOCUMENTS_KEY] = json.dumps(documents, ensure_ascii=False)
     cut = False
     if len(json.dumps(attributes, ensure_ascii=False)) > MAX_SPAN_CHARS:
-        # Largest first, down to 1000 characters each, until the span fits.
+        # Largest first, down to 1000 characters each, until the span fits; the document list stays.
         for key in sorted(attributes, key=lambda k: len(json.dumps(attributes[k], ensure_ascii=False)), reverse=True):
-            if isinstance(attributes[key], str):
+            if isinstance(attributes[key], str) and key != DOCUMENTS_KEY:
                 attributes[key] = _cut(attributes[key], 1000)
                 cut = True
             if len(json.dumps(attributes, ensure_ascii=False)) <= MAX_SPAN_CHARS:
