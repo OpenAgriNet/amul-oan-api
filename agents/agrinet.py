@@ -63,6 +63,7 @@ def get_agrinet_instructions(ctx: RunContext):
         'loan_max_amount': f"{int(settings.loan_max_amount):,}",
         'loan_interest_rate_pct': f"{int(settings.loan_interest_rate_pct)}",
         'network_tools_enabled': True,
+        'interactive_milk': ctx.deps.interactive_milk,
         # Same gate as the tool's prepare hook: most unions (Kaira among them)
         # have no ingested catalog, and a prompt that routes to the hidden tool
         # leaves the model improvising a different scheme answer each turn.

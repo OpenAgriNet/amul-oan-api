@@ -143,6 +143,8 @@ class Turn:
     #: turn so the response can name it (its X-Trace-Id) and a later feedback can
     #: score the turn. None on voice, which keeps its own on the call.
     trace_id: Optional[str] = None
+    interactive_milk: bool = False
+    milk_context: str = ""
 
 
 # ── what a turn emits ───────────────────────────────────────────────────────

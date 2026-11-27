@@ -2,6 +2,7 @@
 Tool for fetching farmer milk collection and deduction details.
 """
 import asyncio
+import json
 from datetime import datetime
 
 from pydantic_ai import RunContext
@@ -18,6 +19,129 @@ from agents.tools.models.milk_collection import FarmerMilkCollectionRequestModel
 from helpers.utils import get_logger
 
 logger = get_logger(__name__)
+
+
+class InteractiveMilk:
+    """Private, per-turn intent and the latest ownership-checked display result."""
+
+    def __init__(self, selected=None, result=None, *, failed=False):
+        self.selected, self.result, self.failed = selected, result, failed
+        self.request = None
+
+    def context(self) -> str:
+        context = dict(selected_account=self.selected, date_reselection_required=self.failed)
+        if self.result:
+            context.update({k: self.result[k] for k in ("status", "account", "period", "summary")})
+        encoded = json.dumps(context, ensure_ascii=False)
+        if len(encoded.encode()) > 4096:
+            # Provider labels can be arbitrarily long; omit them rather than truncate facts.
+            context.pop("selected_account", None)
+            context.pop("account", None)
+            encoded = json.dumps(context, ensure_ascii=False)
+        return encoded
+
+    def stage(self, fromdate, todate) -> str:
+        from app.agui.models import Period
+
+        period = None
+        if not self.failed and fromdate and todate:
+            try:
+                period = Period(fromdate=fromdate, todate=todate).model_dump()
+            except ValueError:
+                pass  # Missing or invalid dates are resolved by the backend picker.
+        intent = dict(period=period)
+        if self.request is not None and self.request != intent:
+            report_tool("error", "one milk workflow per turn")
+            return "A milk lookup is already staged. Do not request another range in this turn."
+        self.request = intent
+        return "Milk workflow requested. The backend will show required account/date controls or the chart. Do not invent records or print tables."
+
+    def read(self, fromdate=None, todate=None, offset=0) -> str:
+        from agents.tools.models.milk_collection import FarmerMilkCollectionResponseModel
+        from app.agui.milk import collection_day, milk_result
+        from app.agui.models import Period
+
+        if self.result is None:
+            report_tool("no_result", "no owned displayed result")
+            return "No currently owned milk result is available in this chat. Request a new lookup if needed."
+        if offset < 0:
+            return "Offset must be nonnegative."
+        data = self.result
+        if fromdate is not None or todate is not None:
+            try:
+                period = Period(fromdate=fromdate, todate=todate).model_dump()
+            except ValueError:
+                return "Supply both dates as a valid ISO range of at most 31 days."
+            if not data["period"]["fromdate"] <= period["fromdate"] <= period["todate"] <= data["period"]["todate"]:
+                return "The displayed result does not cover that range. Request a fresh lookup; do not quote partial totals."
+            rows = dict(milk=[], deduction=[])
+            excluded = 0
+            for source, destination in (("milk", "milk"), ("deductions", "deduction")):
+                for row in data[source]:
+                    day = collection_day(row["date"])
+                    if day is None:
+                        excluded += 1
+                    elif period["fromdate"] <= day <= period["todate"]:
+                        rows[destination].append(row)
+            if excluded:
+                return "Some saved rows have unparseable dates. Reliable totals for this subrange are unavailable; do not quote partial totals."
+            data = milk_result(data["account"], period, FarmerMilkCollectionResponseModel.model_validate(rows))
+        combined = [("milk", row) for row in data["milk"]] + [("deductions", row) for row in data["deductions"]]
+        page = {k: data[k] for k in ("status", "account", "period", "summary", "warnings")}
+        page.update(milk=[], deductions=[], total_rows=len(combined), next_offset=None, complete=True,
+                    total_deductions_rupees=round(sum(row["amount"] or 0 for row in data["deductions"]), 2))
+        for kind, row in combined[offset:offset + 20]:
+            page[kind].append(row)
+            if len(json.dumps(page, ensure_ascii=False).encode()) > 16 * 1024 - 128:
+                page[kind].pop()
+                break
+        taken = len(page["milk"]) + len(page["deductions"])
+        if offset < len(combined) and not taken:
+            return "The displayed record is too large to return safely. No rows or totals were truncated."
+        page["complete"] = offset + taken >= len(combined)
+        page["next_offset"] = None if page["complete"] else offset + taken
+        encoded = json.dumps(page, ensure_ascii=False, allow_nan=False)
+        if len(encoded.encode()) > 16 * 1024:
+            return "The displayed record is too large to return safely. No rows or totals were truncated."
+        return encoded
+
+
+def _interactive_milk_available(deps) -> bool:
+    return deps.interactive_milk and deps.persona == "farmer" and deps.has_farmer_profile() and deps._milk_ui is not None
+
+
+async def prepare_interactive_milk(ctx: RunContext[FarmerContext], tool_def: ToolDefinition) -> ToolDefinition | None:
+    return tool_def if _interactive_milk_available(ctx.deps) else None
+
+
+async def request_milk_records(ctx: RunContext[FarmerContext], fromdate: str | None = None, todate: str | None = None) -> str:
+    """Request the farmer's own milk records/payment as interactive controls and a chart.
+
+    Args:
+        ctx: Trusted farmer and interactive session context.
+        fromdate: Clear user-supplied start date in YYYY-MM-DD, otherwise omit.
+        todate: Clear user-supplied end date in YYYY-MM-DD, otherwise omit.
+    """
+    if not _interactive_milk_available(ctx.deps):
+        report_tool("error", "interactive milk unavailable")
+        return "Interactive milk lookup is unavailable for this turn."
+    return ctx.deps._milk_ui.stage(fromdate, todate)
+
+
+async def read_displayed_milk_records(ctx: RunContext[FarmerContext], fromdate: str | None = None,
+                                     todate: str | None = None, offset: int = 0) -> str:
+    """Read saved milk records to answer a follow-up about the chart already displayed.
+
+    Args:
+        ctx: Trusted farmer and interactive session context.
+        fromdate: Optional start of a subrange within the displayed period, YYYY-MM-DD.
+        todate: Optional end of that subrange, YYYY-MM-DD; supply both dates or neither.
+        offset: Row offset from the previous page's next_offset; defaults to zero.
+    """
+    if not _interactive_milk_available(ctx.deps):
+        report_tool("error", "interactive milk unavailable")
+        return "Interactive milk lookup is unavailable for this turn."
+    return ctx.deps._milk_ui.read(fromdate, todate, offset)
 
 
 async def prepare_get_farmer_milk_collection_details(
@@ -37,6 +161,8 @@ async def prepare_get_farmer_milk_collection_details(
         for cleaned in ((u or "").strip().lower() for u in (ctx.deps.farmer_unions or []))
         if cleaned
     ]
+    if getattr(ctx.deps, "interactive_milk", False):
+        return None
     # The lookup is keyed exclusively by the authenticated mobile in deps. A
     # visible farmer context without that identity is insufficient because the
     # model must never be trusted to supply union/society/farmer identifiers.

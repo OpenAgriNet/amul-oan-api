@@ -26,17 +26,20 @@ def account_label(account) -> str:
                                   f"{account.union_code}/{account.society_code}/{account.farmer_code}") if x)
 
 
+def collection_day(value: str | None) -> str | None:
+    for fmt in ("%Y-%m-%d", "%d-%m-%Y"):
+        try:
+            return datetime.strptime(value or "", fmt).date().isoformat()
+        except ValueError:
+            pass
+    return None
+
+
 def milk_result(account: dict, period: dict, response) -> dict:
     daily = defaultdict(list)
     warnings = set()
     for row in response.milk:
-        day = None
-        for fmt in ("%Y-%m-%d", "%d-%m-%Y"):
-            try:
-                day = datetime.strptime(row.date or "", fmt).date().isoformat()
-                break
-            except ValueError:
-                pass
+        day = collection_day(row.date)
         if day is None:
             warnings.add("unplottable_dates")
         else:

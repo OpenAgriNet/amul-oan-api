@@ -4,6 +4,9 @@ from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 from types import MappingProxyType
 from uuid import uuid4
+from contextlib import nullcontext
+from functools import partial
+import asyncio
 
 from agents.tools.farmer import normalize_phone_to_mobile
 from app.agui.models import MAX_BODY_BYTES, ChatRunRequest
@@ -73,18 +76,28 @@ async def interactive_chat(http_request: Request, background_tasks: BackgroundTa
         from app.turn.types import Turn
 
         trace_id = uuid4().hex
-        turn = Turn(query="Milk records" if request.messages else "Milk UI selection", session_id=request.threadId,
-                    source_lang=props.source_lang, target_lang=props.target_lang, user_id=props.user_id,
-                    authenticated_user=MappingProxyType(dict(user_info)), history=(), history_session_id=request.threadId,
-                    persona=persona, channel=WEB, input_method=_input_method(props.input_method), trace_id=trace_id)
-        telemetry = _ChatTelemetry(turn, pipeline_profile="agui-milk", pipeline_trace=pipeline_trace.begin("agui-milk"))
-        with telemetry.root():
+        telemetry = None
+        if not request.messages:
+            turn = Turn(query="Milk UI selection", session_id=request.threadId,
+                        source_lang=props.source_lang, target_lang=props.target_lang, user_id=props.user_id,
+                        authenticated_user=MappingProxyType(dict(user_info)), history=(), history_session_id=request.threadId,
+                        persona=persona, channel=WEB, input_method=_input_method(props.input_method), trace_id=trace_id)
+            telemetry = _ChatTelemetry(turn, pipeline_profile="agui-milk", pipeline_trace=pipeline_trace.begin("agui-milk"))
+        from app.agui.agent import agent_reply
+
+        with telemetry.root() if telemetry is not None else nullcontext():
             try:
-                response = await store.apply(request, owner, persona, mobile, trace_id)
-                telemetry.record_output(response["text"], "ui")
-                telemetry.record_outcome("error" if response["error"] else "success")
-            except BaseException:
-                telemetry.record_outcome("error")
+                response = await store.apply(request, owner, persona, mobile, trace_id,
+                                             agent_reply=partial(agent_reply, request=request, user_info=user_info,
+                                                                 trace_id=trace_id) if request.messages else None,
+                                             disconnected=http_request.is_disconnected)
+                background_tasks.tasks.extend(response.pop("background_tasks", []))
+                if telemetry is not None:
+                    telemetry.record_output(response["text"], "ui")
+                    telemetry.record_outcome("error" if response["error"] else "success")
+            except BaseException as exc:
+                if telemetry is not None:
+                    telemetry.record_outcome("cancelled" if isinstance(exc, asyncio.CancelledError) else "error")
                 raise
     except UIError as exc:
         headers = {"Cache-Control": "no-store"}
