@@ -24,6 +24,11 @@ from app.services import heat_alert_call, outbound_call
 # Configure observability (Langfuse + pydantic-ai instrumentation) before router
 # imports that pull in agents, tools, and voice/chat pipelines.
 import app.observability  # noqa: F401, E402
+from app import debug_view  # noqa: E402
+
+# The dev UI's Debug panel: on dev and previews that ask for it, chat turns' spans are
+# kept too (app/debug_view.py). A no-op anywhere else.
+debug_view.install()
 
 # Import all routers
 from app.routers import chat, transcribe, suggestions, tts, health, auth, user, telemetry, beckn, webhooks, ui_flags
@@ -162,3 +167,9 @@ if settings.test_cases_route_enabled:
     from app.routers import test_cases
 
     app.include_router(test_cases.router, prefix=settings.api_prefix)
+
+if debug_view.active():
+    # Dev and previews only (DEBUG_VIEW_ENABLED with ENVIRONMENT=development).
+    from app.routers import debug
+
+    app.include_router(debug.router, prefix=settings.api_prefix)
