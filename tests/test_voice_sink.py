@@ -489,6 +489,44 @@ def test_a_call_turn_is_spoken_through_the_voice_sink(monkeypatch):
     assert _Outcomes.seen[-1] == ("outcome", "success")
 
 
+@pytest.mark.parametrize("chunks", [
+    # As prod's answers had them (#612), split across chunks as a stream can.
+    ["Give clean water daily.", "\n\n<|chan", "nel>thought\n<chan", "nel|>"],
+    ["Give clean water daily.", "\n\n<chan", "nel|>"],
+    ["<|channel>thought\n<chan", "nel|>Give clean water daily."],
+])
+def test_thinking_markers_never_reach_the_translator_or_the_history(monkeypatch, chunks):
+    from pydantic_ai.messages import ModelResponse, TextPart
+
+    from tests.test_chat_turn_sequence import _Node
+
+    seen = patch_turn(monkeypatch)
+    saved = ModelResponse(parts=[TextPart(content="".join(chunks))])
+
+    class _Run:
+        ctx = object()
+        result = type("_Result", (), {"new_messages": staticmethod(lambda: [saved])})
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_e):
+            return False
+
+        async def __aiter__(self):
+            yield _Node(chunks)
+
+    monkeypatch.setattr(chat_service.agrinet_agent, "iter", lambda **_kw: _Run())
+    tr = _Translation(monkeypatch, replies=[["ગાયને રોજ પાણી આપો."]])
+
+    emissions = _run(_turn(), _surface())
+
+    assert [text.strip() for text, _, _ in tr.asked] == ["Give clean water daily."]
+    assert emissions == [TextEmission("ગાયને રોજ પાણી આપો.", raw=True)]
+    ((_key, messages),) = seen["history_writes"]
+    assert messages[-1].parts[0].content.strip() == "Give clean water daily."
+
+
 @pytest.mark.parametrize("translated", [
     ["દવા ૫ મિલી આપો."],
     # The full word split across two chunks, as a stream can split it.
