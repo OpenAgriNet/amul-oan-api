@@ -557,21 +557,47 @@ async def get_verified_cattle_listings(
     Returns:
         A count and summary of the matches with numbered listings and seller contacts, one picked listing, or a reason nothing matched.
     """
+    return (await search_verified_cattle_listings(ctx, species, breed, district, village, max_price,
+        min_milk_per_day, milking_status, pregnancy_status, listing_number))["text"]
+
+
+async def search_verified_cattle_listings(
+    ctx: RunContext[FarmerContext],
+    species: str | None = None,
+    breed: str | None = None,
+    district: str | None = None,
+    village: str | None = None,
+    max_price: float | None = None,
+    min_milk_per_day: float | None = None,
+    milking_status: str | None = None,
+    pregnancy_status: str | None = None,
+    listing_number: int | None = None,
+) -> dict:
+    """Structured results from the same matching and formatting used by the legacy tool."""
+    def result(text, *, status="no_result", items=(), match_count=0, elsewhere=0, message=None):
+        return dict(status=status, text=text, listings=list(items), match_count=match_count,
+                    elsewhere_count=elsewhere, fetched_at=snapshot.fetched_at if snapshot else None,
+                    source_total=(snapshot.total_cows + snapshot.total_buffaloes) if snapshot else None,
+                    stale=bool(stale), notice=(f"These listings are about {round(age_hours)} hours old and may have been sold." if stale else None),
+                    message=message,
+                    breeds=sorted({_breed_name(item) for item in snapshot.listings if _breed_name(item) != "breed not given"}) if snapshot else [],
+                    districts=sorted({_district_name(item) for item in snapshot.listings if item.district_name}) if snapshot else [])
+
+    stale = ""
     snapshot = await get_snapshot()
     if snapshot is None:
         report_tool("unavailable", "verified cattle listings unavailable")
-        return _UNAVAILABLE
+        return result(_UNAVAILABLE, status="unavailable")
     fetched = datetime.fromtimestamp(snapshot.fetched_at, _IST)
     as_of = f"Amul Pashudhan data as of {fetched.strftime('%d %B %H:%M')} IST"
     age_hours = snapshot_age_seconds(snapshot) / 3600
-    stale = ""
     if age_hours > 2 * settings.cattle_listings_refresh_seconds / 3600:
         stale = (
             f" Amul Pashudhan could not be reached for an update: these listings are about "
             f"{round(age_hours)} hours old, so tell the farmer some may have been sold."
         )
     if listing_number is not None:
-        return _picked(snapshot, listing_number, as_of) + stale
+        return result(_picked(snapshot, listing_number, as_of) + stale, status="ok", items=[item for item in snapshot.listings if item.number == listing_number])
 
     listings = snapshot.listings
     window = (
@@ -579,17 +605,16 @@ async def get_verified_cattle_listings(
     )
     if not listings:
         report_tool("no_result", "no verified cattle listed")
-        return f"No cows or buffaloes are listed for sale on Amul Pashudhan right now ({window})." + stale
+        return result(f"No cows or buffaloes are listed for sale on Amul Pashudhan right now ({window})." + stale,
+                      message=f"No cows or buffaloes are listed for sale right now ({window}).")
 
     asked: list[str] = []
     checks = []
     requested_species = _species_of(species or "") or _species_of(breed or "")
     if (species or "").strip() and not requested_species and _match_key(species) not in _ANY_SPECIES_WORDS:
         report_tool("no_result", "only cows and buffaloes are listed")
-        return (
-            "Amul Pashudhan lists only cows and buffaloes for sale. Say only that, without "
-            "naming other animals."
-        )
+        return result("Amul Pashudhan lists only cows and buffaloes for sale. Say only that, without "
+            "naming other animals.", message="Amul Pashudhan lists only cows and buffaloes for sale.")
     if requested_species:
         asked.append(requested_species)
         checks.append(("species", lambda item: _species(item) == requested_species))
@@ -597,11 +622,9 @@ async def get_verified_cattle_listings(
         if not any(_breed_matches(item, breed) for item in listings):
             report_tool("no_result", "breed not listed")
             names = _counts(_breed_name(item) for item in listings)
-            return (
-                f'No "{breed}" animals are listed right now ({window}). Breeds listed now: {names}. '
+            return result(f'No "{breed}" animals are listed right now ({window}). Breeds listed now: {names}. '
                 "Tell the farmer and offer these instead; do not present another breed as this one."
-                + stale
-            )
+                + stale, message=f'No "{breed}" animals are listed right now. Breeds listed now: {names}.')
         asked.append(f"breed {breed}")
         checks.append(("breed", lambda item: _breed_matches(item, breed)))
     if max_price is not None:
@@ -635,11 +658,11 @@ async def get_verified_cattle_listings(
         if at_place is None:
             report_tool("no_result", "place has no verified listings")
             nearest = _nearest(place_key, pool, set())
-            return (
+            return result((
                 f'No verified animals are listed in "{place_text}" ({window}). {nearest} '
                 "Tell the farmer honestly and offer these places."
                 + stale
-            ).replace("  ", " ")
+            ).replace("  ", " "), message=f'No verified animals are listed in "{place_text}". {nearest}'.strip())
         at_place, place_label = at_place
         asked.append(f"in {place_label}")
         place_ids = {item.number for item in at_place}
@@ -672,6 +695,7 @@ async def get_verified_cattle_listings(
         matches = pool
         elsewhere = 0
 
+    search_note = "\n".join(lines)
     description = ", ".join(asked) if asked else "any cow or buffalo"
     header = (
         f"Verified animals for sale on Amul Pashudhan ({window}). In all: {len(listings)} "
@@ -696,8 +720,9 @@ async def get_verified_cattle_listings(
             nearest = _nearest(place_key, pool, {_district_key(item.district_name) for item in at_place})
             if nearest:
                 lines.append(nearest)
+        message = "\n".join(lines)
         lines.append("Tell the farmer honestly and offer these options. Do not invent listings.")
-        return "\n".join(lines) + stale
+        return result("\n".join(lines) + stale, message=message)
 
     lines = [header, *lines, f"Matches ({description}): {len(matches)}."]
     if elsewhere:
@@ -724,4 +749,4 @@ async def get_verified_cattle_listings(
         "each seller's name and mobile exactly as shown, without assuming the seller's gender. "
         "If there are many, offer two or three filters from the breakdown."
     )
-    return "\n".join(lines) + stale
+    return result("\n".join(lines) + stale, status="ok", items=shown, match_count=len(matches), elsewhere=elsewhere, message=search_note or None)

@@ -4,6 +4,7 @@ from pydantic_ai import Tool
 
 from agents.tools.telemetry import reporting
 from agents.tools.fodderinfo import FODDER_TOOLS, prepare_fodder_tool
+from agents.tools.listings import request_cattle_listings, request_fodder_listings, prepare_fodder_request, prepare_legacy_fodder
 
 from agents.tools.ai_call import create_ai_call, prepare_create_ai_call, request_ai_booking, prepare_interactive_booking
 from agents.tools.milk_collection import (
@@ -49,12 +50,15 @@ from agents.tools.vistaar_pmkisan import (
 )
 
 TOOLS = [
+    Tool(reporting(request_cattle_listings), prepare=prepare_selector_tool),
+    Tool(reporting(request_fodder_listings), prepare=prepare_fodder_request),
     Tool(reporting(request_mandi_prices), prepare=prepare_selector_tool),
     Tool(reporting(request_scheme_info), prepare=prepare_selector_tool),
     Tool(reporting(request_ai_booking), prepare=prepare_interactive_booking),
     Tool(reporting(request_milk_records), prepare=prepare_interactive_milk),
     Tool(reporting(read_displayed_milk_records), prepare=prepare_interactive_milk),
-    *(Tool(reporting(tool), prepare=prepare_fodder_tool) for tool in FODDER_TOOLS),
+    *(Tool(reporting(tool), prepare=prepare_fodder_tool if tool.__name__ == "lookup_fodder_locations" else prepare_legacy_fodder)
+      for tool in FODDER_TOOLS),
     # # Search Terms
 
     # Search Documents
@@ -129,6 +133,7 @@ TOOLS = [
 
     Tool(
         reporting(get_verified_cattle_listings),
+        prepare=prepare_text_selector_tool,
         takes_ctx=True,
         docstring_format='auto',
         require_parameter_descriptions=True,
