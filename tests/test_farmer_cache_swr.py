@@ -10,10 +10,13 @@ import os
 os.environ.setdefault("OPENAI_API_KEY", "test-key")
 
 import asyncio
+import functools
 import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, patch
+
+import pytest
 
 import agents.tools.farmer_cache as fc
 from agents.tools.farmer import FarmerFetchOutcome
@@ -463,3 +466,128 @@ def test_get_or_fetch_normalizes_equivalent_phone_formats():
     assert cache_get.await_args_list[0].args[0] == "9876543210"
     assert cache_get.await_args_list[1].args[0] == "9876543210"
     assert fc._normalize_cache_phone("+91 9876543210") == "9876543210"
+
+
+# ── why a lookup came back without fresh data (#565) ────────────────────────
+
+
+def _noted(lookup):
+    """Run a lookup as voice's farmer fetch does: (what it returned, why it failed)."""
+    holder = {}
+
+    async def _go():
+        return await fc.lookup_failure_noted(lookup(), holder)
+
+    return asyncio.run(_go()), holder.get("reason")
+
+
+def _locked_redis(acquired=True, held=0):
+    fake_redis = AsyncMock()
+    fake_redis.set = AsyncMock(return_value=True if acquired else None)
+    fake_redis.exists = AsyncMock(return_value=held)
+    fake_redis.delete = AsyncMock()
+    return fake_redis
+
+
+def test_a_cold_fetch_past_the_budget_is_noted_as_a_timeout():
+    async def _slow(_phone):
+        await asyncio.sleep(0.2)
+
+    with patch.object(fc, "get_cached_farmer_data", new=AsyncMock(return_value=None)), \
+         patch.object(fc, "_enqueue_backoff_active", new=AsyncMock(return_value=False)), \
+         patch.object(fc, "enqueue_farmer_refresh", new=AsyncMock()), \
+         patch.object(fc, "refresh_farmer_data", new=_slow), \
+         patch.object(
+             fc, "refresh_farmer_data_bounded",
+             new=functools.partial(fc.refresh_farmer_data_bounded, timeout=0.05),
+         ):
+        assert _noted(lambda: fc.get_or_fetch_farmer_data("9999999999")) == (None, "timeout")
+
+
+def test_a_cold_lookup_in_the_retry_wait_is_noted():
+    with patch.object(fc, "get_cached_farmer_data", new=AsyncMock(return_value=None)), \
+         patch.object(fc, "_enqueue_backoff_active", new=AsyncMock(return_value=True)):
+        assert _noted(lambda: fc.get_or_fetch_farmer_data("9999999999")) == (None, "retry_backoff")
+
+
+@pytest.mark.parametrize("fetch, reason", [
+    (AsyncMock(return_value=(None, FarmerFetchOutcome.ERROR)), "provider_error"),
+    (AsyncMock(side_effect=RuntimeError("upstream broke")), "exception"),
+], ids=["provider_error", "exception"])
+def test_a_refresh_that_fails_is_noted(fetch, reason):
+    with patch.object(fc, "redis_client", _locked_redis()), \
+         patch.object(fc, "fetch_farmer_info_with_outcome", new=fetch), \
+         patch.object(fc, "get_cached_farmer_data", new=AsyncMock(return_value=None)), \
+         patch.object(fc, "_record_refresh_failure", new=AsyncMock()):
+        assert _noted(lambda: fc.refresh_farmer_data("9999999999")) == (None, reason)
+
+
+def test_a_refresh_held_by_another_past_the_wait_is_noted():
+    with patch.object(fc, "FARMER_COLD_FETCH_TIMEOUT", 0.2), \
+         patch.object(fc, "redis_client", _locked_redis(acquired=False, held=1)), \
+         patch.object(fc, "get_cached_farmer_data", new=AsyncMock(return_value=None)), \
+         patch.object(fc, "enqueue_farmer_refresh", new=AsyncMock()):
+        assert _noted(lambda: fc.refresh_farmer_data("9999999999")) == (None, "refresh_in_flight")
+
+
+def test_voice_waiting_on_another_refresh_is_noted_as_that_not_a_timeout():
+    """Voice's bounded fetch has the same budget as the wait for the lock, so
+    its own timeout fires first; the reason is still the refresh it waited on."""
+    fake_redis = _locked_redis(acquired=False, held=1)
+
+    async def _slow_set(*_a, **_kw):
+        await asyncio.sleep(0.03)  # the lock's round trip
+
+    fake_redis.set = AsyncMock(side_effect=_slow_set)
+    with patch.object(fc, "FARMER_COLD_FETCH_TIMEOUT", 0.2),          patch.object(fc, "redis_client", fake_redis),          patch.object(fc, "get_cached_farmer_data", new=AsyncMock(return_value=None)),          patch.object(fc, "enqueue_farmer_refresh", new=AsyncMock()):
+        assert _noted(lambda: fc.refresh_farmer_data_bounded("9999999999", timeout=0.2)) == (None, "refresh_in_flight")
+
+
+def test_another_refresh_that_ends_without_a_record_is_noted():
+    with patch.object(fc, "redis_client", _locked_redis(acquired=False, held=0)),          patch.object(fc, "get_cached_farmer_data", new=AsyncMock(return_value=None)):
+        assert _noted(lambda: fc.refresh_farmer_data("9999999999")) == (None, "refresh_in_flight")
+
+
+def test_a_record_that_is_not_authoritative_is_noted():
+    with patch.object(fc, "get_cached_farmer_data", new=AsyncMock(return_value=_Env("unknown", 0))), \
+         patch.object(fc, "enqueue_farmer_refresh", new=AsyncMock()):
+        assert _noted(lambda: fc.get_or_fetch_farmer_data("9999999999")) == (None, "non_authoritative")
+
+
+def test_a_lookup_that_finds_the_farmer_notes_nothing():
+    fresh = _Env("found", 1)
+    with patch.object(fc, "get_cached_farmer_data", new=AsyncMock(return_value=fresh)):
+        assert _noted(lambda: fc.get_or_fetch_farmer_data("9999999999")) == (fresh, None)
+
+
+def test_the_first_reason_stays_when_the_fetch_fails_after_the_budget():
+    """The fetch that ran out keeps going; its later failure is not why the turn had no data."""
+    holder = {}
+
+    async def _fails_late(_phone):
+        await asyncio.sleep(0.1)
+        raise RuntimeError("upstream broke")
+
+    async def _turn_then_wait():
+        result = await fc.lookup_failure_noted(fc.refresh_farmer_data_bounded("111", timeout=0.05), holder)
+        await asyncio.sleep(0.3)
+        return result
+
+    with patch.object(fc, "redis_client", _locked_redis()), \
+         patch.object(fc, "fetch_farmer_info_with_outcome", new=_fails_late), \
+         patch.object(fc, "_record_refresh_failure", new=AsyncMock()) as failed, \
+         patch.object(fc, "enqueue_farmer_refresh", new=AsyncMock()):
+        assert asyncio.run(_turn_then_wait()) is None
+    failed.assert_awaited_once()
+    assert holder == {"reason": "timeout"}
+
+
+def test_a_lookup_without_a_holder_records_nothing():
+    """Chat and the other callers do not ask why; the holder ends with the voice lookup."""
+    async def _go():
+        await fc.lookup_failure_noted(fc.get_or_fetch_farmer_data("9999999999"), {})
+        return await fc.get_or_fetch_farmer_data("9999999999"), fc._lookup_failure.get()
+
+    with patch.object(fc, "get_cached_farmer_data", new=AsyncMock(return_value=None)), \
+         patch.object(fc, "_enqueue_backoff_active", new=AsyncMock(return_value=True)):
+        assert asyncio.run(_go()) == (None, None)
