@@ -24,7 +24,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-from functools import partial
+from functools import lru_cache, partial
 from pathlib import Path
 from typing import Optional, Sequence, Union
 
@@ -183,42 +183,113 @@ def _canonical_history_user_text(kind: str, fallback: str = "") -> str:
 _SPECIES_YOUNG_HINT_STEMS = {"camel calf": "ઊંટ", "goat kid": "બકર", "lamb": "ઘેટ"}
 
 
+# Glossary terms are matched word by word (#610). A fuzzy score over the whole
+# message matched words that only look alike, and the prompt then made the
+# translator use that term's English: "દૂધની અંદર લોહી આવે છે" (blood comes in the
+# milk) scored 82 against "લોહી જરે છે" and was translated "BLOOD IN URINE";
+# સાયડામાં (in the shade) became diarrhoea through ઝાડા. A word may take a case
+# ending, and a term's last vowel may change only as its noun declines (આફરો ->
+# આફરા), so પાડો (a male buffalo calf) does not match પાડી or પાડવા.
+_GU_WORD_RE = re.compile(r"[\u0a80-\u0aff]+|[A-Za-z]+")
+# Long and short ી/િ and ૂ/ુ are one vowel here, as speech-to-text writes either
+# (બિજદાન for બીજદાન): words, terms and the endings below are in that form.
+_GU_VOWEL_LENGTH = str.maketrans({"ી": "િ", "ૂ": "ુ", "ઈ": "ઇ", "ઊ": "ઉ"})
+_GU_CASE_ENDING = "(?:ને|નો|નિ|નું|ના|નાં|થિ|માં|મા|માંથિ|પર)?"
+_GU_FINAL_VOWELS = ("ું", "ો", "િ", "ા", "ે", "ુ", "ૈ", "ૌ")
+_GU_DECLINED = {"ો": ("ો", "ા"), "ું": ("ું", "ુ", "ા", "ાં", "ો")}
+# A vowel sign speech-to-text doubles (વિિયાણ) is one.
+_GU_DOUBLED_SIGN_RE = re.compile(r"([\u0a81-\u0a83\u0abe-\u0acc])\1+")
+# Speech-to-text's spellings of વિયાણ (calving) in prod voice, 22 Oct-18 Nov, put
+# back in the caller's words before they are matched. Input only: the text the
+# translator gets is unchanged. વિયાવાની (about to calve) stays as it is.
+_GU_CALLER_SPELLINGS = (("વયાણ", "વિયાણ"), ("વ્યાણ", "વિયાણ"), ("બિયાણ", "વિયાણ"), ("વિહાણ", "વિયાણ"))
+
+
+def _gu_words(text: str) -> list[str]:
+    text = text.replace("\u200c", "").replace("\u200d", "").lower().translate(_GU_VOWEL_LENGTH)
+    return _GU_WORD_RE.findall(_GU_DOUBLED_SIGN_RE.sub(r"\1", text))
+
+
+def _caller_spelling(word: str) -> str:
+    for heard, said in _GU_CALLER_SPELLINGS:
+        if word.startswith(heard):
+            return said + word[len(heard):]
+    return word
+
+
+@lru_cache(maxsize=None)
+def _gu_word_rule(term: str) -> tuple[str, Optional[re.Pattern]]:
+    """The stem a word matching ``term`` starts with, and the pattern it must
+    match: ``term`` with a case ending, or with its last vowel declined. A Latin
+    word matches only itself."""
+    if not ("\u0a80" <= term[:1] <= "\u0aff"):
+        return term, None
+    ending = next((v for v in _GU_FINAL_VOWELS if term.endswith(v) and len(term) > len(v) + 1), None)
+    if ending is None:
+        # A short term takes a case ending only: જર (placenta) is not જરે (oozes).
+        stem, endings = term, (r"[ાિુેૈોૌ]?" if len(term) > 2 else "")
+    else:
+        stem = term[: -len(ending)]
+        endings = "(?:" + "|".join(map(re.escape, _GU_DECLINED.get(ending, (ending,)))) + ")"
+    return stem, re.compile(re.escape(stem) + endings + _GU_CASE_ENDING)
+
+
+def _gu_word_matches(word: str, term: str) -> bool:
+    if word == term:
+        return True
+    pattern = _gu_word_rule(term)[1]
+    return pattern is not None and pattern.fullmatch(word) is not None
+
+
+def _glossary_variants(field: str) -> list[tuple[str, ...]]:
+    """The words of each spelling a glossary field gives: "ગેસ આફરો,ફૂલી જવું" and
+    "કાળીયો તાવ (એન્થ્રેક્સ)" hold two each."""
+    parts = re.split(r"[,/;|()]", field or "")
+    return [tuple(words) for words in (_gu_words(p) for p in parts) if words]
+
+
+@lru_cache(maxsize=1)
+def _glossary_index() -> dict:
+    """Each glossary spelling by the stem of its first word: {stem: [(row number,
+    row, words)]}, so a message is checked only against spellings it can match."""
+    index: dict = {}
+    for order, tp in enumerate(TERM_PAIRS):
+        for variant in _glossary_variants(tp.gu) + _glossary_variants(tp.transliteration):
+            index.setdefault(_gu_word_rule(variant[0])[0], []).append((order, tp, variant))
+    return index
+
+
 def _get_glossary_hints_for_gu_query(text: str, max_results: int = 7) -> str:
-    """Fuzzy-match Gujarati input against glossary gu/transliteration fields.
+    """Glossary terms whose words are in the Gujarati input (or their
+    transliteration in its Latin words).
 
     Returns a compact hint string like:
       આફરો = Bloat (rumen tympany)
       આંચળ = Udder / Teat
     """
-    from rapidfuzz import fuzz as _fuzz
-
     if not text or not text.strip():
         return ""
 
-    text_lower = text.lower().strip()
-    scored: list[tuple[str, str, float]] = []
+    words = [_caller_spelling(word) for word in _gu_words(text)]
+    index = _glossary_index()
+    # Row number -> (row, word count of its longest spelling found).
+    found: dict[int, tuple] = {}
+    for i, word in enumerate(words):
+        for end in range(1, len(word) + 1):
+            for order, tp, variant in index.get(word[:end], ()):
+                k = len(variant)
+                if k > found.get(order, (None, 0))[1] and i + k <= len(words) \
+                        and all(_gu_word_matches(words[i + j], variant[j]) for j in range(k)):
+                    found[order] = (tp, k)
 
-    for tp in TERM_PAIRS:
+    scored: list[tuple[str, str, float]] = []
+    for order in sorted(found):
+        tp, k = found[order]
         stem = _SPECIES_YOUNG_HINT_STEMS.get((tp.en or "").strip().lower())
         if stem and stem not in text:
             continue
-        scores: list[float] = []
-        gu_lower = (tp.gu or "").lower().strip()
-        translit_lower = (tp.transliteration or "").lower().strip()
-
-        # Check substring containment first (fast path), ignoring empty fields.
-        if gu_lower:
-            scores.append(100.0 if gu_lower in text_lower else _fuzz.partial_ratio(gu_lower, text_lower))
-        if translit_lower:
-            scores.append(
-                100.0 if translit_lower in text_lower else _fuzz.partial_ratio(translit_lower, text_lower)
-            )
-        if not scores:
-            continue
-        best = max(scores)
-
-        if best >= 75:
-            scored.append((tp.gu, tp.en, best))
+        # A longer term found is the more specific hint.
+        scored.append((tp.gu, tp.en, float(k)))
 
     if not scored:
         return ""

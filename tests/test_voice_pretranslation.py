@@ -256,11 +256,43 @@ def test_gujarati_glossary_hints_include_short_buffalo_variant():
 
 
 @pytest.mark.parametrize("query, expected", [
-    ("મારી ગાય માટે બીજ દાન બુક કરાવવું છે", "Insemination"),
+    # Split in two words, it is the glossary's own "બીજ દાન" row (#610: terms match by word).
+    ("મારી ગાય માટે બીજ દાન બુક કરાવવું છે", "insemination / fertilization"),
     ("મારી ગાયને બીજદાન કરાવવાનું છે", "Insemination"),
     ("કૃત્રિમ બીજદાન બુક કરવું છે", "insemination"),
 ])
 def test_glossary_hints_surface_insemination_terms(query, expected):
+    assert expected in vp._get_glossary_hints_for_gu_query(query, max_results=20)
+
+
+@pytest.mark.parametrize("query, wrong", [
+    # Report 169: blood in the milk was translated "BLOOD IN URINE".
+    ("મારે ગાય વયાણી છે દૂધ ની અંદર લોહી આવે છે", "BLOOD IN URINE"),
+    # #434 item 7: shade was read as diarrhoea.
+    ("ભેંસને સાયડામાં બાંધવી", "Diarrhoea"),
+    # Dropping (પાડવા) is not a buffalo bull, nor જરે (oozes) the placenta, nor
+    # પાડી (female) પાડો (male).
+    ("મારી ગાય વિહની છે હવે એને મેલસા પાડવા માટે શું કરવું", "Buffalo Bull"),
+    ("ગાયને પેશાબમાં લોહી જરે છે", "placenta"),
+    ("અમારે પાડી છે", "Buffalo Bull"),
+    # About to calve is not calving: report 128 heard it as calved.
+    ("ગાય વિયાવાની છે", "Calving"),
+])
+def test_glossary_hints_need_the_terms_words_not_lookalikes(query, wrong):
+    """#610: a fuzzy score over the whole message hinted words that only look
+    alike, and the translator used their English."""
+    assert wrong not in vp._get_glossary_hints_for_gu_query(query, max_results=20)
+
+
+@pytest.mark.parametrize("query, expected", [
+    ("ગાયને પેશાબમાં લોહી જરે છે", "BLOOD IN URINE"),
+    ("ભેંસને આફરાથી પેટ ફૂલી ગયું છે", "Bloat"),
+    ("ગામમાં બિજદાન કરાવું છે", "Insemination"),
+    # Speech-to-text's spelling of વિયાણ, and a vowel sign it doubled.
+    ("મારે ગાય બિયાણી છે દૂધની અંદર લોહી આવે છે", "Calving"),
+    ("ગાય વિિયાણા પછી ખાતી નથી", "Calving"),
+])
+def test_glossary_hints_take_case_endings_declension_and_speech_to_text_spellings(query, expected):
     assert expected in vp._get_glossary_hints_for_gu_query(query, max_results=20)
 
 
