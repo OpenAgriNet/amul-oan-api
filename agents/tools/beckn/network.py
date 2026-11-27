@@ -169,7 +169,7 @@ async def network_search_documents(query: str, top_k: int = 12) -> str:
     return "\n\n".join(lines)
 
 
-async def network_union_schemes(query: str, union: Optional[str] = None) -> str:
+async def discover_union_schemes(query: str, union: Optional[str] = None) -> tuple[list[dict], list[str]]:
     """Scheme discovery via the network — Amul union schemes (schemes:amul-union)
     AND Bharat Vistaar central schemes (via the configured Vistaar leg), merged so the farmer
     sees both in one answer.
@@ -229,34 +229,20 @@ async def network_union_schemes(query: str, union: Optional[str] = None) -> str:
     union_failed = _leg_failed(SCHEMES_LEG)
     vistaar_failed = _leg_failed(VISTAAR_LEG)
 
-    union_items = _items(results.get(SCHEMES_LEG))
-    if union:
-        u = union.strip().lower()
-        union_items = [it for it in union_items if _tag_map(it).get("union", "").lower() == u]
-    vistaar_items = _items(results.get(VISTAAR_LEG))
-
-    out: list[dict] = []
-    for it in union_items:
-        d = it.get("descriptor", {})
-        tags = _tag_map(it)
-        out.append({
-            "scheme_title": d.get("name"),
-            "description": d.get("long_desc") or d.get("short_desc"),
-            "union": tags.get("union"),
-            "category": tags.get("category"),
-            "source": tags.get("source"),
-            "source_network": "amul-union",
-        })
-    for it in vistaar_items:
-        d = it.get("descriptor", {})
-        tags = _tag_map(it)
-        out.append({
-            "scheme_title": d.get("name"),
-            "description": d.get("long_desc") or d.get("short_desc"),
-            "category": tags.get("category"),
-            "source": tags.get("source"),
-            "source_network": "bharat-vistaar",
-        })
+    out = []
+    for leg, source in ((SCHEMES_LEG, "amul-union"), (VISTAAR_LEG, "bharat-vistaar")):
+        for provider in _providers(results.get(leg)):
+            for item in provider.get("items", []):
+                tags, descriptor = _tag_map(item), item.get("descriptor", {})
+                if leg == SCHEMES_LEG and union and tags.get("union", "").lower() != union.strip().lower():
+                    continue
+                record = dict(scheme_title=descriptor.get("name"),
+                    description=descriptor.get("long_desc") or descriptor.get("short_desc"),
+                    category=tags.get("category"), source=tags.get("source"), source_network=source,
+                    provider_id=provider.get("id"), item_id=item.get("id"))
+                if leg == SCHEMES_LEG:
+                    record["union"] = tags.get("union")
+                out.append(record)
     # A leg that FAILED must never be reported as a leg that found nothing.
     # These two sentences are the whole point of reading `errors`.
     unavailable = [
@@ -267,6 +253,13 @@ async def network_union_schemes(query: str, union: Optional[str] = None) -> str:
         )
         if failed
     ]
+    return out, unavailable
+
+
+async def network_union_schemes(query: str, union: Optional[str] = None) -> str:
+    """Legacy text view of the structured union/central discovery result."""
+    out, unavailable = await discover_union_schemes(query, union)
+    out = [{k: v for k, v in item.items() if k not in ("provider_id", "item_id")} for item in out]
     if not out:
         if unavailable:
             report_tool("unavailable", "scheme legs failed: " + " and ".join(unavailable))

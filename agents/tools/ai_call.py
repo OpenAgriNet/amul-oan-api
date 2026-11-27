@@ -45,6 +45,9 @@ async def request_ai_booking(ctx: RunContext[FarmerContext], species: AISpecies 
     """
     if not _interactive_booking_available(ctx.deps) or not await ctx.deps.ensure_in_scope():
         return "Interactive AI booking is unavailable for this turn."
+    selector = getattr(ctx.deps, "_selector_ui", None)
+    if selector is not None and selector.request is not None:
+        return "A selector workflow is already staged. Request one workflow per turn."
     if ctx.deps._milk_ui is not None and ctx.deps._milk_ui.request is not None:
         return "A milk lookup is already staged. Request one workflow per turn."
     intent = {"species": species.value if species else None}

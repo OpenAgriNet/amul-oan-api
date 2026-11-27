@@ -13,9 +13,10 @@ Endpoint is overridable via VISTAAR_BAP_URL (default: the Vistaar sandbox).
 Advisory (ICAR/NPSS) is NOT here — on BV that's document search, not Beckn.
 """
 import uuid
+import time
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Literal, Optional
 
 import httpx
 from pydantic_ai import RunContext
@@ -45,6 +46,72 @@ from app.config import settings
 from helpers.utils import get_logger
 
 logger = get_logger(__name__)
+
+
+class InteractiveSelectors:
+    """Private request staged by the accepted agent attempt; no provider calls."""
+
+    def __init__(self, location=None):
+        self.request = None
+        self.location = location or {}
+
+    def stage(self, deps, intent):
+        if any(getattr(deps, name, None) is not None and getattr(deps, name).request is not None
+               for name in ("_milk_ui", "_booking_ui")):
+            return "Another workflow is already staged. Request one workflow per turn."
+        if self.request is not None and self.request != intent:
+            return "A selector workflow is already staged. Do not replace it in this turn."
+        self.request = intent
+        return "Workflow requested. The backend will show any required choices and the source results. Do not invent results or repeat the lookup."
+
+
+def _selectors_available(deps):
+    return getattr(deps, "_selector_ui", None) is not None and deps.persona == "farmer"
+
+
+async def prepare_selector_tool(ctx, tool_def):
+    return tool_def if _selectors_available(ctx.deps) else None
+
+
+async def prepare_text_selector_tool(ctx, tool_def):
+    return tool_def if getattr(ctx.deps, "_selector_ui", None) is None else None
+
+
+async def request_mandi_prices(ctx: RunContext[FarmerContext], commodity_name: str | None = None,
+                              location: str | None = None, price_date: str | None = None,
+                              price_date_to: str | None = None,
+                              choose: Literal["location"] | None = None) -> str:
+    """Request mandi prices using the existing English commodity name and API.
+
+    Args:
+        ctx: Authenticated interactive context.
+        commodity_name: English Agmarknet name, as in the existing mandi tool. Ask the farmer if unclear.
+        location: Place explicitly named by the farmer; omit to use known context.
+        price_date: Start date using existing mandi date formats, if supplied.
+        price_date_to: End date using existing mandi date formats, if supplied.
+        choose: Reopen district selection when the farmer asks to change the search area.
+    """
+    if not _selectors_available(ctx.deps):
+        return "Interactive mandi lookup is unavailable for this turn."
+    if not (commodity_name or "").strip() and choose != "location":
+        return "Ask the farmer which commodity they want prices for before requesting the lookup."
+    return ctx.deps._selector_ui.stage(ctx.deps, dict(kind="mandi", commodity=commodity_name,
+        location=location, price_date=price_date, price_date_to=price_date_to, choose=choose))
+
+
+async def request_scheme_info(ctx: RunContext[FarmerContext], query: str | None = None,
+                              source: Literal["union", "central", "all"] | None = None) -> str:
+    """Request scheme details or source-labelled union/central scheme choices.
+
+    Args:
+        ctx: Authenticated interactive context.
+        query: Scheme named in the translated question; omit to browse available schemes.
+        source: Union or central when explicitly requested; all for a mixed request.
+    """
+    if not _selectors_available(ctx.deps):
+        return "Interactive scheme lookup is unavailable for this turn."
+    return ctx.deps._selector_ui.stage(ctx.deps, dict(kind="schemes", query=query, source=source))
+
 
 VISTAAR_BAP_URL = settings.vistaar_bap_url.rstrip("/")
 # Timeout: ONE knob, shared with the rest of the Beckn network tools
@@ -235,6 +302,7 @@ async def _resolve_search_location(
     """
     deps = _deps(ctx)
     session_id = getattr(deps, "session_id", None)
+    ui = getattr(deps, "_selector_ui", None)
 
     asked = (location or "").strip()
     if asked:
@@ -243,11 +311,17 @@ async def _resolve_search_location(
             logger.info("vistaar location unresolved asked=%r", asked)
             return None, unknown_place_message(asked)
         # Sticky: the next turn is usually about the same place ("and cotton?").
-        await set_session_district_key(session_id, resolved.key)
+        if ui is not None:
+            ui.location = dict(key=resolved.key, expires=time.time() + settings.mandi_location_ttl_s)
+        else:
+            await set_session_district_key(session_id, resolved.key)
         return SearchLocation(resolved, "explicit"), None
 
-    session_key = await get_session_district_key(session_id)
-    if session_key:
+    if ui is not None:
+        session_key = ui.location.get("key") if ui.location.get("expires", 0) > time.time() else None
+    else:
+        session_key = await get_session_district_key(session_id)
+    if session_key in DISTRICTS:
         return SearchLocation(DISTRICTS[session_key], "session"), None
 
     district = deps.get_farmer_district() if deps is not None else None
@@ -508,6 +582,30 @@ async def get_vistaar_weather(
     return body + (_assumed_location_note(where) if where.assumed else "")
 
 
+async def fetch_mandi_items(commodity_name: str, where: SearchLocation, from_date: str, to_date: str) -> tuple[list[dict], Candidate]:
+    """Structured mandi lookup shared by text and interactive chat."""
+    def build(candidate: Candidate) -> dict:
+        return {
+            "category": {"descriptor": {"code": "price-discovery"}},
+            "item": {"descriptor": {"name": commodity_name}},
+            # `descriptor.name` here is DECORATIVE — measured: name=Junagadh with
+            # Anand's gps returns nothing, name=Anand with Junagadh's gps returns
+            # Junagadh APMC. The gps is what selects the market. It is sent
+            # anyway because it costs nothing and reads correctly in a trace.
+            "fulfillment": {"end": {"location": {
+                "descriptor": {"name": candidate.town},
+                "gps": f"{candidate.lat},{candidate.lon}",
+            }}},
+            # Flat tags — the BPP ignores the Beckn tag-group form.
+            "tags": [
+                {"code": "from_date", "value": from_date},
+                {"code": "to_date", "value": to_date},
+            ],
+        }
+
+    return await _search_candidates(build, where)
+
+
 async def get_vistaar_mandi_prices(
     ctx: RunContext[FarmerContext],
     commodity_name: str,
@@ -552,27 +650,8 @@ async def get_vistaar_mandi_prices(
     assert where is not None
     from_date, to_date = _resolve_date_range(price_date, price_date_to)
 
-    def build(candidate: Candidate) -> dict:
-        return {
-            "category": {"descriptor": {"code": "price-discovery"}},
-            "item": {"descriptor": {"name": commodity_name}},
-            # `descriptor.name` here is DECORATIVE — measured: name=Junagadh with
-            # Anand's gps returns nothing, name=Anand with Junagadh's gps returns
-            # Junagadh APMC. The gps is what selects the market. It is sent
-            # anyway because it costs nothing and reads correctly in a trace.
-            "fulfillment": {"end": {"location": {
-                "descriptor": {"name": candidate.town},
-                "gps": f"{candidate.lat},{candidate.lon}",
-            }}},
-            # Flat tags — the BPP ignores the Beckn tag-group form.
-            "tags": [
-                {"code": "from_date", "value": from_date},
-                {"code": "to_date", "value": to_date},
-            ],
-        }
-
     try:
-        items, used = await _search_candidates(build, where)
+        items, used = await fetch_mandi_items(commodity_name, where, from_date, to_date)
     except VistaarLegUnavailable:
         # A failed leg is NOT an empty market. Never fall through to the
         # "No mandi prices were found…" line below on infrastructure failure.
@@ -602,6 +681,15 @@ async def get_vistaar_mandi_prices(
         + _format_mandi_items(items)
     )
     return body + (_assumed_location_note(where) if where.assumed else "")
+
+
+async def fetch_scheme_items(code: str) -> list[dict]:
+    """Structured central-scheme lookup using an already resolved code."""
+    intent = {
+        "category": {"descriptor": {"code": "schemes-agri"}},
+        "item": {"descriptor": {"name": code}},
+    }
+    return await _vistaar_search(intent)
 
 
 async def get_vistaar_scheme_info(scheme_code: SchemeCode) -> str:
@@ -640,12 +728,8 @@ async def get_vistaar_scheme_info(scheme_code: SchemeCode) -> str:
             "I could not match that to a central government scheme. I can look up "
             f"schemes such as {scheme_names_sentence()}."
         )
-    intent = {
-        "category": {"descriptor": {"code": "schemes-agri"}},
-        "item": {"descriptor": {"name": code}},
-    }
     try:
-        items = await _vistaar_search(intent)
+        items = await fetch_scheme_items(code)
     except VistaarLegUnavailable:
         logger.warning("vistaar scheme leg unavailable code=%s", code)
         report_tool("unavailable", "Bharat Vistaar scheme leg failed")

@@ -24,6 +24,7 @@ from app.agui.milk import account_identity, account_label, labels, milk_result
 from app.agui.models import ErrorDetail, ErrorResponse, ChatRunRequest, UIState
 from app.agui.booking import BookingProvider, advance_booking, complete_booking
 from app.agui.session import storage_session_id
+from app.agui.selectors import SelectorProvider, advance_selectors, PURPOSES as SELECTOR_PURPOSES
 
 MAX_COMPONENTS = 50
 
@@ -81,12 +82,13 @@ def reconcile_accounts(record, accounts):
     elif selected:
         selected["label"] = options[selected["option_id"]]["label"]
     for item in ui["components"]:
-        if item["status"] == "pending" and (removed or not options):
+        if item["purpose"].startswith("milk_") and item["status"] == "pending" and (removed or not options):
             item.update(status="expired", revision=item["revision"] + 1)
     return by_identity, removed
 
 
-async def advance(record, request, mobile, provider, trace_id=None, *, milk_intent=None, booking_intent=None, booking_provider=None, accounts=None):
+async def advance(record, request, mobile, provider, trace_id=None, *, milk_intent=None, booking_intent=None,
+                  booking_provider=None, selector_intent=None, selector_provider=None, accounts=None):
     """Apply a trusted intent or a validated control, never model-written UI."""
     record = copy.deepcopy(record)
     digest = check_run(record, request)
@@ -103,7 +105,7 @@ async def advance(record, request, mobile, provider, trace_id=None, *, milk_inte
         return record, dict(text=text, message_id=message_id, trace_id=trace_id,
                             state=copy.deepcopy(ui), error=failure)
 
-    if request.messages and milk_intent is None and booking_intent is None:
+    if request.messages and milk_intent is None and booking_intent is None and selector_intent is None:
         return finish("")  # Ordinary agent replies do not consume component capacity.
 
     def expire():
@@ -126,6 +128,13 @@ async def advance(record, request, mobile, provider, trace_id=None, *, milk_inte
         workflow_id = target["workflow_id"]
     if props.command and props.command.state_revision != ui["state_revision"]:
         raise UIError(409, "STALE_STATE", "The chat changed. Use its latest state revision.")
+
+    if selector_intent is not None or (target and target["purpose"] in SELECTOR_PURPOSES):
+        text, failure, translate = await advance_selectors(record, request, mobile, selector_provider or SelectorProvider(),
+            message_id, intent=selector_intent, target=target)
+        updated, response = finish(text)
+        response["selector_translate"] = translate
+        return updated, response
 
     if (booking_intent is not None or (target and target["purpose"].startswith("ai_"))
             or (props.command and props.command.kind != "change_milk_account")):
@@ -221,10 +230,11 @@ async def advance(record, request, mobile, provider, trace_id=None, *, milk_inte
 
 
 class MilkStore:
-    def __init__(self, redis, prefix, ttl, provider=None, booking_provider=None):
+    def __init__(self, redis, prefix, ttl, provider=None, booking_provider=None, selector_provider=None):
         self.redis, self.prefix, self.ttl = redis, prefix, ttl
         self.provider = provider or MilkProvider()
         self.booking_provider = booking_provider or BookingProvider()
+        self.selector_provider = selector_provider or SelectorProvider()
 
     def key(self, owner, persona, thread):
         digest = hashlib.sha256(json.dumps([owner, persona, thread]).encode()).hexdigest()
@@ -236,7 +246,7 @@ class MilkStore:
         except Exception:
             raise UIError(503, "STATE_UNAVAILABLE", "Chat state is temporarily unavailable.", retryable=True) from None
 
-    async def apply(self, request, owner, persona, mobile, trace_id=None, *, agent_reply=None, disconnected=None):
+    async def apply(self, request, owner, persona, mobile, trace_id=None, *, agent_reply=None, disconnected=None, render_selector=None):
         key = self.key(owner, persona, request.threadId)
         lock = self.redis.lock(key + ":lock", timeout=120, blocking=False)
         acquired = False
@@ -314,7 +324,13 @@ class MilkStore:
                     updated, response = await advance(record, request, mobile, self.provider, trace_id,
                         milk_intent=reply["intent"] if reply else None,
                         booking_intent=reply.get("booking_intent") if reply else None,
-                        booking_provider=self.booking_provider, accounts=accounts)
+                        booking_provider=self.booking_provider, accounts=accounts,
+                        selector_intent=reply.get("selector_intent") if reply else None,
+                        selector_provider=self.selector_provider)
+                    if response.pop("selector_translate", False) and render_selector is not None:
+                        response["text"] = await render_selector(response["text"])
+                        if response["error"]:
+                            response["error"]["error"]["message"] = response["text"]
                     if disconnected is not None and await disconnected():
                         raise asyncio.CancelledError()
                     send = response.pop("booking_send", False)

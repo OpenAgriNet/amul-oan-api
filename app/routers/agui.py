@@ -83,14 +83,15 @@ async def interactive_chat(http_request: Request, background_tasks: BackgroundTa
                         authenticated_user=MappingProxyType(dict(user_info)), history=(), history_session_id=request.threadId,
                         persona=persona, channel=WEB, input_method=_input_method(props.input_method), trace_id=trace_id)
             telemetry = _ChatTelemetry(turn, pipeline_profile="agui-milk", pipeline_trace=pipeline_trace.begin("agui-milk"))
-        from app.agui.agent import agent_reply
+        from app.agui.agent import agent_reply, translate_selector_text
 
         with telemetry.root() if telemetry is not None else nullcontext():
             try:
                 response = await store.apply(request, owner, persona, mobile, trace_id,
                                              agent_reply=partial(agent_reply, request=request, user_info=user_info,
                                                                  trace_id=trace_id) if request.messages else None,
-                                             disconnected=http_request.is_disconnected)
+                                             disconnected=http_request.is_disconnected,
+                                             render_selector=partial(translate_selector_text, language=props.target_lang, thread=request.threadId))
                 background_tasks.tasks.extend(response.pop("background_tasks", []))
                 if telemetry is not None:
                     telemetry.record_output(response["text"], "ui")

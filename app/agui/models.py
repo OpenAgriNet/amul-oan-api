@@ -134,6 +134,7 @@ class Option(WireModel):
     id: str
     label: str
     description: str | None
+    search_terms: list[str] = Field(default_factory=list)
 
 
 class Account(WireModel):
@@ -191,7 +192,8 @@ class ComponentBase(WireModel):
 
 class ChoiceComponent(ComponentBase):
     kind: Literal["choice"]
-    purpose: Literal["milk_account", "ai_technician", "ai_species"]
+    purpose: Literal["milk_account", "ai_technician", "ai_species", "mandi_location", "scheme"]
+    searchable: bool = False
     options: list[Option]
     selected: ChoiceValue | None
 

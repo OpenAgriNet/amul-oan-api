@@ -870,7 +870,7 @@ class ExecutionContext:
 
         async def raw(tier: ExecutionTarget) -> AsyncIterator[Any]:
             activity_signaled = False
-            staged_ui = [ui for name in ("_milk_ui", "_booking_ui") if (ui := getattr(deps, name, None)) is not None]
+            staged_ui = [ui for name in ("_milk_ui", "_booking_ui", "_selector_ui") if (ui := getattr(deps, name, None)) is not None]
             for ui in staged_ui:
                 ui.request = None
             completed = False

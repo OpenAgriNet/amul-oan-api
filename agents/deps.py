@@ -104,6 +104,8 @@ class FarmerContext(BaseModel):
     milk_context: str = ""
     _milk_ui: Any = PrivateAttr(default=None)
     _booking_ui: Any = PrivateAttr(default=None)
+    _selector_ui: Any = PrivateAttr(default=None)
+    selector_context: str = ""
     booking_context: str = ""
 
     # Handle to the per-turn content-moderation task, which runs concurrently with
