@@ -1,6 +1,6 @@
-# Development milk UI
+# Development interactive chat
 
-`POST /api/chat/` is a development-only milk UI for amul-ui PR #18. **All accounts
+`POST /api/chat/` is a development-only interactive chat endpoint. Milk UI is in amul-ui PR #18; AI booking requires the frontend additions below. **All accounts
 and records come from the existing authenticated Amul APIs. There are no synthetic
 accounts, generated milk records, fixture scenarios, or alternate data sources.**
 
@@ -57,7 +57,7 @@ After a milk-provider failure, date-picker reselection is required before anothe
 fetch, including after an account switch. A new message cannot bypass this by
 supplying the failed period again. A successful date-picker submission clears the
 requirement. Invalid/rejected submissions leave the stored control unchanged.
-`confirm` and chart submissions are unsupported. The request and output models in `app/agui/models.py` are the source of truth;
+`confirm` is supported only for AI booking; chart submissions remain unsupported. The request and output models in `app/agui/models.py` are the source of truth;
 JSON Schema can be generated from them when needed.
 
 Dates must be real ISO calendar dates with `0 <= end - start <= 31 days`; this
@@ -117,8 +117,109 @@ tool calls coalesce into one workflow; conflicting ranges do not replace it.
 Expired controls return 404: start a new chat/thread. Start a new thread after the
 development session/component limit. The 50-component cap includes expired and
 submitted controls/charts; ordinary messages and saved-result reads still work
-at that cap. Reload restoration, other interactive workflows, and full
+at that cap. Reload restoration, additional interactive workflows, and full
 interrupted-run recovery are deferred.
+
+## AI booking contract — frontend handoff
+
+@vishalrathore8oct: reuse the existing account-choice renderer for both new choice
+purposes, and add the confirmation renderer. There is **no new account picker**.
+Use the same POST transport, `agui-v1` snapshot wrapper, anchors and SDK versions.
+This is an additive contract change; deploy the updated renderer before enabling
+the coordinated booking demo. The backend rollout guards remain unchanged.
+
+The agent stages `request_ai_booking(species=None)`. Backend account resolution
+uses a still-owned milk selection, otherwise a sole authenticated farmer record;
+missing, ambiguous or removed context stops booking. It never guesses an account.
+The flow always shows technician selection, even for a single technician. It then
+shows Cow/Buffalo only if the current booking's species was unclear, followed by
+confirmation. Technician names and mobile descriptions come directly from API
+records. Option IDs are opaque; do not submit technician IDs or account codes.
+
+All controls retain the existing base fields:
+`id, workflow_id, message_id, revision, title, status, kind, purpose, selected`.
+The following examples show the additional fields on consecutive controls; IDs
+are illustrative, not provider identifiers. Each control arrives inside
+`STATE_SNAPSHOT.snapshot.amul_ui.components` with its assistant-message anchor.
+
+```json
+{
+  "kind": "choice", "purpose": "ai_technician",
+  "options": [{"id": "opaque-option", "label": "Technician name", "description": "Provider mobile"}],
+  "selected": null
+}
+```
+
+```json
+{
+  "kind": "choice", "purpose": "ai_species",
+  "options": [
+    {"id": "cow", "label": "Cow", "description": null},
+    {"id": "buffalo", "label": "Buffalo", "description": null}
+  ],
+  "selected": null
+}
+```
+
+Use the existing choice submission for both:
+`ui_action: {component_id, revision, kind: "choice", value: {option_id}}`.
+Labels/titles are localized by the backend (en/gu/hi/mr); preserve API names.
+Do not hard-code account-specific labels on these two purposes.
+
+```json
+{
+  "kind": "confirm", "purpose": "ai_booking",
+  "summary": {
+    "account_label": "Farmer / society label",
+    "technician": {"id": "opaque-option", "label": "Technician name", "description": "Provider mobile"},
+    "species": "cow", "species_label": "Cow"
+  },
+  "selected": null,
+  "outcome": null
+}
+```
+
+Render the summary with Confirm booking, Change technician, Change animal and
+Cancel controls. Submit `kind: "confirm", value: {confirmed: true}` only after
+the farmer presses Confirm booking. `confirmed: false` cancels without booking.
+As for milk, actions use `messages: []`, a fresh `runId`, and the displayed control
+ID/revision. Disable controls while a run is active and after submission; keep
+the chosen values visible. Buttons/status labels are frontend translations.
+
+At any pending booking stage, cancellation may also use:
+`command: {kind: "cancel_ai_booking", workflow_id, state_revision}`.
+Editing uses `command: {kind: "edit_ai_booking", workflow_id, state_revision,
+field: "technician" | "species"}`. Use the latest session revision. Editing
+invalidates the old confirmation, shows the relevant picker and requires another
+confirmation. Neither command accepts provider identifiers. Unrelated chat and
+milk controls preserve the pending booking, and vice versa.
+
+After submission, the same confirmation carries `selected: {confirmed: true}` and
+`outcome: {status, message, ticket}`. Status is `confirmed`, `rejected`, `not_sent`,
+`unconfirmed`, or `already_requested`; ticket is nullable. The backend also emits
+the actual result as assistant text. Only `confirmed` represents this workflow's
+successful provider response. Existing session-limit messages may refer to a
+previous ticket; do not present that as a new booking.
+
+Failures emit `CUSTOM amul.ui_error` and `RUN_ERROR` using the existing error
+envelope. New codes: `BOOKING_CONTEXT_UNAVAILABLE`, `TECHNICIANS_UNAVAILABLE`,
+`NO_AI_TECHNICIANS`, `AI_BOOKING_NOT_ALLOWED`, and `AI_BOOKING_` followed by
+`REJECTED`, `NOT_SENT`, `UNCONFIRMED`, or `ALREADY_REQUESTED`. Translate these on the
+frontend, retaining the backend message as fallback. Never automatically retry a
+confirmation or create a fresh booking after an uncertain result.
+
+The backend revalidates ownership, union policy and technician availability on
+each transition. Changed review details require another confirmation. Before any
+external booking write it atomically consumes the confirmation and records the
+run. A crash, disconnection, or failed result commit leaves it consumed with an
+uncertain outcome, so neither an old action nor a fresh run ID can resend it.
+This guarantee applies to the same confirmation, not to separately confirmed
+bookings. Existing session-wide booking-guard settings still apply. No automatic
+recovery/rebooking, production rollout, or live booking is included here.
+
+Frontend acceptance: technician → optional species → review → confirm; editing
+and cancellation; submitted/expired controls; duplicate submissions; provider
+failures and uncertain outcomes; Gujarati and phone-width layout.
 
 Python protocol package: `ag-ui-protocol==1.0.0`; frontend compatibility target:
 `@ag-ui/client` / `@ag-ui/core` `1.0.4`. Versions need not share a number.

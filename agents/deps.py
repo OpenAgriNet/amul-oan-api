@@ -103,6 +103,8 @@ class FarmerContext(BaseModel):
     interactive_milk: bool = False
     milk_context: str = ""
     _milk_ui: Any = PrivateAttr(default=None)
+    _booking_ui: Any = PrivateAttr(default=None)
+    booking_context: str = ""
 
     # Handle to the per-turn content-moderation task, which runs concurrently with
     # the agent on the voice path (see app.services.voice). Side-effecting tools

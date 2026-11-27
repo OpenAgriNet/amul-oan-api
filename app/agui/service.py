@@ -1,4 +1,4 @@
-"""Development milk workflow. Provider reads stay behind authenticated identity."""
+"""Development interactive workflows behind authenticated identity and fenced state."""
 from __future__ import annotations
 
 import copy
@@ -18,8 +18,11 @@ from ag_ui.encoder import EventEncoder
 from redis.exceptions import WatchError
 
 from agents.tools.beckn.amul import authenticated_accounts, fetch_authenticated_farmers, fetch_milk_collection
+from agents.tools.ai_call import UNCONFIRMED_MESSAGE
+from agents.tools.models.ai_call import BookingOutcome
 from app.agui.milk import account_identity, account_label, labels, milk_result
 from app.agui.models import ErrorDetail, ErrorResponse, ChatRunRequest, UIState
+from app.agui.booking import BookingProvider, advance_booking, complete_booking
 from app.agui.session import storage_session_id
 
 MAX_COMPONENTS = 50
@@ -83,8 +86,8 @@ def reconcile_accounts(record, accounts):
     return by_identity, removed
 
 
-async def advance(record, request, mobile, provider, trace_id=None, *, milk_intent=None, accounts=None):
-    """Apply a trusted milk intent or a validated control, never model-written UI."""
+async def advance(record, request, mobile, provider, trace_id=None, *, milk_intent=None, booking_intent=None, booking_provider=None, accounts=None):
+    """Apply a trusted intent or a validated control, never model-written UI."""
     record = copy.deepcopy(record)
     digest = check_run(record, request)
     ui, props = record["ui"], request.forwardedProps
@@ -100,12 +103,12 @@ async def advance(record, request, mobile, provider, trace_id=None, *, milk_inte
         return record, dict(text=text, message_id=message_id, trace_id=trace_id,
                             state=copy.deepcopy(ui), error=failure)
 
-    if request.messages and milk_intent is None:
+    if request.messages and milk_intent is None and booking_intent is None:
         return finish("")  # Ordinary agent replies do not consume component capacity.
 
     def expire():
         for item in ui["components"]:
-            if item["status"] == "pending":
+            if item["purpose"].startswith("milk_") and item["status"] == "pending":
                 item.update(status="expired", revision=item["revision"] + 1)
 
     target = None
@@ -116,13 +119,21 @@ async def advance(record, request, mobile, provider, trace_id=None, *, milk_inte
             raise UIError(404, "COMPONENT_NOT_FOUND", "Control expired or is unavailable. Start a fresh chat.")
         if target["status"] != "pending" or target["revision"] != action.revision:
             raise UIError(409, "STALE_COMPONENT", "This control was used or changed.", component_id=target["id"])
-        if action.kind != target["kind"] or action.kind == "confirm":
+        if action.kind != target["kind"]:
             raise UIError(422, "UNSUPPORTED_ACTION", "This action is not supported.", component_id=target["id"])
         if action.kind == "choice" and action.value.option_id not in {o["id"] for o in target["options"]}:
-            raise UIError(422, "INVALID_OPTION", "Choose one of the displayed accounts.", component_id=target["id"])
+            raise UIError(422, "INVALID_OPTION", "Choose one of the displayed options.", component_id=target["id"])
         workflow_id = target["workflow_id"]
     if props.command and props.command.state_revision != ui["state_revision"]:
         raise UIError(409, "STALE_STATE", "The chat changed. Use its latest state revision.")
+
+    if (booking_intent is not None or (target and target["purpose"].startswith("ai_"))
+            or (props.command and props.command.kind != "change_milk_account")):
+        text, failure, send = await advance_booking(record, request, mobile, booking_provider or BookingProvider(),
+                                                   message_id, intent=booking_intent, target=target)
+        updated, response = finish(text)
+        response["booking_send"] = send
+        return updated, response
 
     if accounts is None:
         try:
@@ -210,9 +221,10 @@ async def advance(record, request, mobile, provider, trace_id=None, *, milk_inte
 
 
 class MilkStore:
-    def __init__(self, redis, prefix, ttl, provider=None):
+    def __init__(self, redis, prefix, ttl, provider=None, booking_provider=None):
         self.redis, self.prefix, self.ttl = redis, prefix, ttl
         self.provider = provider or MilkProvider()
+        self.booking_provider = booking_provider or BookingProvider()
 
     def key(self, owner, persona, thread):
         digest = hashlib.sha256(json.dumps([owner, persona, thread]).encode()).hexdigest()
@@ -272,18 +284,12 @@ class MilkStore:
                         else:
                             reconcile_accounts(record, accounts)
 
-                async def commit(reply=None):
-                    if disconnected is not None and await disconnected():
-                        raise asyncio.CancelledError()
-                    updated, response = await advance(record, request, mobile, self.provider, trace_id,
-                                                      milk_intent=reply["intent"] if reply else None, accounts=accounts)
+                async def persist(updated, response, reply=None):
                     encoded = json.dumps(updated, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
                     if len(encoded.encode()) > 4 * 1024 * 1024:
                         raise UIError(409, "SESSION_LIMIT", "Start a fresh chat session.")
                     if heartbeat.done() and heartbeat.exception() is not None:
                         raise UIError(409, "SESSION_BUSY", "Session lease was lost.", retryable=True)
-                    if disconnected is not None and await disconnected():
-                        raise asyncio.CancelledError()
                     heartbeat.cancel()
                     await asyncio.gather(heartbeat, return_exceptions=True)
                     await pipe.watch(key + ":lock")
@@ -300,6 +306,36 @@ class MilkStore:
                             pipe.delete(suggestions_key)
                         response["agent"] = reply
                     await pipe.execute()
+
+                async def commit(reply=None):
+                    nonlocal heartbeat
+                    if disconnected is not None and await disconnected():
+                        raise asyncio.CancelledError()
+                    updated, response = await advance(record, request, mobile, self.provider, trace_id,
+                        milk_intent=reply["intent"] if reply else None,
+                        booking_intent=reply.get("booking_intent") if reply else None,
+                        booking_provider=self.booking_provider, accounts=accounts)
+                    if disconnected is not None and await disconnected():
+                        raise asyncio.CancelledError()
+                    send = response.pop("booking_send", False)
+                    await persist(updated, response, reply)
+                    if send:
+                        # A crash from here on leaves a consumed, uncertain confirmation.
+                        # Neither a replay nor a new runId may send it again.
+                        heartbeat = asyncio.create_task(renew())
+                        await pipe.watch(key)
+                        if disconnected is not None and await disconnected():
+                            raise asyncio.CancelledError()
+                        if not await lock.owned():
+                            raise UIError(409, "SESSION_BUSY", "Session lease was lost.", retryable=True)
+                        try:
+                            result = await self.booking_provider.book(updated["booking"], request.threadId)
+                        except Exception:
+                            # A failure after claiming/sending cannot establish that no visit was booked.
+                            result = BookingOutcome(status="unconfirmed", message=UNCONFIRMED_MESSAGE)
+                        complete_booking(updated, response, result)
+                        # Save a known outcome even if the browser disconnected after send.
+                        await persist(updated, response)
                     return response
 
                 if request.messages and agent_reply is not None:

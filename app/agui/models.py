@@ -6,6 +6,7 @@ import re
 from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from agents.tools.models.ai_call import BookingOutcome
 
 MAX_BODY_BYTES = 256 * 1024
 MAX_TEXT_BYTES = 16 * 1024
@@ -72,6 +73,19 @@ class ChangeAccount(WireModel):
     state_revision: Annotated[int, Field(ge=0, le=9007199254740991)]
 
 
+class BookingCommand(WireModel):
+    kind: Literal["edit_ai_booking", "cancel_ai_booking"]
+    workflow_id: Identifier
+    state_revision: Annotated[int, Field(ge=0, le=9007199254740991)]
+    field: Literal["technician", "species"] | None = None
+
+    @model_validator(mode="after")
+    def edit_field(self):
+        if (self.kind == "edit_ai_booking") != (self.field is not None):
+            raise ValueError("only an edit requires a field")
+        return self
+
+
 class RequestProps(WireModel):
     version: Literal[1]
     channel: Literal["web", "whatsapp"] = "web"
@@ -81,7 +95,7 @@ class RequestProps(WireModel):
     user_id: Annotated[str, Field(max_length=128)] = "anonymous"
     persona: Literal["farmer", "doctor"] | None = None
     ui_action: UIAction | None = None
-    command: ChangeAccount | None = None
+    command: Annotated[ChangeAccount | BookingCommand, Field(discriminator="kind")] | None = None
 
 
 class UserMessage(WireModel):
@@ -177,7 +191,7 @@ class ComponentBase(WireModel):
 
 class ChoiceComponent(ComponentBase):
     kind: Literal["choice"]
-    purpose: Literal["milk_account"]
+    purpose: Literal["milk_account", "ai_technician", "ai_species"]
     options: list[Option]
     selected: ChoiceValue | None
 
@@ -202,7 +216,22 @@ class ChartComponent(ComponentBase):
     data: MilkResult
 
 
-Component = Annotated[ChoiceComponent | DateComponent | ChartComponent, Field(discriminator="kind")]
+class BookingSummary(WireModel):
+    account_label: str
+    technician: Option
+    species: Literal["cow", "buffalo"]
+    species_label: str
+
+
+class ConfirmComponent(ComponentBase):
+    kind: Literal["confirm"]
+    purpose: Literal["ai_booking"]
+    summary: BookingSummary
+    selected: ConfirmValue | None
+    outcome: BookingOutcome | None = None
+
+
+Component = Annotated[ChoiceComponent | DateComponent | ChartComponent | ConfirmComponent, Field(discriminator="kind")]
 
 
 class UIState(WireModel):

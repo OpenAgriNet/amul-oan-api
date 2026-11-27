@@ -125,6 +125,9 @@ async def request_milk_records(ctx: RunContext[FarmerContext], fromdate: str | N
     if not _interactive_milk_available(ctx.deps):
         report_tool("error", "interactive milk unavailable")
         return "Interactive milk lookup is unavailable for this turn."
+    booking = getattr(ctx.deps, "_booking_ui", None)
+    if booking is not None and booking.request is not None:
+        return "An AI booking workflow is already staged. Request one workflow per turn."
     return ctx.deps._milk_ui.stage(fromdate, todate)
 
 
