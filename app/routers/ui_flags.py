@@ -16,6 +16,7 @@ router = APIRouter(prefix="/ui-flags", tags=["ui-flags"])
 class UIFlags(BaseModel):
     test_case_entry: bool
     doctor_persona_selector: bool
+    chat_agui_enabled: bool
     debug_view: bool
 
 
@@ -24,6 +25,7 @@ async def ui_flags() -> UIFlags:
     return UIFlags(
         # The screen and POST /api/test-cases/ are on together.
         test_case_entry=settings.test_cases_route_enabled,
+        chat_agui_enabled=(settings.environment == "development" and settings.chat_agui_preview_enabled and settings.chat_agui_enabled),
         # resolve_chat_persona (app/personas.py) ignores the picker unless both are on.
         doctor_persona_selector=settings.doctor_persona_enabled and settings.chat_persona_override_enabled,
         # The per-message Debug panel and GET /api/debug/turns/ are on together.

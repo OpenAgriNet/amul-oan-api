@@ -31,7 +31,7 @@ from app import debug_view  # noqa: E402
 debug_view.install()
 
 # Import all routers
-from app.routers import chat, transcribe, suggestions, tts, health, auth, user, telemetry, beckn, webhooks, ui_flags
+from app.routers import chat, transcribe, suggestions, tts, health, auth, user, telemetry, beckn, webhooks, ui_flags, agui
 import logging
 import re
 
@@ -117,7 +117,7 @@ app.add_middleware(
     allow_methods=settings.allowed_methods,
     allow_headers=settings.allowed_headers,
     # The chat response's trace id, which a browser client may read only when exposed.
-    expose_headers=["X-Trace-Id"],
+    expose_headers=["X-Trace-Id", "X-Chat-Format"],
 )
 
 
@@ -143,6 +143,7 @@ async def metrics():
 # Include all routers with API prefix from settings
 app.include_router(auth.router, prefix=settings.api_prefix)  # Auth router (no auth required)
 app.include_router(chat.router, prefix=settings.api_prefix)
+app.include_router(agui.router, prefix=settings.api_prefix)
 app.include_router(transcribe.router, prefix=settings.api_prefix)
 app.include_router(suggestions.router, prefix=settings.api_prefix)
 app.include_router(tts.router, prefix=settings.api_prefix)
