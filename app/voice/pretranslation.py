@@ -94,7 +94,9 @@ _REPEAT_REQUEST_RE = re.compile(
     r"having (some )?trouble (processing|answering))",
     re.IGNORECASE,
 )
-_USER_QUERY_WRAPPER_RE = re.compile(r'^\*\*User:\*\*\s*"(.*)"$', re.DOTALL)
+# Searched, not matched from the start: a turn that told the caller a booking
+# they had not heard saved that note ahead of their words (agents/tools/ai_call.py).
+_USER_QUERY_WRAPPER_RE = re.compile(r'\*\*User:\*\*\s*"(.*)"$', re.DOTALL)
 
 
 def _history_exchanges(history: list) -> list[tuple[Optional[str], str]]:
@@ -143,7 +145,7 @@ def _pretranslation_context(history: list) -> list[tuple[str, str]]:
             elif user in _SILENT_USER_MARKERS:
                 user = None
         if user is not None:
-            match = _USER_QUERY_WRAPPER_RE.match(user)
+            match = _USER_QUERY_WRAPPER_RE.search(user)
             if match:
                 user = match.group(1).strip()
             if "[unclear" in user.lower():
