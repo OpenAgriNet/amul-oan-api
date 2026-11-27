@@ -45,7 +45,7 @@ def test_user_profile_anonymous_when_anon_token():
 def test_user_profile_ok_on_envelope(monkeypatch):
     monkeypatch.setattr(
         user_router,
-        "get_or_fetch_farmer_data",
+        "get_farmer_data_for_profile",
         AsyncMock(return_value=_envelope()),
     )
     out = asyncio.run(user_router.get_user_profile(user_info={"phone": "9876543210"}))
@@ -53,12 +53,14 @@ def test_user_profile_ok_on_envelope(monkeypatch):
     assert out["farmer"] is not None
     assert out["farmer"]["lookupStatus"] == "found"
     assert len(out["farmer"]["farmers"]) == 1
+    # The app's "last updated": the record is no longer refreshed on this read.
+    assert out["farmer"]["fetchedAt"]
 
 
 def test_user_profile_error_when_cache_service_returns_none(monkeypatch):
     monkeypatch.setattr(
         user_router,
-        "get_or_fetch_farmer_data",
+        "get_farmer_data_for_profile",
         AsyncMock(return_value=None),
     )
     out = asyncio.run(user_router.get_user_profile(user_info={"phone": "9876543210"}))
@@ -68,7 +70,7 @@ def test_user_profile_error_when_cache_service_returns_none(monkeypatch):
 def test_user_profile_not_found_on_authoritative_not_found_envelope(monkeypatch):
     monkeypatch.setattr(
         user_router,
-        "get_or_fetch_farmer_data",
+        "get_farmer_data_for_profile",
         AsyncMock(return_value=FarmerDataEnvelope.not_found(source="api")),
     )
     out = asyncio.run(user_router.get_user_profile(user_info={"phone": "9876543210"}))
@@ -79,6 +81,6 @@ def test_user_profile_error_when_cache_service_raises(monkeypatch):
     async def boom(_phone):
         raise RuntimeError("cache down")
 
-    monkeypatch.setattr(user_router, "get_or_fetch_farmer_data", boom)
+    monkeypatch.setattr(user_router, "get_farmer_data_for_profile", boom)
     out = asyncio.run(user_router.get_user_profile(user_info={"phone": "9876543210"}))
     assert out == {"status": "error", "farmer": None}
