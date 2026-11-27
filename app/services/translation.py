@@ -14,6 +14,7 @@ from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar
 from pathlib import Path
 from typing import Literal, NamedTuple, Optional
+from helpers.gujarati_numbers import english_number_words_to_gujarati
 from helpers.utils import get_logger, normalize_voice_output
 from agents.tools.models.union import UNION_BANNED_MESSAGE_VARIANTS, union_banned_message
 from agents.tools.terms import get_mini_glossary_for_text, get_ambiguity_hints_for_query
@@ -707,7 +708,8 @@ _GU_NUMBER_WORDS_RULE = (
     "zero=શૂન્ય, one=એક, two=બે, three=ત્રણ, four=ચાર, five=પાંચ, six=છ, seven=સાત, eight=આઠ, nine=નવ. "
     "Do not round numbers or combine decimal digits into tens. "
     "Examples: one hundred thirty one point four two rupees -> એકસો એકત્રીસ પોઈન્ટ ચાર બે રૂપિયા; twenty six days -> છવ્વીસ દિવસ; "
-    "two thousand twenty six -> બે હજાર છવ્વીસ (never બે હજાર ચોવીસ, which is a different year)."
+    "two thousand twenty six -> બે હજાર છવ્વીસ (never બે હજાર ચોવીસ, which is a different year). "
+    "A number the source already gives in Gujarati words is exact: copy its words as they are."
 )
 _GU_GLOSSARY_OPTION_RULE = (
     "Glossary options joined with OR are alternatives. Choose exactly ONE contextually appropriate Gujarati expression "
@@ -963,6 +965,14 @@ def _canned_union_ban_translation(text: str, target_lang: str) -> str | None:
     if normalized not in UNION_BANNED_MESSAGE_VARIANTS:
         return None
     return union_banned_message(target_lang)
+
+
+def _voice_gu_numbers(text: str, target_lang: str) -> str:
+    """Voice's English for Gujarati with its numbers already in Gujarati words,
+    for the translator to copy (#613)."""
+    if _is_voice_channel() and LANG_CODES.get(target_lang.lower()) == "gu":
+        return english_number_words_to_gujarati(text)
+    return text
 
 
 # ── post-translation tier-chain adapter ───────────────────────────────────────
@@ -1300,6 +1310,7 @@ async def translate_text(
         return text
 
     _prot = _protected_output_triggers(text, target_lang)
+    text = _voice_gu_numbers(text, target_lang)
 
     instruction, tg_prompt = _prepare_translation_inputs(
         text, source_lang, target_lang, max_output_chars
@@ -1496,6 +1507,7 @@ async def translate_text_stream_fast(
         return
 
     _prot = _protected_output_triggers(text, target_lang)
+    text = _voice_gu_numbers(text, target_lang)
 
     instruction, tg_prompt = _prepare_translation_inputs(
         text, source_lang, target_lang, max_output_chars, species=species
