@@ -27,6 +27,7 @@ from typing import Any, Optional
 
 import httpx
 
+from agents.crop_protection import mentions_banned_pesticide
 from agents.tools.telemetry import report_tool
 from agents.tools.scheme_codes import resolve_scheme_code
 from app.config import settings
@@ -154,18 +155,22 @@ async def network_search_documents(query: str, top_k: int = 12) -> str:
         logger.warning("network vet search leg failed error=%s", errors.get(VET_LEG))
         report_tool("unavailable", f"vet document leg failed: {errors.get(VET_LEG)}")
         return "The document search is temporarily unavailable. Please try again shortly."
-    items = _items(results.get(VET_LEG))[:top_k]
-    if not items:
-        logger.info("network vet search returned no items query=%s", query)
-        report_tool("no_result", "no documents returned")
-        return "No relevant documents were found on the network for this query."
     lines: list[str] = []
-    for i, it in enumerate(items, 1):
+    for it in _items(result):
         d = it.get("descriptor", {})
         tags = _tag_map(it)
         text = d.get("long_desc") or d.get("short_desc") or d.get("name", "")
         src = tags.get("source", "")
-        lines.append(f"{i}. {d.get('name', 'Document')}\n{text}" + (f"\n(source: {src})" if src else ""))
+        snippet = f"{d.get('name', 'Document')}\n{text}" + (f"\n(source: {src})" if src else "")
+        if mentions_banned_pesticide(snippet):
+            continue
+        lines.append(f"{len(lines) + 1}. {snippet}")
+        if len(lines) == top_k:
+            break
+    if not lines:
+        logger.info("network vet search returned no relevant items query=%s", query)
+        report_tool("no_result", "no documents returned")
+        return "No relevant documents were found on the network for this query."
     return "\n\n".join(lines)
 
 
