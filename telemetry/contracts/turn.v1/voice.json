@@ -192,6 +192,7 @@
     "error",
     "cancelled",
     "stale_request",
+    "duplicate_request",
     "stt_signal",
     "hold_message",
     "greeting_fast_path",

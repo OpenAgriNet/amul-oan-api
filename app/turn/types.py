@@ -98,6 +98,10 @@ class TelephonyCall:
     #: and its utterance's (turn.v1's ``amul.utterance_id``). For the trace.
     trace_id: Optional[str] = None
     utterance_id: Optional[str] = None
+    #: Set when this request has the words the agent answered on this call a
+    #: moment ago, sent again by the provider: that answer, as the caller heard
+    #: it, to say again without the agent (app/voice/duplicates.py).
+    repeated_answer: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -530,7 +534,7 @@ class SurfaceProfile:
     """What a surface populates. One field per structure that is built."""
 
     surface: Surface
-    #: Ordered. First match wins and ends the turn. Chat has one; voice has five.
+    #: Ordered. First match wins and ends the turn. Chat has one; voice has six.
     classifiers: tuple[Classifier, ...] = ()
     #: Turns the agent's English stream into caller text. A surface that always
     #: answers from its classifiers never reaches it, so it may be left unset.

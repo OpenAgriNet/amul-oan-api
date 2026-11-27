@@ -176,6 +176,11 @@ class VoiceTelemetry:
         self._trace.set_outcome(outcome)
         self._score_turn_outcome(outcome)
 
+    @property
+    def outcome(self) -> Optional[str]:
+        """How the turn ended, once ``run_turn`` has recorded it."""
+        return self._trace.outcome
+
     def _score_turn_outcome(self, outcome: str) -> None:
         # From inside the root: outside it Langfuse skips the score. Synchronous
         # and never raising: run_turn calls this in a finally that can run during

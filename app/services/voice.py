@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import dataclasses
 from contextlib import aclosing
-from functools import partial
 from types import MappingProxyType
 from typing import AsyncGenerator, Optional
 
@@ -33,6 +32,7 @@ from app.turn.types import (
     Turn,
 )
 from app.utils import SessionRequestOwner, release_session_request_ownership
+from app.voice import duplicates
 from app.voice import outbound as _outbound
 from app.voice.agent_input import voice_agent_input
 from app.voice.background import voice_background
@@ -98,7 +98,9 @@ async def stream_voice_message(
     Each emission goes out as voice sent it: through voice's output normalizer,
     except a raw one (the hang-up token, which must stay exact). The nudge goes
     out through the telephony provider, not this stream. The session is released
-    however the turn ends.
+    however the turn ends. An answer the agent gave is kept for a moment, and a
+    request with the same words in that moment is given it again
+    (``app/voice/duplicates.py``).
     """
     call_type = _outbound.normalize_call_type(call_type)
     target = (target_lang or "gu").strip().lower()
@@ -113,6 +115,7 @@ async def stream_voice_message(
                 "Outbound consent turn; session_id=%s process_id=%s query_chars=%s",
                 session_id, process_id, len(query or ""),
             )
+        repeated_answer = await duplicates.answer_to_repeat(session_id, query)
         turn = Turn(
             query=query,
             session_id=session_id,
@@ -134,9 +137,18 @@ async def stream_voice_message(
                 request_epoch=owner.epoch if owner is not None else None,
                 trace_id=owner.trace_id if owner is not None else None,
                 utterance_id=owner.utterance_id if owner is not None else None,
+                repeated_answer=repeated_answer,
             ),
         )
-        surface = dataclasses.replace(VOICE_SURFACE, telemetry=partial(VoiceTelemetry, route=route))
+        telemetry: Optional[VoiceTelemetry] = None
+
+        def _telemetry(*args, **kwargs) -> VoiceTelemetry:
+            # Kept, to read how the turn ended.
+            nonlocal telemetry
+            telemetry = VoiceTelemetry(*args, route=route, **kwargs)
+            return telemetry
+
+        surface = dataclasses.replace(VOICE_SURFACE, telemetry=_telemetry)
         turn_stream = run_turn(
             turn,
             surface,
@@ -146,6 +158,7 @@ async def stream_voice_message(
                 http_request=http_request, owner=owner, session_id=session_id, process_id=process_id
             ),
         )
+        heard: list[str] = []
         # aclosing: a hang-up closes the turn now, so it records the disconnect
         # and releases the session rather than waiting for the event loop.
         async with aclosing(turn_stream) as emissions:
@@ -156,8 +169,11 @@ async def stream_voice_message(
                     # Rendering failed: the turn failed, the caller did not leave.
                     await emissions.athrow(exc)
                     raise
+                heard.extend(chunks)
                 for chunk in chunks:
                     yield chunk
+        if telemetry is not None and telemetry.outcome == "success":
+            await duplicates.remember_answer(session_id, query, heard)
     finally:
         released = await release_session_request_ownership(owner)
         if owner is not None:
