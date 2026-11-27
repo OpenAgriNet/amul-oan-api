@@ -64,6 +64,16 @@ def no_heat_alert(monkeypatch):
     monkeypatch.setattr(voice_service.heat_alert_call, "context_for_call", _none)
 
 
+@pytest.fixture(autouse=True)
+def no_kept_answers(monkeypatch):
+    """No request here repeats an answered one, and no answer is kept (both read Redis)."""
+    async def _none(*_a):
+        return None
+
+    monkeypatch.setattr(voice_service.duplicates, "answer_to_repeat", _none)
+    monkeypatch.setattr(voice_service.duplicates, "remember_answer", _none)
+
+
 @pytest.fixture
 def world(monkeypatch):
     """Stand-ins for Redis, the checks, the agent and the provider."""
@@ -96,6 +106,9 @@ def world(monkeypatch):
         seen["stage_reads"] += 1
         return seen["stage"]
 
+    async def _no_booking(session_id, history):
+        return None
+
     answer = [ModelRequest(parts=[UserPromptPart(content="q")]), ModelResponse(parts=[TextPart(content="Give her water.")])]
     monkeypatch.setattr(bg, "check_moderation", _moderation)
     monkeypatch.setattr(bg, "check_non_meaningful_streak", _streak)
@@ -105,6 +118,7 @@ def world(monkeypatch):
     monkeypatch.setattr(lv, "refresh_session_request_ownership", _owner)
     monkeypatch.setattr(lv, "is_session_request_owner", _owner)
     monkeypatch.setattr(outbound, "get_stage", _stage)
+    monkeypatch.setattr("app.voice.agent_input.unheard_booking_note", _no_booking)
     monkeypatch.setattr(chat_service, "update_message_history", _history)
     monkeypatch.setattr(voice_agents.voice_agent, "iter", lambda **_kw: _Run(["Give her water."], answer))
     monkeypatch.setattr(settings, "enable_voice_nudges", False)
@@ -519,7 +533,9 @@ def test_the_adapter_composes_a_voice_turn(monkeypatch):
 
     ((turn, surface, kwargs),) = fake.calls
     assert surface.surface is Surface.VOICE
-    assert surface.telemetry.func is VoiceTelemetry and surface.telemetry.keywords == {"route": _ROUTE}
+    telemetry = surface.telemetry(turn, pipeline_profile="oss", pipeline_trace=None)
+    # Stamped with what the route did before the turn, which it is timed from.
+    assert isinstance(telemetry, VoiceTelemetry) and telemetry._trace.started_at == _ROUTE.started_at
     assert (turn.session_id, turn.history_session_id, turn.persona, turn.channel) == ("call-1", "call-1", "farmer", None)
     assert dict(turn.authenticated_user) == {"sub": "x"}
     assert (turn.call.process_id, turn.call.provider, turn.call.call_type) == ("proc-1", "RAYA", "inbound")

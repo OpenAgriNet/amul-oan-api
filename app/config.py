@@ -716,6 +716,12 @@ class Settings(BaseSettings):
     # The Langfuse dataset that keeps the cases. Unset, or no Langfuse: 503.
     test_cases_raw_dataset: Optional[str] = os.getenv("TEST_CASES_RAW_DATASET")
 
+    # ── Debug view (/api/debug/, the dev UI's per-message Debug panel) ────────
+    # On only with ENVIRONMENT=development as well (dev and previews, never prod):
+    # each chat turn's steps are kept in Redis for a day, readable by the user who
+    # asked alone (app/debug_view.py). The UI's debug_view flag follows it.
+    debug_view_enabled: bool = _get_bool_env("DEBUG_VIEW_ENABLED", default=False)
+
     # ── Onex-Aura / OneXtel SMS gateway (DLT-approved KDCC micro-loan template) ─
     # When false, SMS is a dry-run: nothing is sent, the code is still issued and
     # stored, and sms_status is recorded as 'dry_run'. Keep OFF while testing.
