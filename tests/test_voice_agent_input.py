@@ -294,7 +294,9 @@ def test_a_known_farmer_gets_the_signed_in_agent_and_their_details(world):
     assert "- Farmer-data tools may be available for this turn." in context
     assert "- Tool groups in this run: retrieval, booking, signed-in-farmer-data" in context
     assert built.message_history[1:3] == list(_PRIOR)
-    assert "action-first symptom" in _content(built.message_history[-1])
+    hints = _content(built.message_history[-1])
+    assert "action-first symptom" in hints
+    assert "search_documents" in hints, "#611: a symptom is searched before it is answered"
     assert world["trims"] == [dict(max_tokens=32_000, include_system_prompts=False, include_tool_calls=True)]
 
 
@@ -412,6 +414,15 @@ def test_per_query_hints_come_right_before_the_prompt(world):
     assert hints.startswith("Hints for the current user query:")
     assert "Voice answer mode: compact comparison" in hints
     assert built.message_history[1:-1] == list(_PRIOR)
+
+
+def test_a_follow_up_with_no_other_hint_is_told_to_look_its_fact_up(world):
+    """#611: follow-ups were answered from memory, "I don't know" with no search."""
+    built, _ = _agent_input(_turn(), query="yes")
+
+    hints = _content(built.message_history[-1])
+    assert hints.startswith("Hints for the current user query:")
+    assert "call a tool before you answer" in hints
 
 
 _ORPHANED = (
