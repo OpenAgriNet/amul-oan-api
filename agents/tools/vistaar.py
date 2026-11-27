@@ -13,6 +13,7 @@ Endpoint is overridable via VISTAAR_BAP_URL (default: the Vistaar sandbox).
 Advisory (ICAR/NPSS) is NOT here — on BV that's document search, not Beckn.
 """
 import uuid
+import time
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Callable, Literal, Optional
@@ -50,8 +51,9 @@ logger = get_logger(__name__)
 class InteractiveSelectors:
     """Private request staged by the accepted agent attempt; no provider calls."""
 
-    def __init__(self):
+    def __init__(self, location=None):
         self.request = None
+        self.location = location or {}
 
     def stage(self, deps, intent):
         if any(getattr(deps, name, None) is not None and getattr(deps, name).request is not None
@@ -300,6 +302,7 @@ async def _resolve_search_location(
     """
     deps = _deps(ctx)
     session_id = getattr(deps, "session_id", None)
+    ui = getattr(deps, "_selector_ui", None)
 
     asked = (location or "").strip()
     if asked:
@@ -308,11 +311,17 @@ async def _resolve_search_location(
             logger.info("vistaar location unresolved asked=%r", asked)
             return None, unknown_place_message(asked)
         # Sticky: the next turn is usually about the same place ("and cotton?").
-        await set_session_district_key(session_id, resolved.key)
+        if ui is not None:
+            ui.location = dict(key=resolved.key, expires=time.time() + settings.mandi_location_ttl_s)
+        else:
+            await set_session_district_key(session_id, resolved.key)
         return SearchLocation(resolved, "explicit"), None
 
-    session_key = await get_session_district_key(session_id)
-    if session_key:
+    if ui is not None:
+        session_key = ui.location.get("key") if ui.location.get("expires", 0) > time.time() else None
+    else:
+        session_key = await get_session_district_key(session_id)
+    if session_key in DISTRICTS:
         return SearchLocation(DISTRICTS[session_key], "session"), None
 
     district = deps.get_farmer_district() if deps is not None else None

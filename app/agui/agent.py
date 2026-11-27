@@ -29,7 +29,7 @@ async def agent_reply(record, history, commit, *, request, user_info, trace_id,
                      if c["kind"] == "chart" and c["data"]["account"]["option_id"] == selected["option_id"]), None)
     ui = InteractiveMilk(selected, data, failed=record.get("date_reselection_required", False))
     booking_ui = InteractiveBooking()
-    selector_ui = InteractiveSelectors()
+    selector_ui = InteractiveSelectors(record.get("mandi_area"))
     props = request.forwardedProps
     query = await mask_private_numbers(request.messages[0].content, request.threadId, owner_mobile(user_info, "farmer"))
     turn = Turn(query=query, session_id=request.threadId, source_lang=props.source_lang,
@@ -62,6 +62,7 @@ async def agent_reply(record, history, commit, *, request, user_info, trace_id,
         reply["intent"] = ui.request
         reply["booking_intent"] = booking_ui.request
         reply["selector_intent"] = selector_ui.request
+        record["mandi_area"] = selector_ui.location
         reply["suggestions_pending"] = any(task.func is create_suggestions for task in tasks.tasks)
         response = await commit(reply)
         if outcome == "error" and response["error"] is None:

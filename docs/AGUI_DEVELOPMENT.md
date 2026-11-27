@@ -272,6 +272,9 @@ commodity catalog, commodity aliases or commodity-name validation are added.
 
 The backend uses explicit location, then owner-scoped remembered location (existing
 mandi TTL), then an unambiguous authenticated profile district; otherwise it asks.
+Weather and mandi share this saved district within the authenticated chat. A newer
+explicit weather/mandi location or district-picker choice replaces the earlier one;
+interactive requests do not read the legacy session-ID-only location cache.
 Union choices require the existing permitted union context and are revalidated
 when selected. Listing a scheme does not verify eligibility. A failed union
 catalog can still show central choices with an incomplete-list notice.
