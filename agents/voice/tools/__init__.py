@@ -21,6 +21,7 @@ from agents.tools.cattle_trade import (
     get_cattle_trade_prices,
     get_verified_cattle_listings,
 )
+from agents.tools.fodderinfo import FODDER_TOOLS, prepare_fodder_tool
 from agents.tools.memory_tools import (
     list_memories,
     prepare_memory_tool,
@@ -52,6 +53,7 @@ def _with_nudge_signal(func):
 
 
 BASE_TOOLS = [
+    *(Tool(_with_nudge_signal(tool), prepare=prepare_fodder_tool) for tool in FODDER_TOOLS),
     Tool(
         _with_nudge_signal(search_terms),
         takes_ctx=False,

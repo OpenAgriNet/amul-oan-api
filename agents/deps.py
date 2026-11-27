@@ -1,5 +1,5 @@
 import asyncio
-from typing import Any, Optional, Literal
+from typing import Any, Callable, Optional, Literal
 from pydantic import BaseModel, Field, PrivateAttr
 
 
@@ -85,6 +85,7 @@ class FarmerContext(BaseModel):
     signed_in: bool = Field(default=False, description="Whether the session is signed in/authenticated for farmer-specific tools.")
     mobile: Optional[str] = Field(default=None, description="Normalized mobile number when available.")
     heat_alert_event_id: Optional[str] = Field(default=None, description="The heat-alert event this outbound voice call was placed for (voice).")
+    heat_alert_booked: bool = Field(default=False, description="This heat-alert call's booking is confirmed, so the call can end (voice).")
     farmer_accounts: list[FarmerAccount] = Field(
         default_factory=list,
         description="All (union, society, farmer) accounts on the caller's mobile, for multi-account fan-out.",
@@ -114,6 +115,15 @@ class FarmerContext(BaseModel):
     # the model transcript.  Keeping them on the per-turn deps object prevents
     # provider HTML from entering prompts, translation, TTS, or chat history.
     _chat_artifacts: list[dict[str, Any]] = PrivateAttr(default_factory=list)
+
+    _on_voice_booking_attempt: Optional[Callable[[], None]] = PrivateAttr(default=None)
+
+    def set_voice_booking_callback(self, callback: Callable[[], None]) -> None:
+        self._on_voice_booking_attempt = callback
+
+    def record_voice_booking_attempt(self) -> None:
+        if self._on_voice_booking_attempt is not None:
+            self._on_voice_booking_attempt()
 
     def set_moderation_task(self, task: Optional["asyncio.Task"]) -> None:
         """Attach the concurrently-running moderation task for tool self-gating."""

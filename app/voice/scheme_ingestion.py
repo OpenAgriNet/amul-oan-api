@@ -70,6 +70,7 @@ async def get_redis_client():
             host=settings.redis_host,
             port=settings.redis_port,
             db=settings.redis_db,
+            username=settings.redis_username,
             password=settings.redis_password,
             decode_responses=True,
             socket_connect_timeout=settings.redis_socket_connect_timeout,
