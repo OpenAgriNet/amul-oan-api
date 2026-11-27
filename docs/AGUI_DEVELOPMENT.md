@@ -229,3 +229,54 @@ The backend stream was checked against Vishal's actual PR #18 adapter with
 one-byte UTF-8/SSE fragments. This one-off verification tooling is not a runtime
 dependency and is not included in the backend source. Real farmer-data validation
 still requires signing in and checking the records in the UI.
+
+## Searchable mandi and scheme choices (issue #639)
+
+These reuse the existing POST, SSE stream, `choice` action and revision checks.
+No additional account selection is introduced. Clear commodity/location or central
+scheme inputs return source-backed text directly in the existing answer layout.
+Missing or ambiguous inputs produce a choice; mandi dates remain fixed while the
+farmer completes it. An unsupported location is explained, never replaced by Anand.
+
+New choice purposes are `mandi_commodity`, `mandi_location` and `scheme`:
+
+```json
+{
+  "kind": "choice",
+  "purpose": "mandi_commodity",
+  "searchable": true,
+  "options": [
+    {"id": "opaque-option-id", "label": "Onion", "description": null,
+     "search_terms": ["onion", "pyaaz"]}
+  ]
+}
+```
+
+The example omits the unchanged component ID, workflow ID, message ID, revision,
+title, status and selected fields. Submit the displayed option ID using the
+existing `ui_action: {component_id, revision, kind: "choice", value: {option_id}}`.
+IDs map to saved source records; neither the frontend nor the agent resolves names.
+Search locally over `label`, `description` and optional `search_terms`. Scheme
+options label their source in `description` (dairy union or central government).
+Retain the selected option and disable submitted/expired controls. Changing a
+commodity or district through chat creates a new choice for that workflow;
+unrelated milk, booking and scheme controls remain usable.
+
+@vishalrathore8oct: add searchable choice rendering, localized controls and mobile
+handling using this contract. Picker search uses existing catalog names/aliases;
+it does not translate Gujarati keystrokes. Gujarati chat input and backend result
+text continue through the existing translation pipeline. Commodity catalog:
+`OpenAgriNet/bharat-oan-api@63a1ccce89286282b84babef5cb10ba9393de2b3`,
+`assets/commodity_codes.json`, copied unchanged; no new Gujarati aliases.
+
+The backend uses explicit location, then owner-scoped remembered location (existing
+mandi TTL), then an unambiguous authenticated profile district; otherwise it asks.
+Union choices require the existing permitted union context and are revalidated
+when selected. Listing a scheme does not verify eligibility. A failed union
+catalog can still show central choices with an incomplete-list notice.
+
+New source error codes: `MANDI_LOCATION_UNSUPPORTED`, `MANDI_UNAVAILABLE`,
+`SCHEMES_UNAVAILABLE`, `SCHEME_ACCESS_CHANGED`. Empty successful results are normal
+assistant text, distinct from unavailable sources. Existing invalid/stale option,
+owner isolation and duplicate-run handling apply. No flag changes, deployment,
+voice/WhatsApp picker changes, or cattle/fodder cards are included.

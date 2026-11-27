@@ -27,6 +27,7 @@ from agents.tools.vet_offices import find_nearby_vet_offices
 from agents.tools.union_schemes import get_union_scheme_data, prepare_get_union_scheme_data
 from agents.tools.loan import check_loan_eligibility, prepare_check_loan_eligibility
 from agents.tools.vistaar import (
+    request_mandi_prices, request_scheme_info, prepare_selector_tool, prepare_text_selector_tool,
     get_vistaar_weather,
     get_vistaar_mandi_prices,
     get_vistaar_scheme_info,
@@ -48,6 +49,8 @@ from agents.tools.vistaar_pmkisan import (
 )
 
 TOOLS = [
+    Tool(reporting(request_mandi_prices), prepare=prepare_selector_tool),
+    Tool(reporting(request_scheme_info), prepare=prepare_selector_tool),
     Tool(reporting(request_ai_booking), prepare=prepare_interactive_booking),
     Tool(reporting(request_milk_records), prepare=prepare_interactive_milk),
     Tool(reporting(read_displayed_milk_records), prepare=prepare_interactive_milk),
@@ -201,12 +204,14 @@ TOOLS.extend([
     ),
     Tool(
         reporting(get_vistaar_mandi_prices),
+        prepare=prepare_text_selector_tool,
         takes_ctx=True,
         docstring_format='auto',
         require_parameter_descriptions=True,
     ),
     Tool(
         reporting(get_vistaar_scheme_info),
+        prepare=prepare_text_selector_tool,
         takes_ctx=False,
         docstring_format='auto',
         require_parameter_descriptions=True,

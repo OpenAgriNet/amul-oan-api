@@ -42,6 +42,8 @@ async def prepare_get_union_scheme_data(
     bail-out for farmers from unions whose scheme catalog isn't ingested
     (e.g., dudhsagar). The LLM won't see the tool in its schema this turn, so it can't call it.
     """
+    if getattr(ctx.deps, "_selector_ui", None) is not None:
+        return None
     if has_union_scheme_catalog(ctx.deps):
         return tool_def
     logger.info(
