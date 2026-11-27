@@ -664,6 +664,12 @@ async def search_verified_cattle_listings(
                 + stale
             ).replace("  ", " "), message=f'No verified animals are listed in "{place_text}". {nearest}'.strip())
         at_place, place_label = at_place
+        if (district or "").strip() and (village or "").strip():
+            village_keys = {_place_key(item.village_name) for item in at_place} - {""}
+            matched_villages = _fuzzy(_place_key(village), village_keys)
+            at_place = [item for item in at_place if _place_key(item.village_name) in matched_villages]
+            village_label = " and ".join(sorted({item.village_name for item in at_place})) or village.strip()
+            place_label += f", {village_label} village"
         asked.append(f"in {place_label}")
         place_ids = {item.number for item in at_place}
         matches = [item for item in pool if item.number in place_ids]

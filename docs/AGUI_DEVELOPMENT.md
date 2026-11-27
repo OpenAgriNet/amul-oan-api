@@ -331,7 +331,9 @@ Omitted/null/blank optional filters are cleared. An omitted or cleared fodder `l
 to its existing default of 5. Backend validation rejects unknown fields, negative
 or nonfinite amounts, mismatched sources and unsupported UI enum values. Names
 retain existing matching. Cattle profile-district defaults and nearest-district
-behavior are unchanged. Fodder clarification statuses continue through chat;
+behavior are unchanged. Supplying both district and village intersects them; village
+matching is restricted to listings in the selected district. An unmatched village
+returns no matches rather than widening the search. Fodder clarification statuses continue through chat;
 its existing location-lookup tool remains available. Numeric fodder search filters
 use kg; displayed asking rates keep their original unit.
 
