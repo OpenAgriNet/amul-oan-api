@@ -27,7 +27,7 @@ from typing import Any, Optional
 
 import httpx
 
-from agents.crop_protection import mentions_triazophos
+from agents.crop_protection import mentions_banned_pesticide
 from agents.tools.telemetry import report_tool
 from agents.tools.scheme_codes import resolve_scheme_code
 from app.config import settings
@@ -162,7 +162,7 @@ async def network_search_documents(query: str, top_k: int = 12) -> str:
         text = d.get("long_desc") or d.get("short_desc") or d.get("name", "")
         src = tags.get("source", "")
         snippet = f"{d.get('name', 'Document')}\n{text}" + (f"\n(source: {src})" if src else "")
-        if mentions_triazophos(snippet):
+        if mentions_banned_pesticide(snippet):
             continue
         lines.append(f"{len(lines) + 1}. {snippet}")
         if len(lines) == top_k:

@@ -12,7 +12,7 @@ import marqo
 from pydantic import BaseModel, Field
 from pydantic_ai import ModelRetry, RunContext
 
-from agents.crop_protection import mentions_triazophos
+from agents.crop_protection import mentions_banned_pesticide
 from agents.deps import FarmerContext
 from agents.tools.telemetry import reason, report_tool
 from agents.voice.tools.terms import normalize_text_with_glossary
@@ -481,7 +481,7 @@ async def search_documents(
             hit
             for hit in results
             if not any(
-                mentions_triazophos(str(hit.get(key) or ""))
+                mentions_banned_pesticide(str(hit.get(key) or ""))
                 for key in ("text", "name", "name_en", "name_gu", "filename")
             )
         ]
