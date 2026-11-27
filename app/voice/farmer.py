@@ -569,6 +569,22 @@ def _append_ai_call_union_ban_lines(lines: list[str], farmer: FarmerRecord) -> N
     lines.append("- Do not ask which technician they want. Do not call `create_ai_call`.")
 
 
+def _short_technician_names(names: list[Optional[str]]) -> list[Optional[str]]:
+    """Each technician's first name, the list read aloud is long enough without
+    the rest. Two technicians sharing it keep as many words as tell them apart."""
+    worded = [(name or "").casefold().split() for name in names]
+
+    def short(index: int) -> Optional[str]:
+        words = (names[index] or "").split()
+        for count in range(1, len(words)):
+            head = worded[index][:count]
+            if not any(other[:count] == head for i, other in enumerate(worded) if i != index):
+                return " ".join(words[:count])
+        return names[index]
+
+    return [short(index) for index in range(len(names))]
+
+
 def _build_ai_technician_summary(envelope: Optional[FarmerDataEnvelope]) -> str:
     if envelope is None:
         return ""
@@ -607,8 +623,8 @@ def _build_ai_technician_summary(envelope: Optional[FarmerDataEnvelope]) -> str:
         lines.append("- AI technician options for booking are internal context, not user-provided information.")
         lines.append("- The caller does not know which AI technicians are available unless you tell them by technician name.")
         lines.append("- AI technician options for booking are grouped by farmer and society.")
-        lines.append("- Each technician option only has these fields: id, full_name, mobile_number.")
-        lines.append("- When asking the farmer to choose a technician, use the technician full name in natural spoken form.")
+        lines.append("- Each technician option only has these fields: id, name, mobile_number.")
+        lines.append("- When asking the farmer to choose a technician, say the name exactly as given here, nothing longer.")
         lines.append("- Do not ask by technician position, number, option index, or ordinal words such as first, second, or third.")
         lines.append("- Mention phone only if a disambiguating mobile number is needed.")
         # Every group and every technician is listed. A cap here is silent: the
@@ -636,15 +652,15 @@ def _build_ai_technician_summary(envelope: Optional[FarmerDataEnvelope]) -> str:
                 else:
                     lines.append("- AI technician option: none available for this farmer group.")
                 continue
-            for technician in technicians:
-                name = strip_ait_name_codes(technician.get("fullName"))
+            names = _short_technician_names([strip_ait_name_codes(t.get("fullName")) for t in technicians])
+            for technician, name in zip(technicians, names):
                 mobile = technician.get("mobileNumber")
                 user_id = technician.get("userId")
                 option = "- AI technician option:"
                 if user_id:
                     option += f" id={user_id}"
                 if name:
-                    option += f" full_name={name}"
+                    option += f" name={name}"
                 if mobile:
                     option += f", mobile_number={mobile}"
                 lines.append(option)

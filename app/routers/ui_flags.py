@@ -7,6 +7,7 @@ sign-in (the test case icon shows on the login screen).
 from fastapi import APIRouter
 from pydantic import BaseModel
 
+from app import debug_view
 from app.config import settings
 
 router = APIRouter(prefix="/ui-flags", tags=["ui-flags"])
@@ -16,6 +17,7 @@ class UIFlags(BaseModel):
     test_case_entry: bool
     doctor_persona_selector: bool
     chat_agui_enabled: bool
+    debug_view: bool
 
 
 @router.get("/", response_model=UIFlags)
@@ -26,4 +28,6 @@ async def ui_flags() -> UIFlags:
         chat_agui_enabled=(settings.environment == "development" and settings.chat_agui_preview_enabled and settings.chat_agui_enabled),
         # resolve_chat_persona (app/personas.py) ignores the picker unless both are on.
         doctor_persona_selector=settings.doctor_persona_enabled and settings.chat_persona_override_enabled,
+        # The per-message Debug panel and GET /api/debug/turns/ are on together.
+        debug_view=debug_view.active(),
     )

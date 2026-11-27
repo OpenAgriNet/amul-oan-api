@@ -270,11 +270,12 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("AMUL_CHAT_BE_UVICORN_WORKERS", "UVICORN_WORKERS"),
     )
 
-    # Redis Settings (set REDIS_HOST, REDIS_PORT, REDIS_DB, REDIS_PASSWORD, etc. via env)
+    # Redis Settings (set REDIS_HOST, REDIS_PORT, REDIS_DB, REDIS_USERNAME, REDIS_PASSWORD, etc. via env)
     redis_host: str = "localhost"
     redis_port: int = 6379
     redis_db: int = 0
     redis_password: Optional[str] = None
+    redis_username: Optional[str] = None  # ACL user. Set with redis_password. Both unset: no AUTH.
     redis_key_prefix: str = "sva-cache-"
     # A preview backend sets dev's REDIS_KEY_PREFIX here, so the Beckn callbacks dev receives reach it.
     beckn_redis_key_prefix: str = ""
@@ -717,6 +718,12 @@ class Settings(BaseSettings):
     test_cases_route_enabled: bool = _get_bool_env("TEST_CASES_ROUTE_ENABLED", default=False)
     # The Langfuse dataset that keeps the cases. Unset, or no Langfuse: 503.
     test_cases_raw_dataset: Optional[str] = os.getenv("TEST_CASES_RAW_DATASET")
+
+    # ── Debug view (/api/debug/, the dev UI's per-message Debug panel) ────────
+    # On only with ENVIRONMENT=development as well (dev and previews, never prod):
+    # each chat turn's steps are kept in Redis for a day, readable by the user who
+    # asked alone (app/debug_view.py). The UI's debug_view flag follows it.
+    debug_view_enabled: bool = _get_bool_env("DEBUG_VIEW_ENABLED", default=False)
 
     # ── Onex-Aura / OneXtel SMS gateway (DLT-approved KDCC micro-loan template) ─
     # When false, SMS is a dry-run: nothing is sent, the code is still issued and

@@ -94,12 +94,19 @@ def _parse_verdict(raw: str) -> NonMeaningfulVerdict:
     )
 
 
-def _build_messages(user_turns: list[str], source_lang: str) -> list[dict[str, str]]:
-    turns = [turn.strip() for turn in user_turns if isinstance(turn, str) and turn.strip()]
-    numbered_turns = "\n".join(f"{idx}. {turn}" for idx, turn in enumerate(turns, start=1))
+def _build_messages(
+    user_turns: list[str], source_lang: str, assistant_prompts: Optional[list[str]] = None
+) -> list[dict[str, str]]:
+    turns = [
+        {
+            "preceding_assistant_prompt": assistant_prompts[index] if assistant_prompts else "",
+            "caller": turn.strip(),
+        }
+        for index, turn in enumerate(user_turns)
+    ]
     user_content = (
         f"Source language: {source_lang}\n\n"
-        f"Recent 5 caller turns (oldest to newest):\n{numbered_turns}"
+        f"Recent caller turns (oldest to newest):\n{json.dumps(turns, ensure_ascii=False)}"
     )
     return [
         {"role": "system", "content": _STATIC_NON_MEANINGFUL_SYSTEM_PROMPT},
@@ -112,11 +119,12 @@ async def _create_non_meaningful_response(
     model: str,
     user_turns: list[str],
     source_lang: str,
+    assistant_prompts: Optional[list[str]] = None,
 ):
     return await asyncio.wait_for(
         client.chat.completions.create(
             model=model,
-            messages=_build_messages(user_turns, source_lang),
+            messages=_build_messages(user_turns, source_lang, assistant_prompts),
             max_completion_tokens=120,
             response_format={"type": "json_object"},
         ),
@@ -129,8 +137,11 @@ async def check_non_meaningful_streak(
     source_lang: str,
     *,
     execution: ExecutionContext,
+    assistant_prompts: Optional[list[str]] = None,
 ) -> NonMeaningfulVerdict:
-    turns = [turn for turn in user_turns if isinstance(turn, str) and turn.strip()]
+    eligible = [index for index, turn in enumerate(user_turns) if isinstance(turn, str) and turn.strip()][-5:]
+    turns = [user_turns[index] for index in eligible]
+    prompts = [assistant_prompts[index] for index in eligible] if assistant_prompts is not None else None
     if len(turns) < 5:
         return _allow("fewer than five user turns", failed_open=False)
 
@@ -143,7 +154,7 @@ async def check_non_meaningful_streak(
 
     try:
         if not langfuse:
-            response = await _create_non_meaningful_response(client, model, turns[-5:], source_lang)
+            response = await _create_non_meaningful_response(client, model, turns, source_lang, prompts)
             raw = (response.choices[0].message.content or "").strip()
             return _parse_verdict(raw)
 
@@ -161,7 +172,7 @@ async def check_non_meaningful_streak(
                 "provider": provider,
             },
         ) as observation:
-            response = await _create_non_meaningful_response(client, model, turns[-5:], source_lang)
+            response = await _create_non_meaningful_response(client, model, turns, source_lang, prompts)
             raw = (response.choices[0].message.content or "").strip()
             verdict = _parse_verdict(raw)
             observation.update(

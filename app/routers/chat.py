@@ -5,7 +5,9 @@ from fastapi import APIRouter, Depends, BackgroundTasks
 from fastapi.responses import JSONResponse, StreamingResponse
 from starlette.types import Send
 from agents.tools.session_pmkisan import mask_private_numbers, owner_mobile
+from app import debug_view
 from app.auth.jwt_auth import get_chat_user
+from app.channels.whatsapp_language import whatsapp_languages
 from app.services.chat import stream_chat_messages
 from app.utils import _get_message_history
 from app.models.requests import ChatRequest
@@ -55,16 +57,22 @@ async def chat_endpoint(
     # The turn's trace id, sent back as X-Trace-Id (and trace_id in a JSON body): the
     # client names the turn with it when it sends the farmer's feedback.
     trace_id = uuid.uuid4().hex
+    # Dev and previews with the debug view on: keep this turn's steps for its asker.
+    await debug_view.register_turn(trace_id, owner=debug_view.owner_of(user_info), session_id=session_id)
     resolved_persona = resolve_chat_persona(user_info, request.persona)
     query = await mask_private_numbers(
         request.query, session_id, owner_mobile(user_info, resolved_persona)
     )
+    source_lang, target_lang = request.source_lang, request.target_lang
+    if request.channel == "whatsapp":
+        source_lang, target_lang = whatsapp_languages(request.query, source_lang, target_lang)
 
     logger.info(
         f"Chat request received - session_id: {session_id}, user_id: {request.user_id}, "
         f"channel: {request.channel}, "
-        f"authenticated_user: {user_info}, source_lang: {request.source_lang}, "
-        f"target_lang: {request.target_lang}, "
+        f"authenticated_user: {user_info}, source_lang: {source_lang}, "
+        f"target_lang: {target_lang}, "
+        f"requested_langs: {request.source_lang}/{request.target_lang}, "
         f"requested_persona: {request.persona}, query: {query}"
     )
 
@@ -76,8 +84,8 @@ async def chat_endpoint(
     message_stream = stream_chat_messages(
         query=query,
         session_id=session_id,
-        source_lang=request.source_lang,
-        target_lang=request.target_lang,
+        source_lang=source_lang,
+        target_lang=target_lang,
         channel=request.channel,
         user_id=request.user_id,
         history=history,
