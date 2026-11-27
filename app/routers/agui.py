@@ -89,7 +89,7 @@ async def interactive_chat(http_request: Request, background_tasks: BackgroundTa
             try:
                 response = await store.apply(request, owner, persona, mobile, trace_id,
                                              agent_reply=partial(agent_reply, request=request, user_info=user_info,
-                                                                 provider=store.provider, trace_id=trace_id) if request.messages else None,
+                                                                 trace_id=trace_id) if request.messages else None,
                                              disconnected=http_request.is_disconnected)
                 background_tasks.tasks.extend(response.pop("background_tasks", []))
                 if telemetry is not None:

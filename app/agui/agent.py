@@ -9,9 +9,7 @@ from redis.exceptions import RedisError
 
 from agents.tools.milk_collection import InteractiveMilk
 from agents.tools.ai_call import InteractiveBooking
-from agents.tools.farmer import normalize_phone_to_mobile
 from agents.tools.session_pmkisan import mask_private_numbers, owner_mobile
-from app.agui.milk import account_identity
 from app.agui.service import UIError
 from app.agui.models import ErrorDetail, ErrorResponse
 from app.channels.chat import WEB
@@ -20,21 +18,13 @@ from app.tasks.suggestions import create_suggestions
 from app.turn.types import ArtifactEmission, TextEmission, Turn
 
 
-async def agent_reply(record, history, commit, *, request, user_info, provider, trace_id):
-    selected = record["ui"]["selected_milk_account"]
+async def agent_reply(record, history, commit, *, request, user_info, trace_id,
+                      history_session_id, accounts_available):
+    selected = record["ui"]["selected_milk_account"] if accounts_available else None
     data = None
     if selected:
-        option = record["options"].get(selected["option_id"])
-        try:
-            accounts = await provider.accounts(normalize_phone_to_mobile(user_info["phone"]), request.threadId, request.runId + ":context")
-            owned = option and tuple(option["identity"]) in {account_identity(a) for a in accounts}
-        except Exception:
-            owned = False
-        if owned:
-            data = next((c["data"] for c in reversed(record["ui"]["components"])
-                         if c["kind"] == "chart" and c["data"]["account"]["option_id"] == selected["option_id"]), None)
-        else:
-            selected = None
+        data = next((c["data"] for c in reversed(record["ui"]["components"])
+                     if c["kind"] == "chart" and c["data"]["account"]["option_id"] == selected["option_id"]), None)
     ui = InteractiveMilk(selected, data, failed=record.get("date_reselection_required", False))
     booking_ui = InteractiveBooking()
     props = request.forwardedProps
@@ -42,7 +32,7 @@ async def agent_reply(record, history, commit, *, request, user_info, provider, 
     turn = Turn(query=query, session_id=request.threadId, source_lang=props.source_lang,
                 target_lang=props.target_lang, user_id=props.user_id,
                 authenticated_user=MappingProxyType(dict(user_info)), history=tuple(history),
-                history_session_id=request.threadId, persona="farmer", channel=WEB,
+                history_session_id=history_session_id, persona="farmer", channel=WEB,
                 input_method=_input_method(props.input_method), trace_id=trace_id,
                 interactive_milk=True, milk_context=ui.context())
     tasks = BackgroundTasks()
