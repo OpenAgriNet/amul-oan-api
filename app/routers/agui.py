@@ -47,7 +47,7 @@ async def interactive_chat(http_request: Request, background_tasks: BackgroundTa
             request = ChatRunRequest.model_validate_json(bytes(body))
         except (ValidationError, ValueError):
             # Default validation errors contain user input, potentially Aadhaar/OTP.
-            raise UIError(422, "INVALID_REQUEST", "Send one valid message, action, or command; use YYYY-MM-DD dates at most 31 days apart.") from None
+            raise UIError(422, "INVALID_REQUEST", "Send one valid message, action, or command with the expected fields and values.") from None
         if http_request.query_params:
             raise UIError(422, "INVALID_REQUEST", "POST options belong in the JSON request, not query parameters.")
         props = request.forwardedProps

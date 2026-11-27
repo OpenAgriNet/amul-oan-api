@@ -7,6 +7,7 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from agents.tools.models.ai_call import BookingOutcome
+from agents.tools.models.listings import CattleFilters, FodderFilters
 
 MAX_BODY_BYTES = 256 * 1024
 MAX_TEXT_BYTES = 16 * 1024
@@ -65,7 +66,41 @@ class ConfirmAction(ActionBase):
     value: ConfirmValue
 
 
-UIAction = Annotated[ChoiceAction | DateAction | ConfirmAction, Field(discriminator="kind")]
+class ListingFiltersValue(WireModel):
+    source: Literal["cattle", "fodder"]
+    filters: CattleFilters | FodderFilters
+
+    @model_validator(mode="before")
+    @classmethod
+    def parse_source_filters(cls, value):
+        if isinstance(value, dict) and value.get("source") in ("cattle", "fodder"):
+            model = CattleFilters if value["source"] == "cattle" else FodderFilters
+            value = {**value, "filters": model.model_validate(value.get("filters", {}))}
+        return value
+
+    @model_validator(mode="after")
+    def matching_source(self):
+        expected = CattleFilters if self.source == "cattle" else FodderFilters
+        if not isinstance(self.filters, expected):
+            raise ValueError("filters must match the listing source")
+        return self
+
+
+class ListingFiltersAction(ActionBase):
+    kind: Literal["listing_filters"]
+    value: ListingFiltersValue
+
+
+class OpenListingValue(WireModel):
+    listing_ref: Identifier
+
+
+class OpenListingAction(ActionBase):
+    kind: Literal["open_listing"]
+    value: OpenListingValue
+
+
+UIAction = Annotated[ChoiceAction | DateAction | ConfirmAction | ListingFiltersAction | OpenListingAction, Field(discriminator="kind")]
 
 
 class ChangeAccount(WireModel):
@@ -233,7 +268,64 @@ class ConfirmComponent(ComponentBase):
     outcome: BookingOutcome | None = None
 
 
-Component = Annotated[ChoiceComponent | DateComponent | ChartComponent | ConfirmComponent, Field(discriminator="kind")]
+class ListingFact(WireModel):
+    key: str
+    value: str | int | float | bool
+
+
+class ListingCard(WireModel):
+    listing_ref: str
+    listing_number: int | None = None
+    title: str
+    facts: list[ListingFact]
+
+
+class ListingFilter(WireModel):
+    name: str
+    kind: Literal["text", "number", "select"]
+    options: list[str] = Field(default_factory=list)
+    minimum: float | None = None
+    maximum: float | None = None
+    unit: str | None = None
+
+
+class ListingCollection(ComponentBase):
+    kind: Literal["listing_collection"]
+    purpose: Literal["cattle", "fodder"]
+    filters: CattleFilters | FodderFilters
+    filter_definitions: list[ListingFilter]
+    cards: list[ListingCard]
+    displayed_count: int
+    match_count: int | None
+    source_total: int | None
+    elsewhere_count: int | None
+    source_status: str
+    notice: str | None
+    fetched_at: float | None
+    stale: bool
+
+
+class ListingSeller(WireModel):
+    name: str | None = None
+    mobile: str | None = None
+
+
+class ListingDetail(ComponentBase):
+    kind: Literal["listing_detail"]
+    purpose: Literal["cattle", "fodder"]
+    status: Literal["submitted", "expired"]
+    collection_id: str
+    listing_ref: str
+    title: str
+    facts: list[ListingFact]
+    seller: ListingSeller | None
+    source_status: str
+    notice: str | None
+    fetched_at: float | None
+    stale: bool
+
+
+Component = Annotated[ChoiceComponent | DateComponent | ChartComponent | ConfirmComponent | ListingCollection | ListingDetail, Field(discriminator="kind")]
 
 
 class UIState(WireModel):

@@ -25,6 +25,7 @@ from app.agui.models import ErrorDetail, ErrorResponse, ChatRunRequest, UIState
 from app.agui.booking import BookingProvider, advance_booking, complete_booking
 from app.agui.session import storage_session_id
 from app.agui.selectors import SelectorProvider, advance_selectors, PURPOSES as SELECTOR_PURPOSES
+from app.agui.listings import ListingProvider, advance_listings
 
 MAX_COMPONENTS = 50
 
@@ -88,7 +89,7 @@ def reconcile_accounts(record, accounts):
 
 
 async def advance(record, request, mobile, provider, trace_id=None, *, milk_intent=None, booking_intent=None,
-                  booking_provider=None, selector_intent=None, selector_provider=None, accounts=None):
+                  booking_provider=None, selector_intent=None, selector_provider=None, listing_provider=None, accounts=None):
     """Apply a trusted intent or a validated control, never model-written UI."""
     record = copy.deepcopy(record)
     digest = check_run(record, request)
@@ -121,13 +122,21 @@ async def advance(record, request, mobile, provider, trace_id=None, *, milk_inte
             raise UIError(404, "COMPONENT_NOT_FOUND", "Control expired or is unavailable. Start a fresh chat.")
         if target["status"] != "pending" or target["revision"] != action.revision:
             raise UIError(409, "STALE_COMPONENT", "This control was used or changed.", component_id=target["id"])
-        if action.kind != target["kind"]:
+        listing_action = target["kind"] == "listing_collection" and action.kind in ("listing_filters", "open_listing")
+        if action.kind != target["kind"] and not listing_action:
             raise UIError(422, "UNSUPPORTED_ACTION", "This action is not supported.", component_id=target["id"])
         if action.kind == "choice" and action.value.option_id not in {o["id"] for o in target["options"]}:
             raise UIError(422, "INVALID_OPTION", "Choose one of the displayed options.", component_id=target["id"])
         workflow_id = target["workflow_id"]
     if props.command and props.command.state_revision != ui["state_revision"]:
         raise UIError(409, "STALE_STATE", "The chat changed. Use its latest state revision.")
+
+    if (selector_intent and selector_intent["kind"] in ("cattle", "fodder")) or (target and target["kind"] == "listing_collection"):
+        text, failure = await advance_listings(record, request, listing_provider or ListingProvider(),
+            message_id, intent=selector_intent, target=target)
+        updated, response = finish(text)
+        response["selector_translate"] = True
+        return updated, response
 
     if selector_intent is not None or (target and target["purpose"] in SELECTOR_PURPOSES):
         text, failure, translate = await advance_selectors(record, request, mobile, selector_provider or SelectorProvider(),
@@ -230,11 +239,12 @@ async def advance(record, request, mobile, provider, trace_id=None, *, milk_inte
 
 
 class MilkStore:
-    def __init__(self, redis, prefix, ttl, provider=None, booking_provider=None, selector_provider=None):
+    def __init__(self, redis, prefix, ttl, provider=None, booking_provider=None, selector_provider=None, listing_provider=None):
         self.redis, self.prefix, self.ttl = redis, prefix, ttl
         self.provider = provider or MilkProvider()
         self.booking_provider = booking_provider or BookingProvider()
         self.selector_provider = selector_provider or SelectorProvider()
+        self.listing_provider = listing_provider or ListingProvider()
 
     def key(self, owner, persona, thread):
         digest = hashlib.sha256(json.dumps([owner, persona, thread]).encode()).hexdigest()
@@ -326,7 +336,7 @@ class MilkStore:
                         booking_intent=reply.get("booking_intent") if reply else None,
                         booking_provider=self.booking_provider, accounts=accounts,
                         selector_intent=reply.get("selector_intent") if reply else None,
-                        selector_provider=self.selector_provider)
+                        selector_provider=self.selector_provider, listing_provider=self.listing_provider)
                     if response.pop("selector_translate", False) and render_selector is not None:
                         response["text"] = await render_selector(response["text"])
                         if response["error"]:

@@ -284,3 +284,89 @@ New source error codes: `MANDI_LOCATION_UNSUPPORTED`, `MANDI_UNAVAILABLE`,
 assistant text, distinct from unavailable sources. Existing invalid/stale option,
 owner isolation and duplicate-run handling apply. No flag changes, deployment,
 voice/WhatsApp picker changes, or cattle/fodder cards are included.
+
+## Cattle and fodder cards with filters (issue #639)
+
+Interactive web chat adds `request_cattle_listings(filters, listing_ref=None)` and
+`request_fodder_listings(filters, listing_ref=None)`. They stage one read-only
+workflow through the existing accepted-turn mechanism. Other channels retain the
+legacy tools; average cattle rates and feeding/growing advice keep their routing.
+There are no new catalogs, name aliases, provider APIs, flags or endpoints.
+
+### Components and actions
+
+`listing_collection` is a reusable, pending component with purpose `cattle` or
+`fodder`. It retains the existing component/workflow/message IDs and revision.
+It supplies:
+
+- `filters`: complete active source filters; optional fields are nullable.
+- `filter_definitions`: name, kind (`text`, `number`, `select`), options, minimum,
+  maximum and unit. Text-field options are source-backed suggestions, not a new
+  name-validation catalog. Empty numeric fields clear their filter; `limit` resets
+  to 5 when omitted or cleared and accepts 1–20.
+- `cards`: opaque `listing_ref`, nullable cattle `listing_number`, title and typed
+  facts (`{key, value}`). Keys such as `asking_price_inr`, `milk_per_day_litres`,
+  `price.rate_inr`, `price.per_unit_name_en` and `freshness.valid_until` identify
+  labels that the frontend localizes. Retain source values and original units.
+- `displayed_count`, `match_count`, `source_total`, `elsewhere_count`: nullable
+  when unavailable. Cattle match count is before its existing 10-card cap;
+  source total is the provider's overall cattle total, not the filtered total.
+  Fodder source total is the provider-reported search total and may exceed the
+  current, non-test rows displayed. Fodder `match_count` is unknown, not inferred.
+- `source_status`, `notice`, `fetched_at`, `stale`. Fodder per-listing freshness is
+  in its source facts; collection `fetched_at` is null when not supplied.
+
+Apply the complete filter state through the existing `ui_action` envelope:
+
+```json
+{
+  "component_id": "collection-id",
+  "revision": 1,
+  "kind": "listing_filters",
+  "value": {"source": "cattle", "filters": {"species": "cow", "max_price": 80000}}
+}
+```
+
+Omitted/null/blank optional filters are cleared. An omitted or cleared fodder `limit` resets
+to its existing default of 5. Backend validation rejects unknown fields, negative
+or nonfinite amounts, mismatched sources and unsupported UI enum values. Names
+retain existing matching. Cattle profile-district defaults and nearest-district
+behavior are unchanged. Supplying both district and village intersects them; village
+matching is restricted to listings in the selected district. An unmatched village
+returns no matches rather than widening the search. Fodder clarification statuses continue through chat;
+its existing location-lookup tool remains available. Numeric fodder search filters
+use kg; displayed asking rates keep their original unit.
+
+Open a card using the collection's latest revision:
+
+```json
+{
+  "component_id": "collection-id",
+  "revision": 1,
+  "kind": "open_listing",
+  "value": {"listing_ref": "opaque-listing-reference"}
+}
+```
+
+Source identity stays in session state: cattle cache key plus listing number, or
+fodder listing ID. Details recheck that identity using existing refresh rules.
+Never use card position or invent a listing reference. Removed/expired listings
+return an unavailable detail without another seller's information. A provider
+failure emits `LISTINGS_UNAVAILABLE` via the existing error envelope/SSE events.
+No automatic force refresh or pagination is added.
+
+`listing_detail` is a submitted component carrying `collection_id`, `listing_ref`,
+title, facts, nullable `seller: {name, mobile}`, source status, notice, fetched time
+and stale flag. Seller contact appears only when the source permits it. Cattle
+stale-cache warnings remain visible. Repeated opens update the current detail;
+the collection stays browsable with its revision unchanged. Applying filters
+increments the collection revision, replaces its cards/references, and expires
+previous details. Old revisions/references cannot act on the new results.
+
+@vishalrathore8oct: render summary cards and a compact panel containing all supplied
+filter definitions, plus View details. Show source counts distinctly, preserve
+freshness warnings and handle empty/clarification/error states. Add localized
+labels, loading/expired states and mobile layouts. Do not display missing facts
+as zero or infer eligibility/availability. Assistant status text uses the existing
+output translator; card labels are frontend translations. Opening details and
+filtering preserve unrelated milk, booking, mandi and scheme controls.
