@@ -20,6 +20,7 @@ cache = Cache(
     port=settings.redis_port,
     db=settings.redis_db,
     password=settings.redis_password,
+    connection_pool_kwargs={"username": settings.redis_username},
     serializer=JsonSerializer(),
     ttl=settings.default_cache_ttl,
     timeout=settings.redis_socket_timeout,
@@ -29,13 +30,13 @@ cache = Cache(
 
 # Raw async Redis client for operations aiocache doesn't expose: SET NX locks,
 # set-based queues (SADD/SPOP), TTL/EXISTS. Used by the farmer SWR cache layer.
-# Shares the same instance/db/prefix as `cache`. password passes through from
-# settings (None today → no auth, matching the shared passwordless Redis; a
-# REDIS_PASSWORD env value is honored if ever set).
+# Shares the same instance/db/prefix as `cache`. username and password pass
+# through from settings; both None means no AUTH is sent.
 redis_client = Redis(
     host=settings.redis_host,
     port=settings.redis_port,
     db=settings.redis_db,
+    username=settings.redis_username,
     password=settings.redis_password,
     socket_connect_timeout=settings.redis_socket_connect_timeout,
     socket_timeout=settings.redis_socket_timeout,

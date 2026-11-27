@@ -267,11 +267,12 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("AMUL_CHAT_BE_UVICORN_WORKERS", "UVICORN_WORKERS"),
     )
 
-    # Redis Settings (set REDIS_HOST, REDIS_PORT, REDIS_DB, REDIS_PASSWORD, etc. via env)
+    # Redis Settings (set REDIS_HOST, REDIS_PORT, REDIS_DB, REDIS_USERNAME, REDIS_PASSWORD, etc. via env)
     redis_host: str = "localhost"
     redis_port: int = 6379
     redis_db: int = 0
     redis_password: Optional[str] = None
+    redis_username: Optional[str] = None  # ACL user. Set with redis_password. Both unset: no AUTH.
     redis_key_prefix: str = "sva-cache-"
     # A preview backend sets dev's REDIS_KEY_PREFIX here, so the Beckn callbacks dev receives reach it.
     beckn_redis_key_prefix: str = ""
@@ -737,6 +738,7 @@ class Settings(BaseSettings):
     amul_network_url: str = os.getenv("AMUL_NETWORK_URL", "http://amul-bap-seeker:3000")
     # Timeout (seconds) for network calls from the agent tools.
     amul_network_timeout_s: float = float(os.getenv("AMUL_NETWORK_TIMEOUT_S", "35"))
+    fodderinfo_api_key: str = os.getenv("FODDERINFO_API_KEY", "")
     # Doctor persona only: Qdrant search service pinned to the doctor collection.
     # Empty = the doctor searches through Beckn like the farmer.
     doctor_search_url: str = os.getenv("DOCTOR_SEARCH_URL", "")

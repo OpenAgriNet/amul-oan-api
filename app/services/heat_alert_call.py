@@ -15,6 +15,7 @@ knows which animal it is about and books for that account.
 from __future__ import annotations
 
 import asyncio
+import random
 import uuid
 from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
@@ -44,6 +45,10 @@ logger = get_logger(__name__)
 
 SCRIPT_PROMPT = "heat_alert_call_script_gu"
 _ATTEMPTS = 3
+# Raya refuses calls past its rate / concurrency limit. A refused call is tried again a few minutes
+# later (spread, so the batch held to 06:00 does not retry in lockstep) while its AI window is open.
+_RATE_LIMIT_RETRY_SECONDS = 120
+_RATE_LIMIT_RETRIES = 30
 # A farmer answers within minutes of the dial; the row itself lives 24 h.
 _ANSWER_WINDOW = timedelta(hours=3)
 _SESSION_TTL = 4 * 60 * 60
@@ -90,11 +95,13 @@ def agent_args(event: HeatAlertWebhookEvent, species: str = "") -> dict[str, str
     }
 
 
-def schedule(event_id: uuid.UUID, due_at: datetime) -> None:
-    outbound_call.schedule(due_at, lambda: call_farmer(event_id), name=f"heat-alert-call:{event_id}")
+def schedule(event_id: uuid.UUID, due_at: datetime, rate_limit_retries: int = 0) -> None:
+    outbound_call.schedule(
+        due_at, lambda: call_farmer(event_id, rate_limit_retries), name=f"heat-alert-call:{event_id}"
+    )
 
 
-async def call_farmer(event_id: uuid.UUID) -> None:
+async def call_farmer(event_id: uuid.UUID, rate_limit_retries: int = 0) -> None:
     event = await _claim(event_id)
     if event is None:
         return  # already called, booked another way, or the AI window has closed
@@ -114,6 +121,9 @@ async def call_farmer(event_id: uuid.UUID) -> None:
         logger.warning("Heat-alert call not placed id=%s reason=%s", event_id, exc)
         # A definite refusal releases the claim; an ambiguous one keeps it, the call may exist.
         await _record(event_id, called=exc.ambiguous, call_error=str(exc)[:64])
+        if str(exc) == "rate_limited" and rate_limit_retries < _RATE_LIMIT_RETRIES:
+            delay = _RATE_LIMIT_RETRY_SECONDS * (1 + random.random())
+            schedule(event_id, datetime.now(timezone.utc) + timedelta(seconds=delay), rate_limit_retries + 1)
         return
     logger.info("Heat-alert call placed id=%s call_uuid=%s", event_id, call_uuid)
     await _record(event_id, outbound_call_uuid=call_uuid)
@@ -195,7 +205,7 @@ async def _dial(event: HeatAlertWebhookEvent, species: str = "") -> str:
         except outbound_call.OutboundCallError as exc:
             if exc.retry_after is None or attempt == _ATTEMPTS:
                 raise
-            await asyncio.sleep(exc.retry_after)
+            await asyncio.sleep(exc.retry_after * (1 + random.random()))
     raise AssertionError("unreachable")
 
 
@@ -286,9 +296,9 @@ async def _species(event: HeatAlertWebhookEvent, account: AuthenticatedFarmerAcc
                 if str(animal.tagNumber or "").strip() in ids:
                     return _species_name(animal.animalType)
         # The Pashu Aadhaar only: a short collar tag ("1") could name another farmer's animal.
-        if account and event.pashuaadhar_no:
+        if event.pashuaadhar_no:
             profile = await asyncio.wait_for(
-                fetch_animal_profile(event.pashuaadhar_no.strip(), union_code=account.union_code),
+                fetch_animal_profile(event.pashuaadhar_no.strip(), union_code=account.union_code if account else None),
                 _PROFILE_TIMEOUT_S,
             )
             return _species_name(profile.animal_type if profile else None)

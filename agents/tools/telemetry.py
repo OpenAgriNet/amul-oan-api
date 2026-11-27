@@ -21,7 +21,8 @@ message the reason. ``amul.cache`` (hit, miss) is for a tool that has one.
 status the tool reported through ``report_tool``, else ``error`` when it raised,
 ``empty`` when it returned nothing, ``success`` otherwise. A tool that reports a
 failure and then raises keeps its own status and reason. Chat's and voice's
-registries wrap every tool.
+registries wrap every tool. It also hands each result to chat's phone number check
+(agents/tools/contacts.py).
 """
 from __future__ import annotations
 
@@ -33,6 +34,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
 from app.observability import get_langfuse_client
+from agents.tools.contacts import note_tool_result
 
 logger = logging.getLogger(__name__)
 
@@ -89,6 +91,7 @@ def reporting(tool: Callable[..., Any]) -> Callable[..., Any]:
                 raise
             else:
                 _record(_report.get(), result=result, raised=None)
+                note_tool_result(tool.__name__, result)
                 return result
             finally:
                 _report.reset(token)
@@ -105,6 +108,7 @@ def reporting(tool: Callable[..., Any]) -> Callable[..., Any]:
             raise
         else:
             _record(_report.get(), result=result, raised=None)
+            note_tool_result(tool.__name__, result)
             return result
         finally:
             _report.reset(token)

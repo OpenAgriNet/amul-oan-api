@@ -83,24 +83,26 @@ def test_non_meaningful_less_than_five_turns_returns_false():
 def test_non_meaningful_asks_the_classifier_tier_about_the_last_five_turns(monkeypatch):
     seen = {}
 
-    async def fake_create(client, model, user_turns, source_lang):
-        seen.update(client=client, model=model, turns=user_turns)
+    async def fake_create(client, model, user_turns, source_lang, assistant_prompts):
+        seen.update(client=client, model=model, turns=user_turns, prompts=assistant_prompts)
         return _resp('{"five_consecutive_non_meaningful": true, "reason": "filler"}')
 
     monkeypatch.setattr(nm, "_create_non_meaningful_response", fake_create)
 
     verdict = asyncio.run(nm.check_non_meaningful_streak(
         user_turns=["first", *_FIVE], source_lang="gu", execution=_execution(),
+        assistant_prompts=["discarded", "", "", "", "", "Should I book the visit?"],
     ))
 
     assert verdict.five_consecutive_non_meaningful is True
     assert isinstance(seen["client"], AsyncOpenAI)
     assert seen["model"] == "gemma-classifier"
     assert seen["turns"] == _FIVE
+    assert seen["prompts"] == ["", "", "", "", "Should I book the visit?"]
 
 
 def test_non_meaningful_fails_open_on_timeout(monkeypatch):
-    async def slow(client, model, user_turns, source_lang):
+    async def slow(client, model, user_turns, source_lang, assistant_prompts):
         raise asyncio.TimeoutError
 
     monkeypatch.setattr(nm, "_create_non_meaningful_response", slow)
