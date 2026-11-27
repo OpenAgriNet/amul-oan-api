@@ -1,9 +1,8 @@
-"""Source-backed commodity, district and scheme choices for interactive chat."""
+"""Source-backed district and scheme choices for interactive chat."""
 import json
 import re
 import time
 import unicodedata
-from pathlib import Path
 from uuid import uuid4
 
 from agents.tools import vistaar
@@ -16,16 +15,12 @@ from agents.tools.union_schemes import SUPPORTED_SCHEME_UNIONS
 from app.config import settings
 from app.agui.models import ErrorDetail, ErrorResponse
 
-# Source: OpenAgriNet/bharat-oan-api@63a1ccce89286282b84babef5cb10ba9393de2b3.
-# Keep its names/aliases intact; Gujarati chat uses the existing translator.
-COMMODITIES = {row["code"]: row for row in json.loads(
-    (Path(__file__).resolve().parents[2] / "assets/commodity_codes.json").read_text(encoding="utf-8"))}
-PURPOSES = {"mandi_commodity", "mandi_location", "scheme"}
+PURPOSES = {"mandi_location", "scheme"}
 TITLES = {
-    "en": ("Choose a commodity", "Choose the search district", "Choose a scheme"),
-    "gu": ("પાક પસંદ કરો", "શોધ માટે જિલ્લો પસંદ કરો", "યોજના પસંદ કરો"),
-    "hi": ("फसल चुनें", "खोज के लिए जिला चुनें", "योजना चुनें"),
-    "mr": ("पीक निवडा", "शोधासाठी जिल्हा निवडा", "योजना निवडा"),
+    "en": ("Choose the search district", "Choose a scheme"),
+    "gu": ("શોધ માટે જિલ્લો પસંદ કરો", "યોજના પસંદ કરો"),
+    "hi": ("खोज के लिए जिला चुनें", "योजना चुनें"),
+    "mr": ("शोधासाठी जिल्हा निवडा", "योजना निवडा"),
 }
 
 
@@ -62,7 +57,7 @@ class SelectorProvider:
 def selector_context(record):
     context = []
     for kind, flow in record.get("selectors", {}).items():
-        item = dict(kind=kind, stage=flow["stage"], commodity=COMMODITIES.get(flow.get("commodity"), {}).get("name"),
+        item = dict(kind=kind, stage=flow["stage"], commodity=flow.get("commodity"),
                     area=flow.get("area"), period=flow.get("period"), scheme=flow.get("scheme"))
         result = flow.get("result")
         if result and len(result.encode()) <= 4096:
@@ -104,7 +99,7 @@ async def advance_selectors(record, request, mobile, provider, message_id, *, in
         if len(record["ui"]["components"]) >= MAX_COMPONENTS:
             raise UIError(409, "SESSION_LIMIT", "Start a fresh chat session.")
         title = TITLES.get(request.forwardedProps.target_lang.lower(), TITLES["en"])[
-            ("mandi_commodity", "mandi_location", "scheme").index(purpose)]
+            ("mandi_location", "scheme").index(purpose)]
         options, choices_public = {}, []
         for identity, label, description, terms in choices:
             option = uuid4().hex
@@ -118,15 +113,12 @@ async def advance_selectors(record, request, mobile, provider, message_id, *, in
 
     if kind == "mandi":
         if intent is not None:
-            query = normalized(intent.get("commodity"))
-            matches = [code for code, row in COMMODITIES.items() if query and query in
-                       {normalized(term) for term in (row["name"], *row["terms"])}]
             choose = intent.get("choose")
-            flow.update(commodity=matches[0] if len(matches) == 1 and choose != "commodity" else None,
+            flow.update(commodity=(intent.get("commodity") or "").strip(),
                         area=None, choose_area=choose == "location",
                         period=(previous.get("period") or list(vistaar._resolve_date_range())) if choose and not intent.get("price_date") and not intent.get("price_date_to")
                         else list(vistaar._resolve_date_range(intent.get("price_date"), intent.get("price_date_to"))))
-            if choose == "location" and flow["commodity"] is None:
+            if choose == "location" and not flow["commodity"]:
                 flow["commodity"] = previous.get("commodity")
             if intent.get("location") and not flow["choose_area"]:
                 area = resolve_place(intent["location"])
@@ -134,14 +126,11 @@ async def advance_selectors(record, request, mobile, provider, message_id, *, in
                     return fail("MANDI_LOCATION_UNSUPPORTED", "That place is outside the supported mandi search areas. Please choose a supported Gujarat district.")
                 flow["area"] = area.key
                 record["mandi_area"] = dict(key=area.key, expires=time.time() + settings.mandi_location_ttl_s)
-        elif target["purpose"] == "mandi_commodity":
-            flow["commodity"] = value
         else:
             flow["area"] = value
             record["mandi_area"] = dict(key=value, expires=time.time() + settings.mandi_location_ttl_s)
-        if flow["commodity"] not in COMMODITIES:
-            return picker("mandi_commodity", [(code, row["name"], None, row["terms"])
-                for code, row in sorted(COMMODITIES.items(), key=lambda item: item[1]["name"])])
+        if not flow["commodity"]:
+            return result("Which commodity would you like mandi prices for?")
         if flow["area"] is None and not flow["choose_area"]:
             remembered = record.get("mandi_area", {})
             if remembered.get("expires", 0) > time.time() and remembered.get("key") in DISTRICTS:
@@ -156,7 +145,7 @@ async def advance_selectors(record, request, mobile, provider, message_id, *, in
         if flow["area"] is None:
             return picker("mandi_location", [(key, area.display, None, [key, *[alias for alias, district in _ALIASES.items() if district == key]]) for key, area in
                 sorted(DISTRICTS.items(), key=lambda item: item[1].display)])
-        commodity = COMMODITIES[flow["commodity"]]["name"]
+        commodity = flow["commodity"]
         try:
             data = await provider.mandi(commodity, flow["area"], flow["period"])
         except Exception:

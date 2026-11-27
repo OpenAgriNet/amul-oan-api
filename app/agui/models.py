@@ -192,7 +192,7 @@ class ComponentBase(WireModel):
 
 class ChoiceComponent(ComponentBase):
     kind: Literal["choice"]
-    purpose: Literal["milk_account", "ai_technician", "ai_species", "mandi_commodity", "mandi_location", "scheme"]
+    purpose: Literal["milk_account", "ai_technician", "ai_species", "mandi_location", "scheme"]
     searchable: bool = False
     options: list[Option]
     selected: ChoiceValue | None

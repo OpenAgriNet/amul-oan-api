@@ -78,19 +78,21 @@ async def prepare_text_selector_tool(ctx, tool_def):
 async def request_mandi_prices(ctx: RunContext[FarmerContext], commodity_name: str | None = None,
                               location: str | None = None, price_date: str | None = None,
                               price_date_to: str | None = None,
-                              choose: Literal["commodity", "location"] | None = None) -> str:
-    """Request mandi prices with backend-owned commodity and search-area choices.
+                              choose: Literal["location"] | None = None) -> str:
+    """Request mandi prices using the existing English commodity name and API.
 
     Args:
         ctx: Authenticated interactive context.
-        commodity_name: Commodity from the translated question; omit if unclear.
+        commodity_name: English Agmarknet name, as in the existing mandi tool. Ask the farmer if unclear.
         location: Place explicitly named by the farmer; omit to use known context.
         price_date: Start date using existing mandi date formats, if supplied.
         price_date_to: End date using existing mandi date formats, if supplied.
-        choose: Reopen commodity or location selection when the farmer asks to change it.
+        choose: Reopen district selection when the farmer asks to change the search area.
     """
     if not _selectors_available(ctx.deps):
         return "Interactive mandi lookup is unavailable for this turn."
+    if not (commodity_name or "").strip() and choose != "location":
+        return "Ask the farmer which commodity they want prices for before requesting the lookup."
     return ctx.deps._selector_ui.stage(ctx.deps, dict(kind="mandi", commodity=commodity_name,
         location=location, price_date=price_date, price_date_to=price_date_to, choose=choose))
 

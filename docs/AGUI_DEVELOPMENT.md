@@ -235,19 +235,21 @@ still requires signing in and checking the records in the UI.
 These reuse the existing POST, SSE stream, `choice` action and revision checks.
 No additional account selection is introduced. Clear commodity/location or central
 scheme inputs return source-backed text directly in the existing answer layout.
-Missing or ambiguous inputs produce a choice; mandi dates remain fixed while the
-farmer completes it. An unsupported location is explained, never replaced by Anand.
+Commodity handling stays the same: translated English name → existing mandi API.
+Missing/unclear commodities are clarified in chat, with no local catalog or name
+validation. Missing districts and broad schemes produce choices; mandi dates stay
+fixed while the farmer completes a district choice. An unsupported location is explained, never replaced by Anand.
 
-New choice purposes are `mandi_commodity`, `mandi_location` and `scheme`:
+New choice purposes are `mandi_location` and `scheme`:
 
 ```json
 {
   "kind": "choice",
-  "purpose": "mandi_commodity",
+  "purpose": "mandi_location",
   "searchable": true,
   "options": [
-    {"id": "opaque-option-id", "label": "Onion", "description": null,
-     "search_terms": ["onion", "pyaaz"]}
+    {"id": "opaque-option-id", "label": "Rajkot", "description": null,
+     "search_terms": ["rajkot"]}
   ]
 }
 ```
@@ -259,15 +261,14 @@ IDs map to saved source records; neither the frontend nor the agent resolves nam
 Search locally over `label`, `description` and optional `search_terms`. Scheme
 options label their source in `description` (dairy union or central government).
 Retain the selected option and disable submitted/expired controls. Changing a
-commodity or district through chat creates a new choice for that workflow;
+commodity through chat uses the new English name; changing district opens its choice;
 unrelated milk, booking and scheme controls remain usable.
 
 @vishalrathore8oct: add searchable choice rendering, localized controls and mobile
-handling using this contract. Picker search uses existing catalog names/aliases;
-it does not translate Gujarati keystrokes. Gujarati chat input and backend result
-text continue through the existing translation pipeline. Commodity catalog:
-`OpenAgriNet/bharat-oan-api@63a1ccce89286282b84babef5cb10ba9393de2b3`,
-`assets/commodity_codes.json`, copied unchanged; no new Gujarati aliases.
+handling using this contract. Picker search uses existing district/scheme names
+and aliases without translating Gujarati keystrokes. Gujarati chat input and
+backend result text continue through the existing translation pipeline. No
+commodity catalog, commodity aliases or commodity-name validation are added.
 
 The backend uses explicit location, then owner-scoped remembered location (existing
 mandi TTL), then an unambiguous authenticated profile district; otherwise it asks.
